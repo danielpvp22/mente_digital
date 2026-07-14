@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+.claude/settings.local.json
+
+# Dados gerados em runtime
+banco_vetorial_cerebro/
+telemetria_etl.db
+chat_dump_bruto.md
