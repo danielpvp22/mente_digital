@@ -16,6 +16,16 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Raiz do projeto = pasta deste arquivo. TODOS os caminhos default são derivados
+# daqui (não de caminhos absolutos de uma máquina específica), então o projeto
+# roda de qualquer diretório e em qualquer máquina, sem editar código. Cada campo
+# ainda pode ser sobrescrito por .env / variável de ambiente (prefixo MENTE_).
+BASE_DIR = Path(__file__).resolve().parent
+# Modelos de IA (LLM .gguf, voz Piper) e cache do Whisper ficam versionados como
+# pastas (com .gitkeep), mas os binários em si não vão pro git — ver .gitignore.
+DIR_MODELOS = BASE_DIR / "modelos"
+DIR_WHISPER = DIR_MODELOS / "whisper"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -25,13 +35,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- Caminhos (defaults do seu ambiente Windows) ---------------------------
-    caminho_modelo_llama: str = r"D:\projetos\modelos\Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf"
-    caminho_voz_piper: str = r"D:\projetos\modelos\pt_BR-cadu-medium.onnx"
-    caminho_obsidian: str = r"C:\Users\User\Desktop\projetos\memoria_vetorial\Cerebro_Digital"
-    diretorio_banco_vetorial: str = "./banco_vetorial_cerebro"
-    arquivo_chat_dump: str = "chat_dump_bruto.md"
-    db_telemetria: str = "telemetria_etl.db"
+    # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
+    # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
+    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf")
+    caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
+    # Cache onde o faster-whisper baixa os pesos do Whisper na 1ª execução.
+    caminho_cache_whisper: str = str(DIR_WHISPER)
+    # Vault Obsidian: default dentro do projeto (pode começar vazio); aponte para
+    # o seu vault real via MENTE_CAMINHO_OBSIDIAN no .env.
+    caminho_obsidian: str = str(BASE_DIR / "Cerebro_Digital")
+    diretorio_banco_vetorial: str = str(BASE_DIR / "banco_vetorial_cerebro")
+    arquivo_chat_dump: str = str(BASE_DIR / "chat_dump_bruto.md")
+    db_telemetria: str = str(BASE_DIR / "telemetria_etl.db")
     subpasta_conhecimento_novo: str = "Conhecimento_Novo"
 
     # --- LLM (GPU) -------------------------------------------------------------
@@ -106,6 +121,10 @@ class Settings(BaseSettings):
         os.makedirs(self.diretorio_banco_vetorial, exist_ok=True)
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
+        # Pastas dos modelos: garantem que o local de download do Whisper e o
+        # destino esperado do LLM/voz existam mesmo num clone recém-feito.
+        os.makedirs(DIR_MODELOS, exist_ok=True)
+        os.makedirs(self.caminho_cache_whisper, exist_ok=True)
 
 
 settings = Settings()
