@@ -45,8 +45,13 @@ class Settings(BaseSettings):
     max_tokens_resumo: int = 1800
 
     # --- STT / Embeddings ------------------------------------------------------
+    # Backend: faster-whisper (CTranslate2) — mesmos pesos do Whisper, bem mais
+    # rápido. Para MÁXIMA qualidade de transcrição, suba o modelo:
+    #   MENTE_WHISPER_MODEL=large-v3  (e MENTE_WHISPER_DEVICE=cuda se tiver VRAM).
     whisper_model: str = "small"
-    whisper_device: str = "cpu"
+    whisper_device: str = "cpu"     # "auto"/"cuda"/"cpu" — cuda: large-v3 usa ~3GB VRAM
+    # "auto" = float16 na GPU, int8 na CPU (int8 é rápido e preciso o bastante).
+    whisper_compute_type: str = "auto"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta

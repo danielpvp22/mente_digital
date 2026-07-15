@@ -91,18 +91,42 @@ class SentenceChunker:
 # STT — Whisper
 # ==========================================================================
 class SttService:
+    """STT via faster-whisper (CTranslate2): mesmos pesos do Whisper, mais rápido.
+
+    A troca não muda a qualidade por modelo — habilita subir para `large-v3` no
+    mesmo hardware. A entrada é o mesmo `np.ndarray` float32 mono 16kHz de antes.
+    """
+
     def __init__(self) -> None:
         self._model = None
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup."""
         try:
-            import whisper
+            from faster_whisper import WhisperModel
 
-            self._model = whisper.load_model(settings.whisper_model, device=settings.whisper_device)
-            telemetry.track("WHISPER", f"Modelo '{settings.whisper_model}' carregado (CPU).")
+            from rag import resolve_device  # reusa a resolução auto/cuda/cpu
+
+            try:
+                import torch
+
+                cuda_ok = torch.cuda.is_available()
+            except Exception:
+                cuda_ok = False
+            device = resolve_device(settings.whisper_device, cuda_ok)
+            compute = settings.whisper_compute_type
+            if compute == "auto":
+                compute = "float16" if device == "cuda" else "int8"
+
+            self._model = WhisperModel(
+                settings.whisper_model, device=device, compute_type=compute
+            )
+            telemetry.track(
+                "WHISPER",
+                f"faster-whisper '{settings.whisper_model}' carregado ({device}/{compute}).",
+            )
         except Exception as exc:
-            telemetry.error("WHISPER", "Falha ao carregar Whisper", exc)
+            telemetry.error("WHISPER", "Falha ao carregar faster-whisper", exc)
 
     @property
     def ready(self) -> bool:
@@ -113,10 +137,12 @@ class SttService:
             telemetry.warn("WHISPER", "Transcrição solicitada sem modelo.")
             return ""
         try:
-            res = await asyncio.to_thread(
-                self._model.transcribe, audio_numpy, language="pt", fp16=False
-            )
-            return res["text"].strip()
+            def _run() -> str:
+                # transcribe() é lazy: a geração só roda ao iterar os segmentos.
+                segmentos, _info = self._model.transcribe(audio_numpy, language="pt")
+                return "".join(seg.text for seg in segmentos).strip()
+
+            return await asyncio.to_thread(_run)
         except Exception as exc:
             telemetry.error("WHISPER", "Erro na transcrição", exc)
             return ""
