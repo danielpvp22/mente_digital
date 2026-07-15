@@ -130,7 +130,8 @@ class LiveSession:
         elif tipo == "end_session":
             telemetry.track("SERVER", "Sessão encerrada. Iniciando processamento IDLE...")
             itens = self.ctx.memory.drenar_etl()
-            asyncio.create_task(self.ctx.etl.run_idle(itens))
+            # Retido no ctx (não na sessão): o idle sobrevive à desconexão do WS.
+            self.ctx.track_task(self.ctx.etl.run_idle(itens))
 
         elif tipo == "texto":
             texto = (payload.get("payload") or "").strip()

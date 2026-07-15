@@ -35,14 +35,14 @@ from ws import LiveSession  # noqa: E402
 async def _boot(ctx: AppContext) -> None:
     """Carrega modelos sem bloquear o startup do servidor."""
     # GPU: em background (inclui warm-up).
-    asyncio.create_task(ctx.llama.load())
+    ctx.track_task(ctx.llama.load())
     # CPU: Whisper e Piper em threads.
     await asyncio.to_thread(ctx.stt.load)
     await asyncio.to_thread(ctx.tts.load)
     # RAG: embeddings (singleton) -> abre/sincroniza o VectorDB.
     await asyncio.to_thread(ctx.vectorstore.load_embeddings)
     await ctx.vectorstore.open()
-    asyncio.create_task(ctx.vectorstore.sync())
+    ctx.track_task(ctx.vectorstore.sync())
 
 
 @asynccontextmanager
@@ -123,7 +123,7 @@ async def receber_nota_texto(request: Request):
 
     try:
         await asyncio.to_thread(_save)
-        asyncio.create_task(ctx.vectorstore.sync())
+        ctx.track_task(ctx.vectorstore.sync())
         return {"status": "ok", "arquivo": nome}
     except Exception as exc:
         telemetry.error("NOTA", "Erro ao salvar nota manual", exc)

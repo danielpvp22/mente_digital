@@ -3,6 +3,9 @@ __pycache__/
 .env
 .claude/settings.local.json
 
+# Artefatos de teste
+.pytest_cache/
+
 # Dados gerados em runtime
 banco_vetorial_cerebro/
 telemetria_etl.db
