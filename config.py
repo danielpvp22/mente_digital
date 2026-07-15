@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     chroma_batch: int = 2000
     web_max_results: int = 4
     web_prefetch_results: int = 3
+    # Fallback de busca: tenta cada backend do ddgs em ordem até um dar resultado.
+    web_backends: list[str] = ["auto", "html", "lite"]
+
+    # --- Ferramentas (function calling aditivo) --------------------------------
+    max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
+    # Loop agêntico CAPADO: nº máximo de ferramentas encadeadas por mensagem.
+    # Ferramentas "terminais" (calcular, hora, salvar) já saem no 1º passo.
+    max_tool_steps: int = 3
 
     # --- VAD / Áudio -----------------------------------------------------------
     vad_rms_threshold: float = 0.005    # servidor: início de fala

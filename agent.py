@@ -23,6 +23,7 @@ from typing import Awaitable, Callable, Deque, List, Tuple
 
 import prompts
 import textutils
+import tools
 from audio import SentenceChunker
 from config import settings
 from llm import LlamaManager
@@ -123,6 +124,7 @@ class Agent:
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
         self.optimizer = QueryOptimizer(ctx.llama)
+        self.tools = tools.criar_registry()
 
     async def _falar(self, send: Sender, frases: List[str]) -> None:
         """Envia frases prontas para o TTS conforme o chunker fecha sentenças."""
@@ -177,6 +179,21 @@ class Agent:
 
         rota = "web"
         try:
+            # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
+            # roteador LLM. Pergunta de conhecimento nem paga essa chamada — cai
+            # direto no pipeline afinado abaixo (TTFA preservado).
+            if tools.talvez_acao(texto_usuario):
+                decisao = await self._rotear(texto_usuario)
+                if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
+                    telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
+                    if texto_final:
+                        await append_chat_dump("IA", texto_final)
+                        self.ctx.memory.registrar_turno(texto_usuario, texto_final)
+                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final)
+                        await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
+                    return
+
             termos = await self.optimizer.optimize(texto_usuario, self.ctx.memory.chat_history)
             local = await self.ctx.vectorstore.search(termos)
             ram = self._ram_relevante(termos)
@@ -225,6 +242,47 @@ class Agent:
         )
         telemetry.track("LATENCIA", f"rota={rota} TTFT={ttft}ms TTFA={ttfa}ms total={total}ms")
         await asyncio.to_thread(db.save_latency, rota, ttft, ttfa, total)
+
+    async def _rotear(self, texto_usuario: str, observacoes: str = ""):
+        """Pergunta ao LLM qual ferramenta usar; devolve uma `tools.Decisao` ou None."""
+        bruto = await self.ctx.llama.collect(
+            prompts.prompt_router(self.tools.menu(), texto_usuario, observacoes),
+            max_tokens=settings.max_tokens_router,
+            system_prompt=prompts.SYS_ROUTER,
+            temperature=0.0,
+        )
+        return tools.parse_decisao(bruto)
+
+    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira) -> str:
+        """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
+
+        Ferramentas terminais (calcular/hora/salvar) encerram no 1º passo. As não
+        terminais (buscar_web/ler_nota/listar_notas) podem encadear até
+        `max_tool_steps`, mas o loop para assim que o roteador devolve 'responder'.
+        A resposta final vai por streaming + chunking (TTS), preservando o pilar.
+        """
+        observacoes: List[str] = []
+        decisao = primeira
+        passos = 0
+        while decisao and decisao.tool != "responder" and passos < settings.max_tool_steps:
+            tool = self.tools.get(decisao.tool)
+            if tool is None:
+                break
+            try:
+                obs = await tool.executar(decisao.args, self.ctx)
+            except Exception as exc:
+                telemetry.error("TOOL", f"Falha na ferramenta '{decisao.tool}'", exc)
+                obs = f"erro ao executar {decisao.tool}"
+            observacoes.append(f"[{decisao.tool}] {obs}")
+            passos += 1
+            if tool.terminal:
+                break
+            decisao = await self._rotear(texto_usuario, "\n".join(observacoes))
+
+        resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"
+        return await self._responder_stream(
+            prompts.prompt_resposta_ferramentas(resultados, texto_usuario), send
+        )
 
     async def _responder_contexto(self, contexto: str, texto_usuario: str, send: Sender):
         """Responde pelo contexto local/RAM COM streaming, mas segura o áudio até ter
