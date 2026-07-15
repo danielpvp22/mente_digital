@@ -6,6 +6,17 @@ __pycache__/
 # Artefatos de teste
 .pytest_cache/
 
+# Modelos de IA (binários grandes) — versiona só a estrutura de pastas
+modelos/*
+!modelos/.gitkeep
+!modelos/README.md
+!modelos/whisper/
+modelos/whisper/*
+!modelos/whisper/.gitkeep
+
+# Vault Obsidian local (notas do usuário, não versionadas)
+Cerebro_Digital/
+
 # Dados gerados em runtime
 banco_vetorial_cerebro/
 banco_vetorial_cerebro.bak_l2/

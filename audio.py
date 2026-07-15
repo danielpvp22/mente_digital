@@ -118,8 +118,13 @@ class SttService:
             if compute == "auto":
                 compute = "float16" if device == "cuda" else "int8"
 
+            # download_root: baixa/lê os pesos do Whisper na pasta do projeto
+            # (./modelos/whisper), em vez do cache global do HuggingFace.
             self._model = WhisperModel(
-                settings.whisper_model, device=device, compute_type=compute
+                settings.whisper_model,
+                device=device,
+                compute_type=compute,
+                download_root=settings.caminho_cache_whisper,
             )
             telemetry.track(
                 "WHISPER",

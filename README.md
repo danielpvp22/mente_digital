@@ -20,9 +20,15 @@ mente_digital/
 ├── agent.py       # QueryOptimizer, Agent.pipeline_resposta, EtlProcessor (idle)
 ├── ws.py          # LiveSession: máquina de estados VAD/barge-in/end_session
 ├── templates/index.html
+├── modelos/        # modelos de IA (LLM .gguf, voz Piper) + whisper/ (cache STT)
 ├── requirements.txt
 └── README.md
 ```
+
+> **Caminhos são relativos ao projeto.** Não há mais paths absolutos de máquina no
+> código: os defaults são derivados da pasta do projeto (`BASE_DIR` em `config.py`),
+> então o repositório roda de qualquer diretório/máquina. Sobrescreva qualquer um
+> via `.env` (prefixo `MENTE_`).
 
 ## Setup / Instalação
 
@@ -53,32 +59,35 @@ pip install -r requirements.txt
 
 ### 2. Baixar os modelos (NÃO vêm no repositório)
 
-Crie uma pasta para os modelos (ex.: `C:\IA\modelos`) e coloque nela:
+A pasta `modelos/` já existe no projeto (só os binários é que não são versionados).
+Coloque os arquivos nela — ver [`modelos/README.md`](modelos/README.md):
 
 ```
-C:\IA\modelos\
+modelos/
 ├── Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf   # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
-└── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
+├── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
+└── whisper/                                            # cache do STT (baixa sozinho)
 ```
 
 - **Voz Piper** (`pt_BR-cadu`, medium): repositório oficial
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em `pt/pt_BR/cadu/medium/`.
   Baixe o `.onnx` **e** o `.onnx.json`.
-- **Whisper** (STT) e **embeddings** baixam sozinhos na 1ª execução (via internet).
-- O **banco vetorial** (`./banco_vetorial_cerebro`) e a **pasta do vault Obsidian** são
-  criados automaticamente no startup — o vault pode começar vazio (cai no fallback web
-  até você adicionar notas `.md`).
+- **Whisper** (STT) baixa sozinho na 1ª execução para `modelos/whisper/`; os
+  **embeddings** também baixam sozinhos (via internet).
+- O **banco vetorial** (`banco_vetorial_cerebro/`) e a **pasta do vault Obsidian**
+  (`Cerebro_Digital/`) são criados automaticamente no startup, dentro do projeto — o
+  vault pode começar vazio (cai no fallback web até você adicionar notas `.md`).
 
-### 3. Criar o `.env` (caminhos e parâmetros, sem tocar no código)
+### 3. (Opcional) `.env` — só se quiser apontar para fora do projeto
 
-Cada máquina tem o seu — o `.env` está no `.gitignore`. Crie um na raiz do projeto
-apontando para onde você salvou os arquivos:
+Por padrão tudo funciona com os caminhos relativos acima, sem `.env`. Crie um na raiz
+apenas se os modelos/vault já moram em outro lugar (o `.env` está no `.gitignore`):
 
 ```
-MENTE_CAMINHO_MODELO_LLAMA=C:\IA\modelos\Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf
-MENTE_CAMINHO_VOZ_PIPER=C:\IA\modelos\pt_BR-cadu-medium.onnx
-MENTE_CAMINHO_OBSIDIAN=C:\IA\Cerebro_Digital
+MENTE_CAMINHO_MODELO_LLAMA=D:\outro\caminho\Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf
+MENTE_CAMINHO_VOZ_PIPER=D:\outro\caminho\pt_BR-cadu-medium.onnx
+MENTE_CAMINHO_OBSIDIAN=D:\meu\vault\Cerebro_Digital
 # (opcional) qualquer outro parâmetro, ex.:  MENTE_N_CTX=8192
 ```
 
