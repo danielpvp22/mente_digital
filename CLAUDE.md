@@ -13,9 +13,18 @@ Este é o pacote modularizado (V2) de um MVP monolítico anterior (`mvp_mente.py
 ```bash
 pip install -r requirements.txt
 python main.py                          # ou: uvicorn main:app --host 0.0.0.0 --port 8000
+
+pip install -r requirements-dev.txt     # deps de teste (pytest, pytest-asyncio)
+pytest                                   # suíte roda sem GPU/rede (usa fakes)
 ```
 
-Servidor em `http://localhost:8000`. Não há suíte de testes, linter ou build configurados neste repositório.
+Servidor em `http://localhost:8000`. Há uma suíte `pytest` (pasta `tests/`) cobrindo a
+lógica pura e sensível — gate de relevância, buffer anti-sentinela, chunker, latência —
+com fakes de LLM/TTS/store (sem GPU nem rede). Não há linter ou build configurados.
+
+**Ambiente:** o projeto roda na env conda `llama-omni` (Python 3.10.20) — o `python` no
+PATH do Windows costuma ser o atalho falso da Microsoft Store. Rode via caminho absoluto:
+`C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pytest`.
 
 Configuração via `.env` (prefixo `MENTE_`), sem tocar no código — ex.: `MENTE_N_CTX=4096`, `MENTE_RAG_SCORE_CONFIDENT=0.7`. Todos os campos configuráveis estão em [config.py](config.py).
 
@@ -27,11 +36,11 @@ Wiring fino em [main.py](main.py) (lifespan cria os serviços e injeta em `AppCo
 - **[state.py](state.py)** — `AppContext` (DI container em `app.state.ctx`) e `SessionMemory` (histórico de chat, "memória fresca da sessão", fila de ETL — todas `deque` com `maxlen` para não crescer sem fim).
 - **[llm.py](llm.py)** — `LlamaManager`. GPU serializada por um `ThreadPoolExecutor(max_workers=1)` ("gpu-infer"): garante estruturalmente que dois decodes nunca rodam juntos na GPU. Cancelamento (barge-in) usa `stop_event` por requisição; o `asyncio.Lock` só é liberado depois que a thread realmente terminou (sem overlap de VRAM).
 - **[audio.py](audio.py)** — `SttService` (Whisper), `TtsService` (Piper), `SentenceChunker` (quebra streaming de tokens em frases prontas para TTS, ignorando abreviações/decimais, com flush por tamanho).
-- **[rag.py](rag.py)** — `EmbeddingProvider` (singleton, carrega uma vez), `VectorStore` (Chroma; reindex incremental por `mtime` do vault Obsidian, dedup por `source`), `WebSearcher` (DuckDuckGo, com cache LRU e speculative pre-fetch).
+- **[rag.py](rag.py)** — `EmbeddingProvider` (singleton; device via `resolve_device`, `auto` usa GPU se houver), `VectorStore` (Chroma com **distância de cosseno** — não o L2 padrão, pois os embeddings não são normalizados e os thresholds do gate são de escala cosseno; reindex incremental por `mtime`, chunking por cabeçalho Markdown via `split_markdown`, dedup por `source`), `WebSearcher` (DuckDuckGo, cache LRU, speculative pre-fetch). **Trocar a métrica de distância exige recriar o banco vetorial** (apagar `banco_vetorial_cerebro`).
 - **[agent.py](agent.py)** — `QueryOptimizer` (resolve pronomes cruzados via LLM), `Agent.pipeline_resposta` (orquestra cache-hit local/RAM → escalada para web), `EtlProcessor` (sintetiza conhecimento novo no idle, sempre cedendo a GPU para inferência interativa via `ctx.interactive_idle`).
 - **[textutils.py](textutils.py)** — normalização de texto e extração de keywords (sem acento/stopwords) usada para aterramento léxico e limpeza de query.
 - **[ws.py](ws.py)** — `LiveSession`: máquina de estados do WebSocket `/ws/chat_live` (VAD por RMS no servidor, barge-in cancela o pipeline em andamento, `end_session` dispara o ETL idle).
-- **[telemetry.py](telemetry.py)** — logs coloridos thread-safe (`telemetry.track/warn/error`) e `Database` (SQLite: histórico de chat, log de ETL, métricas). Nunca usar `except: pass` — todo erro passa por `telemetry.error`.
+- **[telemetry.py](telemetry.py)** — logs coloridos thread-safe (`telemetry.track/warn/error`) e `Database` (SQLite: histórico de chat, log de ETL, métricas, e **latência TTFT/TTFA por resposta** via `save_latency`; médias expostas em `/api/metrics`). Nunca usar `except: pass` — todo erro passa por `telemetry.error`. A instrumentação de latência vive no `agent.LatencyTracker` (clock injetável, envolve o `send`).
 - **[prompts.py](prompts.py)** — todos os prompts de sistema/tarefa centralizados aqui (extrator de query, filler, resposta principal, síntese ETL, resumo de sessão).
 
 ### Pipeline de resposta (`Agent.pipeline_resposta`)

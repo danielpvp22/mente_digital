@@ -44,11 +44,14 @@ class Settings(BaseSettings):
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
 
-    # --- STT / Embeddings (CPU) ------------------------------------------------
+    # --- STT / Embeddings ------------------------------------------------------
     whisper_model: str = "small"
     whisper_device: str = "cpu"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    embedding_device: str = "cpu"
+    # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
+    # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
+    # (e acelera a reindexação). Force com MENTE_EMBEDDING_DEVICE=cpu se precisar.
+    embedding_device: str = "auto"
 
     # --- RAG / Busca -----------------------------------------------------------
     rag_top_k: int = 3

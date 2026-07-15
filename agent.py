@@ -36,6 +36,34 @@ STOP_WORDS = {"não", "nao", "sim", "nada", "tudo", "pode falar", "continue", "i
 SENTINELA_INSUF = "nao tenho informacoes suficientes"
 
 
+class LatencyTracker:
+    """Mede o pilar de latência: TTFT (1º token) e TTFA (1º áudio) por resposta.
+
+    Marca o primeiro instante em que cada tipo de mensagem sai pelo `send`. O clock
+    é injetável para permitir teste determinístico (sem depender do relógio real).
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
+        self._clock = clock
+        self.t0 = clock()
+        self.ttft: float | None = None
+        self.ttfa: float | None = None
+
+    def note(self, msg: dict) -> None:
+        tipo = msg.get("tipo")
+        if tipo == "token" and self.ttft is None:
+            self.ttft = self._clock() - self.t0
+        elif tipo == "audio" and self.ttfa is None:
+            self.ttfa = self._clock() - self.t0
+
+    def total(self) -> float:
+        return self._clock() - self.t0
+
+    @staticmethod
+    def _ms(seg: float | None) -> int | None:
+        return round(seg * 1000) if seg is not None else None
+
+
 async def append_chat_dump(ator: str, texto: str) -> None:
     """Grava o dump bruto da conversa (Obsidian). IO em thread."""
     def _write() -> None:
@@ -140,6 +168,14 @@ class Agent:
 
     async def pipeline_resposta(self, texto_usuario: str, send: Sender) -> None:
         self.ctx.interactive_idle.clear()  # sinaliza: GPU ocupada com interação
+        # Instrumenta o TTFT/TTFA sem tocar no resto: cada msg passa pelo tracker.
+        tracker = LatencyTracker()
+
+        async def send_medido(msg: dict) -> bool:
+            tracker.note(msg)
+            return await send(msg)
+
+        rota = "web"
         try:
             termos = await self.optimizer.optimize(texto_usuario, self.ctx.memory.chat_history)
             local = await self.ctx.vectorstore.search(termos)
@@ -157,26 +193,38 @@ class Agent:
             if tem_contexto:
                 telemetry.track("AGENT", "Cache Hit. Tentando responder pelo contexto.")
                 contexto = self._montar_contexto(local, ram)
-                texto_final = await self._responder_contexto(contexto, texto_usuario, send)
+                texto_final = await self._responder_contexto(contexto, texto_usuario, send_medido)
                 if texto_final is None:
                     telemetry.warn("AGENT", "Contexto insuficiente. Escalando para a web.")
+                else:
+                    rota = "local"
 
             # CACHE MISS (ou escalada da rede de segurança): busca web.
             if texto_final is None:
                 if not tem_contexto:
                     telemetry.track("AGENT", f"Cache Miss para '{termos}'. Indo para a web.")
-                texto_final = await self._responder_web(termos, texto_usuario, send)
+                texto_final = await self._responder_web(termos, texto_usuario, send_medido)
 
             if texto_final:
                 await append_chat_dump("IA", texto_final)
                 self.ctx.memory.registrar_turno(texto_usuario, texto_final)
                 await asyncio.to_thread(db.save_chat, texto_usuario, texto_final)
+                await self._registrar_latencia(tracker, rota)
         except asyncio.CancelledError:
             raise  # barge-in: propaga para o LlamaManager parar o decode
         except Exception as exc:
             telemetry.error("PIPELINE", "Erro no pipeline de resposta", exc)
         finally:
             self.ctx.interactive_idle.set()  # GPU livre de novo
+
+    async def _registrar_latencia(self, tracker: LatencyTracker, rota: str) -> None:
+        ttft, ttfa, total = (
+            LatencyTracker._ms(tracker.ttft),
+            LatencyTracker._ms(tracker.ttfa),
+            LatencyTracker._ms(tracker.total()),
+        )
+        telemetry.track("LATENCIA", f"rota={rota} TTFT={ttft}ms TTFA={ttfa}ms total={total}ms")
+        await asyncio.to_thread(db.save_latency, rota, ttft, ttfa, total)
 
     async def _responder_contexto(self, contexto: str, texto_usuario: str, send: Sender):
         """Responde pelo contexto local/RAM COM streaming, mas segura o áudio até ter
