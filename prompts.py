@@ -57,6 +57,34 @@ def prompt_resposta_cache(contexto_combinado: str, texto_usuario: str) -> str:
     )
 
 
+# --- Roteador de ferramentas (function calling aditivo) ----------------------
+SYS_ROUTER = (
+    "Você é um ROTEADOR de intenção. Dada a mensagem do usuário, escolha UMA ferramenta. "
+    "Responda SOMENTE com um objeto JSON válido em UMA linha, sem texto antes ou depois, "
+    "sem markdown e sem explicação. Se for uma PERGUNTA de conhecimento a responder "
+    'normalmente, use {"tool":"responder","args":{}}.'
+)
+
+
+def prompt_router(menu: str, texto_usuario: str, observacoes: str = "") -> str:
+    obs = f"\n[RESULTADOS DE FERRAMENTAS JÁ EXECUTADAS]\n{observacoes}\n" if observacoes else ""
+    return (
+        f"Ferramentas disponíveis (escolha UMA):\n{menu}\n{obs}\n"
+        f"Mensagem do usuário: {texto_usuario}\n"
+        "Responda só o JSON:"
+    )
+
+
+# --- Resposta final após rodar ferramentas -----------------------------------
+def prompt_resposta_ferramentas(resultados: str, texto_usuario: str) -> str:
+    return (
+        f"Resultados das ferramentas:\n{resultados}\n\n"
+        f"Usuário: '{texto_usuario}'. "
+        "Responda ao usuário de forma direta e natural, baseado nos resultados acima. "
+        "Sem introduções polidas."
+    )
+
+
 # --- ETL / Idle (síntese em background) --------------------------------------
 SYS_SINTESE = "Você é um documentarista analítico."
 

@@ -293,6 +293,26 @@ class VectorStore:
 # ==========================================================================
 # Busca Web (DuckDuckGo) + Pre-fetch
 # ==========================================================================
+def buscar_com_fallback(fetch_backend, backends: List[str]) -> list:
+    """Tenta cada backend em ordem; devolve o 1º resultado não-vazio. Puro/testável.
+
+    Corrige o ponto único de falha do DDG: se um backend cai (rate-limit, mudança
+    de HTML), passa para o próximo em vez de simplesmente não ter web.
+    """
+    ultimo_erro = None
+    for backend in backends:
+        try:
+            res = fetch_backend(backend)
+        except Exception as exc:  # tenta o próximo backend
+            ultimo_erro = exc
+            continue
+        if res:
+            return res
+    if ultimo_erro is not None:
+        raise ultimo_erro
+    return []
+
+
 class WebSearcher:
     def __init__(self) -> None:
         self._cache = LruCache(settings.max_web_cache)
@@ -301,8 +321,15 @@ class WebSearcher:
         def _fetch() -> list:
             from ddgs import DDGS
 
-            with DDGS() as ddgs:
-                return list(ddgs.text(termo, max_results=max_results))
+            def _um_backend(backend: str) -> list:
+                with DDGS() as ddgs:
+                    try:
+                        return list(ddgs.text(termo, max_results=max_results, backend=backend))
+                    except TypeError:
+                        # versão do ddgs sem o parâmetro 'backend'
+                        return list(ddgs.text(termo, max_results=max_results))
+
+            return buscar_com_fallback(_um_backend, settings.web_backends)
 
         return await asyncio.to_thread(_fetch)
 
