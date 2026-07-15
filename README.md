@@ -24,12 +24,67 @@ mente_digital/
 └── README.md
 ```
 
-## Como rodar
+## Setup / Instalação
+
+### Pré-requisitos
+
+- **Python 3.10.20** (o projeto roda em 3.10; use exatamente essa versão para evitar
+  incompatibilidades de wheels de ML).
+- **GPU NVIDIA + CUDA Toolkit** para rodar o LLM na GPU. O `llama-cpp-python` precisa
+  ser **compilado com suporte CUDA** (não basta o `pip install` padrão); no Windows
+  isso exige também o "Visual Studio Build Tools" com C++. Sem GPU NVIDIA, dá para
+  rodar em CPU, porém lento.
+
+### 1. Clonar e criar a venv
 
 ```bash
+git clone https://github.com/danielpvp22/mente_digital.git
+cd mente_digital
+
+# venv com Python 3.10.20
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+# source .venv/bin/activate
+
 pip install -r requirements.txt
-# (opcional) ajuste caminhos/params sem tocar no código:
-#   crie um .env com, por ex.:  MENTE_N_CTX=8192
+```
+
+### 2. Baixar os modelos (NÃO vêm no repositório)
+
+Crie uma pasta para os modelos (ex.: `C:\IA\modelos`) e coloque nela:
+
+```
+C:\IA\modelos\
+├── Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf   # LLM (~4.7 GB)
+├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
+└── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
+```
+
+- **Voz Piper** (`pt_BR-cadu`, medium): repositório oficial
+  [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em `pt/pt_BR/cadu/medium/`.
+  Baixe o `.onnx` **e** o `.onnx.json`.
+- **Whisper** (STT) e **embeddings** baixam sozinhos na 1ª execução (via internet).
+- O **banco vetorial** (`./banco_vetorial_cerebro`) e a **pasta do vault Obsidian** são
+  criados automaticamente no startup — o vault pode começar vazio (cai no fallback web
+  até você adicionar notas `.md`).
+
+### 3. Criar o `.env` (caminhos e parâmetros, sem tocar no código)
+
+Cada máquina tem o seu — o `.env` está no `.gitignore`. Crie um na raiz do projeto
+apontando para onde você salvou os arquivos:
+
+```
+MENTE_CAMINHO_MODELO_LLAMA=C:\IA\modelos\Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf
+MENTE_CAMINHO_VOZ_PIPER=C:\IA\modelos\pt_BR-cadu-medium.onnx
+MENTE_CAMINHO_OBSIDIAN=C:\IA\Cerebro_Digital
+# (opcional) qualquer outro parâmetro, ex.:  MENTE_N_CTX=8192
+```
+
+### 4. Rodar
+
+```bash
 python main.py            # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
