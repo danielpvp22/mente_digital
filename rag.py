@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -24,6 +25,70 @@ from state import LruCache
 from telemetry import telemetry
 
 NENHUM = "NENHUM DADO"
+
+# Bloco de frontmatter YAML no topo de uma nota Obsidian: ---\n ... \n---\n
+# (﻿ opcional cobre o BOM que às vezes abre arquivos salvos no Windows)
+_FRONTMATTER_RE = re.compile(r"^﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", re.DOTALL)
+
+
+def resolve_device(requested: str, cuda_available: bool) -> str:
+    """Resolve o device de embeddings. Puro (testável sem torch).
+
+    - "auto"  -> "cuda" se disponível, senão "cpu".
+    - "cuda*" -> respeitado se houver GPU; degrada para "cpu" se não houver.
+    - resto   -> devolvido como veio (ex.: "cpu").
+    """
+    req = (requested or "auto").strip().lower()
+    if req == "auto":
+        return "cuda" if cuda_available else "cpu"
+    if req.startswith("cuda") and not cuda_available:
+        return "cpu"
+    return req
+
+
+def strip_frontmatter(texto: str) -> str:
+    """Remove o frontmatter YAML do topo da nota (não é conteúdo pesquisável)."""
+    return _FRONTMATTER_RE.sub("", texto, count=1)
+
+
+def split_markdown(conteudo: str, base_metadata: dict, chunk_size: int, chunk_overlap: int) -> list:
+    """Quebra uma nota respeitando a estrutura Obsidian.
+
+    1) tira o frontmatter; 2) quebra pelos cabeçalhos (#/##/###), então cada chunk
+    é uma SEÇÃO coerente (não um corte cego por nº de caracteres) e carrega o
+    caminho dos títulos em `section`; 3) capa por tamanho para seções longas.
+    """
+    from langchain_core.documents import Document
+    from langchain_text_splitters import (
+        MarkdownHeaderTextSplitter,
+        RecursiveCharacterTextSplitter,
+    )
+
+    texto = strip_frontmatter(conteudo)
+    header_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
+        strip_headers=False,  # mantém o título no texto: dá contexto ao LLM e ao TTS
+    )
+    try:
+        secoes = header_splitter.split_text(texto)
+    except Exception:
+        secoes = []
+    if not secoes:  # nota sem cabeçalho nenhum -> trata o corpo inteiro como uma seção
+        secoes = [Document(page_content=texto, metadata={})]
+
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+    )
+    out: list = []
+    for sec in secoes:
+        meta = dict(base_metadata)
+        caminho = " > ".join(v for v in sec.metadata.values() if v)
+        if caminho:
+            meta["section"] = caminho
+        for pedaco in char_splitter.split_text(sec.page_content):
+            if pedaco.strip():
+                out.append(Document(page_content=pedaco, metadata=dict(meta)))
+    return out
 
 
 @dataclass
@@ -49,12 +114,20 @@ class EmbeddingProvider:
         try:
             from langchain_huggingface import HuggingFaceEmbeddings
 
+            try:
+                import torch
+
+                cuda_ok = torch.cuda.is_available()
+            except Exception:
+                cuda_ok = False
+            device = resolve_device(settings.embedding_device, cuda_ok)
+
             self._embeddings = HuggingFaceEmbeddings(
                 model_name=settings.embedding_model,
-                model_kwargs={"device": settings.embedding_device},
+                model_kwargs={"device": device},
                 encode_kwargs={"normalize_embeddings": False},
             )
-            telemetry.track("EMBED", "Embeddings multilingues carregados (singleton, CPU).")
+            telemetry.track("EMBED", f"Embeddings multilingues carregados (singleton, {device}).")
         except Exception as exc:
             telemetry.error("EMBED", "Falha ao carregar embeddings", exc)
 
@@ -92,9 +165,15 @@ class VectorStore:
                     lambda: Chroma(
                         embedding_function=self._embeddings.instance,
                         persist_directory=settings.diretorio_banco_vetorial,
+                        # Distância de COSSENO (não o L2 padrão). Os embeddings não são
+                        # normalizados (norma ~4-5), então o L2 dá distâncias ~15 e os
+                        # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
+                        # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
+                        # Com cosseno, um bom match fica ~0.3 e o gate funciona.
+                        collection_metadata={"hnsw:space": "cosine"},
                     )
                 )
-            telemetry.track("DB", "ChromaDB aberto.")
+            telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
         except Exception as exc:
             telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
 
@@ -105,9 +184,6 @@ class VectorStore:
         if self._store is None:
             return
         try:
-            from langchain_core.documents import Document
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-
             async with self._write_lock:
                 existing = await asyncio.to_thread(
                     lambda: self._store.get(include=["metadatas"])
@@ -141,7 +217,7 @@ class VectorStore:
                             lambda p=path: self._store.delete(where={"source": p})
                         )
 
-                docs = []
+                splits = []
                 for path, mtime in pendentes:
                     try:
                         conteudo = await asyncio.to_thread(
@@ -151,22 +227,19 @@ class VectorStore:
                         telemetry.warn("DB", f"Não consegui ler {path}: {exc}")
                         continue
                     is_auto = settings.subpasta_conhecimento_novo in path
-                    docs.append(
-                        Document(
-                            page_content=conteudo,
-                            metadata={
-                                "source": path,
-                                "mtime": mtime,
-                                "confidence": 0.6 if is_auto else 1.0,
-                                "origin": "Web" if is_auto else "Local",
-                            },
+                    base_meta = {
+                        "source": path,
+                        "mtime": mtime,
+                        "confidence": 0.6 if is_auto else 1.0,
+                        "origin": "Web" if is_auto else "Local",
+                    }
+                    # Chunking por cabeçalho Markdown (respeita a estrutura Obsidian)
+                    splits.extend(
+                        split_markdown(
+                            conteudo, base_meta, settings.chunk_size, settings.chunk_overlap
                         )
                     )
 
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap
-                )
-                splits = splitter.split_documents(docs)
                 for i in range(0, len(splits), settings.chroma_batch):
                     await asyncio.to_thread(
                         self._store.add_documents, splits[i : i + settings.chroma_batch]

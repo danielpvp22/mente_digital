@@ -87,6 +87,13 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     pergunta TEXT, resposta TEXT)"""
             )
+            # Latência por resposta: TTFT (1º token) e TTFA (1º áudio) são o pilar
+            # que valida a arquitetura de streaming. Sem medir, calibra-se no escuro.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS metricas_latencia
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
+                    rota TEXT, ttft_ms INTEGER, ttfa_ms INTEGER, total_ms INTEGER)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -111,6 +118,24 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar histórico", exc)
+
+    def save_latency(
+        self,
+        rota: str,
+        ttft_ms: Optional[int],
+        ttfa_ms: Optional[int],
+        total_ms: Optional[int],
+    ) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO metricas_latencia (data_hora, rota, ttft_ms, ttfa_ms, total_ms) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar latência", exc)
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:
@@ -140,11 +165,22 @@ class Database:
                         "FROM log_etl ORDER BY id DESC LIMIT 10"
                     ).fetchall()
                 ]
+                lat = conn.execute(
+                    "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms) "
+                    "FROM metricas_latencia"
+                ).fetchone()
+                latencia = {
+                    "amostras": lat[0] or 0,
+                    "ttft_ms_medio": round(lat[1]) if lat[1] is not None else None,
+                    "ttfa_ms_medio": round(lat[2]) if lat[2] is not None else None,
+                    "total_ms_medio": round(lat[3]) if lat[3] is not None else None,
+                }
             return {
                 "total_conversas": total_chat,
                 "total_etl": total_etl,
                 "etl_por_status": por_status,
                 "ultimos_etl": ultimos_etl,
+                "latencia": latencia,
             }
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao calcular métricas", exc)

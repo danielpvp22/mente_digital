@@ -8,5 +8,6 @@ __pycache__/
 
 # Dados gerados em runtime
 banco_vetorial_cerebro/
+banco_vetorial_cerebro.bak_l2/
 telemetria_etl.db
 chat_dump_bruto.md
