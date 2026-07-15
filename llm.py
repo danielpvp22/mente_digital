@@ -53,6 +53,58 @@ class LlamaManager:
     def ready(self) -> bool:
         return self._ready
 
+    def _build_llama_kwargs(self) -> dict:
+        """Monta os kwargs do construtor Llama a partir do settings.
+
+        Puro/sem GPU (só monta um dict) — seguro chamar do event loop. Cada botão
+        de tuning (§7) e o speculative decoding (§5) entram aqui, cada um guardado
+        e logado: um valor inválido degrada para o default em vez de derrubar o load.
+        """
+        import llama_cpp
+
+        kwargs: dict = dict(
+            model_path=settings.caminho_modelo_llama,
+            n_gpu_layers=settings.n_gpu_layers,
+            n_ctx=settings.n_ctx,
+            n_batch=settings.n_batch,
+            n_ubatch=settings.n_ubatch,
+            flash_attn=settings.flash_attn,
+            verbose=False,
+        )
+
+        # KV-cache quantizado (§7): metade da VRAM de KV a custo ínfimo de qualidade.
+        # llama.cpp EXIGE flash_attn para o cache V quantizado — guardamos isso para
+        # não cair num erro obscuro de runtime lá na frente.
+        kv = settings.kv_cache_type.strip().lower()
+        if kv and kv != "f16":
+            if not settings.flash_attn:
+                telemetry.warn(
+                    "VRAM", f"kv_cache_type={kv} exige flash_attn=True; usando f16."
+                )
+            else:
+                ggml_type = getattr(llama_cpp, f"GGML_TYPE_{kv.upper()}", None)
+                if ggml_type is None:
+                    telemetry.warn("VRAM", f"kv_cache_type={kv} desconhecido; usando f16.")
+                else:
+                    kwargs["type_k"] = ggml_type
+                    kwargs["type_v"] = ggml_type
+                    telemetry.track("VRAM", f"KV-cache quantizado em {kv}.")
+
+        # Speculative decoding (§5): prompt-lookup — sem modelo/VRAM extra. Acha
+        # n-gramas no contexto e os propõe como rascunho; lossless, ideal para RAG.
+        if settings.speculative_enabled:
+            try:
+                from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
+
+                kwargs["draft_model"] = LlamaPromptLookupDecoding(
+                    num_pred_tokens=settings.speculative_num_pred_tokens
+                )
+                telemetry.track("LLM", "Speculative decoding (prompt-lookup) ativo.")
+            except Exception as exc:  # dependência ausente/versão antiga -> segue sem
+                telemetry.warn("LLM", f"Speculative decoding indisponível: {exc}")
+
+        return kwargs
+
     async def load(self) -> None:
         """Ancora o Qwen na GPU. Degradação graciosa se falhar."""
         async with self._load_lock:
@@ -62,15 +114,11 @@ class LlamaManager:
             try:
                 from llama_cpp import Llama
 
+                kwargs = self._build_llama_kwargs()
                 loop = asyncio.get_running_loop()
                 self._model = await loop.run_in_executor(
                     self._gpu_executor,
-                    lambda: Llama(
-                        model_path=settings.caminho_modelo_llama,
-                        n_gpu_layers=settings.n_gpu_layers,
-                        n_ctx=settings.n_ctx,
-                        verbose=False,
-                    ),
+                    lambda: Llama(**kwargs),
                 )
                 self._ready = True
                 telemetry.track("VRAM", "Qwen 7B pronto na GPU.")

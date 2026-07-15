@@ -59,6 +59,33 @@ class Settings(BaseSettings):
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
 
+    # --- Tuning llama.cpp (§7 do estudo de perf) -------------------------------
+    # Flash attention: kernel de atenção fundido. Ganho DUPLO num card apertado —
+    # prefill mais rápido (melhora TTFT com contexto RAG longo) E menos VRAM de
+    # KV-cache. O default do llama-cpp-python é False; aqui ligamos por padrão.
+    flash_attn: bool = True
+    # Lote de prefill. n_ubatch controla o paralelismo ao "engolir" o prompt —
+    # subir ajuda o TTFT de prompts RAG longos, mas custa VRAM no buffer de compute.
+    # Mantemos o default do llama.cpp (512); é um botão, não um valor mágico.
+    n_batch: int = 512
+    n_ubatch: int = 512
+    # KV-cache quantizado: "f16" (default seguro, sem perda) | "q8_0" | "q4_0".
+    # q8_0 corta ~metade da VRAM de KV com perda de qualidade ínfima -> libera
+    # espaço para embeddings/Whisper. EXIGE flash_attn=True (o cache V quantizado
+    # só funciona com flash attention no llama.cpp). Ver _build_llama_kwargs.
+    kv_cache_type: str = "f16"
+
+    # --- Speculative decoding (§5) — prompt-lookup ------------------------------
+    # DESLIGADO por default após benchmark no RTX 3080 (2026-07): o
+    # LlamaPromptLookupDecoding do llama-cpp-python 0.3.34 (a) fica MAIS lento em
+    # prompt curto (93 vs 121 tok/s, overhead de lookup sem aceitação) e (b)
+    # CRASHA em contexto longo — "could not broadcast array ... shape mismatch" —
+    # justo no caso de uso principal (RAG). Mantido como flag experimental: religue
+    # (MENTE_SPECULATIVE_ENABLED=true) só após subir o llama-cpp-python p/ uma
+    # versão que corrija o bug de shape no draft com contexto grande.
+    speculative_enabled: bool = False
+    speculative_num_pred_tokens: int = 10   # tamanho do n-grama proposto por passo
+
     # --- STT / Embeddings ------------------------------------------------------
     # Backend: faster-whisper (CTranslate2) — mesmos pesos do Whisper, bem mais
     # rápido. Para MÁXIMA qualidade de transcrição, suba o modelo:
