@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Deque, Optional, Tuple
+from typing import TYPE_CHECKING, Coroutine, Deque, Optional, Set, Tuple
 
 from config import Settings
 
@@ -76,6 +76,9 @@ class AppContext:
     # Sinaliza que NÃO há inferência interativa rodando -> ETL idle pode usar a GPU.
     # Começa "setado" (livre). O pipeline limpa ao entrar e seta ao sair.
     interactive_idle: asyncio.Event = field(default_factory=asyncio.Event)
+    # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
+    # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
+    _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
 
     # Serviços (preenchidos no lifespan)
     llama: "LlamaManager" = None          # type: ignore[assignment]
@@ -88,3 +91,18 @@ class AppContext:
 
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão
+
+    def track_task(self, coro: Coroutine) -> "asyncio.Task":
+        """Cria uma task de background SEGURANDO uma referência forte a ela.
+
+        O event loop mantém só uma referência FRACA às tasks. Sem guardar uma
+        referência forte, o GC pode coletar a task no meio da execução e a
+        corrotina morre em silêncio (footgun documentado do asyncio). Isso era um
+        risco real em `agent._prefetch`, no ETL idle (`etl.run_idle`) e nas syncs
+        do VectorDB — trabalho que sumia sem log. Aqui a task fica retida no set
+        até terminar, quando o done-callback a remove.
+        """
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task

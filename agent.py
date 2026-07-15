@@ -238,7 +238,7 @@ class Agent:
                 await send({"tipo": "audio", "base64": audio})
 
         dados_web = await self.ctx.web.search(termos)
-        asyncio.create_task(self._prefetch(termos))  # background, web-only
+        self.ctx.track_task(self._prefetch(termos))  # background, web-only (ref. retida)
 
         if NENHUM not in dados_web:
             self.ctx.memory.lembrar(termos, dados_web)
