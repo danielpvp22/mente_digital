@@ -54,8 +54,12 @@ async def lifespan(app: FastAPI):
     ctx.llama = LlamaManager()
     ctx.stt = SttService()
     ctx.tts = TtsService()
-    ctx.web = WebSearcher()
-    ctx.vectorstore = VectorStore(EmbeddingProvider())
+    # Embeddings singleton compartilhado: o VectorStore o carrega no boot e o
+    # WebSearcher reusa a MESMA instância para rankear os trechos do deep-fetch
+    # (RAG efêmero) — sem carregar um segundo modelo nem gastar VRAM extra.
+    embeddings = EmbeddingProvider()
+    ctx.web = WebSearcher(embeddings)
+    ctx.vectorstore = VectorStore(embeddings)
     ctx.agent = Agent(ctx)
     ctx.etl = EtlProcessor(ctx)
     app.state.ctx = ctx

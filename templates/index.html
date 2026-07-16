@@ -44,6 +44,13 @@
         #bottom-bar { position: fixed; bottom: 20px; left: 0; width: 100%; display: flex; align-items: flex-end; justify-content: center; padding: 0 15px; z-index: 50; gap: 10px; }
         .action-btn { background: var(--surface); color: var(--text-primary); border: 1px solid rgba(255,255,255,0.1); width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: 0.2s; flex-shrink: 0; }
         .action-btn:hover { background: var(--surface-hover); }
+        #btn-end .material-symbols-outlined { font-size: 22px; }
+        /* Estado IDLE (conversa encerrada, consolidando memória em 2º plano) */
+        body.idle #btn-end, body.idle #btn-end-live { color: var(--accent-blue); background: rgba(168,199,250,0.15); border-color: rgba(168,199,250,0.4); box-shadow: 0 0 18px rgba(168,199,250,0.35); }
+        #header-right { min-width: 24px; display: flex; justify-content: flex-end; }
+        #idle-badge { display: none; align-items: center; gap: 5px; font-size: 0.72rem; font-weight: 500; color: var(--accent-blue); background: rgba(168,199,250,0.1); border: 1px solid rgba(168,199,250,0.25); padding: 4px 10px; border-radius: 20px; white-space: nowrap; }
+        body.idle #idle-badge { display: inline-flex; animation: idle-pulse 2.2s ease-in-out infinite; }
+        @keyframes idle-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
 
         #input-wrapper { flex: 1; max-width: 600px; background: var(--surface); border-radius: 32px; display: flex; align-items: center; padding: 6px 12px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 15px rgba(0,0,0,0.4); }
         #texto-input { flex: 1; background: transparent; border: none; color: var(--text-primary); font-size: 1rem; padding: 10px; outline: none; min-width: 0; }
@@ -78,7 +85,9 @@
     <header>
         <button class="icon-btn-header" onclick="abrirHistorico()"><span class="material-symbols-outlined">history</span></button>
         <div class="brand"><span id="conn-dot" title="Conexão"></span> Mente Digital</div>
-        <div style="width: 24px;"></div>
+        <div id="header-right">
+            <div id="idle-badge"><span class="material-symbols-outlined" style="font-size:16px;">bedtime</span>Consolidando memória…</div>
+        </div>
     </header>
 
     <div id="toast"></div>
@@ -86,6 +95,7 @@
     <div id="chat-container"></div>
 
     <div id="bottom-bar">
+        <button class="action-btn" id="btn-end" onclick="encerrarConversa()" title="Encerrar conversa (consolidar memória em segundo plano)"><span class="material-symbols-outlined">bedtime</span></button>
         <button class="action-btn" onclick="enviarNotaEscrita()" title="Salvar anotação rápida"><span class="material-symbols-outlined">edit_document</span></button>
 
         <div id="input-wrapper">
@@ -96,7 +106,8 @@
     </div>
 
     <div id="live-overlay">
-        <button class="close-live" onclick="toggleLiveMode()"><span class="material-symbols-outlined" style="font-size: 32px;">keyboard_arrow_down</span></button>
+        <button class="close-live" id="btn-end-live" style="left:20px; right:auto; border-radius:50%; padding:6px;" onclick="encerrarConversa()" title="Encerrar conversa"><span class="material-symbols-outlined" style="font-size: 30px;">bedtime</span></button>
+        <button class="close-live" onclick="toggleLiveMode()" title="Minimizar (a conversa continua aberta)"><span class="material-symbols-outlined" style="font-size: 32px;">keyboard_arrow_down</span></button>
         <div class="orb listening" id="live-orb"></div>
         <div class="live-status-text" id="live-status">Ouvindo...</div>
     </div>
@@ -105,12 +116,35 @@
         const chatContainer = document.getElementById('chat-container');
         const inputTexto = document.getElementById('texto-input');
         let ws, isLiveMode = false, iaFalando = false, audioQueue = [], currentAudio = null;
+        let conversaEncerrada = false;   // true = idle (consolidando memória em 2º plano)
         let audioCtx, processor, source, streamGlobal, gainNode;
         let reconnectDelay = 1000;
         // Bolha de IA em construção + texto bruto acumulado (render de markdown por mensagem inteira).
         let currentIaBubble = null, currentIaRaw = "";
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('overlay').classList.toggle('show'); }
+
+        // --- Ciclo de sessão: encerrar => idle (o backend dispara o ETL de consolidação
+        // de memória em 2º plano). Qualquer nova mensagem (texto ou voz) reabre a conversa
+        // e sai do idle. Vale para os dois modos, chat e voz. ---
+        function setIdle(on) {
+            conversaEncerrada = on;
+            document.body.classList.toggle('idle', on);
+        }
+        function encerrarConversa() {
+            if (conversaEncerrada) return;                    // já encerrada
+            if (isLiveMode) encerrarLiveMode(false);          // para o mic sem duplicar o fim
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ tipo: "end_session" }));
+                toast("Conversa encerrada. Consolidando memória em segundo plano…");
+            } else {
+                toast("Sem conexão — será consolidada ao reconectar.");
+            }
+            setIdle(true);
+        }
+        function abrirConversa() {                             // sai do idle ao voltar a interagir
+            if (conversaEncerrada) setIdle(false);
+        }
 
         let toastTimer = null;
         function toast(msg) {
@@ -185,6 +219,7 @@
 
         function enviarTexto() {
             const txt = inputTexto.value.trim(); if(!txt) return;
+            abrirConversa();                          // nova mensagem => conversa aberta (sai do idle)
             inputTexto.value = ''; document.getElementById('btn-send-text').style.display = 'none';
             if (ws && ws.readyState === WebSocket.OPEN) {
                 currentIaBubble = null;   // próxima resposta abre uma bolha nova
@@ -218,6 +253,7 @@
                 let data;
                 try { data = JSON.parse(event.data); } catch (e) { return; }
                 if (data.tipo === "transcricao") {
+                    abrirConversa();             // turno do usuário (voz ou texto) => sai do idle
                     currentIaBubble = null;      // fecha a bolha de IA anterior
                     appendMsg(data.texto, 'user');
                 }
@@ -262,11 +298,12 @@
         async function toggleLiveMode() {
             const btn = document.getElementById('btn-mic');
 
-            if (isLiveMode) {          // desligar
-                encerrarLiveMode(true);
+            if (isLiveMode) {          // desligar (só minimiza — a conversa segue aberta)
+                encerrarLiveMode(false);
                 return;
             }
 
+            abrirConversa();           // entrar no modo voz => conversa aberta (sai do idle)
             isLiveMode = true; btn.classList.add('active');
             document.getElementById('live-overlay').classList.add('active');
             atualizarEstadoOrb('listening');

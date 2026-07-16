@@ -85,6 +85,42 @@ async def append_chat_dump(ator: str, texto: str) -> None:
 
 
 # ==========================================================================
+# Atomização de arquivos (um .md por ideia — Zettelkasten puro)
+# ==========================================================================
+def dividir_atomos(texto: str) -> List[str]:
+    """Quebra a saída de síntese (vários '## título') em blocos atômicos individuais.
+
+    Puro/testável. Cada bloco começa num cabeçalho '## ' e vai até o próximo. Ignora
+    qualquer preâmbulo antes do 1º '##' (o prompt proíbe introdução, mas o LLM às vezes
+    escapa uma). Sem nenhum '##', devolve [] — o chamador decide o fallback.
+    """
+    blocos: List[str] = []
+    atual: List[str] = []
+    for ln in texto.splitlines():
+        if ln.lstrip().startswith("## "):
+            if atual:
+                bloco = "\n".join(atual).strip()
+                if bloco:
+                    blocos.append(bloco)
+            atual = [ln]
+        elif atual:
+            atual.append(ln)
+    if atual:
+        bloco = "\n".join(atual).strip()
+        if bloco:
+            blocos.append(bloco)
+    return blocos
+
+
+def _slug_titulo(bloco: str) -> str:
+    """Slug curto a partir do título (1ª linha '## ...') do átomo, para o nome do arquivo."""
+    primeira = bloco.splitlines()[0] if bloco.strip() else ""
+    titulo = primeira.lstrip("#").strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", textutils.normaliza(titulo)).strip("_")
+    return slug[:40] or "atomo"
+
+
+# ==========================================================================
 # Extrator de query (resolve pronomes cruzados)
 # ==========================================================================
 class QueryOptimizer:
@@ -231,7 +267,7 @@ class Agent:
             # (fresco, e sem pagar a passada local morta). Fora isso, cascata normal.
             if tools.talvez_tempo_real(texto_usuario):
                 telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
-                web = await self._responder_web(termos, pergunta_resp, send_medido)
+                web = await self._responder_web(termos, pergunta_resp, send_medido, consulta_rank=texto_usuario)
                 if web:
                     paragrafos.append(web)
                     fontes.append("web")
@@ -253,12 +289,18 @@ class Agent:
                 )
                 if local.relevante:
                     telemetry.track("AGENT", "Fusão: passada Banco.")
+                    antes = len(paragrafos)
                     await passada(self._montar_contexto(local, []), "banco")
+                    # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
+                    # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
+                    # Em background: não pesa no TTFA da resposta atual.
+                    if len(paragrafos) > antes and local.fontes:
+                        self.ctx.track_task(self._consolidar_fontes(local.fontes))
 
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
-                    web = await self._responder_web(termos, pergunta_resp, send_medido)
+                    web = await self._responder_web(termos, pergunta_resp, send_medido, consulta_rank=texto_usuario)
                     if web:
                         paragrafos.append(web)
                         fontes.append("web")
@@ -463,11 +505,16 @@ class Agent:
         self._filler_i += 1
         return msg
 
-    async def _responder_web(self, termos: str, texto_usuario: str, send: Sender) -> str:
+    async def _responder_web(
+        self, termos: str, texto_usuario: str, send: Sender, consulta_rank: str | None = None
+    ) -> str:
         # Filler específico mascara a latência da busca web (diz o que está fazendo).
         await self._falar_status(send, self._msg_web(termos))
 
-        dados_web = await self.ctx.web.search(termos)
+        # `termos` (query enxuta) faz o DDG; `consulta_rank` (pergunta natural crua)
+        # guia o ranking dos trechos do deep-fetch — o embedding é simétrico, então a
+        # frase inteira casa melhor com os parágrafos das páginas que 5 keywords.
+        dados_web = await self.ctx.web.search(termos, consulta=consulta_rank or termos)
         self.ctx.track_task(self._prefetch(termos))  # background, web-only (ref. retida)
 
         # Sem dados locais NEM web (ex.: pergunta não-buscável): NÃO deixe o LLM falar
@@ -506,6 +553,37 @@ class Agent:
         ctx_amplo = await self.ctx.web.prefetch(tema)
         if ctx_amplo:
             self.ctx.memory.lembrar(tema, ctx_amplo)
+            # A "curiosidade" — contexto amplo que veio junto mas NÃO era necessário
+            # falar agora — também é enfileirada pro ETL: vira átomos #conhecimento_novo
+            # e engorda a base sobre o que o usuário demonstrou interesse.
+            self.ctx.memory.enfileirar_etl(tema, ctx_amplo)
+
+    async def _consolidar_fontes(self, fontes: List[str]) -> None:
+        """Promoção: tira a tag #conhecimento_novo dos arquivos-fonte que foram usados
+        numa resposta local. Best-effort e idempotente — só reescreve se a tag existir
+        (evita bumps de mtime inúteis que disparariam reindexação à toa). O reindex do
+        texto no Chroma acontece na próxima sync (fim de sessão); o arquivo no vault já
+        reflete a mudança na hora, que é o que o usuário vê no Obsidian."""
+        tag = prompts.TAG_NOVO
+        promovidos = 0
+        for src in fontes:
+            try:
+                def _promover(caminho=src) -> bool:
+                    with open(caminho, "r", encoding="utf-8") as f:
+                        conteudo = f.read()
+                    if tag not in conteudo:
+                        return False
+                    novo = textutils.remover_tag(conteudo, tag)
+                    with open(caminho, "w", encoding="utf-8") as f:
+                        f.write(novo)
+                    return True
+
+                if await asyncio.to_thread(_promover):
+                    promovidos += 1
+            except OSError as exc:
+                telemetry.warn("PROMOCAO", f"Não consegui consolidar {src}: {exc}")
+        if promovidos:
+            telemetry.track("PROMOCAO", f"{promovidos} nota(s) consolidada(s) (tirado {tag}).")
 
     async def _responder_stream(self, prompt_resposta: str, send: Sender) -> str:
         chunker = SentenceChunker()
@@ -537,10 +615,38 @@ class EtlProcessor:
         """Cede a vez para a inferência interativa antes de cada tarefa pesada."""
         await self.ctx.interactive_idle.wait()
 
+    async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str) -> int:
+        """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
+        precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
+        não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
+
+        Fallback: se o LLM não usou nenhum '##' (formato quebrado), salva o texto inteiro
+        como 1 átomo em vez de descartar o conhecimento em silêncio."""
+        blocos = dividir_atomos(texto)
+        if not blocos and texto.strip():
+            blocos = [texto.strip()]
+        salvos = 0
+        for i, bloco in enumerate(blocos):
+            nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
+            caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
+
+            def _save(c=caminho, body=bloco) -> None:
+                with open(c, "w", encoding="utf-8") as f:
+                    f.write(body + "\n")
+
+            try:
+                await asyncio.to_thread(_save)
+                await asyncio.to_thread(db.log_etl, tipo_log, nome, "CONCLUIDO")
+                salvos += 1
+            except OSError as exc:
+                telemetry.error(tipo_log, f"Falha ao salvar átomo {nome}", exc)
+        return salvos
+
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:
             return
         telemetry.track("ETL_POST_CHAT", f"Sintetizando {len(itens)} pesquisas da sessão.")
+        total = 0
         for tema, dados in itens:
             await self._esperar_idle()
             try:
@@ -549,22 +655,19 @@ class EtlProcessor:
                     max_tokens=settings.max_tokens_sintese,
                     system_prompt=prompts.SYS_SINTESE,
                 )
-                nome = f"Sintese_{tema[:15].replace(' ', '_')}_{int(time.time())}.md"
-                caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
-
-                def _save(c=caminho, t=tema, body=conteudo) -> None:
-                    with open(c, "w", encoding="utf-8") as f:
-                        f.write(f"# {t}\n\n{body}")
-
-                await asyncio.to_thread(_save)
-                await asyncio.to_thread(db.log_etl, "ETL_POST_CHAT", nome, "CONCLUIDO")
+                total += await self._salvar_atomos(conteudo, "Sintese", "ETL_POST_CHAT")
             except Exception as exc:
                 telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar '{tema}'", exc)
 
         await self.ctx.vectorstore.sync()
-        telemetry.track("ETL_POST_CHAT", "Banco Vetorial atualizado.")
+        telemetry.track("ETL_POST_CHAT", f"Banco Vetorial atualizado ({total} átomos).")
 
     async def summarize_dump(self) -> None:
+        """Destila o histórico BRUTO da conversa (texto+voz) em NOTAS ATÔMICAS
+        Zettelkasten — mesma regra da base — em vez do antigo 'Resumo_Sessao'
+        estruturado. Cada ideia trocada vira um átomo recuperável, nascendo como
+        #conhecimento_novo (consolida quando usado). O dump só é limpo se a síntese
+        for salva com sucesso — senão a conversa fica pra próxima passada (nada se perde)."""
         path = settings.arquivo_chat_dump
         if not os.path.exists(path):
             return
@@ -579,28 +682,38 @@ class EtlProcessor:
             return
 
         await self._esperar_idle()
-        telemetry.track("IDLE", "Analisando histórico bruto da conversa...")
-        resumo = await self.ctx.llama.collect(
-            prompts.prompt_resumo_sessao(conteudo),
+        telemetry.track("IDLE", "Atomizando histórico da conversa (Zettelkasten)...")
+        atomos = await self.ctx.llama.collect(
+            prompts.prompt_sintese_conversa(conteudo),
             max_tokens=settings.max_tokens_resumo,
-            system_prompt=prompts.SYS_RESUMO,
+            system_prompt=prompts.SYS_SINTESE_CONVERSA,
         )
-        nome = f"Resumo_Sessao_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
-        caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
+        atomos = atomos.strip()
 
-        def _save_and_clear() -> None:
-            with open(caminho, "w", encoding="utf-8") as f:
-                f.write(resumo)
-            open(path, "w").close()
+        async def _limpar_dump() -> None:
+            try:
+                await asyncio.to_thread(lambda: open(path, "w").close())
+            except OSError as exc:
+                telemetry.error("IDLE", "Erro ao limpar dump", exc)
 
-        try:
-            await asyncio.to_thread(_save_and_clear)
-            telemetry.track("IDLE", f"Resumo da sessão salvo: {nome}")
+        # O prompt manda responder só 'NADA' quando não há conhecimento a reter
+        # (conversa de small talk). Nesse caso não cria nota — mas limpa o dump.
+        if not atomos or atomos.upper().strip(".!\n ") == "NADA":
+            await _limpar_dump()
+            telemetry.track("IDLE", "Conversa sem conhecimento novo a reter.")
+            return
+
+        # Um arquivo por átomo (mesma regra da fila web). O dump só é limpo se ALGO
+        # foi retido — senão a conversa fica pra próxima passada (nada se perde).
+        salvos = await self._salvar_atomos(atomos, "Conversa", "IDLE_CONVERSA")
+        if salvos:
+            await _limpar_dump()
+            telemetry.track("IDLE", f"Conversa atomizada: {salvos} átomo(s).")
             await self.ctx.vectorstore.sync()
-        except Exception as exc:
-            telemetry.error("IDLE", "Erro ao salvar resumo", exc)
+        else:
+            telemetry.warn("IDLE", "Nenhum átomo salvo da conversa — dump preservado p/ retry.")
 
     async def run_idle(self, itens: List[Tuple[str, str]]) -> None:
-        """Orquestra o idle: 1) sínteses da fila, 2) mega-resumo do dump."""
+        """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa."""
         await self.process_queue(itens)
         await self.summarize_dump()

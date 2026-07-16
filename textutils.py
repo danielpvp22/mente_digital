@@ -63,6 +63,23 @@ def contem_alguma(texto: str, chaves: set[str]) -> bool:
     return bool(set(tokens(texto)) & chaves)
 
 
+def remover_tag(conteudo: str, tag: str) -> str:
+    """Remove uma tag Obsidian (#algo) do texto, sem tocar no resto. Puro/testável.
+
+    Usado na PROMOÇÃO: quando um átomo #conhecimento_novo é de fato usado numa
+    resposta, tiramos só essa tag (o #zettelkasten_atomico e a ideia permanecem).
+    Casa a tag como palavra inteira (não pega '#conhecimento_novo_x') e limpa o
+    espaço/linha que sobra, sem deixar linha em branco dupla.
+    """
+    tag_escapada = re.escape(tag.lstrip("#"))
+    # tag precedida por espaços/tabs OU sozinha na linha; \b evita casar prefixo de outra tag.
+    padrao = re.compile(rf"[ \t]*#{tag_escapada}\b")
+    novo = padrao.sub("", conteudo)
+    # se a remoção deixou uma linha só com espaços, colapsa para linha vazia limpa
+    novo = re.sub(r"[ \t]+\n", "\n", novo)
+    return novo
+
+
 def limpar_query(s: str, max_palavras: int = 6) -> str:
     """
     Transforma a saída do extrator numa query enxuta: remove saudação/fillers,
