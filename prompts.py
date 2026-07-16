@@ -142,6 +142,14 @@ SYS_SINTESE = (
 )
 
 
+# A tag #conhecimento_novo marca o ESTADO de maturidade do átomo: recém-colhido da
+# curiosidade (web/conversa), ainda NÃO "consolidado" pelo uso. Quando o átomo é de
+# fato recuperado e usado numa resposta local, o pipeline REMOVE essa tag (promoção) —
+# ver Agent._consolidar_fontes. O #zettelkasten_atomico permanece; só a maturidade muda.
+TAG_ATOMO = "#zettelkasten_atomico"
+TAG_NOVO = "#conhecimento_novo"
+
+
 def prompt_sintese(tema: str, dados: str) -> str:
     return (
         f"A partir dos dados brutos sobre '{tema}', extraia as ideias-chave como NOTAS "
@@ -149,18 +157,34 @@ def prompt_sintese(tema: str, dados: str) -> str:
         "## <título curto da ideia>\n"
         "<a ideia em 1-2 frases afirmativas>\n"
         "**Malha Neural:** [[Conceito relacionado]]\n"
-        "#zettelkasten_atomico\n\n"
+        f"{TAG_ATOMO} {TAG_NOVO}\n\n"
         "Separe as notas por uma linha em branco. Nada de introdução ou conclusão.\n\n"
         f"DADOS BRUTOS:\n{dados}"
     )
 
 
-SYS_RESUMO = "Organize a conversa em um Markdown impecável."
+# --- Síntese ATÔMICA da conversa (histórico de chat vira Zettelkasten) --------
+# Antes o idle gerava um 'Resumo_Sessao' estruturado (H1 + bullets + conclusão) — o
+# OPOSTO de Zettelkasten. Agora o histórico (texto OU voz) é destilado em NOTAS
+# ATÔMICAS, no MESMO formato da base, então cada ideia trocada na conversa fica
+# recuperável isolada — e nasce como #conhecimento_novo (consolida ao ser usada).
+SYS_SINTESE_CONVERSA = (
+    "Você destila uma CONVERSA em NOTAS ATÔMICAS Zettelkasten: cada nota é UMA ideia "
+    "de conhecimento auto-contida que valha a pena reter. Ignore saudações, small talk "
+    "e meta-conversa. Português direto, sem texto fora do formato pedido."
+)
 
 
-def prompt_resumo_sessao(conteudo: str) -> str:
+def prompt_sintese_conversa(conteudo: str) -> str:
     return (
-        "Analise este registro de conversa entre Usuário e IA. Crie um resumo bem "
-        "estruturado com Título em H1, Principais Tópicos (em bullet points) e "
-        f"Conclusão.\n\nREGISTRO BRUTO:\n{conteudo}"
+        "Extraia da conversa abaixo (entre Usuário e IA) as ideias de conhecimento "
+        "que valham reter, como NOTAS ATÔMICAS. Capture também os TEMAS de interesse/"
+        "curiosidade do usuário. Use EXATAMENTE este formato, uma ideia por nota, sem repetir:\n\n"
+        "## <título curto da ideia>\n"
+        "<a ideia em 1-2 frases afirmativas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        f"{TAG_ATOMO} {TAG_NOVO}\n\n"
+        "Separe as notas por uma linha em branco. Se não houver nada que valha reter, "
+        "responda apenas 'NADA'. Nada de introdução ou conclusão.\n\n"
+        f"CONVERSA:\n{conteudo}"
     )

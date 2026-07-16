@@ -139,6 +139,26 @@ class Settings(BaseSettings):
     # Fallback de busca: tenta cada backend do ddgs em ordem até um dar resultado.
     web_backends: list[str] = ["auto", "html", "lite"]
 
+    # --- Web deep-fetch + RAG efêmero -----------------------------------------
+    # PROBLEMA que isto resolve: o ddgs.text() devolve só SNIPPETS (título + 1-2
+    # frases). Para perguntas específicas/numéricas ("quanto o TensorRT acelera o
+    # YOLO"), o número está DENTRO do artigo, nunca no snippet — então o LLM, fiel ao
+    # anti-alucinação, respondia "Não tenho informações suficientes" mesmo com a web
+    # tendo "respondido". A correção: baixar o CORPO das top-N páginas, extrair o
+    # texto principal (trafilatura), atomizar e RANKEAR esses trechos contra a
+    # pergunta com o embedding JÁ carregado, e passar só os melhores ao LLM (RAG
+    # efêmero, nada é indexado). Desligue com MENTE_WEB_FETCH_ENABLED=false para
+    # voltar ao comportamento antigo (só snippets).
+    web_fetch_enabled: bool = True
+    web_fetch_pages: int = 3            # quantas URLs do resultado abrir de fato
+    web_fetch_timeout: float = 6.0      # timeout por página (s) — não travar o TTFA
+    web_fetch_max_chars: int = 20000    # teto de texto extraído por página (anti-lixo)
+    web_chunk_size: int = 600           # tamanho do átomo efêmero (chars)
+    web_chunk_overlap: int = 80
+    web_rank_top_k: int = 12            # nº de trechos rankeados que entram no contexto
+    # Orçamento de chars do contexto web montado (protege o n_ctx, como o do RAG local).
+    web_context_char_budget: int = 6000
+
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
     # Loop agêntico CAPADO: nº máximo de ferramentas encadeadas por mensagem.

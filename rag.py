@@ -16,7 +16,7 @@ import asyncio
 import glob
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import textutils
@@ -98,6 +98,9 @@ class LocalResult:
     texto: str                      # NENHUM se nada aproveitável
     melhor_dist: Optional[float]    # menor distância encontrada (para calibrar)
     relevante: bool                 # há match aterrado (léxico) OU confiante (distância)?
+    # Arquivos-fonte dos chunks que ENTRARAM no contexto (não só recuperados). Alimenta
+    # a PROMOÇÃO: se a resposta local usar estes átomos, o Agent tira o #conhecimento_novo.
+    fontes: List[str] = field(default_factory=list)
 
 
 # ==========================================================================
@@ -346,7 +349,14 @@ class VectorStore:
                 f"[Local - Confiança: {d.metadata.get('confidence', 1.0)}] {d.page_content}"
                 for _, d in usar
             )
-            return LocalResult(texto, melhor, relevante)
+            # Fontes (dedup, ordem preservada) dos átomos que ENTRARAM no contexto —
+            # a promoção só toca no que foi de fato usado, não em tudo que foi recuperado.
+            fontes: List[str] = []
+            for _, d in usar:
+                src = d.metadata.get("source")
+                if src and src not in fontes:
+                    fontes.append(str(src))
+            return LocalResult(texto, melhor, relevante, fontes)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)
             return LocalResult(NENHUM, None, False)
@@ -379,9 +389,51 @@ def buscar_com_fallback(fetch_backend, backends: List[str]) -> list:
     return []
 
 
+def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Quebra um texto corrido em pedaços para o ranking efêmero. Puro/testável."""
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+    )
+    return [p.strip() for p in splitter.split_text(texto) if p.strip()]
+
+
+def rankear_por_similaridade(
+    consulta_vec: List[float], docs: List[Tuple[str, List[float]]]
+) -> List[Tuple[float, str]]:
+    """Ordena (texto, vetor) por similaridade de cosseno com a consulta. Puro/testável.
+
+    Os embeddings NÃO são normalizados (mesma decisão do VectorStore), então
+    normalizamos aqui na mão. Devolve [(score_cosseno, texto)] em ordem decrescente.
+    """
+    import numpy as np
+
+    q = np.asarray(consulta_vec, dtype="float32")
+    qn = float(np.linalg.norm(q)) or 1.0
+    out: List[Tuple[float, str]] = []
+    for texto, vec in docs:
+        v = np.asarray(vec, dtype="float32")
+        vn = float(np.linalg.norm(v)) or 1.0
+        out.append((float(np.dot(q, v)) / (qn * vn), texto))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
 class WebSearcher:
-    def __init__(self) -> None:
+    """Busca web em DOIS estágios:
+
+    1) DDG devolve URLs + snippets (rápido, mas raso).
+    2) DEEP-FETCH: abre o corpo das top-N páginas (httpx), extrai o texto principal
+       (trafilatura), atomiza e RANKEIA os trechos contra a pergunta com o embedding
+       já carregado — RAG efêmero, nada é indexado. Passa ao LLM só os melhores
+       trechos (dentro de um orçamento de chars). Cai de volta pros snippets se o
+       fetch falhar, se estiver desligado, ou se não houver embeddings (ex.: testes).
+    """
+
+    def __init__(self, embeddings: Optional["EmbeddingProvider"] = None) -> None:
         self._cache = LruCache(settings.max_web_cache)
+        self._embeddings = embeddings  # p/ o ranking do RAG efêmero (opcional)
 
     async def _ddg(self, termo: str, max_results: int) -> list:
         def _fetch() -> list:
@@ -399,8 +451,104 @@ class WebSearcher:
 
         return await asyncio.to_thread(_fetch)
 
-    async def search(self, termo: str) -> str:
-        """Busca exata com cache."""
+    async def _baixar_pagina(self, client, url: str) -> Optional[str]:
+        """Baixa e extrai o texto principal de UMA página. Nunca levanta — devolve
+        None em qualquer falha (timeout, 404, HTML sem corpo), pois é best-effort."""
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            html = resp.text
+        except Exception as exc:
+            telemetry.warn("WEB_FETCH", f"Falha ao baixar {url[:60]}: {exc}")
+            return None
+
+        def _extrair() -> Optional[str]:
+            import trafilatura
+
+            texto = trafilatura.extract(
+                html, include_comments=False, include_tables=True, favor_recall=True
+            )
+            if not texto:
+                return None
+            return texto[: settings.web_fetch_max_chars]
+
+        try:
+            return await asyncio.to_thread(_extrair)
+        except Exception as exc:
+            telemetry.warn("WEB_FETCH", f"Falha ao extrair {url[:60]}: {exc}")
+            return None
+
+    async def _deep_fetch(self, res: list, consulta: str) -> Optional[str]:
+        """Estágio 2: abre as top-N páginas, atomiza e rankeia contra a consulta.
+
+        Devolve o contexto montado (só os melhores trechos) ou None se nada útil saiu
+        — nesse caso o chamador cai de volta pros snippets.
+        """
+        emb = self._embeddings.instance if self._embeddings else None
+        if emb is None:
+            return None  # sem embedding não há como rankear -> usa snippets
+
+        urls = [r.get("href") or r.get("url") or "" for r in res]
+        urls = [u for u in urls if u][: settings.web_fetch_pages]
+        if not urls:
+            return None
+
+        try:
+            import httpx
+        except ImportError:
+            telemetry.warn("WEB_FETCH", "httpx ausente — usando só snippets.")
+            return None
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            )
+        }
+        async with httpx.AsyncClient(
+            timeout=settings.web_fetch_timeout, follow_redirects=True, headers=headers
+        ) as client:
+            paginas = await asyncio.gather(*(self._baixar_pagina(client, u) for u in urls))
+
+        textos = [t for t in paginas if t]
+        if not textos:
+            return None
+
+        # Atomiza todas as páginas num pool de trechos e rankeia contra a pergunta.
+        chunks: List[str] = []
+        for t in textos:
+            chunks.extend(
+                _chunk_texto(t, settings.web_chunk_size, settings.web_chunk_overlap)
+            )
+        if not chunks:
+            return None
+
+        try:
+            vecs = await asyncio.to_thread(emb.embed_documents, chunks)
+            qvec = await asyncio.to_thread(emb.embed_query, consulta)
+        except Exception as exc:
+            telemetry.error("WEB_FETCH", "Falha ao embeddar trechos web", exc)
+            return None
+
+        rankeados = rankear_por_similaridade(qvec, list(zip(chunks, vecs)))
+
+        usar: List[str] = []
+        orcamento = settings.web_context_char_budget
+        for _score, trecho in rankeados[: settings.web_rank_top_k]:
+            if usar and orcamento - len(trecho) < 0:
+                break
+            usar.append(trecho)
+            orcamento -= len(trecho)
+
+        telemetry.track(
+            "WEB_FETCH",
+            f"{len(textos)}/{len(urls)} páginas, {len(chunks)} trechos -> {len(usar)} rankeados.",
+        )
+        return "\n\n".join(f"- FONTE WEB: {t}" for t in usar) if usar else None
+
+    async def search(self, termo: str, consulta: Optional[str] = None) -> str:
+        """Busca web com cache. `consulta` (pergunta natural) guia o ranking do
+        deep-fetch; sem ela, usa o próprio `termo`."""
         if len(termo.strip()) < 2:
             return NENHUM
         cached = self._cache.get(termo)
@@ -411,7 +559,18 @@ class WebSearcher:
             res = await self._ddg(termo, settings.web_max_results)
             if not res:
                 return NENHUM
-            ctx = "\n".join(f"- FONTE ({r['title']}): {r['body']}" for r in res)
+
+            ctx = None
+            if settings.web_fetch_enabled:
+                try:
+                    ctx = await self._deep_fetch(res, (consulta or termo).strip() or termo)
+                except Exception as exc:
+                    telemetry.error("WEB_FETCH", "Falha no deep-fetch — usando snippets", exc)
+                    ctx = None
+            # Fallback (deep-fetch off/vazio/sem embeddings): os snippets de sempre.
+            if not ctx:
+                ctx = "\n".join(f"- FONTE ({r['title']}): {r['body']}" for r in res)
+
             self._cache.put(termo, ctx)
             return ctx
         except Exception as exc:
