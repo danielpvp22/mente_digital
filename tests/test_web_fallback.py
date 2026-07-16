@@ -42,3 +42,14 @@ def test_todos_falham_propaga_ultimo_erro():
 
     with pytest.raises(RuntimeError, match="falhou-lite"):
         buscar_com_fallback(fetch, ["auto", "html", "lite"])
+
+
+def test_vazio_com_sucesso_nao_vira_excecao():
+    # 'auto' responde vazio (sucesso), 'html' falha, 'lite' vazio: é "nada encontrado",
+    # não erro. Não deve propagar a exceção do 'html'.
+    def fetch(backend):
+        if backend == "html":
+            raise RuntimeError("rate-limit")
+        return []
+
+    assert buscar_com_fallback(fetch, ["auto", "html", "lite"]) == []

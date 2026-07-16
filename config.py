@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     n_ctx: int = 8192
     temperatura_resposta: float = 0.2
     max_tokens_resposta: int = 800
-    max_tokens_filler: int = 30
     max_tokens_query: int = 15
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
@@ -101,12 +100,37 @@ class Settings(BaseSettings):
     embedding_device: str = "auto"
 
     # --- RAG / Busca -----------------------------------------------------------
-    rag_top_k: int = 3
+    # Nº de candidatos recuperados do vetor. A base é ZETTELKASTEN ATÔMICA — cada
+    # nota tem UMA ideia. Para montar uma resposta de verdade é preciso colher DEZENAS
+    # de átomos (o usuário estimou 10~30), senão o assistente "esquece" o que já foi
+    # anotado. Por isso o leque é largo. Custo: mais prefill (TTFT) — limitado pelo
+    # orçamento de caracteres abaixo, não só pela contagem.
+    rag_top_k: int = 40
+    # Teto de chunks/átomos que entram no contexto do LLM. Com nota atômica, 4 era
+    # quase nada. Subimos para reunir muitos átomos por resposta; o corte REAL costuma
+    # ser o rag_context_char_budget (protege o n_ctx), este é só o limite de contagem.
+    rag_max_chunks: int = 30
+    # Orçamento de caracteres do contexto local montado. Guarda o n_ctx (8192): mesmo
+    # colhendo 30 átomos, paramos de empilhar ao bater este teto (átomos são pequenos,
+    # mas alguns imports são grandes). ~12k chars ≈ 3k tokens, sobra folga p/ resposta.
+    rag_context_char_budget: int = 12000
     rag_score_max: float = 1.5          # distância máxima p/ um chunk ser exibível
     # PRINCIPAL BOTÃO DE CALIBRAÇÃO: distância abaixo da qual um match é "confiante"
     # o bastante para valer como Cache Hit MESMO sem casar palavra-chave. Ajuste
     # olhando o log "[LOCAL] melhor_dist=..." com os seus próprios dados.
     rag_score_confident: float = 0.8
+    # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
+    # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
+    rag_debug: bool = False
+    # HyDE (Hypothetical Document Embeddings): antes de buscar no vetor, o LLM gera
+    # uma PASSAGEM hipotética no estilo das notas e ELA é embeddada — casa melhor com
+    # os parágrafos do banco do que a query crua (o modelo de embedding é simétrico).
+    # Custa uma chamada extra ao LLM no caminho crítico da busca LOCAL (~300-900ms),
+    # por isso é um BOTÃO: ligue com MENTE_RAG_HYDE=true e meça no log "[HYDE]".
+    # Com off, a base já embeddar a pergunta natural inteira (grátis) em vez da query
+    # de 5 palavras — que casa mal com passagens longas.
+    rag_hyde: bool = False
+    max_tokens_hyde: int = 160          # tamanho da passagem hipotética (curta)
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000

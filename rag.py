@@ -188,11 +188,33 @@ class VectorStore:
                 existing = await asyncio.to_thread(
                     lambda: self._store.get(include=["metadatas"])
                 )
+                # PURGA DE ÓRFÃOS: chunks cujo `source` não vive mais sob o vault atual
+                # (ou sumiu do disco). Conserta o lixo deixado quando o CAMINHO do vault
+                # muda — ex.: a migração de `.../Desktop/projetos/memoria_vetorial/...`
+                # para a pasta do projeto duplicava TODA nota no Chroma (source velho +
+                # novo), pois o delete-by-source do reindex só casa strings idênticas.
+                base = os.path.normcase(os.path.abspath(settings.caminho_obsidian))
                 indexado: dict[str, float] = {}
+                orfaos: set[str] = set()
                 for md in existing.get("metadatas", []) or []:
                     src = md.get("source")
-                    if src is not None:
-                        indexado[src] = float(md.get("mtime", 0) or 0)
+                    if src is None:
+                        continue
+                    ap = os.path.normcase(os.path.abspath(str(src)))
+                    dentro = ap == base or ap.startswith(base + os.sep)
+                    if not dentro or not os.path.exists(str(src)):
+                        orfaos.add(str(src))
+                        continue
+                    indexado[src] = float(md.get("mtime", 0) or 0)
+
+                for src in orfaos:
+                    await asyncio.to_thread(
+                        lambda s=src: self._store.delete(where={"source": s})
+                    )
+                if orfaos:
+                    telemetry.track(
+                        "DB", f"Purga: {len(orfaos)} fontes órfãs removidas (vault movido/nota apagada)."
+                    )
 
                 arquivos = glob.glob(
                     os.path.join(settings.caminho_obsidian, "**/*.md"), recursive=True
@@ -250,7 +272,7 @@ class VectorStore:
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
 
-    async def search(self, termos: str) -> LocalResult:
+    async def search(self, termos: str, texto_busca: Optional[str] = None) -> LocalResult:
         """
         Busca híbrida local COM aterramento léxico.
 
@@ -258,12 +280,19 @@ class VectorStore:
         pergunta OU (b) é semanticamente muito próximo (distância < rag_score_confident).
         Isso mata o "Cache Hit falso": um trecho genérico semanticamente-parecido mas
         que NÃO fala da entidade perguntada deixa de valer como contexto → vai pra web.
+
+        `termos` é a query enxuta (5 palavras) usada para o ATERRAMENTO léxico. Já o
+        EMBEDDING usa `texto_busca` quando fornecido (pergunta inteira ou passagem HyDE
+        — ver Agent._texto_busca): o modelo de embedding é simétrico, então uma consulta
+        no formato de passagem casa muito melhor com os parágrafos do banco do que a
+        query de keywords. Sem `texto_busca`, cai no `termos` (compatível com os testes).
         """
         if self._store is None or not termos:
             return LocalResult(NENHUM, None, False)
+        consulta = (texto_busca or termos).strip() or termos
         try:
             res = await asyncio.to_thread(
-                self._store.similarity_search_with_score, termos, k=settings.rag_top_k
+                self._store.similarity_search_with_score, consulta, k=settings.rag_top_k
             )
             if not res:
                 return LocalResult(NENHUM, None, False)
@@ -273,12 +302,45 @@ class VectorStore:
             chaves = textutils.palavras_chave(termos)
             aterrados = [(s, d) for s, d in validos if textutils.contem_alguma(d.page_content, chaves)]
 
-            if aterrados:                                    # menciona a entidade
-                usar, relevante = aterrados, True
-            elif melhor < settings.rag_score_confident:      # semanticamente confiante
-                usar, relevante = sorted(validos, key=lambda x: x[0])[:1], True
-            else:                                            # parecido, mas fora do tema
-                usar, relevante = [], False
+            if settings.rag_debug:
+                telemetry.track(
+                    "LOCAL_DBG",
+                    f"termos='{termos}' recuperados={len(res)} "
+                    f"validos={len(validos)} aterrados={len(aterrados)}",
+                )
+                for s, d in sorted(validos, key=lambda x: x[0]):
+                    fonte = os.path.basename(str(d.metadata.get("source", "")))
+                    telemetry.track("LOCAL_DBG", f"  dist={s:.3f} [{fonte}] :: {d.page_content[:80]!r}")
+
+            # Base ZETTELKASTEN: cada nota é 1 ideia, então uma resposta de verdade
+            # precisa de MUITOS átomos. Um chunk entra se (a) menciona a entidade
+            # (aterrado) OU (b) é semanticamente confiante (< rag_score_confident).
+            # Prioriza aterrados, completa com confiáveis, sem repetir. O corte real é
+            # o orçamento de caracteres (protege o n_ctx), não só a contagem.
+            confiaveis = [(s, d) for s, d in validos if s < settings.rag_score_confident]
+            vistos: set[str] = set()
+            candidatos: List[Tuple[float, object]] = []
+            for s, d in aterrados + confiaveis:
+                if d.page_content in vistos:
+                    continue
+                vistos.add(d.page_content)
+                candidatos.append((s, d))
+            candidatos.sort(key=lambda x: x[0])
+            relevante = bool(candidatos)
+
+            usar: List[Tuple[float, object]] = []
+            orcamento = settings.rag_context_char_budget
+            for s, d in candidatos[: settings.rag_max_chunks]:
+                if usar and orcamento - len(d.page_content) < 0:
+                    break                                    # respeita o teto (n_ctx)
+                usar.append((s, d))
+                orcamento -= len(d.page_content)
+
+            if settings.rag_debug:
+                telemetry.track(
+                    "LOCAL_DBG",
+                    f"selecionados={len(usar)}/{len(candidatos)} átomos (aterrados={len(aterrados)})",
+                )
 
             texto = NENHUM if not usar else "\n".join(
                 f"[Local - Confiança: {d.metadata.get('confidence', 1.0)}] {d.page_content}"
@@ -300,15 +362,19 @@ def buscar_com_fallback(fetch_backend, backends: List[str]) -> list:
     de HTML), passa para o próximo em vez de simplesmente não ter web.
     """
     ultimo_erro = None
+    algum_ok = False
     for backend in backends:
         try:
             res = fetch_backend(backend)
         except Exception as exc:  # tenta o próximo backend
             ultimo_erro = exc
             continue
+        algum_ok = True          # respondeu (mesmo que vazio): é "sem resultados"
         if res:
             return res
-    if ultimo_erro is not None:
+    # Só propaga erro se NENHUM backend respondeu. Se algum voltou vazio-com-sucesso,
+    # isso é "nada encontrado" ([]), não uma falha — não mascara vazio legítimo de erro.
+    if not algum_ok and ultimo_erro is not None:
         raise ultimo_erro
     return []
 

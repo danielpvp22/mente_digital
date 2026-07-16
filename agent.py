@@ -33,6 +33,9 @@ from telemetry import db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
 STOP_WORDS = {"não", "nao", "sim", "nada", "tudo", "pode falar", "continue", "isso", "nenhum"}
+# "Sem banco local" — usado no estágio RAM para reaproveitar _montar_contexto sem
+# tocar no vetor (o builder ignora o local quando o texto é NENHUM).
+NENHUM_LOCAL = LocalResult(NENHUM, None, False)
 # Sentinela anti-alucinação (normalizado) — REGRA 1 do system prompt de resposta.
 SENTINELA_INSUF = "nao tenho informacoes suficientes"
 
@@ -125,6 +128,7 @@ class Agent:
         self.ctx = ctx
         self.optimizer = QueryOptimizer(ctx.llama)
         self.tools = tools.criar_registry()
+        self._filler_i = 0  # rotaciona o texto do filler p/ não ficar repetitivo
 
     async def _falar(self, send: Sender, frases: List[str]) -> None:
         """Envia frases prontas para o TTS conforme o chunker fecha sentenças."""
@@ -195,32 +199,72 @@ class Agent:
                     return
 
             termos = await self.optimizer.optimize(texto_usuario, self.ctx.memory.chat_history)
-            local = await self.ctx.vectorstore.search(termos)
-            ram = self._ram_relevante(termos)
-            telemetry.track(
-                "LOCAL",
-                f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
-            )
+            # Pergunta enriquecida com o histórico p/ o GERADOR da resposta (não a
+            # recuperação, que já resolve o pronome via QueryOptimizer). Sem isso, um
+            # follow-up cru como "poderia explicar melhor?" chegava ao LLM SEM antecedente
+            # → ele dizia sentinela mesmo com os átomos certos na mão. Dump/memória/busca
+            # seguem com o texto_usuario ORIGINAL; só o prompt de resposta recebe o contexto.
+            pergunta_resp = self._pergunta_com_contexto(texto_usuario)
 
-            tem_contexto = local.relevante or bool(ram)
-            texto_final = None
+            # FUSÃO EM CASCATA: cada fonte com átomos relevantes contribui com UM
+            # parágrafo (passada de inferência própria), na ordem memória > banco > web.
+            # A web só entra se o local não produziu NADA real (preserva TTFA e o
+            # anti-alucinação local-first). Parágrafos separados por linha em branco.
+            paragrafos: List[str] = []
+            fontes: List[str] = []
 
-            # CACHE HIT: tenta responder pelo contexto. Se o contexto não bastar
-            # (sentinela anti-alucinação), texto_final volta None e escala pra web.
-            if tem_contexto:
-                telemetry.track("AGENT", "Cache Hit. Tentando responder pelo contexto.")
-                contexto = self._montar_contexto(local, ram)
-                texto_final = await self._responder_contexto(contexto, texto_usuario, send_medido)
-                if texto_final is None:
-                    telemetry.warn("AGENT", "Contexto insuficiente. Escalando para a web.")
-                else:
-                    rota = "local"
+            async def passada(contexto: str, fonte: str) -> None:
+                # prefixo só quando JÁ há parágrafo antes (separa as passadas); é enviado
+                # dentro do _responder_contexto, na 1ª emissão real (não vaza se der sentinela).
+                p = await self._responder_contexto(
+                    contexto, pergunta_resp, send_medido,
+                    prompt_fn=prompts.prompt_resposta_atomos,
+                    system=prompts.SYS_FUSAO,
+                    prefixo="\n\n" if paragrafos else "",
+                )
+                if p:
+                    paragrafos.append(p)
+                    fontes.append(fonte)
 
-            # CACHE MISS (ou escalada da rede de segurança): busca web.
-            if texto_final is None:
-                if not tem_contexto:
-                    telemetry.track("AGENT", f"Cache Miss para '{termos}'. Indo para a web.")
-                texto_final = await self._responder_web(termos, texto_usuario, send_medido)
+            # ATALHO TIME-SENSITIVE: cotação/preço agora, notícias/clima de hoje. O banco
+            # é inútil e desatualizado nesses casos — pula RAM+Banco e vai DIRETO pra web
+            # (fresco, e sem pagar a passada local morta). Fora isso, cascata normal.
+            if tools.talvez_tempo_real(texto_usuario):
+                telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
+                web = await self._responder_web(termos, pergunta_resp, send_medido)
+                if web:
+                    paragrafos.append(web)
+                    fontes.append("web")
+            else:
+                ram = self._ram_relevante(termos)
+
+                # ESTÁGIO 1 — RAM (memória fresca da sessão): a mais fresca, já por tema.
+                if ram:
+                    telemetry.track("AGENT", f"Fusão: passada RAM ({len(ram)} tópico(s)).")
+                    await passada(self._montar_contexto(NENHUM_LOCAL, ram), "ram")
+
+                # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base) colhe
+                # dezenas de átomos Zettelkasten e os funde num parágrafo.
+                texto_busca = await self._texto_busca(texto_usuario, termos)
+                local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
+                telemetry.track(
+                    "LOCAL",
+                    f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
+                )
+                if local.relevante:
+                    telemetry.track("AGENT", "Fusão: passada Banco.")
+                    await passada(self._montar_contexto(local, []), "banco")
+
+                # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
+                if not paragrafos:
+                    telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
+                    web = await self._responder_web(termos, pergunta_resp, send_medido)
+                    if web:
+                        paragrafos.append(web)
+                        fontes.append("web")
+
+            texto_final = "\n\n".join(paragrafos) if paragrafos else None
+            rota = "+".join(fontes) if fontes else "web"
 
             if texto_final:
                 await append_chat_dump("IA", texto_final)
@@ -280,26 +324,95 @@ class Agent:
             decisao = await self._rotear(texto_usuario, "\n".join(observacoes))
 
         resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"
-        return await self._responder_stream(
+        resposta = await self._responder_stream(
             prompts.prompt_resposta_ferramentas(resultados, texto_usuario), send
         )
+        if resposta.strip():
+            return resposta
+        # Caso raro: o phrasing final saiu vazio. Não deixe o usuário no silêncio —
+        # fala o resultado bruto da ferramenta. Só executa quando vazio, então não
+        # pesa no TTFA do caminho normal.
+        fala = resultados[:300] if observacoes else "Pronto."
+        await send({"tipo": "token", "texto": fala})
+        audio = await self.ctx.tts.synth_base64(fala)
+        if audio:
+            await send({"tipo": "audio", "base64": audio})
+        return fala
 
-    async def _responder_contexto(self, contexto: str, texto_usuario: str, send: Sender):
-        """Responde pelo contexto local/RAM COM streaming, mas segura o áudio até ter
-        certeza de que não é o sentinela 'Não tenho informações suficientes'.
+    def _pergunta_com_contexto(self, texto_usuario: str) -> str:
+        """Prefixa o histórico recente à pergunta, só para o LLM de RESPOSTA.
+
+        A recuperação já resolve pronomes (QueryOptimizer), mas o gerador recebia o
+        texto cru e ficava cego a follow-ups ("explique melhor", "e sobre isso") — daí
+        respondia sentinela mesmo com os átomos certos. Damos 2 turnos recentes (resposta
+        anterior truncada) e marcamos [PERGUNTA ATUAL] para manter o foco. Sem histórico,
+        devolve a pergunta intacta (custo zero na 1ª pergunta da sessão)."""
+        hist = self.ctx.memory.chat_history
+        if not hist:
+            return texto_usuario
+        turnos = []
+        for q, a in list(hist)[-2:]:
+            resumo = (a[:200] + "…") if len(a) > 200 else a
+            turnos.append(f"Usuário: {q}\nVocê: {resumo}")
+        return "[CONVERSA RECENTE]\n" + "\n".join(turnos) + f"\n\n[PERGUNTA ATUAL] {texto_usuario}"
+
+    async def _texto_busca(self, texto_usuario: str, termos: str) -> str:
+        """Texto que vai ao EMBEDDING da busca vetorial (o aterramento léxico segue
+        usando `termos`, a query enxuta).
+
+        Base (grátis): a pergunta natural inteira. O modelo de embedding é simétrico —
+        uma frase completa casa muito melhor com os parágrafos do banco do que a query
+        de 5 palavras. Com MENTE_RAG_HYDE=true, o LLM gera uma passagem hipotética no
+        estilo das notas (HyDE) e a anexamos à pergunta: recall melhor ao custo de UMA
+        chamada extra ao LLM — e só neste estágio, nunca quando a RAM já resolveu.
+        """
+        base = texto_usuario.strip() or termos
+        if not settings.rag_hyde:
+            return base
+        try:
+            hyde = await self.ctx.llama.collect(
+                prompts.prompt_hyde(texto_usuario),
+                max_tokens=settings.max_tokens_hyde,
+                system_prompt=prompts.SYS_HYDE,
+                temperature=0.0,
+            )
+            hyde = hyde.strip()
+            if hyde:
+                telemetry.track("HYDE", f"passagem: {hyde[:90]!r}")
+                return f"{base}\n{hyde}"  # ancora na pergunta e enriquece o vetor
+        except Exception as exc:
+            telemetry.error("HYDE", "Falha ao gerar passagem hipotética", exc)
+        return base
+
+    async def _responder_contexto(
+        self,
+        contexto: str,
+        texto_usuario: str,
+        send: Sender,
+        *,
+        prompt_fn: Callable[[str, str], str] = prompts.prompt_resposta_cache,
+        system: str = prompts.SYS_RESPOSTA,
+        prefixo: str = "",
+    ):
+        """Responde por um contexto (RAM ou Banco) COM streaming, segurando o áudio até
+        ter certeza de que não é o sentinela 'Não tenho informações suficientes'.
 
         Enquanto os tokens iniciais forem prefixo do sentinela, o buffer fica retido.
-        Se o sentinela se confirmar, devolve None (o pipeline escala pra web) e NADA é
-        falado. Se divergir, libera o buffer e segue em streaming normal (TTFA preservado).
+        Se o sentinela se confirmar, devolve None (o pipeline escala) e NADA é falado.
+        Se divergir, libera o buffer e segue em streaming normal (TTFA preservado).
+
+        `prompt_fn`/`system` permitem reusar este guard na FUSÃO por fonte (SYS_FUSAO).
+        `prefixo` (ex.: '\\n\\n') é emitido só na 1ª emissão REAL — separa parágrafos das
+        passadas sem vazar quebra de linha quando a passada acaba em sentinela.
         """
         chunker = SentenceChunker()
         texto_final = ""
         buffer = ""
         decidido = False
         async for token in self.ctx.llama.stream(
-            prompts.prompt_resposta_cache(contexto, texto_usuario),
+            prompt_fn(contexto, texto_usuario),
             max_tokens=settings.max_tokens_resposta,
-            system_prompt=prompts.SYS_RESPOSTA,
+            system_prompt=system,
         ):
             texto_final += token
             if decidido:
@@ -315,6 +428,8 @@ class Agent:
                 return None                       # confirmou insuficiência
             if not SENTINELA_INSUF.startswith(norm):
                 decidido = True                   # divergiu do sentinela -> resposta real
+                if prefixo:
+                    await send({"tipo": "token", "texto": prefixo})
                 await send({"tipo": "token", "texto": buffer})
                 frases = chunker.push(buffer)
                 if frases:
@@ -328,31 +443,64 @@ class Agent:
             await self._falar(send, [resto])
         return texto_final
 
+    async def _falar_status(self, send: Sender, texto: str) -> None:
+        """Filler ESPECÍFICO: diz em poucas palavras o que está sendo feito (texto+voz).
+        Só na escalada web (a única espera longa) — o local já streama rápido, sem filler.
+        Sem chamada extra ao LLM: é template, então não pesa no TTFA."""
+        await send({"tipo": "token", "texto": texto + " "})
+        audio = await self.ctx.tts.synth_base64(texto)
+        if audio:
+            await send({"tipo": "audio", "base64": audio})
+
+    def _msg_web(self, termos: str) -> str:
+        # Rotaciona para não ficar repetitivo/chato quando várias perguntas escalam.
+        variantes = [
+            f"Isso não está nas suas notas — vou buscar sobre {termos} na web.",
+            f"Não tenho isso salvo. Procurando {termos} online.",
+            f"Vou complementar com a web sobre {termos}.",
+        ]
+        msg = variantes[self._filler_i % len(variantes)]
+        self._filler_i += 1
+        return msg
+
     async def _responder_web(self, termos: str, texto_usuario: str, send: Sender) -> str:
-        # Filler mascara a latência da busca web
-        filler = ""
-        async for token in self.ctx.llama.stream(
-            prompts.prompt_filler(texto_usuario),
-            max_tokens=settings.max_tokens_filler,
-            system_prompt=prompts.SYS_FILLER,
-        ):
-            filler += token
-            await send({"tipo": "token", "texto": token})
-        if filler.strip():
-            audio = await self.ctx.tts.synth_base64(filler)
-            if audio:
-                await send({"tipo": "audio", "base64": audio})
+        # Filler específico mascara a latência da busca web (diz o que está fazendo).
+        await self._falar_status(send, self._msg_web(termos))
 
         dados_web = await self.ctx.web.search(termos)
         self.ctx.track_task(self._prefetch(termos))  # background, web-only (ref. retida)
 
-        if NENHUM not in dados_web:
-            self.ctx.memory.lembrar(termos, dados_web)
-            self.ctx.memory.enfileirar_etl(termos, dados_web)
+        # Sem dados locais NEM web (ex.: pergunta não-buscável): NÃO deixe o LLM falar
+        # o sentinela cru "Não tenho informações suficientes". Fala um retorno gracioso
+        # e pula o decode (mais rápido). O sentinela é sinal interno, não fala de UX.
+        if NENHUM in dados_web:
+            fala = "Não encontrei isso nas suas notas nem na web."
+            await send({"tipo": "token", "texto": fala})
+            audio = await self.ctx.tts.synth_base64(fala)
+            if audio:
+                await send({"tipo": "audio", "base64": audio})
+            return fala
 
-        return await self._responder_stream(
-            prompts.prompt_resposta_web(dados_web, texto_usuario), send
+        self.ctx.memory.lembrar(termos, dados_web)
+        self.ctx.memory.enfileirar_etl(termos, dados_web)
+
+        # A web VOLTOU dados, mas eles podem não responder (projeto privado, snippet
+        # sem o número etc.). Passa pelo MESMO guard anti-sentinela do local: se o LLM
+        # concluir insuficiência, NÃO fala o sentinela cru — devolve None e caímos num
+        # retorno gracioso. Antes usava _responder_stream (sem guard) e o sentinela
+        # "Não tenho informações suficientes" vazava falado para o usuário.
+        resposta = await self._responder_contexto(
+            dados_web, texto_usuario, send,
+            prompt_fn=prompts.prompt_resposta_web, system=prompts.SYS_RESPOSTA_WEB,
         )
+        if resposta is not None:
+            return resposta
+        fala = "Procurei, mas não achei uma resposta clara sobre isso nas suas notas nem na web."
+        await send({"tipo": "token", "texto": fala})
+        audio = await self.ctx.tts.synth_base64(fala)
+        if audio:
+            await send({"tipo": "audio", "base64": audio})
+        return fala
 
     async def _prefetch(self, tema: str) -> None:
         ctx_amplo = await self.ctx.web.prefetch(tema)
