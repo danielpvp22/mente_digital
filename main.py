@@ -95,6 +95,20 @@ async def obter_historico(request: Request):
     return JSONResponse(content=historico)
 
 
+@app.get("/api/conversas")
+async def listar_conversas(request: Request):
+    """Histórico agrupado em CONVERSAS (não turnos soltos) — o que o sidebar lista."""
+    conversas = await asyncio.to_thread(db.get_conversations, 100)
+    return JSONResponse(content=conversas)
+
+
+@app.get("/api/conversa/{cid}")
+async def obter_conversa(cid: str, request: Request):
+    """Todos os turnos de uma conversa, para reabrir e continuar o chat."""
+    turnos = await asyncio.to_thread(db.get_conversation, cid, 1000)
+    return JSONResponse(content=turnos)
+
+
 @app.get("/api/metrics")
 async def obter_metricas(request: Request):
     metricas = await asyncio.to_thread(db.metrics)

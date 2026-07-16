@@ -85,8 +85,14 @@ class Database:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS chat_history
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
-                    pergunta TEXT, resposta TEXT)"""
+                    pergunta TEXT, resposta TEXT, conversa_id TEXT)"""
             )
+            # Migração: bancos antigos não têm a coluna conversa_id (agrupa turnos em
+            # CONVERSAS no histórico). Adiciona se faltar — turnos legados ficam com NULL
+            # e são agrupados por dia via COALESCE nas consultas abaixo.
+            cols = [r[1] for r in c.execute("PRAGMA table_info(chat_history)").fetchall()]
+            if "conversa_id" not in cols:
+                c.execute("ALTER TABLE chat_history ADD COLUMN conversa_id TEXT")
             # Latência por resposta: TTFT (1º token) e TTFA (1º áudio) são o pilar
             # que valida a arquitetura de streaming. Sem medir, calibra-se no escuro.
             c.execute(
@@ -108,12 +114,13 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar log de ETL", exc)
 
-    def save_chat(self, pergunta: str, resposta: str) -> None:
+    def save_chat(self, pergunta: str, resposta: str, conversa_id: Optional[str] = None) -> None:
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO chat_history (data_hora, pergunta, resposta) VALUES (?, ?, ?)",
-                    (datetime.now().isoformat(), pergunta, resposta),
+                    "INSERT INTO chat_history (data_hora, pergunta, resposta, conversa_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    (datetime.now().isoformat(), pergunta, resposta, conversa_id),
                 )
                 conn.commit()
         except Exception as exc:
@@ -148,6 +155,50 @@ class Database:
             return [{"q": q, "a": a, "t": t} for q, a, t in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler histórico", exc)
+            return []
+
+    # Chave de conversa: usa conversa_id quando existe; para turnos legados (NULL),
+    # agrupa por DIA (substr da data) — assim o histórico antigo não vira uma lista
+    # infinita de fragmentos soltos.
+    _CID = "COALESCE(conversa_id, substr(data_hora,1,10))"
+
+    def get_conversations(self, limit: int = 100) -> list[dict]:
+        """Histórico agrupado em CONVERSAS (não turnos soltos). Uma entrada por
+        conversa: id, título (1ª pergunta), instante final e nº de turnos."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"""SELECT {self._CID} AS cid, MAX(data_hora) AS fim, COUNT(*) AS n
+                        FROM chat_history GROUP BY cid ORDER BY fim DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                out = []
+                for cid, fim, n in rows:
+                    tr = conn.execute(
+                        f"""SELECT pergunta FROM chat_history
+                            WHERE {self._CID} = ? ORDER BY id ASC LIMIT 1""",
+                        (cid,),
+                    ).fetchone()
+                    titulo = (tr[0] if tr and tr[0] else "") or "Conversa"
+                    out.append({"id": cid, "titulo": titulo, "fim": fim, "n": n})
+                return out
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar conversas", exc)
+            return []
+
+    def get_conversation(self, cid: str, limit: int = 1000) -> list[dict]:
+        """Todos os turnos (pergunta/resposta) de UMA conversa, em ordem cronológica —
+        para reabrir o chat e continuar de onde parou."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"""SELECT pergunta, resposta, data_hora FROM chat_history
+                        WHERE {self._CID} = ? ORDER BY id ASC LIMIT ?""",
+                    (cid, limit),
+                ).fetchall()
+            return [{"q": q, "a": a, "t": t} for q, a, t in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler conversa", exc)
             return []
 
     def metrics(self) -> dict:

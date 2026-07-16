@@ -31,6 +31,9 @@ class SessionMemory:
         self.conhecimento_sessao: Deque[Tuple[str, str]] = deque(maxlen=settings.max_session_knowledge)
         # (tema, dados) — fila drenada no end_session (ETL idle)
         self.fila_etl: Deque[Tuple[str, str]] = deque(maxlen=settings.max_etl_queue)
+        # Conversa ATUAL: todo turno gravado carrega este id, e o histórico agrupa por
+        # ele (ver telemetry.get_conversations). None = ainda não definida pelo cliente.
+        self.conversa_id: Optional[str] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -45,6 +48,22 @@ class SessionMemory:
         itens = list(self.fila_etl)
         self.fila_etl.clear()
         return itens
+
+    def nova_conversa(self, conversa_id: str) -> None:
+        """Começa uma conversa do zero: novo id e contexto limpo (sem herdar o chat
+        anterior). O ETL da conversa que estava aberta é disparado à parte (end_session)."""
+        self.conversa_id = conversa_id
+        self.chat_history.clear()
+        self.conhecimento_sessao.clear()
+
+    def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
+        """Reabre uma conversa existente: define o id e recarrega o histórico recente
+        (últimos turnos) na RAM, para que o modelo continue com o contexto certo."""
+        self.conversa_id = conversa_id
+        self.chat_history.clear()
+        for q, a in turnos[-self.chat_history.maxlen:]:
+            self.chat_history.append((q, a))
+        self.conhecimento_sessao.clear()
 
 
 class LruCache:

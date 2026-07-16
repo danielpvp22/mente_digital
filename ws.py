@@ -23,7 +23,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from agent import append_chat_dump
 from config import settings
 from state import AppContext
-from telemetry import telemetry
+from telemetry import db, telemetry
 
 _RECV_TIMEOUT = 0.5  # s — granularidade da checagem de silêncio
 
@@ -153,6 +153,31 @@ class LiveSession:
 
         elif tipo == "end_session":
             self._finalizar_sessao()
+
+        elif tipo == "set_conversa":
+            # Reassocia o id da conversa atual (ex.: reconexão do WS) sem mexer no contexto.
+            cid = (payload.get("id") or "").strip()
+            if cid:
+                self.ctx.memory.conversa_id = cid
+
+        elif tipo == "nova_conversa":
+            # "Novo chat": id novo e contexto limpo. A conversa anterior já foi encerrada
+            # (end_session) pelo próprio front antes de trocar.
+            cid = (payload.get("id") or "").strip()
+            if cid:
+                self._cancel_pipeline()
+                self.ctx.memory.nova_conversa(cid)
+                telemetry.track("WS", f"Nova conversa: {cid}")
+
+        elif tipo == "carregar_conversa":
+            # Reabre uma conversa do histórico: recarrega os turnos na RAM p/ continuar.
+            cid = (payload.get("id") or "").strip()
+            if cid:
+                self._cancel_pipeline()
+                turnos_raw = await asyncio.to_thread(db.get_conversation, cid, settings.max_chat_history)
+                turnos = [(t["q"], t["a"]) for t in turnos_raw]
+                self.ctx.memory.carregar_conversa(cid, turnos)
+                telemetry.track("WS", f"Conversa reaberta: {cid} ({len(turnos)} turnos)")
 
         elif tipo == "texto":
             texto = (payload.get("payload") or "").strip()
