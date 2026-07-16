@@ -230,7 +230,7 @@ class Agent:
                     if texto_final:
                         await append_chat_dump("IA", texto_final)
                         self.ctx.memory.registrar_turno(texto_usuario, texto_final)
-                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final)
+                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, self.ctx.memory.conversa_id)
                         await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
                     return
 
@@ -311,7 +311,7 @@ class Agent:
             if texto_final:
                 await append_chat_dump("IA", texto_final)
                 self.ctx.memory.registrar_turno(texto_usuario, texto_final)
-                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final)
+                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, self.ctx.memory.conversa_id)
                 await self._registrar_latencia(tracker, rota)
         except asyncio.CancelledError:
             raise  # barge-in: propaga para o LlamaManager parar o decode
