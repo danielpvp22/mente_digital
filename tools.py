@@ -18,7 +18,6 @@ import glob
 import json
 import operator
 import os
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
@@ -42,26 +41,63 @@ class Decisao:
     args: dict = field(default_factory=dict)
 
 
-def parse_decisao(bruto: str) -> Optional[Decisao]:
-    """Extrai o 1º objeto {"tool":..., "args":{...}} do texto do LLM.
+def _objetos_json(s: str):
+    """Gera cada objeto JSON top-level de chaves BALANCEADAS em `s`.
 
-    Tolerante a lixo em volta (```json, texto antes/depois). None se não achar
-    um JSON válido com uma chave 'tool' string.
+    Ciente de strings (chaves dentro de aspas não contam), então lida com
+    `{"expressao":"a}b"}`. Fora de um objeto, só o '{' importa — aspas na prosa
+    não confundem. Um passe O(n) sobre a saída curta do roteador.
+    """
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if depth == 0:
+            if ch == "{":
+                start, depth = i, 1
+            continue
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                yield s[start : i + 1]
+
+
+def parse_decisao(bruto: str) -> Optional[Decisao]:
+    """Extrai o 1º objeto {"tool":..., "args":{...}} VÁLIDO do texto do LLM.
+
+    Varre os objetos JSON balanceados (via `_objetos_json`) e devolve o primeiro
+    com uma chave 'tool' string. Robusto a chave solta na prosa ('{sorriso}') e a
+    mais de um objeto — o antigo 'do 1º "{" ao último "}"' quebrava nesses casos.
+    None se nenhum objeto válido for achado.
     """
     if not bruto:
         return None
-    try:
-        ini, fim = bruto.index("{"), bruto.rindex("}") + 1
-        obj = json.loads(bruto[ini:fim])
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(obj, dict):
-        return None
-    tool = obj.get("tool")
-    if not isinstance(tool, str) or not tool:
-        return None
-    args = obj.get("args")
-    return Decisao(tool=tool, args=args if isinstance(args, dict) else {})
+    for candidato in _objetos_json(bruto):
+        try:
+            obj = json.loads(candidato)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        tool = obj.get("tool")
+        if not isinstance(tool, str) or not tool:
+            continue
+        args = obj.get("args")
+        return Decisao(tool=tool, args=args if isinstance(args, dict) else {})
+    return None
 
 
 # ==========================================================================
@@ -90,12 +126,46 @@ def talvez_acao(texto: str) -> bool:
     return any(g in t for g in _GATILHOS_ACAO)
 
 
+# Perguntas de DADO EM TEMPO REAL: o banco local é inútil e desatualizado (cotação,
+# preço agora, notícias/clima de hoje). Lista curada e CONSERVADORA — só frases que
+# quase sempre pedem web — para não pular o local de uma pergunta que o vault responde.
+# Falso NEGATIVO é barato: cai na cascata normal (só ~1s mais lento). Falso POSITIVO
+# custa uma resposta ruim, então preferimos ser restritos.
+_GATILHOS_TEMPO = (
+    "cotacao", "quanto esta o dolar", "quanto esta o euro", "quanto esta o bitcoin",
+    "dolar hoje", "euro hoje", "bitcoin hoje", "preco do bitcoin", "preco do dolar",
+    "preco do euro", "bolsa hoje", "ibovespa", "preco das acoes",
+    "noticias de hoje", "noticias hoje", "ultimas noticias", "manchetes",
+    "previsao do tempo", "clima hoje", "temperatura hoje", "vai chover",
+)
+
+
+def talvez_tempo_real(texto: str) -> bool:
+    """True se a pergunta pede dado em tempo real → pular local e ir DIRETO pra web.
+
+    Evita a passada local morta (recuperação larga + sentinela) em perguntas que o
+    vault nunca responde bem: cotação/preço agora, notícias/clima de hoje.
+    """
+    t = textutils.normaliza(texto)
+    return any(g in t for g in _GATILHOS_TEMPO)
+
+
 # ==========================================================================
 # Calculadora segura (sem eval)
 # ==========================================================================
+def _pow_limitado(base, exp):
+    """Potência com expoente limitado. A calculadora roda SÍNCRONA no event loop;
+    sem o teto, '9**9**9' computaria um inteiro gigante e congelaria o servidor
+    inteiro (DoS). 1000 cobre qualquer uso real e mantém o cálculo instantâneo —
+    sem pagar o hop de asyncio.to_thread em toda conta."""
+    if isinstance(exp, (int, float)) and abs(exp) > 1000:
+        raise ValueError("expoente muito grande")
+    return operator.pow(base, exp)
+
+
 _OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
-    ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
+    ast.Div: operator.truediv, ast.Pow: _pow_limitado, ast.Mod: operator.mod,
     ast.FloorDiv: operator.floordiv, ast.USub: operator.neg, ast.UAdd: operator.pos,
 }
 
@@ -209,7 +279,8 @@ async def _t_salvar_nota(args: dict, ctx) -> str:
     if not conteudo:
         return "faltou o conteúdo da nota"
     seguro = "".join(c for c in titulo if c.isalnum() or c in " -_")[:40].strip() or "Nota"
-    nome = f"{seguro.replace(' ', '_')}_{int(time.time())}.md"
+    # Carimbo com microssegundos: duas notas no mesmo segundo não se sobrescrevem.
+    nome = f"{seguro.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.md"
     caminho = os.path.join(settings.caminho_obsidian, nome)
 
     def _save() -> None:

@@ -85,3 +85,23 @@ async def test_executor_calcular():
 
 async def test_executor_calcular_sem_expressao():
     assert await tools._t_calcular({}, ctx=None) == "faltou a expressão"
+
+
+# --- correções da revisão -------------------------------------------------
+def test_calcular_rejeita_potencia_gigante():
+    # DoS: 9**9**9 congelaria o event loop (calculadora é síncrona). Deve recusar.
+    assert tools.calcular_seguro("9**9**9") == "não consegui calcular essa expressão"
+    assert tools.calcular_seguro("2**100000") == "não consegui calcular essa expressão"
+    assert tools.calcular_seguro("2**10") == "1024"          # potência normal segue OK
+
+
+def test_parse_decisao_robusto_a_chave_solta_e_dois_objetos():
+    # chave solta na prosa antes do JSON real
+    d = tools.parse_decisao('Claro {sorriso} {"tool":"hora_atual","args":{}}')
+    assert d is not None and d.tool == "hora_atual"
+    # dois objetos: pega o 1º válido com 'tool'
+    d = tools.parse_decisao('{"nota":1} {"tool":"calcular","args":{"expressao":"2+2"}}')
+    assert d is not None and d.tool == "calcular" and d.args == {"expressao": "2+2"}
+    # chave DENTRO de string não confunde o balanceamento
+    d = tools.parse_decisao('{"tool":"salvar_nota","args":{"conteudo":"a } b"}}')
+    assert d is not None and d.tool == "salvar_nota" and d.args["conteudo"] == "a } b"

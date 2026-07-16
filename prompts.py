@@ -23,15 +23,29 @@ REGRA CRÍTICA: Se o usuário usou pronomes (ele, esse, disso) ou apenas continu
 QUERY DE BUSCA:"""
 
 
-# --- Filler (mascara latência da busca web) ----------------------------------
-SYS_FILLER = "Confirme rápido e sem interrogatórios."
+# --- HyDE Zettelkasten: atomiza a PERGUNTA no formato da base (busca vetorial) -
+# A base é Zettelkasten ATÔMICA. Para o embedding da pergunta cair no MESMO espaço
+# das notas, geramos uma "sonda": uma nota atômica hipotética (1 ideia) que conteria
+# a resposta. NÃO precisa estar correta — é só isca de embedding para casar com o
+# átomo real. É o mesmo formato usado na ingestão (prompt_sintese) → match fiel.
+SYS_HYDE = (
+    "Você escreve UMA nota atômica Zettelkasten (1 ideia, 1-2 frases afirmativas) que "
+    "conteria a resposta à pergunta. Use os termos-chave exatos do assunto. "
+    "Sem saudação, sem 'não sei', sem meta, sem título."
+)
 
 
-def prompt_filler(texto_usuario: str) -> str:
+def prompt_hyde(pergunta: str) -> str:
     return (
-        f"O usuário perguntou sobre: '{texto_usuario}'. "
-        "Diga APENAS que vai pesquisar os arquivos sobre isso. Sem fazer perguntas."
+        f"Pergunta: '{pergunta}'\n"
+        "Escreva a nota atômica (1-2 frases) que conteria a resposta, "
+        "usando os conceitos-chave. Só o texto do átomo."
     )
+
+
+# O filler que mascara a latência da web agora é um TEMPLATE específico em
+# agent.Agent._msg_web ("procurando X na web…") — sem chamada extra ao LLM, então
+# não pesa no TTFA e diz de fato o que está sendo feito.
 
 
 # --- Resposta principal (anti-alucinação, brutalmente concisa) ---------------
@@ -41,11 +55,23 @@ REGRA 2: Seja BRUTALMENTE CONCISO. Resuma a resposta em no máximo 3 ou 4 frases
 REGRA 3: Vá direto ao ponto, sem introduções polidas."""
 
 
+# System da resposta WEB — SEPARADO do SYS_RESPOSTA (local). O local é conservador
+# ("se não estiver lá, diga que não tem") para não alucinar sobre as notas. Mas na WEB
+# isso rejeitava dado que ESTAVA no snippet (ex.: preço do bitcoin cravado na fonte,
+# e mesmo assim respondia o sentinela). Aqui o modelo é instruído a USAR o dado; só
+# solta o sentinela EXATO quando o dado realmente não contém a resposta (o guard
+# anti-sentinela em _responder_web depende dessa frase idêntica).
+SYS_RESPOSTA_WEB = """Você responde com base nos DADOS DA WEB fornecidos.
+REGRA 1: Os dados da web são sua fonte — USE-OS. Extraia números, preços, datas e fatos que estiverem nos dados e responda direto. Não seja excessivamente cauteloso: se está nos dados, entregue.
+REGRA 2: Só se os dados realmente NÃO contiverem a resposta, responda EXATAMENTE 'Não tenho informações suficientes'. NUNCA invente dado que não está nos textos.
+REGRA 3: Seja conciso: 2 a 4 frases diretas, sem introdução polida."""
+
+
 def prompt_resposta_web(dados_web: str, texto_usuario: str) -> str:
     return (
-        f"Dados da Web: {dados_web}\n"
-        f"Usuário: '{texto_usuario}'. "
-        "Responda direto e estruturado baseado estritamente na Web."
+        f"Dados da Web:\n{dados_web}\n\n"
+        f"Pergunta do usuário: '{texto_usuario}'.\n"
+        "Responda direto usando os dados acima. Se um número/valor aparece nos dados, cite-o."
     )
 
 
@@ -54,6 +80,26 @@ def prompt_resposta_cache(contexto_combinado: str, texto_usuario: str) -> str:
         f"Contexto Local e RAM: {contexto_combinado}\n"
         f"Usuário: '{texto_usuario}'. "
         "Responda baseado ESTRITAMENTE nos dados."
+    )
+
+
+# --- Resposta por FUSÃO de átomos (cascata: 1 parágrafo por fonte) ------------
+# A base Zettelkasten devolve DEZENAS de átomos (1 ideia cada). Aqui o LLM os
+# INTEGRA num parágrafo coerente por fonte (RAM / Banco / Web). A REGRA 1 (sentinela)
+# é mantida idêntica: sem base → 'Não tenho informações suficientes' → o pipeline
+# escala para a próxima fonte sem "falar" o sentinela.
+SYS_FUSAO = """Você é um Engenheiro de Dados Sênior.
+REGRA 1: Baseie-se APENAS nos átomos fornecidos. Se a resposta não estiver neles, responda EXATAMENTE 'Não tenho informações suficientes'. NUNCA invente.
+REGRA 2: A base é Zettelkasten — vários átomos de 1 ideia. INTEGRE os relevantes numa resposta coerente; não liste, não repita, ignore em silêncio os irrelevantes.
+REGRA 3: UM parágrafo, direto, sem introdução polida."""
+
+
+def prompt_resposta_atomos(atomos: str, texto_usuario: str) -> str:
+    return (
+        f"Átomos de conhecimento:\n{atomos}\n\n"
+        f"Pergunta: '{texto_usuario}'.\n"
+        "Escreva UM parágrafo integrando só os átomos que realmente tratam da pergunta. "
+        "Se nenhum tratar, responda 'Não tenho informações suficientes'."
     )
 
 
@@ -85,14 +131,27 @@ def prompt_resposta_ferramentas(resultados: str, texto_usuario: str) -> str:
     )
 
 
-# --- ETL / Idle (síntese em background) --------------------------------------
-SYS_SINTESE = "Você é um documentarista analítico."
+# --- ETL / Idle (síntese em background → NOTAS ATÔMICAS) ---------------------
+# Antes gerava um "documentão" multi-seção — o OPOSTO de Zettelkasten, e ainda por
+# cima indexado, poluindo a base atômica. Agora destila em átomos no MESMO formato
+# das notas do vault: cada '##' vira um chunk próprio na indexação (split por
+# cabeçalho), então cada ideia fica recuperável isolada — como a query atomizada.
+SYS_SINTESE = (
+    "Você destila conhecimento em NOTAS ATÔMICAS Zettelkasten: cada nota é UMA ideia "
+    "auto-contida. Português direto, sem enrolação e sem texto fora do formato pedido."
+)
 
 
 def prompt_sintese(tema: str, dados: str) -> str:
     return (
-        f"Sintetize os dados brutos a seguir em um documento técnico e estruturado "
-        f"sobre '{tema}'. Dados: {dados}"
+        f"A partir dos dados brutos sobre '{tema}', extraia as ideias-chave como NOTAS "
+        "ATÔMICAS. Use EXATAMENTE este formato para cada nota, uma ideia por nota, sem repetir:\n\n"
+        "## <título curto da ideia>\n"
+        "<a ideia em 1-2 frases afirmativas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        "#zettelkasten_atomico\n\n"
+        "Separe as notas por uma linha em branco. Nada de introdução ou conclusão.\n\n"
+        f"DADOS BRUTOS:\n{dados}"
     )
 
 

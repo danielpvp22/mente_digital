@@ -67,6 +67,11 @@ async def test_sem_store_retorna_nenhum():
 
 
 def test_defaults_de_calibracao_intactos():
-    # se estes mudarem sem querer, o gate inteiro se desloca — trava o contrato
-    assert settings.rag_score_confident == 0.8
-    assert settings.rag_score_max == 1.5
+    # Trava os DEFAULTS DO CÓDIGO, não o valor efetivo: se mudarem sem querer, o gate
+    # inteiro se desloca. Ignora o .env de propósito — o usuário PODE sobrescrever no
+    # runtime (ex.: MENTE_RAG_SCORE_CONFIDENT=0.45); o contrato aqui é o default limpo.
+    from config import Settings
+
+    padrao = Settings(_env_file=None)
+    assert padrao.rag_score_confident == 0.8
+    assert padrao.rag_score_max == 1.5
