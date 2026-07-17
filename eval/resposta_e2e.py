@@ -65,7 +65,19 @@ from state import AppContext, SessionMemory  # noqa: E402
 from telemetry import db  # noqa: E402
 
 DIR_SAIDA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saidas")
-BRACOS = ("sem_malha", "com_malha")
+
+# Braços disponíveis. Cada um é uma configuração do caminho de RECUPERAÇÃO; o caminho
+# de GERAÇÃO é idêntico em todos (mesmo prompt, mesmo modelo, temperature 0) — senão a
+# comparação mediria duas coisas de uma vez.
+#   cru   — a pergunta natural inteira vai ao embedding (produção hoje)
+#   hyde  — o LLM atomiza a pergunta no formato da base ANTES de buscar (prompts.SYS_HYDE)
+#   malha — expansão por conceito compartilhado (já medida 3x: não paga; ver config)
+CONFIG_BRACO = {
+    "cru": {"hyde": False, "malha": False},
+    "hyde": {"hyde": True, "malha": False},
+    "malha": {"hyde": False, "malha": True},
+}
+BRACOS: Tuple[str, ...] = ("cru", "hyde")
 # id de conversa LEGADA: turnos antigos não têm `conversa_id` e o telemetry._CID os
 # agrupa por dia via COALESCE -> o id vira 'YYYY-MM-DD'. Ver `casos_reais`.
 _ID_LEGADO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -155,9 +167,20 @@ def casos_reais(limite: int) -> List[Tuple[str, SessionMemory]]:
 
 
 async def rodar() -> None:
+    global BRACOS
     ap = argparse.ArgumentParser(description="Teste ponta a ponta da resposta")
     ap.add_argument("--n", type=int, default=20, help="nº de perguntas (2 decodes cada)")
+    ap.add_argument(
+        "--bracos", default=",".join(BRACOS),
+        help=f"dois braços a comparar, de {sorted(CONFIG_BRACO)} (ex.: cru,malha)",
+    )
     args = ap.parse_args()
+
+    escolhidos = tuple(b.strip() for b in args.bracos.split(",") if b.strip())
+    if len(escolhidos) != 2 or any(b not in CONFIG_BRACO for b in escolhidos):
+        print(f"ERRO: --bracos precisa de DOIS nomes de {sorted(CONFIG_BRACO)}.")
+        return
+    BRACOS = escolhidos
 
     os.makedirs(DIR_SAIDA, exist_ok=True)
     pares = casos_reais(args.n)
@@ -187,17 +210,25 @@ async def rodar() -> None:
     agente = Agent(ctx)
     otimizador = QueryOptimizer(llama)
 
-    print(f"[2/3] montando contexto de {len(pares)} perguntas nos {len(BRACOS)} braços...")
+    print(f"[2/3] montando contexto de {len(pares)} perguntas nos braços {BRACOS}...")
     casos: List[dict] = []
     for q, mem in pares:
         # CAMINHO DA PRODUÇÃO: o QueryOptimizer resolve o pronome contra o histórico
         # ('quanto ELE acelera...' -> 'tensor rt acelera yolo'), e é o `termos` que faz
         # o aterramento léxico. Pular isto foi o que inverteu certo e errado antes.
+        # Roda UMA vez e é compartilhado: os braços variam a busca, não a query.
         termos = await otimizador.optimize(q, mem.chat_history)
-        texto_busca = await agente._texto_busca(q, termos)
         dados: dict = {}
         for braco in BRACOS:
-            settings.malha_expandir = braco == "com_malha"
+            cfg = CONFIG_BRACO[braco]
+            settings.rag_hyde = cfg["hyde"]
+            settings.malha_expandir = cfg["malha"]
+            # O tempo do _texto_busca é do BRAÇO, não do cenário: com HyDE ele embute
+            # uma chamada de LLM ANTES da busca. Medir só o decode da resposta mediria
+            # o ganho e esconderia o preço — e o preço é TTFA, o pilar do projeto.
+            t0 = time.perf_counter()
+            texto_busca = await agente._texto_busca(q, termos)
+            ms_busca = round((time.perf_counter() - t0) * 1000)
             r = await store.search(termos, texto_busca=texto_busca)
             dados[braco] = {
                 "contexto": r.texto,
@@ -205,6 +236,8 @@ async def rodar() -> None:
                 "relevante": r.relevante,
                 "melhor_dist": r.melhor_dist,
                 "vizinhos": r.texto.count("[Malha - relacionado]"),
+                "ms_pre_busca": ms_busca,
+                "texto_busca": texto_busca,
             }
         # Só interessa onde o Banco de fato responderia. Sem âncora local o Agent vai
         # pra web, e aí o braço não muda nada — incluir só diluiria a comparação.
@@ -247,7 +280,10 @@ async def rodar() -> None:
                     "sentinela": _e_sentinela(texto),
                     "chars_resposta": len(texto.strip()),
                     "chars_contexto": caso[braco]["chars"],
+                    "melhor_dist": caso[braco]["melhor_dist"],
                     "vizinhos": caso[braco]["vizinhos"],
+                    "ms_pre_busca": caso[braco]["ms_pre_busca"],
+                    "texto_busca": caso[braco]["texto_busca"],
                     **m,
                 }
             )
@@ -275,9 +311,14 @@ def _comparar(resultados: dict) -> None:
             {
                 "n": len(r),
                 "sentinela": sum(1 for x in r if x["sentinela"]),
+                "dist": _med([x["melhor_dist"] for x in r if x["melhor_dist"] is not None]),
                 "chars_ctx": _med([x["chars_contexto"] for x in r]),
                 "chars_resp": _med([x["chars_resposta"] for x in r]),
+                "pre": _med([x["ms_pre_busca"] for x in r]),
                 "ttft": _med([x["ttft_ms"] for x in r]),
+                # O que o usuário SENTE: o pré-busca (HyDE) acontece ANTES do 1º token,
+                # então ele entra inteiro no tempo até a fala começar.
+                "ate_1o_token": _med([x["ms_pre_busca"] + x["ttft_ms"] for x in r]),
                 "total": _med([x["total_ms"] for x in r]),
             }
         )
@@ -293,9 +334,12 @@ def _comparar(resultados: dict) -> None:
 
     print(f"{'perguntas':28} | {a['n']:12d} | {b['n']:12d} |")
     linha("respostas com sentinela", a["sentinela"], b["sentinela"])
+    linha("melhor_dist (med)", a["dist"], b["dist"], fmt=".3f")
     linha("chars de contexto (med)", a["chars_ctx"], b["chars_ctx"])
     linha("chars de resposta (med)", a["chars_resp"], b["chars_resp"], pior_maior=False)
+    linha("ms antes da busca (med)", a["pre"], b["pre"])
     linha("TTFT ms (med)", a["ttft"], b["ttft"])
+    linha("ate o 1o token ms (med)", a["ate_1o_token"], b["ate_1o_token"])
     linha("total ms (med)", a["total"], b["total"])
     print("=" * 78)
     print("\nSENTINELA é o veredito principal: menos = o vault cobriu mais a pergunta.")
