@@ -218,6 +218,24 @@ class Settings(BaseSettings):
     # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
     dedup_dist_max: float = 0.08
 
+    # --- Agentes / Scheduler (lembretes, alarmes, watchers, briefing) -----------
+    # O SchedulerService é um loop de background que lê a tabela `agendamentos` e
+    # dispara os vencidos. É a "responsabilidade contínua" dos agentes tipo-Alexa.
+    scheduler_enabled: bool = True
+    # Granularidade do loop: de quanto em quanto tempo checa a tabela. 20s dá precisão
+    # de sub-minuto para lembretes sem custar quase nada (uma consulta SQLite indexada).
+    scheduler_tick_seconds: float = 20.0
+    # Watcher "me avise quando": intervalo padrão entre checagens da condição na web.
+    # Cada checagem gasta 1 busca web + 1 inferência (preemptível, cede à conversa).
+    watcher_intervalo_seconds: int = 1800     # 30 min
+    # Teto de vida de um watcher: expira sozinho depois disso (não fica checando a web
+    # para sempre por uma condição que talvez nunca ocorra).
+    watcher_expira_horas: int = 168           # 7 dias
+    # Briefing diário: horário padrão (HH:MM) quando o usuário não especifica.
+    briefing_hora_padrao: str = "07:00"
+    # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
+    subpasta_listas: str = "Listas"
+
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
     max_session_knowledge: int = 12
@@ -233,11 +251,16 @@ class Settings(BaseSettings):
     def dir_conhecimento_novo(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_conhecimento_novo
 
+    @property
+    def dir_listas(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_listas
+
     def ensure_dirs(self) -> None:
         """Cria as pastas necessárias. Chamado no startup, nunca no import."""
         os.makedirs(self.diretorio_banco_vetorial, exist_ok=True)
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
+        os.makedirs(self.dir_listas, exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)

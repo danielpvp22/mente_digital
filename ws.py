@@ -79,6 +79,11 @@ class LiveSession:
     async def run(self) -> None:
         await self.ws.accept()
         self.ctx.sessoes.add(self)
+        # Entrega já os avisos que dispararam enquanto ninguém estava conectado
+        # (lembrete de ontem, watcher satisfeito de madrugada). Em background: não
+        # atrasa o handshake, e o loop do scheduler também os reentregaria no tick.
+        if self.ctx.scheduler is not None:
+            self.ctx.track_task(self.ctx.scheduler.entregar_pendentes())
         # Abertura do live é sinal de uso: religa o modelo se o idle o descarregou,
         # para a 1ª pergunta não pagar o reload em cima da latência normal.
         if not self.ctx.llama.ready:

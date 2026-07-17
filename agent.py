@@ -557,9 +557,12 @@ class Agent:
                 decisao = await self._rotear(texto_usuario)
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
+                    tool = self.tools.get(decisao.tool)
                     texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
                     if texto_final:
-                        if not efemero:
+                        # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
+                        # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
+                        if not efemero and tool.registra_conhecimento:
                             await append_chat_dump("IA", texto_final)
                         mem.registrar_turno(texto_usuario, texto_final)
                         await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)

@@ -377,6 +377,15 @@
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
                 else if (data.tipo === "audio") { audioQueue.push(data.base64); if (!iaFalando) tocarProximoAudio(); }
+                else if (data.tipo === "proativo") {
+                    // Mensagem que o servidor INICIA (alarme/lembrete/watcher/briefing): abre
+                    // uma bolha própria com o sino, sem se colar à resposta anterior. O áudio
+                    // chega em mensagens {tipo:"audio"} separadas, logo depois.
+                    abrirConversa();
+                    currentIaBubble = null;
+                    appendMsg("🔔 " + data.texto, 'ia');
+                    currentIaBubble = null;
+                }
                 else if (data.tipo === "status") { toast(data.texto); }
                 else if (data.tipo === "erro") { toast("Erro: " + data.texto); }
             };

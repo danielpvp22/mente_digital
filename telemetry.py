@@ -109,6 +109,21 @@ class Database:
                    (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
                     visto_em TEXT, pesquisado_em TEXT)"""
             )
+            # AGENDAMENTOS: a "responsabilidade contínua" dos agentes (lembrete/alarme/
+            # timer, watcher "me avise quando", briefing diário). Persistente de propósito
+            # — o SchedulerService lê esta tabela e sobrevive a restart do servidor (a RAM
+            # da sessão morre com a conexão e não serviria para um alarme de amanhã).
+            #   tipo         : 'lembrete' | 'watcher' | 'briefing'
+            #   proximo_disparo: ISO — quando disparar (lembrete) ou checar (watcher)
+            #   recorrencia  : NULL (único) | 'diario' | 'semanal:<0-6>' | 'intervalo:<segs>'
+            #   payload      : JSON extra (watcher: termos+condicao)
+            #   status       : 'ativo' | 'pendente_entrega' | 'concluido' | 'cancelado'
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS agendamentos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, mensagem TEXT,
+                    proximo_disparo TEXT, recorrencia TEXT, payload TEXT,
+                    status TEXT DEFAULT 'ativo', criado_em TEXT, conversa_id TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -202,6 +217,128 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao marcar lacuna", exc)
+
+    # ---- Agendamentos (SchedulerService: lembretes/alarmes, watchers, briefing) ----
+    def criar_agendamento(
+        self, tipo: str, mensagem: str, proximo_disparo: str,
+        recorrencia: Optional[str] = None, payload: Optional[str] = None,
+        conversa_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """Insere um agendamento ATIVO e devolve o id (para o usuário poder cancelar)."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    """INSERT INTO agendamentos
+                       (tipo, mensagem, proximo_disparo, recorrencia, payload, status, criado_em, conversa_id)
+                       VALUES (?, ?, ?, ?, ?, 'ativo', ?, ?)""",
+                    (tipo, mensagem, proximo_disparo, recorrencia, payload,
+                     datetime.now().isoformat(), conversa_id),
+                )
+                conn.commit()
+                return cur.lastrowid
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar agendamento", exc)
+            return None
+
+    def get_agendamentos_vencidos(self, agora_iso: str) -> list[dict]:
+        """Agendamentos ATIVOS cujo horário já chegou — o scheduler dispara estes."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
+                       FROM agendamentos
+                       WHERE status = 'ativo' AND proximo_disparo <= ?
+                       ORDER BY proximo_disparo ASC""",
+                    (agora_iso,),
+                ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
+                 "recorrencia": r, "payload": pl, "conversa_id": c}
+                for i, t, m, p, r, pl, c in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler agendamentos vencidos", exc)
+            return []
+
+    def get_agendamentos_pendentes(self) -> list[dict]:
+        """Disparos que ocorreram sem ninguém conectado — entregues na próxima conexão."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
+                       FROM agendamentos WHERE status = 'pendente_entrega'
+                       ORDER BY proximo_disparo ASC""",
+                ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
+                 "recorrencia": r, "payload": pl, "conversa_id": c}
+                for i, t, m, p, r, pl, c in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler agendamentos pendentes", exc)
+            return []
+
+    def listar_agendamentos(self, tipos: Optional[tuple] = None) -> list[dict]:
+        """Agendamentos ATIVOS (para 'liste meus lembretes'). Filtra por tipo se dado."""
+        try:
+            with self._conn() as conn:
+                if tipos:
+                    marks = ",".join("?" * len(tipos))
+                    rows = conn.execute(
+                        f"""SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
+                            WHERE status = 'ativo' AND tipo IN ({marks})
+                            ORDER BY proximo_disparo ASC""",
+                        tuple(tipos),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
+                           WHERE status = 'ativo' ORDER BY proximo_disparo ASC""",
+                    ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p, "recorrencia": r}
+                for i, t, m, p, r in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar agendamentos", exc)
+            return []
+
+    def atualizar_agendamento(
+        self, ag_id: int, *, status: Optional[str] = None, proximo_disparo: Optional[str] = None,
+    ) -> None:
+        """Reprograma (próximo disparo da recorrência) ou muda o status de um agendamento."""
+        campos, valores = [], []
+        if status is not None:
+            campos.append("status = ?")
+            valores.append(status)
+        if proximo_disparo is not None:
+            campos.append("proximo_disparo = ?")
+            valores.append(proximo_disparo)
+        if not campos:
+            return
+        valores.append(ag_id)
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ?", valores
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao atualizar agendamento", exc)
+
+    def cancelar_agendamento(self, ag_id: int) -> bool:
+        """Marca como cancelado. True se um agendamento ATIVO foi de fato cancelado."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE agendamentos SET status = 'cancelado' WHERE id = ? AND status = 'ativo'",
+                    (ag_id,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao cancelar agendamento", exc)
+            return False
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:
