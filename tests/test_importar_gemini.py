@@ -8,6 +8,7 @@ importador regenera da fonte. Aqui travamos o que é testável sem GPU: a extra�
 turnos, o janelamento por fronteira de turno, e o tema vindo do nome do arquivo.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -478,3 +479,17 @@ def test_garantir_assunto_sem_entidade_cai_na_regra_antiga():
     # oposto — assunto ERRADO envenena a recuperação (foi o mal das notas _Pt<N>_).
     original = "## Economia mensal\ncorpo."
     assert garantir_assunto(original, "economia da máquina de lavar louça") == original
+
+
+# --- limpar_vault: o backup FORA do vault -----------------------------------
+def test_backup_do_limpar_vault_fica_fora_do_vault():
+    # REGRESSÃO: o backup dentro de Importado_Gemini/ era re-indexado pelo sync (glob
+    # recursivo **/*.md), anulando a limpeza — os 38 átomos de lixo voltaram ao Chroma.
+    import importar_gemini  # garante o sys.path do scripts/
+    import limpar_vault
+    from config import settings
+    vault = os.path.abspath(settings.caminho_obsidian)
+    lixo = os.path.abspath(limpar_vault.LIXO)
+    # o destino do lixo NÃO pode estar sob o caminho indexado
+    assert not lixo.startswith(vault + os.sep)
+    assert lixo != vault

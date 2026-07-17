@@ -38,7 +38,9 @@ from config import settings  # noqa: E402
 from rag import strip_frontmatter  # noqa: E402
 
 AUTO = os.path.join(settings.caminho_obsidian, "Importado_Gemini")
-LIXO = os.path.join(AUTO, "_lixo_purgado")
+# FORA do vault: o sync faz glob recursivo `**/*.md`, então um backup DENTRO do vault
+# seria re-indexado e a limpeza se anularia (bug medido: os 38 voltaram ao Chroma).
+LIXO = os.path.join(os.path.dirname(settings.caminho_obsidian), "_lixo_purgado")
 
 
 def corpo_puro(txt: str) -> str:
@@ -57,7 +59,6 @@ def corpo_puro(txt: str) -> str:
 def classificar() -> dict:
     """Varre a base auto-gerada e rotula cada arquivo. Puro de efeitos (só lê)."""
     arqs = glob.glob(os.path.join(AUTO, "**/*.md"), recursive=True)
-    arqs = [p for p in arqs if os.path.abspath(LIXO) not in os.path.abspath(p)]
     nada, vazio, corpos = [], [], {}
     for p in arqs:
         try:
