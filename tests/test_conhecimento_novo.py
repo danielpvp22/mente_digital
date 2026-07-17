@@ -15,7 +15,7 @@ from datetime import datetime
 
 import prompts
 import textutils
-from agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo
+from agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo, normalizar_malha
 from config import Settings, settings
 from rag import NENHUM, VectorStore, strip_frontmatter
 from state import AppContext, SessionMemory
@@ -105,6 +105,65 @@ def test_normalizar_nao_confunde_cabecalho_com_tag():
     # A regra de tag-no-fim exige espaço antes do '#': '## Título' nunca pode ser comido.
     out = normalizar_atomo("## Título com # no meio\ncorpo", "Sintese", _AGORA)
     assert "## Título com # no meio" in out
+
+
+# --- normalizar_malha: o Obsidian só resolve [[duplo]] -----------------------
+def test_malha_colchete_simples_vira_wikilinks():
+    # O caso REAL reportado: 44 de 84 átomos do import saíram assim. '[FastAPI, ...]'
+    # não é link no Obsidian — é sintaxe markdown sem URL, renderiza como texto.
+    bruto = "[FastAPI, Faster-Whisper, Silero VAD (Opcional, mas recomendado), Ollama Python Library, Piper TTS ou Edge-TTS]"
+    out = normalizar_malha(bruto)
+    assert out == ("[[FastAPI]] [[Faster-Whisper]] [[Silero VAD]] "
+                   "[[Ollama Python Library]] [[Piper TTS]] [[Edge-TTS]]")
+
+
+def test_malha_parentese_nao_vira_link_lixo():
+    # A vírgula DENTRO do parêntese quebraria 'Silero VAD (Opcional, mas recomendado)'
+    # em '[[Silero VAD (Opcional]]' e '[[mas recomendado)]]'.
+    out = normalizar_malha("[Silero VAD (Opcional, mas recomendado)]")
+    assert out == "[[Silero VAD]]"
+
+
+def test_malha_aninhamento_torto_do_modelo():
+    # O caso REAL, achado em 45 de 378 átomos: o modelo abre duplo e fecha simples.
+    # O regex de '[[...]]' não casava, o descasque externo deixava tudo como UM
+    # conceito, e o resultado saía re-embrulhado e igualmente quebrado.
+    bruto = "[[Córtex Auditivo] [Solicitações HTTP] [Carregamento de pesos]]"
+    assert normalizar_malha(bruto) == "[[Córtex Auditivo]] [[Solicitações HTTP]] [[Carregamento de pesos]]"
+
+
+def test_malha_aninhamento_torto_com_dois_conceitos():
+    assert normalizar_malha("[[Vídeos processados] [Pulando vídeos]]") == \
+        "[[Vídeos processados]] [[Pulando vídeos]]"
+
+
+def test_malha_ja_correta_e_preservada():
+    out = normalizar_malha("[[Estimativa de valor]] [[Cálculo de liquidez]]")
+    assert out == "[[Estimativa de valor]] [[Cálculo de liquidez]]"
+
+
+def test_malha_sem_colchete_nenhum():
+    assert normalizar_malha("TensorRT, YOLO") == "[[TensorRT]] [[YOLO]]"
+
+
+def test_malha_dedup_e_vazio():
+    assert normalizar_malha("[A, a, A]") == "[[A]]"
+    assert normalizar_malha("") == ""
+    assert normalizar_malha("[]") == ""
+
+
+def test_malha_frase_longa_nao_vira_link():
+    # Conceito é um NOME. Se o modelo escreveu uma frase, é ruído, não link.
+    frase = "este conceito se relaciona com muitas outras ideias do vault e mereceria uma nota inteira"
+    assert normalizar_malha(f"[{frase}]") == ""
+
+
+def test_normalizar_atomo_conserta_a_malha_no_lugar():
+    # A integração: quem impõe a sintaxe é o normalizar_atomo, não o prompt.
+    bruto = "## Backend em Python\nO servidor será assíncrono.\n**Malha Neural:** [FastAPI, Piper TTS]"
+    out = normalizar_atomo(bruto, "Gemini", _AGORA)
+    assert "**Malha Neural:** [[FastAPI]] [[Piper TTS]]" in out
+    assert "[FastAPI," not in out
 
 
 def test_normalizar_e_idempotente():

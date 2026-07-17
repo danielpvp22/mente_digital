@@ -32,3 +32,8 @@ eval/resultado_*.json
 # Estado/log do import de histórico (retomável, específico da máquina)
 scripts/importar_gemini.estado.json
 scripts/import.log
+
+# Saidas do teste ponta a ponta da resposta: mesma regra do ab_modelos acima —
+# carregam perguntas reais e respostas aterradas no VAULT. Regeneraveis com
+# `resposta_e2e.py`, entao versiona-se a ferramenta, nao o dado do usuario.
+eval/saidas/

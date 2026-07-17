@@ -147,11 +147,17 @@ def dividir_atomos(texto: str) -> List[str]:
     return [b for b in candidatos if _parece_atomo(b)]
 
 
-def _slug_titulo(bloco: str) -> str:
+def _slug_titulo(bloco: str, max_len: int = 40) -> str:
     """Slug curto a partir do título ('## ...') do átomo, para o nome do arquivo.
 
     Procura a linha do título em vez de assumir a 1ª: o átomo normalizado começa com
     frontmatter, então `splitlines()[0]` seria '---'.
+
+    `max_len` é parâmetro porque o import de histórico precisa de mais espaço: lá o
+    `garantir_assunto` PREFIXA o assunto no título, e em 40 chars o prefixo comia a
+    parte que distingue os átomos — "Custo de 40 balas de MAI AP" e "Custo de 30 balas
+    de BP" viravam slugs que só diferiam no 40/30, perdendo o "MAI AP" vs "BP". Corta
+    em fronteira de palavra: nome cortado no meio de uma sílaba não ajuda ninguém.
     """
     titulo = ""
     for ln in bloco.splitlines():
@@ -162,7 +168,65 @@ def _slug_titulo(bloco: str) -> str:
         primeira = bloco.splitlines()[0] if bloco.strip() else ""
         titulo = primeira.lstrip("#").strip()
     slug = re.sub(r"[^a-z0-9]+", "_", textutils.normaliza(titulo)).strip("_")
-    return slug[:40] or "atomo"
+    if len(slug) > max_len:
+        corte = slug.rfind("_", 0, max_len + 1)      # não corta no meio da palavra
+        slug = slug[: corte if corte > max_len // 2 else max_len]
+    return slug.strip("_") or "atomo"
+
+
+# Conteúdo da linha de Malha Neural, e os separadores que o modelo realmente usa.
+# ' e ' fica de FORA de propósito: aparece dentro de nomes ("Pesquisa e Ranking") e
+# quebraria conceitos legítimos em dois. Vírgula/ponto-e-vírgula/' ou ' bastam.
+_MALHA_RE = re.compile(r"^\s*\*\*Malha Neural:\*\*\s*(.*)$", re.IGNORECASE)
+_MALHA_SEP = re.compile(r"\s*(?:,|;|\bou\b)\s*", re.IGNORECASE)
+_PARENTESE = re.compile(r"\([^)]*\)")
+
+
+def normalizar_malha(conteudo: str) -> str:
+    """Conteúdo cru da Malha Neural -> '[[A]] [[B]] [[C]]'. Puro/testável.
+
+    Por que existe: o Obsidian só resolve wikilink com colchete DUPLO. Medido em 84
+    átomos reais do import, 44 (58%) saíram com colchete SIMPLES — '[FastAPI,
+    Faster-Whisper, Silero VAD, Ollama, Piper TTS]'. Isso não é link: é sintaxe de link
+    markdown sem a URL, então o Obsidian renderiza como texto literal, e cinco conceitos
+    distintos viram uma string só. Sem link não há grafo, e sem grafo a "Malha Neural"
+    não existe — é o nome da coisa.
+
+    Mesma lição de `normalizar_atomo`, aplicada onde eu tinha esquecido: o LLM entrega
+    os CONCEITOS, o Python entrega a SINTAXE.
+
+    Se já houver [[...]], respeita e devolve só eles (o modelo acertou). Senão, descasca
+    os colchetes externos, joga fora parênteses ("(Opcional, mas recomendado)" viraria
+    dois links-lixo se a vírgula dentro dele fosse separador) e fatia o resto.
+    """
+    conteudo = conteudo.strip()
+    if not conteudo:
+        return ""
+    # Extrai QUALQUER grupo entre colchetes — duplo, simples ou torto. A 1ª versão
+    # tratava '[[x]]' e '[x]' como dois casos e deixava escapar o aninhamento que o
+    # modelo realmente produz: '[[Córtex Auditivo] [Solicitações HTTP] [Pesos]]' (abre
+    # duplo, fecha simples). O regex de '[[...]]' não casava, o descasque de colchetes
+    # externos deixava 'Córtex Auditivo] [Solicitações HTTP] [Pesos' como UM conceito, e
+    # o resultado saía re-embrulhado e igualmente quebrado — 45 de 378 átomos reais.
+    # Um regex que aceita qualquer número de colchetes resolve os três casos de uma vez.
+    grupos = re.findall(r"\[+([^\[\]]+)\]+", conteudo) or [conteudo]
+
+    conceitos: List[str] = []
+    for g in grupos:
+        # Parêntese fora ANTES de fatiar: a vírgula dentro de "(Opcional, mas
+        # recomendado)" viraria dois links-lixo.
+        conceitos.extend(_MALHA_SEP.split(_PARENTESE.sub("", g)))
+
+    vistos: set = set()
+    finais: List[str] = []
+    for c in conceitos:
+        c = c.strip(" .*[]").strip()
+        # Conceito é um NOME, não uma frase: o que for longo demais é ruído do modelo.
+        if not c or len(c) > 60 or c.lower() in vistos:
+            continue
+        vistos.add(c.lower())
+        finais.append(f"[[{c}]]")
+    return " ".join(finais)
 
 
 def _e_titulo(linha: str) -> bool:
@@ -216,6 +280,14 @@ def normalizar_atomo(
             ln = ln[: fim.start()].rstrip()
             if not ln:
                 continue
+        # Malha Neural: a SINTAXE é imposta aqui, não pedida ao modelo (58% dos átomos
+        # reais saíam com colchete simples, que o Obsidian não resolve). Ver normalizar_malha.
+        m = _MALHA_RE.match(ln)
+        if m:
+            links = normalizar_malha(m.group(1))
+            if links:
+                corpo.append(f"{_MALHA} {links}")
+            continue
         if not primeira_analisada:
             primeira_analisada = True
             if ln.lstrip().startswith("#"):
