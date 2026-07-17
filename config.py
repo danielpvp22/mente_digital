@@ -194,6 +194,16 @@ class Settings(BaseSettings):
     tts_chunk_min_chars: int = 8        # frase mínima antes de sintetizar
     tts_chunk_max_chars: int = 180      # flush forçado em frases longas
 
+    # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
+    # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar
+    # conhecimento e liberar a GPU. Diferente do vad_silence (fim de FALA, ~1s); este
+    # é fim de INTERAÇÃO. Uma nova mensagem/fala rearma. Maior = idle mais preguiçoso
+    # (menos reloads, VRAM presa por mais tempo); menor = libera a GPU mais cedo.
+    idle_inatividade_seconds: float = 90.0
+    # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
+    # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
+    idle_descarregar_modelo: bool = True
+
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
     max_session_knowledge: int = 12

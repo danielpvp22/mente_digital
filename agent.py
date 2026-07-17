@@ -1017,6 +1017,22 @@ class EtlProcessor:
             telemetry.warn("IDLE", "Nenhum átomo salvo da conversa — dump preservado p/ retry.")
 
     async def run_idle(self, itens: List[Tuple[str, str]]) -> None:
-        """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa."""
+        """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa,
+        3) DESCARREGA o modelo, liberando a VRAM (o pilar pedido: a GPU volta pra outros
+        trabalhos quando o chat para).
+
+        A ordem importa e foi pedida assim: o ETL PRECISA do modelo, então o unload é o
+        ÚLTIMO passo. E só descarrega se ninguém voltou a interagir no meio-tempo —
+        `interactive_idle` está SETADO quando não há inferência interativa em voo; se o
+        usuário mandou algo, o pipeline o limpou e o unload é pulado (o próprio pipeline
+        religou/manteve o modelo). Se descarregar e a mensagem chegar logo depois,
+        `ensure_loaded` (no stream) religa: seguro nas duas direções."""
         await self.process_queue(itens)
         await self.summarize_dump()
+
+        if not settings.idle_descarregar_modelo:
+            return
+        if not self.ctx.interactive_idle.is_set():
+            telemetry.track("ETL_POST_CHAT", "Interação retomada no idle — modelo mantido.")
+            return
+        await self.ctx.llama.unload()
