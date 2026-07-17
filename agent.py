@@ -265,6 +265,7 @@ def normalizar_atomo(
         return ""
 
     titulo = ""
+    titulo_explicito = False          # veio de um '## ' real (não de linha promovida)
     corpo: List[str] = []
     achadas: List[str] = []          # tags que o próprio modelo emitiu
     primeira_analisada = False
@@ -292,6 +293,7 @@ def normalizar_atomo(
             primeira_analisada = True
             if ln.lstrip().startswith("#"):
                 titulo = ln.lstrip("#").strip()
+                titulo_explicito = True
                 continue
             if _e_titulo(ln):
                 titulo = ln.strip()
@@ -299,6 +301,24 @@ def normalizar_atomo(
         corpo.append(ln)
 
     corpo_txt = "\n".join(corpo).strip()
+
+    # PORTÃO NADA/vazio: um átomo sem FATO não é átomo. O sentinela "nada a extrair"
+    # vazava por bloco — o check de NADA do importador e do ETL só pega a saída INTEIRA,
+    # então uma síntese com átomos bons + um bloco "NADA" salvava '## Assunto: NADA'
+    # (corpo 'NADA'), medido: 11 na base. E '## Título\n**Malha**' sem corpo virava
+    # átomo oco (9 na base). Fatiar aqui protege OS DOIS caminhos (importar_gemini E
+    # criação de MD pós-conversa), porque ambos passam por normalizar_atomo.
+    #
+    # CUIDADO com o FALLBACK do ETL: quando o LLM manda prosa SEM '##', a 1ª linha é
+    # PROMOVIDA a título e o átomo fica sem corpo DE PROPÓSITO (não perder conhecimento
+    # — ver test_atomo_sem_cabecalho...). Esse caso tem título promovido, não explícito.
+    # Só rejeitamos corpo vazio quando o título era um '## ' REAL; a prosa promovida passa.
+    corpo_sem_malha = "\n".join(ln for ln in corpo if not ln.startswith(_MALHA)).strip()
+    nada = textutils.normaliza(corpo_sem_malha).strip(".!?") == "nada"
+    vazio_com_titulo_real = not corpo_sem_malha and titulo_explicito
+    if nada or vazio_com_titulo_real:
+        return ""
+
     if not titulo:
         # Formato irrecuperável: melhor um título derivado que um átomo sem título.
         titulo = " ".join(corpo_txt.split()[:6]) or "Atomo"

@@ -372,3 +372,33 @@ async def test_atomo_sem_cabecalho_salvo_como_um_fallback(tmp_path, monkeypatch)
 
     gerados = [f for f in os.listdir(st.dir_conhecimento_novo) if f.startswith("Sintese_")]
     assert len(gerados) == 1                             # fallback: 1 átomo com o texto inteiro
+
+
+# --- portão NADA/vazio no normalizar_atomo ---------------------------------
+def test_normalizar_rejeita_bloco_nada():
+    # O sentinela "nada a extrair" vazava por bloco (o check do importador/ETL só pega
+    # a saída inteira). Um bloco NADA não pode virar átomo com título.
+    from datetime import datetime
+    import agent
+    assert agent.normalizar_atomo("## Preço de GPUs na AWS\nNADA", "x.json", datetime(2026, 7, 17)) == ""
+    assert agent.normalizar_atomo("## Assunto\nnada.", "x.json", datetime(2026, 7, 17)) == ""
+
+
+def test_normalizar_rejeita_atomo_so_com_malha():
+    # Linha de Malha sem corpo = átomo oco (9 na base). Sem fato, não é átomo.
+    from datetime import datetime
+    import agent
+    out = agent.normalizar_atomo(
+        "## Reflexos\n**Malha Neural:** [[FPS]] [[APM]]", "x.json", datetime(2026, 7, 17))
+    assert out == ""
+
+
+def test_normalizar_mantem_atomo_com_fato_e_malha():
+    # Não pode ser zeloso demais: átomo real com Malha continua passando.
+    from datetime import datetime
+    import agent
+    out = agent.normalizar_atomo(
+        "## Stratum\nO Stratum conecta o minerador à pool.\n**Malha Neural:** [[Zcash]]",
+        "x.json", datetime(2026, 7, 17))
+    assert "Stratum conecta" in out
+    assert out.strip() != ""
