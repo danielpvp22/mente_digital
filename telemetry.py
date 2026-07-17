@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config import settings
@@ -100,6 +100,15 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     rota TEXT, ttft_ms INTEGER, ttfa_ms INTEGER, total_ms INTEGER)"""
             )
+            # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
+            # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
+            # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
+            # forma normalizada (agrupa 'o que é X?' e 'X, o que é'); `n` acumula.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS lacunas
+                   (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
+                    visto_em TEXT, pesquisado_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -143,6 +152,56 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar latência", exc)
+
+    def save_lacuna(self, chave: str, termos: str) -> None:
+        """Registra (ou incrementa) uma pergunta que a RAM E o banco não responderam.
+
+        UPSERT: a mesma dúvida recorrente sobe o contador `n` em vez de virar N linhas —
+        assim a pesquisa proativa prioriza o que MAIS falta, não o que falta há mais tempo."""
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO lacunas (chave, termos, n, visto_em)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, termos, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar lacuna", exc)
+
+    def get_lacunas(self, limit: int = 20, nao_pesquisadas_ha_dias: int = 7) -> list[dict]:
+        """As maiores dúvidas por resolver, mais frequentes primeiro.
+
+        Pula lacunas pesquisadas há menos de `nao_pesquisadas_ha_dias` (não re-pesquisa
+        o que acabou de ser trazido). Ordena por n desc, depois recência."""
+        try:
+            corte = (datetime.now() - timedelta(days=nao_pesquisadas_ha_dias)).isoformat()
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT termos, n FROM lacunas
+                       WHERE pesquisado_em IS NULL OR pesquisado_em < ?
+                       ORDER BY n DESC, visto_em DESC LIMIT ?""",
+                    (corte, limit),
+                ).fetchall()
+            return [{"termos": t, "n": n} for t, n in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler lacunas", exc)
+            return []
+
+    def marcar_lacuna_pesquisada(self, chave: str) -> None:
+        """Carimba que a lacuna foi pesquisada — sai da fila por `nao_pesquisadas_ha_dias`."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE lacunas SET pesquisado_em = ? WHERE chave = ?",
+                    (datetime.now().isoformat(), chave),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar lacuna", exc)
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:

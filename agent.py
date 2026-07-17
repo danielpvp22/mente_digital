@@ -548,6 +548,13 @@ class Agent:
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
+                    # LACUNA: nem a RAM nem o banco tinham. Registra para a pesquisa
+                    # proativa do idle trazer isto pronto na próxima vez. Efêmero não
+                    # conta — 'clima amanhã' não é dúvida a resolver, é dado que expira.
+                    if not efemero:
+                        await asyncio.to_thread(
+                            db.save_lacuna, textutils.normaliza(termos), termos
+                        )
                     # `efemero` também aqui: é POR ESTE caminho que "clima em lisboa
                     # amanhã" chega (o gate de rota não o pega), escala pra web e hoje
                     # é ingerido. Sem isto o bloqueio vazaria os casos reais medidos.
@@ -900,9 +907,16 @@ class EtlProcessor:
             blocos = [texto.strip()]
         agora = datetime.now()
         salvos = 0
+        duplicados = 0
         for i, bloco in enumerate(blocos):
             bloco = normalizar_atomo(bloco, prefixo, agora)
             if not bloco.strip():
+                continue
+            # DEDUP contra o banco (pedido: "impeça a duplicação"). Um átomo quase
+            # idêntico a um já indexado não vira arquivo novo — senão a base incha com
+            # a mesma ideia e o rag_top_k recupera clones. Fail-open sem embeddings.
+            if await self._ja_no_banco(strip_frontmatter(bloco)):
+                duplicados += 1
                 continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
             caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
@@ -917,7 +931,27 @@ class EtlProcessor:
                 salvos += 1
             except OSError as exc:
                 telemetry.error(tipo_log, f"Falha ao salvar átomo {nome}", exc)
+        if duplicados:
+            telemetry.track(tipo_log, f"Dedup: {duplicados} átomo(s) já no banco, ignorados.")
         return salvos
+
+    async def _ja_no_banco(self, corpo: str) -> bool:
+        """True se um átomo quase idêntico já está indexado (distância < dedup_dist_max).
+
+        Fail-open: sem embeddings/loja (testes) devolve False — dedup é uma trava de
+        qualidade, não pode virar bloqueio de escrita. Barato: 1 embedding + 1 vizinho."""
+        store = self.ctx.vectorstore
+        if store is None or getattr(store, "_store", None) is None or not corpo.strip():
+            return False
+        try:
+            res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
+        except Exception as exc:
+            telemetry.warn("DEDUP", f"Falha ao checar duplicata (seguindo com o save): {exc}")
+            return False
+        if not res:
+            return False
+        _doc, dist = res[0]
+        return dist < settings.dedup_dist_max
 
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:
@@ -1016,10 +1050,67 @@ class EtlProcessor:
         else:
             telemetry.warn("IDLE", "Nenhum átomo salvo da conversa — dump preservado p/ retry.")
 
+    async def pesquisa_proativa(self) -> None:
+        """No idle, busca na web as maiores LACUNAS (perguntas que a RAM E o banco não
+        responderam), atomiza e insere — para a próxima vez já achar local. É o que faz
+        o app "sempre ter algo novo pronto" sobre as dúvidas reais do usuário.
+
+        Anti-duplicação em DOIS níveis:
+        1. ALVO: se o banco JÁ cobre a lacuna (relevante) — porque outra passada de idle
+           já a trouxe, ou a base cresceu — não re-pesquisa; só marca como resolvida.
+        2. ÁTOMO: `_salvar_atomos` descarta o que já está indexado (dedup_dist_max).
+
+        Preempção: cada síntese é `preemptible`. Se o usuário volta, InferenciaPreemptada
+        encerra a pesquisa — o idle acabou, e as lacunas não-tocadas ficam para a próxima."""
+        if not settings.idle_pesquisa_proativa:
+            return
+        lacunas = await asyncio.to_thread(db.get_lacunas, settings.idle_pesquisa_max * 4)
+        if not lacunas:
+            return
+        feitas = 0
+        for lac in lacunas:
+            if feitas >= settings.idle_pesquisa_max:
+                break
+            termos = lac["termos"]
+            chave = textutils.normaliza(termos)
+            await self._esperar_idle()
+            # Nível 1 — o banco já cobre? (cresceu desde que a lacuna foi vista)
+            local = await self.ctx.vectorstore.search(termos, texto_busca=termos)
+            if local.relevante:
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            dados = await self.ctx.web.search(termos, consulta=termos)
+            if not dados or dados == NENHUM:
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            try:
+                conteudo = await self.ctx.llama.collect(
+                    prompts.prompt_sintese(termos, dados),
+                    max_tokens=settings.max_tokens_sintese,
+                    system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,
+                )
+            except InferenciaPreemptada:
+                telemetry.track("ETL_PROATIVO", "Usuário voltou — pesquisa proativa adiada.")
+                return
+            except Exception as exc:
+                telemetry.error("ETL_PROATIVO", f"Falha ao sintetizar lacuna '{termos}'", exc)
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            # Nível 2 (dedup por átomo) acontece dentro de _salvar_atomos.
+            salvos = await self._salvar_atomos(conteudo, "Proativa", "ETL_PROATIVO")
+            await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+            if salvos:
+                feitas += 1
+                telemetry.track("ETL_PROATIVO", f"Lacuna '{termos}': {salvos} átomo(s) novos.")
+        if feitas:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("ETL_PROATIVO", f"Pesquisa proativa: {feitas} lacuna(s) trazida(s) ao banco.")
+
     async def run_idle(self, itens: List[Tuple[str, str]]) -> None:
         """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa,
-        3) DESCARREGA o modelo, liberando a VRAM (o pilar pedido: a GPU volta pra outros
-        trabalhos quando o chat para).
+        3) PESQUISA PROATIVA das lacunas, 4) DESCARREGA o modelo, liberando a VRAM (o
+        pilar pedido: a GPU volta pra outros trabalhos quando o chat para).
 
         A ordem importa e foi pedida assim: o ETL PRECISA do modelo, então o unload é o
         ÚLTIMO passo. E só descarrega se ninguém voltou a interagir no meio-tempo —
@@ -1029,6 +1120,7 @@ class EtlProcessor:
         `ensure_loaded` (no stream) religa: seguro nas duas direções."""
         await self.process_queue(itens)
         await self.summarize_dump()
+        await self.pesquisa_proativa()
 
         if not settings.idle_descarregar_modelo:
             return

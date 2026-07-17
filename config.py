@@ -203,6 +203,16 @@ class Settings(BaseSettings):
     # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
     # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
     idle_descarregar_modelo: bool = True
+    # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
+    # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
+    # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.
+    idle_pesquisa_proativa: bool = True
+    # Quantas lacunas pesquisar por ciclo de idle (cada uma: 1 busca web + 1 síntese).
+    idle_pesquisa_max: int = 3
+    # Dedup do átomo novo contra o banco: distância de cosseno abaixo da qual o átomo é
+    # considerado DUPLICADO e descartado. Conservador (0.08 ≈ quase idêntico) para não
+    # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
+    dedup_dist_max: float = 0.08
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
