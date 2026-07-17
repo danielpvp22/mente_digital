@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -35,7 +36,15 @@ _FRONTMATTER_RE = re.compile(r"^﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", re.DO
 # não seria revisitada só porque o código passou a extrair metadado novo — a base
 # ficaria meio velha/meio nova para sempre. Bumpar isto força UMA re-passada e a
 # migração se resolve sozinha. v2: origem/colhido_em/colhido_ts do frontmatter.
-_META_VERSAO = 2
+# v3: conceitos da Malha Neural (ver MalhaIndex).
+_META_VERSAO = 3
+
+# Wikilink do Obsidian: [[Conceito]] ou [[Conceito|texto exibido]] (fica o alvo).
+_LINK_RE = re.compile(r"\[\[([^\[\]|]+)(?:\|[^\[\]]*)?\]\]")
+# Separador do campo `conceitos` no metadado. O Chroma só guarda ESCALAR (str/num/bool),
+# então a lista vira string delimitada. O '|' não aparece em conceito (o _LINK_RE o
+# trata como separador de alias), então não há ambiguidade ao refatiar.
+_SEP_CONCEITO = "|"
 
 
 def resolve_device(requested: str, cuda_available: bool) -> str:
@@ -84,6 +93,36 @@ def parse_frontmatter(texto: str) -> dict:
     return out
 
 
+def extrair_conceitos(texto: str) -> List[str]:
+    """Conceitos da Malha Neural de um átomo (os [[wikilinks]]). Puro/testável.
+
+    MEDIDO antes de desenhar, sobre os 3.004 átomos reais: 8.403 links, mediana 3 por
+    átomo, mas só 3,3% resolvem para o TÍTULO de um átomo existente. A malha NÃO é um
+    grafo nota->nota: os links são CONCEITOS ([[Python]] 101x, [[YOLO]] 89x, [[VRAM]]
+    81x) e os títulos são auto-contidos com o assunto prefixado ("Clima no Paraguai:
+    Efeito de Forno no Verão") — um nunca casa com o outro, por construção.
+
+    Então não se "segue o link até a nota vizinha" (não há para onde ir em 96,7% dos
+    casos). O que existe é um índice invertido conceito->átomos, e é ele que o
+    MalhaIndex explora.
+
+    Dedup preservando a ordem: um conceito repetido no mesmo átomo não é mais forte,
+    e a ordem é a que o LLM escreveu (a mais importante primeiro, na prática).
+    """
+    vistos: set = set()
+    out: List[str] = []
+    for bruto in _LINK_RE.findall(texto or ""):
+        c = " ".join(bruto.split()).strip()
+        if not c:
+            continue
+        chave = textutils.normaliza(c)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        out.append(c)
+    return out
+
+
 def _data_para_ts(data: str) -> Optional[float]:
     """'YYYY-MM-DD' -> epoch. None se o formato não casar (nunca levanta)."""
     try:
@@ -100,8 +139,8 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
     mesmo patamar de uma nota escrita à mão pelo usuário — quando são síntese de LLM
     sobre conversas antigas (o `e_fiel` do importador é rede, não prova). O rótulo
     `[Local - Confiança: X]` vai no prompt, então o LLM estava sendo informado de que
-    um átomo derivado é fonte primária. Medido na base real: 2.211 de 2.212 notas
-    entravam como 1.0/"Local". O frontmatter sabe a origem real; o caminho não sabe.
+    um átomo derivado é fonte primária. O frontmatter sabe a origem real; o caminho
+    do arquivo não sabe.
 
     Três níveis, do mais para o menos confiável:
     - "Local"   (1.0): sem frontmatter e fora da pasta auto -> escrita pelo usuário.
@@ -129,6 +168,11 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
         ts = _data_para_ts(colhido)
         if ts is not None:
             meta["colhido_ts"] = ts
+    conceitos = extrair_conceitos(conteudo)
+    if conceitos:
+        # Delimitado nas DUAS pontas ('|a|b|') para permitir casar '|x|' exato depois
+        # sem pegar prefixo de outro conceito ('|xyz|').
+        meta["conceitos"] = _SEP_CONCEITO + _SEP_CONCEITO.join(conceitos) + _SEP_CONCEITO
     return meta
 
 
@@ -170,6 +214,112 @@ def split_markdown(conteudo: str, base_metadata: dict, chunk_size: int, chunk_ov
             if pedaco.strip():
                 out.append(Document(page_content=pedaco, metadata=dict(meta)))
     return out
+
+
+@dataclass
+class _DocVizinho:
+    """Átomo trazido pela malha (não veio da busca vetorial, então não tem distância).
+
+    Duck-type do Document do langchain: o resto do pipeline só lê `.page_content` e
+    `.metadata`, e não vale arrastar a dependência até aqui por dois campos.
+    """
+
+    page_content: str
+    metadata: dict
+
+
+class MalhaIndex:
+    """Índice invertido conceito -> átomos, montado da Malha Neural (ver extrair_conceitos).
+
+    POR QUE existe: a base é Zettelkasten atômica — 1 ideia por nota. A busca vetorial
+    devolve os átomos que PARECEM com a pergunta, mas a resposta boa mora na VIZINHANÇA
+    deles, que é o pressuposto do Zettelkasten inteiro. Como a malha liga conceitos (e
+    não notas), a vizinhança se atravessa pelo conceito COMPARTILHADO: os átomos que o
+    LLM marcou com [[TensorRT]] na ingestão são a vizinhança de TensorRT, escrita à mão.
+
+    O peso é IDF, e isso NÃO é enfeite: [[Python]] está em 101 átomos e [[DuckDB]] em 34.
+    Expandir por um hub arrastaria meia base para o contexto. Compartilhar um conceito
+    RARO é evidência de vizinhança; compartilhar [[IA]] não é evidência de nada. (É a
+    mesma falha que o aterramento léxico tem hoje — OR booleano sem IDF — e que aqui,
+    de propósito, não repetimos.)
+
+    Vive em RAM: ~3k átomos custam poucos MB e a expansão precisa ser barata (roda no
+    caminho da resposta). Se o vault crescer ordens de grandeza, isto vira o primeiro
+    lugar a revisitar.
+    """
+
+    def __init__(self) -> None:
+        self._por_conceito: dict = {}       # conceito normalizado -> set de sources
+        self._conceitos_de: dict = {}       # source -> lista de conceitos normalizados
+        self._texto_de: dict = {}           # source -> texto do átomo (concat dos chunks)
+        self._meta_de: dict = {}            # source -> metadado (1º chunk basta)
+
+    @property
+    def n_atomos(self) -> int:
+        return len(self._conceitos_de)
+
+    @property
+    def n_conceitos(self) -> int:
+        return len(self._por_conceito)
+
+    def construir(self, documentos: List[str], metadatas: List[dict]) -> None:
+        """(Re)constrói o índice a partir do dump do Chroma. Idempotente."""
+        self._por_conceito, self._conceitos_de = {}, {}
+        self._texto_de, self._meta_de = {}, {}
+        for texto, md in zip(documentos, metadatas):
+            src = str((md or {}).get("source") or "")
+            if not src:
+                continue
+            # Um átomo pode ter virado 2+ chunks; o texto do vizinho é a nota inteira.
+            self._texto_de[src] = (self._texto_de.get(src, "") + "\n" + (texto or "")).strip()
+            self._meta_de.setdefault(src, dict(md or {}))
+            if src in self._conceitos_de:
+                continue
+            bruto = str((md or {}).get("conceitos") or "")
+            conceitos = [
+                textutils.normaliza(c) for c in bruto.split(_SEP_CONCEITO) if c.strip()
+            ]
+            self._conceitos_de[src] = conceitos
+            for c in conceitos:
+                self._por_conceito.setdefault(c, set()).add(src)
+
+    def idf(self, conceito: str) -> float:
+        """log(N/df). Conceito ausente devolve 0.0 — não pontua, em vez de explodir."""
+        df = len(self._por_conceito.get(textutils.normaliza(conceito), ()))
+        if df <= 0 or self.n_atomos <= 0:
+            return 0.0
+        return math.log(self.n_atomos / df)
+
+    def vizinhos(
+        self, sementes: List[str], limite: int, idf_min: float
+    ) -> List[Tuple[float, "_DocVizinho"]]:
+        """Átomos que compartilham conceitos com as `sementes`, ranqueados por IDF somado.
+
+        `sementes` são os `source` dos átomos que a busca vetorial já escolheu — eles
+        são EXCLUÍDOS do resultado (já estão no contexto; repeti-los gasta orçamento).
+        `idf_min` corta os hubs: um conceito genérico demais não é evidência.
+        """
+        if not sementes or limite <= 0:
+            return []
+        semente_set = set(sementes)
+        scores: dict = {}
+        for src in sementes:
+            for c in self._conceitos_de.get(src, ()):  # já normalizados
+                peso = self.idf(c)
+                if peso < idf_min:
+                    continue
+                for vizinho in self._por_conceito.get(c, ()):
+                    if vizinho in semente_set:
+                        continue
+                    scores[vizinho] = scores.get(vizinho, 0.0) + peso
+        ordenado = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        out: List[Tuple[float, _DocVizinho]] = []
+        for src, score in ordenado[:limite]:
+            texto = self._texto_de.get(src, "")
+            if not texto.strip():
+                continue
+            out.append((score, _DocVizinho(texto, dict(self._meta_de.get(src, {})))))
+        return out
 
 
 @dataclass
@@ -228,6 +378,7 @@ class VectorStore:
         self._embeddings = embeddings
         self._store = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
+        self.malha = MalhaIndex()
 
     @property
     def ready(self) -> bool:
@@ -258,8 +409,35 @@ class VectorStore:
                     )
                 )
             telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
+            await self._reconstruir_malha()
         except Exception as exc:
             telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
+
+    async def _reconstruir_malha(self) -> None:
+        """Recarrega o índice de conceitos do que está no Chroma.
+
+        Chamado no open (o índice vive em RAM, some com o processo) e no fim do sync
+        (nota nova = conceito novo; sem isto a expansão ficaria olhando um retrato
+        velho da base). Nunca derruba a busca: sem malha, a expansão só não acontece.
+        """
+        if self._store is None:
+            return
+        try:
+            dump = await asyncio.to_thread(
+                lambda: self._store.get(include=["documents", "metadatas"])
+            )
+            await asyncio.to_thread(
+                self.malha.construir,
+                dump.get("documents") or [],
+                dump.get("metadatas") or [],
+            )
+            telemetry.track(
+                "MALHA",
+                f"Índice de conceitos: {self.malha.n_conceitos} conceitos "
+                f"em {self.malha.n_atomos} átomos.",
+            )
+        except Exception as exc:
+            telemetry.error("MALHA", "Falha ao montar índice de conceitos", exc)
 
     async def sync(self) -> None:
         """Reindex incremental por mtime (novos + modificados) e por `meta_v`
@@ -357,6 +535,8 @@ class VectorStore:
                 telemetry.track(
                     "DB", f"Indexados/atualizados {len(pendentes)} arquivos ({len(splits)} chunks)."
                 )
+            # Fora do write_lock: _reconstruir_malha só LÊ, e o lock não é reentrante.
+            await self._reconstruir_malha()
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
 
@@ -416,28 +596,65 @@ class VectorStore:
             candidatos.sort(key=lambda x: x[0])
             relevante = bool(candidatos)
 
-            usar: List[Tuple[float, object]] = []
+            # EXPANSÃO PELA MALHA — só DEPOIS de `relevante` estar decidido, e isso é
+            # o ponto: a vizinhança ENRIQUECE uma resposta que já tem âncora, mas nunca
+            # pode transformar pergunta-sem-match em Cache Hit. Deixá-la votar no gate
+            # ressuscitaria o "Cache Hit falso" por outra porta — agora por conceito.
+            vizinhos: List[Tuple[Optional[float], object]] = []
+            if settings.malha_expandir and candidatos:
+                sementes: List[str] = []
+                for _, d in candidatos[: settings.rag_max_chunks]:
+                    src = str(d.metadata.get("source") or "")
+                    if src and src not in sementes:
+                        sementes.append(src)
+                for _score, dv in self.malha.vizinhos(
+                    sementes, settings.malha_max_vizinhos, settings.malha_idf_min
+                ):
+                    if dv.page_content in vistos:
+                        continue
+                    vistos.add(dv.page_content)
+                    vizinhos.append((None, dv))
+
+            # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
+            # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
+            usar: List[Tuple[Optional[float], object]] = []
             orcamento = settings.rag_context_char_budget
-            for s, d in candidatos[: settings.rag_max_chunks]:
+            for s, d in list(candidatos[: settings.rag_max_chunks]) + vizinhos:
                 if usar and orcamento - len(d.page_content) < 0:
                     break                                    # respeita o teto (n_ctx)
                 usar.append((s, d))
                 orcamento -= len(d.page_content)
 
             if settings.rag_debug:
+                n_viz = sum(1 for s, _ in usar if s is None)
                 telemetry.track(
                     "LOCAL_DBG",
-                    f"selecionados={len(usar)}/{len(candidatos)} átomos (aterrados={len(aterrados)})",
+                    f"selecionados={len(usar)}/{len(candidatos)} átomos "
+                    f"(aterrados={len(aterrados)}, vizinhos_malha={n_viz}/{len(vizinhos)})",
                 )
 
+            # O vizinho é ROTULADO como relacionado, não como match. Sem isso ele chega
+            # ao LLM indistinguível de um átomo que responde a pergunta — e um átomo
+            # tangencial apresentado como resposta é exatamente a alucinação que o
+            # pipeline inteiro combate. O rótulo deixa o modelo usá-lo como apoio.
             texto = NENHUM if not usar else "\n".join(
-                f"[Local - Confiança: {d.metadata.get('confidence', 1.0)}] {d.page_content}"
-                for _, d in usar
+                (
+                    f"[Malha - relacionado] {d.page_content}"
+                    if s is None
+                    else f"[Local - Confiança: {d.metadata.get('confidence', 1.0)}] {d.page_content}"
+                )
+                for s, d in usar
             )
             # Fontes (dedup, ordem preservada) dos átomos que ENTRARAM no contexto —
             # a promoção só toca no que foi de fato usado, não em tudo que foi recuperado.
+            # VIZINHO DA MALHA NÃO PROMOVE (s is None): ele entrou por conceito
+            # compartilhado, não por responder à pergunta. Promovê-lo tiraria o
+            # #conhecimento_novo de átomo que só passou perto — o ciclo de maturidade
+            # mede REUSO real, e inflá-lo o esvazia de sentido.
             fontes: List[str] = []
-            for _, d in usar:
+            for s, d in usar:
+                if s is None:
+                    continue
                 src = d.metadata.get("source")
                 if src and src not in fontes:
                     fontes.append(str(src))

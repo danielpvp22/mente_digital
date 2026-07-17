@@ -131,6 +131,28 @@ class Settings(BaseSettings):
     # de 5 palavras — que casa mal com passagens longas.
     rag_hyde: bool = False
     max_tokens_hyde: int = 160          # tamanho da passagem hipotética (curta)
+    # MALHA: expansão por conceito compartilhado (ver rag.MalhaIndex). Depois de a busca
+    # vetorial escolher os átomos, traz a VIZINHANÇA deles — os átomos que o LLM marcou
+    # com os mesmos [[conceitos]] na ingestão. Não custa LLM (parsing + lookup em RAM);
+    # custa PREFILL (mais átomos no contexto = TTFT maior), por isso é um botão.
+    #
+    # DESLIGADA por padrão porque a medição NÃO a defendeu. Nas 74 perguntas reais:
+    # contexto de 5.049 -> 7.476 chars de mediana (+48% de prefill, direto no TTFT) e,
+    # na inspeção, os vizinhos vêm do assunto certo e da pergunta errada (fine-tuning
+    # de YOLO numa pergunta sobre TensorRT). A ablação de formato explica o porquê: a
+    # linha da Malha vale 0.010 de distância (vs 0.029 do assunto no título) — ela quase
+    # não carrega sinal. Ligue com MENTE_MALHA_EXPANDIR=true para experimentar; o
+    # candidato a consertá-la é filtrar o vizinho por similaridade com a PERGUNTA
+    # (rag.rankear_por_similaridade, já existe), exigindo conceito raro E proximidade.
+    malha_expandir: bool = False
+    # Teto de vizinhos. Eles entram DEPOIS dos matches reais e disputam o que sobra do
+    # rag_context_char_budget — na prática o orçamento corta antes deste número.
+    malha_max_vizinhos: int = 8
+    # Corte de hub por IDF. Medido na base real (3.004 átomos, 4.512 conceitos):
+    # [[Python]] em 101 átomos -> idf 3.4; [[DuckDB]] em 34 -> 4.5; conceito em 3 -> 6.9.
+    # Compartilhar um conceito raro é evidência de vizinhança; compartilhar [[IA]] não é.
+    # Subir = expansão mais conservadora (só conceito muito específico conecta).
+    malha_idf_min: float = 4.0
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000
