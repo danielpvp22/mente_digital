@@ -390,6 +390,38 @@ def lacuna_pesquisavel(termos: str) -> bool:
     return bool(nucleo)
 
 
+# Gatilhos de pergunta META-LINGUÍSTICA: quem pergunta "de onde saiu a EXPRESSÃO X"
+# está perguntando SOBRE a frase X, e X (não a moldura) é o alvo da busca.
+_GATILHOS_CITACAO = {
+    "expressao", "expressoes", "frase", "frases", "ditado", "ditados", "giria",
+    "girias", "proverbio", "proverbios", "dito", "ditado popular", "jargao",
+}
+
+
+def frase_citada(pergunta: str) -> str:
+    """Extrai a FRASE que a pergunta cita, quando ela é sobre uma expressão. Puro.
+
+    Bug medido em produção: "da onde saiu a expressão pega um prato faz a linha dá um
+    tiro na farinha?" → o extrator reduziu a 5 palavras e cuspiu 'saiu expressão pega
+    prato', JOGANDO FORA a expressão inteira — que é exatamente o que se busca. A query
+    de 5 palavras serve ao aterramento léxico LOCAL; para a web, a frase citada é o
+    alvo de maior sinal (o Google acha 'pega um prato...' num instante).
+
+    Pega tudo depois do gatilho ('expressão', 'ditado', ...). Exige >=3 palavras de
+    resto para não disparar em 'qual sua expressão favorita?' (moldura sem citação)."""
+    palavras = pergunta.strip().rstrip("?.!").split()
+    norm = [textutils.normaliza(w) for w in palavras]
+    for i, w in enumerate(norm):
+        if w in _GATILHOS_CITACAO:
+            resto = palavras[i + 1:]
+            # pula um conector logo após o gatilho ('o ditado QUE DIZ x', 'a frase: x')
+            while resto and textutils.normaliza(resto[0]) in {"que", "diz", "e", ":"}:
+                resto = resto[1:]
+            if len(resto) >= 3:
+                return " ".join(resto).strip(" :\"'")
+    return ""
+
+
 # ==========================================================================
 # Extrator de query (resolve pronomes cruzados)
 # ==========================================================================
@@ -830,13 +862,19 @@ class Agent:
         self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
         consulta_rank: str | None = None, efemero: bool = False,
     ) -> str:
-        # Filler específico mascara a latência da busca web (diz o que está fazendo).
-        await self._falar_status(send, self._msg_web(termos))
+        # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
+        # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
+        # prato' em vez de 'pega um prato faz a linha dá um tiro na farinha'). Senão, a
+        # query enxuta de sempre.
+        query_web = frase_citada(consulta_rank or texto_usuario) or termos
 
-        # `termos` (query enxuta) faz o DDG; `consulta_rank` (pergunta natural crua)
-        # guia o ranking dos trechos do deep-fetch — o embedding é simétrico, então a
-        # frase inteira casa melhor com os parágrafos das páginas que 5 keywords.
-        dados_web = await self.ctx.web.search(termos, consulta=consulta_rank or termos)
+        # Filler específico mascara a latência da busca web (diz o que está fazendo).
+        await self._falar_status(send, self._msg_web(query_web))
+
+        # `query_web` faz o DDG; `consulta_rank` (pergunta natural crua) guia o ranking
+        # dos trechos do deep-fetch — o embedding é simétrico, então a frase inteira
+        # casa melhor com os parágrafos das páginas que 5 keywords.
+        dados_web = await self.ctx.web.search(query_web, consulta=consulta_rank or termos)
         # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
         # engordava o vault com dezenas de notas por pergunta sobre o tempo.
