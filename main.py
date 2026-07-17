@@ -27,7 +27,7 @@ from audio import SttService, TtsService  # noqa: E402
 from config import settings  # noqa: E402
 from llm import LlamaManager  # noqa: E402
 from rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
-from state import AppContext, SessionMemory  # noqa: E402
+from state import AppContext  # noqa: E402
 from telemetry import db, telemetry  # noqa: E402
 from ws import LiveSession  # noqa: E402
 
@@ -50,7 +50,9 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     await asyncio.to_thread(db.init)
 
-    ctx = AppContext(settings=settings, memory=SessionMemory(settings))
+    # Sem memória de sessão aqui: ela é POR CONEXÃO (LiveSession.memory). O AppContext
+    # é container de SERVIÇOS, que são compartilháveis; estado de conversa não é.
+    ctx = AppContext(settings=settings)
     ctx.llama = LlamaManager()
     ctx.stt = SttService()
     ctx.tts = TtsService()
@@ -113,10 +115,14 @@ async def obter_conversa(cid: str, request: Request):
 async def obter_metricas(request: Request):
     metricas = await asyncio.to_thread(db.metrics)
     ctx = get_ctx(request)
+    # A memória é por conexão, então aqui AGREGAMOS as sessões vivas em vez de ler
+    # um estado global (que não existe mais — ver AppContext).
+    sessoes = list(ctx.sessoes)
     metricas["sessao"] = {
-        "chat_history_ram": len(ctx.memory.chat_history),
-        "conhecimento_sessao": len(ctx.memory.conhecimento_sessao),
-        "fila_etl": len(ctx.memory.fila_etl),
+        "conexoes": len(sessoes),
+        "chat_history_ram": sum(len(s.memory.chat_history) for s in sessoes),
+        "conhecimento_sessao": sum(len(s.memory.conhecimento_sessao) for s in sessoes),
+        "fila_etl": sum(len(s.memory.fila_etl) for s in sessoes),
         "llm_pronto": ctx.llama.ready,
         "stt_pronto": ctx.stt.ready,
         "tts_pronto": ctx.tts.ready,

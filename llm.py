@@ -19,18 +19,43 @@ Aqui a garantia passa a ser ESTRUTURAL, não cooperativa:
 3. O `asyncio.Lock` continua existindo para preservar o contrato "uma stream
    lógica por vez" da arquitetura original, e o `finally` só solta a thread depois
    que o worker realmente terminou.
+
+PREEMPÇÃO (prioridade da inferência interativa)
+-----------------------------------------------
+A serialização acima tem um preço: quem pega o lock o segura até o decode acabar.
+O ETL idle sintetiza com `max_tokens_sintese=1600` — ~13s a 120 tok/s. Uma pergunta
+que chegasse no meio esperava TUDO isso antes do primeiro token, porque o
+`interactive_idle` do AppContext só evita COMEÇAR o próximo documento; ele não
+interrompe o que já está decodificando. O pilar "o ETL cede a GPU para a inferência
+interativa" era, na prática, falso.
+
+A correção: um decode pode se declarar `preemptible=True`. O `stop_event` dele entra
+num registro, e `preempt()` (chamado pelo pipeline interativo) o seta — o loop do
+worker já checa esse evento a cada token, então o decode morre em ~1 token e solta
+o lock. A stream preemptada levanta `InferenciaPreemptada`, o que OBRIGA o chamador
+a decidir o que fazer com o trabalho perdido (o ETL devolve o item pra fila; nada
+se perde em silêncio).
 """
 from __future__ import annotations
 
 import asyncio
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Set
 
 from config import settings
 from telemetry import telemetry
 
 _SENTINEL = object()
+
+
+class InferenciaPreemptada(RuntimeError):
+    """O decode foi abortado para ceder a GPU à inferência interativa.
+
+    Não é erro: é o mecanismo funcionando. Quem pediu uma stream `preemptible`
+    precisa tratar isto — o texto gerado até aqui está incompleto e deve ser
+    descartado, e o trabalho, reagendado.
+    """
 
 
 class _WorkerError:
@@ -48,10 +73,27 @@ class LlamaManager:
         # UMA thread => zero overlap de decode na GPU, mesmo durante cancelamentos.
         self._gpu_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-infer")
         self._ready = False
+        # stop_events dos decodes de BAIXA prioridade em curso (ETL). Só o event loop
+        # mexe aqui, então um set puro basta — sem lock.
+        self._preemptiveis: Set[threading.Event] = set()
 
     @property
     def ready(self) -> bool:
         return self._ready
+
+    def preempt(self) -> int:
+        """Aborta os decodes preemptíveis em curso. Devolve quantos foram atingidos.
+
+        Barato e idempotente: setar um Event já setado é no-op, e sem ETL rodando
+        isto custa uma iteração sobre um set vazio — então o pipeline interativo pode
+        chamar sempre, sem pagar nada no caminho comum.
+        """
+        atingidos = list(self._preemptiveis)
+        for ev in atingidos:
+            ev.set()
+        if atingidos:
+            telemetry.track("LLM", f"Preempção: {len(atingidos)} decode(s) de ETL cedendo a GPU.")
+        return len(atingidos)
 
     def _build_llama_kwargs(self) -> dict:
         """Monta os kwargs do construtor Llama a partir do settings.
@@ -145,8 +187,15 @@ class LlamaManager:
         max_tokens: int = 700,
         system_prompt: str = "Você é um assistente IA lógico e direto.",
         temperature: Optional[float] = None,
+        preemptible: bool = False,
     ) -> AsyncIterator[str]:
-        """Gera tokens em tempo real sem bloquear o event loop."""
+        """Gera tokens em tempo real sem bloquear o event loop.
+
+        `preemptible=True` marca o decode como BAIXA PRIORIDADE: `preempt()` pode
+        abortá-lo a qualquer token para liberar a GPU, e aí a stream levanta
+        `InferenciaPreemptada`. Use só em trabalho de background (ETL) — nunca numa
+        resposta ao usuário, que jamais deve ser interrompida por outra coisa.
+        """
         if self._model is None:
             telemetry.warn("LLM", "Inferência solicitada sem modelo carregado.")
             return
@@ -179,6 +228,11 @@ class LlamaManager:
                 finally:
                     loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
 
+            # Registrado ANTES do submit: assim uma pergunta que chegue no instante
+            # seguinte já encontra este decode e consegue abortá-lo.
+            if preemptible:
+                self._preemptiveis.add(stop_event)
+
             future: Future = self._gpu_executor.submit(_worker)
             try:
                 while True:
@@ -189,7 +243,12 @@ class LlamaManager:
                         telemetry.error("LLM", "Erro no worker de inferência", item.exc)
                         break
                     yield item
+                # Aqui o stop_event só está setado se `preempt()` o setou (o finally
+                # abaixo ainda não rodou) -> o decode foi cortado, não terminou.
+                if preemptible and stop_event.is_set():
+                    raise InferenciaPreemptada("decode de background cedeu a GPU")
             finally:
+                self._preemptiveis.discard(stop_event)
                 # Cancel path (barge-in): manda o decode parar e só solta o lock
                 # depois que a thread da GPU está livre — sem overlap de VRAM.
                 stop_event.set()
