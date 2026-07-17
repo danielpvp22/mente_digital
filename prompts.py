@@ -91,7 +91,8 @@ def prompt_resposta_cache(contexto_combinado: str, texto_usuario: str) -> str:
 SYS_FUSAO = """Você é um Engenheiro de Dados Sênior.
 REGRA 1: Baseie-se APENAS nos átomos fornecidos. Se a resposta não estiver neles, responda EXATAMENTE 'Não tenho informações suficientes'. NUNCA invente.
 REGRA 2: A base é Zettelkasten — vários átomos de 1 ideia. INTEGRE os relevantes numa resposta coerente; não liste, não repita, ignore em silêncio os irrelevantes.
-REGRA 3: UM parágrafo, direto, sem introdução polida."""
+REGRA 3: Se um trecho está marcado como 'WEB — informação GENÉRICA', NÃO o apresente como dado específico do usuário. Deixe claro que é genérico ('de forma geral, na web...') e não afirme que é o projeto/lista/configuração DELE.
+REGRA 4: UM parágrafo, direto, sem introdução polida."""
 
 
 def prompt_resposta_atomos(atomos: str, texto_usuario: str) -> str:

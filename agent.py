@@ -316,7 +316,11 @@ def normalizar_atomo(
     corpo_sem_malha = "\n".join(ln for ln in corpo if not ln.startswith(_MALHA)).strip()
     nada = textutils.normaliza(corpo_sem_malha).strip(".!?") == "nada"
     vazio_com_titulo_real = not corpo_sem_malha and titulo_explicito
-    if nada or vazio_com_titulo_real:
+    # IDIOMA ERRADO: a síntese às vezes sai em chinês (medido: 30 na base). Um átomo
+    # cujo corpo é substancialmente CJK nunca serve a uma pergunta em PT e só dilui o
+    # contexto — rejeita na fonte (importador E ETL vivo E pesquisa proativa passam aqui).
+    lingua_errada = textutils.fracao_cjk(corpo_sem_malha) > 0.15
+    if nada or vazio_com_titulo_real or lingua_errada:
         return ""
 
     if not titulo:
@@ -346,6 +350,24 @@ def normalizar_atomo(
     return "\n".join(out) + "\n"
 
 
+# Marcadores de que a pergunta REFERENCIA o contexto anterior (pronomes/demonstrativos
+# que apontam pra trás). Só quando um deles aparece vale passar o histórico ao extrator
+# — senão o LLM MISTURA o assunto velho no novo. Medido em produção: 'como funciona o
+# tensor RT?' (sem pronome, troca limpa de assunto) virou query 'tensor rt esp32',
+# puxando 'esp32' do turno anterior. Referência ausente -> pergunta é auto-contida.
+_REFERENCIAS_CONTEXTO = {
+    "ele", "ela", "eles", "elas", "dele", "dela", "deles", "delas", "nele", "nela",
+    "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta", "estes", "estas",
+    "nisso", "disso", "nesse", "neste", "nessa", "nesta", "aquele", "aquela", "aquilo",
+    "aqueles", "aquelas", "mesmo", "mesma", "tal", "ai", "assim", "acima", "citado",
+}
+
+
+def referencia_contexto(pergunta: str) -> bool:
+    """A pergunta aponta pra um assunto anterior (tem pronome/demonstrativo)? Puro."""
+    return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
+
+
 # ==========================================================================
 # Extrator de query (resolve pronomes cruzados)
 # ==========================================================================
@@ -361,8 +383,12 @@ class QueryOptimizer:
                 return textutils.limpar_query(historico[-1][0]) or historico[-1][0]
             return limpa
 
+        # SÓ passa o histórico se a pergunta REFERENCIA o assunto anterior. Uma pergunta
+        # auto-contida ('como funciona o tensor RT?') não pode ver o turno de 'esp32' —
+        # o extrator misturava os dois numa query só ('tensor rt esp32'). Sem referência,
+        # contexto="NENHUM": o assunto novo entra limpo.
         contexto = "NENHUM"
-        if historico:
+        if historico and referencia_contexto(pergunta):
             turnos = []
             for q, a in list(historico)[-2:]:
                 resumo = a[:150] + "..." if len(a) > 150 else a
@@ -431,7 +457,14 @@ class Agent:
         if local.texto != NENHUM:
             partes.append(f"[Banco Local]\n{local.texto}")
         if ram:
-            partes.append("[Memória Fresca da Sessão]\n" + "\n\n".join(ram))
+            # A RAM da sessão é SEMPRE prefetch da WEB (só o _prefetch chama lembrar).
+            # Rotulá-la como GENÉRICA impede que a fusão apresente um kit qualquer da
+            # web como se fosse a lista do PROJETO do usuário (medido: pergunta sobre
+            # 'a lista de compra do meu projeto' respondida com um kit ESP32 aleatório).
+            partes.append(
+                "[Contexto amplo da WEB — informação GENÉRICA, pode não ser específica "
+                "do caso do usuário]\n" + "\n\n".join(ram)
+            )
         return "\n".join(partes)
 
     async def pipeline_resposta(

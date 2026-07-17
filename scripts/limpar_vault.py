@@ -59,7 +59,7 @@ def corpo_puro(txt: str) -> str:
 def classificar() -> dict:
     """Varre a base auto-gerada e rotula cada arquivo. Puro de efeitos (só lê)."""
     arqs = glob.glob(os.path.join(AUTO, "**/*.md"), recursive=True)
-    nada, vazio, corpos = [], [], {}
+    nada, vazio, chines, corpos = [], [], [], {}
     for p in arqs:
         try:
             c = corpo_puro(open(p, encoding="utf-8").read())
@@ -70,6 +70,9 @@ def classificar() -> dict:
             nada.append(p)
         elif cn == "":
             vazio.append(p)
+        elif textutils.fracao_cjk(c) > 0.15:
+            # Idioma errado: síntese em chinês. Nunca serve a pergunta em PT.
+            chines.append(p)
         else:
             corpos.setdefault(hashlib.md5(cn.encode()).hexdigest(), []).append(p)
     # Clone exato: ordena por nome e mantém o 1º (determinístico, sem Date/random).
@@ -77,7 +80,8 @@ def classificar() -> dict:
     for ps in corpos.values():
         if len(ps) > 1:
             dup.extend(sorted(ps)[1:])
-    return {"NADA": nada, "corpo vazio": vazio, "clone exato": dup, "total_base": len(arqs)}
+    return {"NADA": nada, "corpo vazio": vazio, "idioma errado (CJK)": chines,
+            "clone exato": dup, "total_base": len(arqs)}
 
 
 def main() -> None:
@@ -86,11 +90,12 @@ def main() -> None:
     args = ap.parse_args()
 
     r = classificar()
-    remover = r["NADA"] + r["corpo vazio"] + r["clone exato"]
+    categorias = ("NADA", "corpo vazio", "idioma errado (CJK)", "clone exato")
+    remover = [p for k in categorias for p in r[k]]
     print(f"base auto-gerada: {r['total_base']} átomos")
-    for k in ("NADA", "corpo vazio", "clone exato"):
-        print(f"  {k:12}: {len(r[k])}")
-    print(f"  {'TOTAL':12}: {len(remover)}")
+    for k in categorias:
+        print(f"  {k:20}: {len(r[k])}")
+    print(f"  {'TOTAL':20}: {len(remover)}")
 
     if not args.executar:
         print("\n[dry-run] nada movido. Rode com --executar para agir.")
