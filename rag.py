@@ -17,6 +17,7 @@ import glob
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import textutils
@@ -29,6 +30,12 @@ NENHUM = "NENHUM DADO"
 # Bloco de frontmatter YAML no topo de uma nota Obsidian: ---\n ... \n---\n
 # (﻿ opcional cobre o BOM que às vezes abre arquivos salvos no Windows)
 _FRONTMATTER_RE = re.compile(r"^﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", re.DOTALL)
+
+# Versão do ESQUEMA de metadados. O reindex é por mtime, então uma nota já indexada
+# não seria revisitada só porque o código passou a extrair metadado novo — a base
+# ficaria meio velha/meio nova para sempre. Bumpar isto força UMA re-passada e a
+# migração se resolve sozinha. v2: origem/colhido_em/colhido_ts do frontmatter.
+_META_VERSAO = 2
 
 
 def resolve_device(requested: str, cuda_available: bool) -> str:
@@ -49,6 +56,80 @@ def resolve_device(requested: str, cuda_available: bool) -> str:
 def strip_frontmatter(texto: str) -> str:
     """Remove o frontmatter YAML do topo da nota (não é conteúdo pesquisável)."""
     return _FRONTMATTER_RE.sub("", texto, count=1)
+
+
+def parse_frontmatter(texto: str) -> dict:
+    """Lê o frontmatter como pares chave->valor (sem dependência de YAML).
+
+    Contraparte de `strip_frontmatter`: o bloco sai do texto indexado (não polui o
+    embedding), mas o que ele DIZ vira metadado no Chroma. Sem isto o `colhido_em`
+    que o `agent.normalizar_atomo` grava morre no disco — a "poda por idade a custo
+    zero de busca" que ele promete não tinha quem a lesse.
+
+    Parser deliberadamente burro (só `chave: valor` de 1ª linha): é o formato que
+    `normalizar_atomo` emite. YAML real (listas, aninhamento) não aparece aqui, e
+    fingir suportá-lo convidaria a gravá-lo.
+    """
+    m = _FRONTMATTER_RE.match(texto)
+    if not m:
+        return {}
+    out: dict = {}
+    for ln in m.group(0).splitlines():
+        ln = ln.strip().lstrip("﻿")
+        if not ln or ln.startswith("---"):
+            continue
+        chave, sep, valor = ln.partition(":")
+        if sep and chave.strip():
+            out[chave.strip()] = valor.strip()
+    return out
+
+
+def _data_para_ts(data: str) -> Optional[float]:
+    """'YYYY-MM-DD' -> epoch. None se o formato não casar (nunca levanta)."""
+    try:
+        return datetime.strptime(data.strip(), "%Y-%m-%d").timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
+    """Metadados de indexação de uma nota. Puro/testável (sem IO, sem Chroma).
+
+    A CONFIANÇA vinha só da PASTA (`is_auto = subpasta_conhecimento_novo in path`).
+    Isso classificava os 1.7k+ átomos de `Importado_Gemini` como 1.0/"Local" — o
+    mesmo patamar de uma nota escrita à mão pelo usuário — quando são síntese de LLM
+    sobre conversas antigas (o `e_fiel` do importador é rede, não prova). O rótulo
+    `[Local - Confiança: X]` vai no prompt, então o LLM estava sendo informado de que
+    um átomo derivado é fonte primária. Medido na base real: 2.211 de 2.212 notas
+    entravam como 1.0/"Local". O frontmatter sabe a origem real; o caminho não sabe.
+
+    Três níveis, do mais para o menos confiável:
+    - "Local"   (1.0): sem frontmatter e fora da pasta auto -> escrita pelo usuário.
+    - "Conversa" (0.8): tem `origem:` -> destilado de conversa/histórico próprio.
+    - "Web"     (0.6): pasta de conhecimento auto-colhido -> origem externa.
+
+    `colhido_ts` existe porque o Chroma filtra range em NÚMERO, não em string de data:
+    é ele que torna a poda/janela por idade uma cláusula `where`, não um scan.
+    """
+    fm = parse_frontmatter(conteudo)
+    meta: dict = {"source": path, "mtime": mtime, "meta_v": _META_VERSAO}
+    origem = fm.get("origem", "")
+    if settings.subpasta_conhecimento_novo in path:
+        meta["origin"], meta["confidence"] = "Web", 0.6
+    elif origem:
+        meta["origin"], meta["confidence"] = "Conversa", 0.8
+    else:
+        meta["origin"], meta["confidence"] = "Local", 1.0
+    # Chaves ausentes são OMITIDAS: o Chroma rejeita valor None no metadado.
+    if origem:
+        meta["origem"] = origem
+    colhido = fm.get("colhido_em", "")
+    if colhido:
+        meta["colhido_em"] = colhido
+        ts = _data_para_ts(colhido)
+        if ts is not None:
+            meta["colhido_ts"] = ts
+    return meta
 
 
 def split_markdown(conteudo: str, base_metadata: dict, chunk_size: int, chunk_overlap: int) -> list:
@@ -181,7 +262,8 @@ class VectorStore:
             telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
 
     async def sync(self) -> None:
-        """Reindex incremental por mtime (novos + modificados)."""
+        """Reindex incremental por mtime (novos + modificados) e por `meta_v`
+        (notas indexadas com esquema de metadado antigo — ver `_META_VERSAO`)."""
         if self._store is None:
             await self.open()
         if self._store is None:
@@ -198,6 +280,7 @@ class VectorStore:
                 # novo), pois o delete-by-source do reindex só casa strings idênticas.
                 base = os.path.normcase(os.path.abspath(settings.caminho_obsidian))
                 indexado: dict[str, float] = {}
+                versao: dict[str, int] = {}
                 orfaos: set[str] = set()
                 for md in existing.get("metadatas", []) or []:
                     src = md.get("source")
@@ -209,6 +292,10 @@ class VectorStore:
                         orfaos.add(str(src))
                         continue
                     indexado[src] = float(md.get("mtime", 0) or 0)
+                    # MIN entre os chunks da nota: se qualquer pedaço ficou para trás
+                    # (lote interrompido no meio), a nota inteira é reprocessada.
+                    v = int(md.get("meta_v", 1) or 1)
+                    versao[src] = min(versao.get(src, v), v)
 
                 for src in orfaos:
                     await asyncio.to_thread(
@@ -228,7 +315,11 @@ class VectorStore:
                         mtime = os.path.getmtime(path)
                     except OSError:
                         continue
-                    if indexado.get(path) is None or mtime > indexado.get(path, 0):
+                    if (
+                        indexado.get(path) is None
+                        or mtime > indexado.get(path, 0)
+                        or versao.get(path, 1) < _META_VERSAO
+                    ):
                         pendentes.append((path, mtime))
 
                 if not pendentes:
@@ -251,13 +342,7 @@ class VectorStore:
                     except OSError as exc:
                         telemetry.warn("DB", f"Não consegui ler {path}: {exc}")
                         continue
-                    is_auto = settings.subpasta_conhecimento_novo in path
-                    base_meta = {
-                        "source": path,
-                        "mtime": mtime,
-                        "confidence": 0.6 if is_auto else 1.0,
-                        "origin": "Web" if is_auto else "Local",
-                    }
+                    base_meta = metadados_da_nota(path, conteudo, mtime)
                     # Chunking por cabeçalho Markdown (respeita a estrutura Obsidian)
                     splits.extend(
                         split_markdown(
