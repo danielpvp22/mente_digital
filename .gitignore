@@ -22,3 +22,13 @@ banco_vetorial_cerebro/
 banco_vetorial_cerebro.bak_l2/
 telemetria_etl.db
 chat_dump_bruto.md
+
+# Saídas do A/B de modelos: carregam perguntas reais e trechos do VAULT (mesma regra
+# do Cerebro_Digital acima). São regeneráveis com `ab_modelos.py --preparar`, então
+# versiona-se a ferramenta, não o dado do usuário.
+eval/casos.json
+eval/resultado_*.json
+
+# Estado/log do import de histórico (retomável, específico da máquina)
+scripts/importar_gemini.estado.json
+scripts/import.log

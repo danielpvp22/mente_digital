@@ -14,17 +14,40 @@ from typing import List, Optional, Tuple
 # LLM falso — emite uma sequência de tokens pré-definida
 # ==========================================================================
 class FakeLlama:
-    """Substitui LlamaManager: `stream` devolve os tokens dados, na ordem."""
+    """Substitui LlamaManager: `stream` devolve os tokens dados, na ordem.
+
+    Também imita o contrato de PREEMPÇÃO do LlamaManager real: `preempt()` marca os
+    streams `preemptible=True` em curso, que então levantam InferenciaPreemptada —
+    como o decode de verdade faria ao ceder a GPU para uma pergunta do usuário.
+    """
 
     def __init__(self, tokens: List[str]) -> None:
         self.tokens = tokens
+        self.preempcoes = 0
+        self._preemptar_proximo = False
+
+    def preempt(self) -> int:
+        self.preempcoes += 1
+        return 0
+
+    def armar_preempcao(self) -> None:
+        """A PRÓXIMA stream preemptible será cortada (simula o usuário perguntando
+        no meio de uma síntese de ETL)."""
+        self._preemptar_proximo = True
 
     async def stream(self, prompt: str, **kwargs):
+        from llm import InferenciaPreemptada
+
+        if kwargs.get("preemptible") and self._preemptar_proximo:
+            self._preemptar_proximo = False
+            if self.tokens:
+                yield self.tokens[0]          # alcançou a decodificar um pedaço...
+            raise InferenciaPreemptada("preempção simulada")   # ...e foi cortada
         for tok in self.tokens:
             yield tok
 
     async def collect(self, prompt: str, **kwargs) -> str:
-        return "".join(self.tokens)
+        return "".join([tok async for tok in self.stream(prompt, **kwargs)])
 
 
 # ==========================================================================

@@ -175,6 +175,80 @@ SYS_SINTESE_CONVERSA = (
 )
 
 
+# --- Import de histórico externo (JSONs do Gemini) ---------------------------
+# ESTÁGIO 1 — descobrir o ASSUNTO REAL do trecho.
+# Por que não usar o nome do arquivo: uma conversa MUDA de tema no meio. Medido no
+# acervo real, metade de "Otimizando-Munição-no-Tarkov-Arena.json" é sobre a economia
+# de um jogo NFT (Bomb Crypto). Injetar "Tarkov" como assunto ali fazia o modelo
+# escrever sobre um assunto que não era o do texto — e ele então abandonava a regra de
+# auto-contenção, produzindo "## Pressão de Oferta / No fundo, a pressão de oferta é
+# alta" (de quê?). O assunto tem que sair do TRECHO, não do nome do arquivo.
+SYS_ASSUNTO = (
+    "Você identifica o assunto concreto de um trecho de conversa. Responda APENAS com "
+    "o assunto em até 8 palavras, nomeando as entidades próprias (produtos, jogos, "
+    "tecnologias, lugares). Sem introdução, sem aspas, sem explicação."
+)
+
+
+def prompt_assunto(trecho: str) -> str:
+    return (
+        "Qual é o ASSUNTO concreto do trecho abaixo? Nomeie as entidades próprias "
+        "(ex.: 'Economia do jogo NFT Bomb Crypto', 'Munição do Escape from Tarkov', "
+        "'Preço de GPUs na AWS'). Máximo 8 palavras, só o assunto:\n\n"
+        f"{trecho[:3000]}"
+    )
+
+
+# Diferente do prompt_sintese_conversa: aqui o TEMA da conversa é conhecido (vem do
+# nome do arquivo) e é INJETADO, porque o defeito do import antigo foi exatamente a
+# perda de contexto. Ele cortou as conversas em fragmentos 'Pt<N>' com títulos
+# derivados mecanicamente, e produziu coisas como:
+#   "# Economia necessária / Precisamos economizar pelo menos 166,2."  (166,2 de quê?)
+#   "# Gemini"  numa nota cujo corpo fala de preço de instância g5.xlarge na AWS.
+# Como split_markdown indexa o título junto com o corpo (strip_headers=False), esses
+# títulos genéricos ENVENENAM a recuperação: medido, a nota do Tarkov acima entrou no
+# contexto de uma pergunta sobre a economia da máquina de lavar louça, casada só pela
+# palavra "economia". Daí a REGRA CRÍTICA de auto-contenção abaixo.
+SYS_SINTESE_IMPORT = (
+    "Você destila uma conversa em NOTAS ATÔMICAS Zettelkasten: cada nota é UMA ideia "
+    "auto-contida, que faz sentido sozinha. Português direto, sem texto fora do formato."
+)
+
+
+def prompt_sintese_import(tema: str, trecho: str) -> str:
+    return (
+        f"A conversa abaixo é sobre: **{tema}**.\n\n"
+        "Extraia dela as ideias de conhecimento DURÁVEL como NOTAS ATÔMICAS.\n\n"
+        "REGRA CRÍTICA — AUTO-CONTENÇÃO: cada nota será lida ISOLADA, meses depois, sem "
+        "esta conversa ao lado. O título E o corpo precisam dizer de que assunto se trata, "
+        f"nomeando '{tema}' ou a entidade concreta envolvida. Títulos genéricos como "
+        "'Economia necessária', 'Gemini' ou 'Configuração' são INÚTEIS e proibidos: "
+        "escreva 'Economia de munição necessária no Tarkov'. Nunca use pronome sem "
+        "antecedente ('ele', 'isso', 'esse valor', 'o script') — repita o nome.\n\n"
+        "REGRA — RECUPERAÇÃO: escreva cada nota como a RESPOSTA a uma pergunta que "
+        "alguém faria meses depois, usando as palavras que essa pessoa usaria ao "
+        "perguntar. Números e nomes próprios devem vir acompanhados do que medem.\n\n"
+        "REGRA — TÍTULOS DISTINTOS: cada nota trata de UMA ideia, então cada título "
+        "tem que ser DIFERENTE dos outros e nomear a ideia ESPECÍFICA daquela nota. "
+        f"NÃO repita '{tema}' como título de várias notas: ele é o contexto, não a "
+        "ideia. Se duas notas teriam o mesmo título, ou são a mesma nota (escreva UMA) "
+        "ou os títulos estão genéricos demais (diferencie-os).\n\n"
+        "REGRA — UMA IDEIA POR NOTA: não junte dois fatos numa nota nem repita o mesmo "
+        "fato em notas diferentes. Quantas notas? Quantas ideias houver — nem mais, nem "
+        "menos.\n\n"
+        "IGNORE: saudações, small talk, correções de rumo, pedidos de desculpa do "
+        "assistente, e QUALQUER dado perecível (cotação, clima, hora, preço de hoje).\n\n"
+        "Formato EXATO, uma ideia por nota, sem repetir:\n\n"
+        "## <título auto-contido, com o assunto dentro>\n"
+        "<a ideia em 1-3 frases afirmativas e completas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        f"{TAG_ATOMO}\n\n"
+        "Separe as notas por uma linha em branco. Se não houver NADA durável a reter "
+        "neste trecho, responda apenas 'NADA'. Sem introdução e sem conclusão.\n\n"
+        f"CONVERSA:\n{trecho}"
+    )
+
+
 def prompt_sintese_conversa(conteudo: str) -> str:
     return (
         "Extraia da conversa abaixo (entre Usuário e IA) as ideias de conhecimento "

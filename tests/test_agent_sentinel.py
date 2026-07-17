@@ -16,7 +16,7 @@ from conftest import FakeLlama, FakeTts, make_send, textos_de_tokens
 
 
 def _agent_com_tokens(tokens):
-    ctx = AppContext(settings=settings, memory=SessionMemory(settings))
+    ctx = AppContext(settings=settings)
     ctx.llama = FakeLlama(tokens)
     ctx.tts = FakeTts()
     return Agent(ctx)

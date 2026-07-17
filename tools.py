@@ -150,6 +150,42 @@ def talvez_tempo_real(texto: str) -> bool:
     return any(g in t for g in _GATILHOS_TEMPO)
 
 
+# Gate de INGESTÃO — deliberadamente MAIS LARGO que o de roteamento acima.
+#
+# Por que dois gates e não um: os custos são ASSIMÉTRICOS e opostos.
+#   - talvez_tempo_real decide PULAR O LOCAL. Falso positivo = resposta pior (a
+#     pergunta ia ser respondida pelo vault e foi pra web). Caro -> conservador.
+#   - e_efemero decide NÃO ETERNIZAR. Falso positivo = deixamos de aprender um fato.
+#     Barato -> pode ser agressivo.
+# Reusar o gate de roteamento aqui vazaria os casos reais: medido no vault, "como
+# será o clima em lisboa para amanhã?" tem talvez_tempo_real=False (a lista tem
+# "clima hoje", não "clima") e foi justamente essa pergunta que gerou os átomos
+# Conversa_clima_em_lisboa_*. 48 dos 177 átomos auto-colhidos (27%) são previsão do
+# tempo e cotação — fatos com validade de horas, eternizados num Zettelkasten e
+# recuperados para sempre pelo rag_top_k=40.
+_GATILHOS_EFEMERO = _GATILHOS_TEMPO + (
+    "clima", "previsao do tempo", "temperatura em", "vai chover", "chove",
+    "quanto esta o", "quanto custa", "preco do", "preco da", "preco atual",
+    "bolsa de valores", "acoes da", "noticia", "manchete",
+    "dolar", "euro", "bitcoin",
+    # Leitura de relógio/calendário é a definição de efêmero. Vem pelo caminho de
+    # FERRAMENTA (hora_atual), cujo turno também ia parar no dump e virava um átomo
+    # "## Hora atual — são 14:32" no Zettelkasten.
+    "que horas", "que dia e hoje", "data de hoje",
+)
+
+
+def e_efemero(texto: str) -> bool:
+    """True se a resposta tem validade de horas → NÃO vira átomo permanente.
+
+    Só governa a INGESTÃO (fila do ETL e pre-fetch). A resposta é dada normalmente e
+    a memória de sessão (RAM) continua guardando o dado — ela morre com a sessão e é
+    o que faz o follow-up ("e amanhã?") funcionar.
+    """
+    t = textutils.normaliza(texto)
+    return any(g in t for g in _GATILHOS_EFEMERO)
+
+
 # ==========================================================================
 # Calculadora segura (sem eval)
 # ==========================================================================

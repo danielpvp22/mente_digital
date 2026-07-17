@@ -8,9 +8,10 @@ injetado nos serviços — mais fácil de testar e sem coleções que crescem se
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Coroutine, Deque, Optional, Set, Tuple
+from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
 
 from config import Settings
 
@@ -91,10 +92,21 @@ class AppContext:
     """Amarra configuração, serviços e memória. Guardado em app.state.ctx."""
 
     settings: Settings
-    memory: SessionMemory
+    # NÃO existe `memory` aqui, e isso é deliberado: a memória de sessão é POR
+    # CONEXÃO (LiveSession.memory) e viaja como parâmetro até quem precisa dela.
+    # Antes era um SessionMemory único no AppContext, compartilhado por TODA conexão:
+    # o cliente manda `set_conversa` no onopen e reconecta sozinho com backoff, então
+    # bastava o celular estar aberto (ou o WS piscar) para o último a conectar
+    # sobrescrever `conversa_id` — e os turnos seguintes eram gravados no SQLite
+    # dentro da conversa ERRADA (corrupção persistente, não só de RAM). O
+    # `chat_history` global ainda vazava o contexto de uma conversa no prompt da outra.
+    # Sessões vivas, para o /api/metrics agregar (não é dono do estado, só observa).
+    sessoes: Set["object"] = field(default_factory=set, repr=False)
     # Sinaliza que NÃO há inferência interativa rodando -> ETL idle pode usar a GPU.
-    # Começa "setado" (livre). O pipeline limpa ao entrar e seta ao sair.
+    # Começa "setado" (livre). Manipulado SÓ pelo context manager `interativo()`.
     interactive_idle: asyncio.Event = field(default_factory=asyncio.Event)
+    # Quantos pipelines interativos estão em voo. Ver `interativo()`.
+    _interativos: int = field(default=0, repr=False)
     # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
     # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
     _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
@@ -110,6 +122,30 @@ class AppContext:
 
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão
+
+    @contextlib.asynccontextmanager
+    async def interativo(self) -> AsyncIterator[None]:
+        """Marca "há inferência interativa em voo" — com CONTADOR, não booleano.
+
+        O par clear()/set() solto tinha um furo que aparecia no fluxo mais comum do
+        modo voz, o barge-in: `_cancel_pipeline` cancela a task A e cria a B na linha
+        seguinte, sem esperar A morrer. Mas A demora de propósito — o `finally` do
+        `LlamaManager.stream` só retorna quando a thread da GPU parou de fato. Quando
+        A finalmente desenrolava, o `set()` dela DESFAZIA o `clear()` de B: o ETL era
+        avisado de "GPU livre" com B decodificando, e entrava na frente da resposta
+        do usuário. Com o contador, só o ÚLTIMO a sair libera.
+
+        Mutação de int a partir do event loop é atômica -> não precisa de lock. O
+        `finally` roda também no CancelledError (barge-in), então o contador não vaza.
+        """
+        self._interativos += 1
+        self.interactive_idle.clear()
+        try:
+            yield
+        finally:
+            self._interativos = max(0, self._interativos - 1)
+            if self._interativos == 0:
+                self.interactive_idle.set()
 
     def track_task(self, coro: Coroutine) -> "asyncio.Task":
         """Cria uma task de background SEGURANDO uma referência forte a ela.

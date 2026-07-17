@@ -11,12 +11,13 @@ Ciclo de vida do conhecimento auto-colhido:
 Tudo com fakes (sem GPU/rede/Chroma).
 """
 import os
+from datetime import datetime
 
 import prompts
 import textutils
-from agent import Agent, EtlProcessor, dividir_atomos
+from agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo
 from config import Settings, settings
-from rag import NENHUM, VectorStore
+from rag import NENHUM, VectorStore, strip_frontmatter
 from state import AppContext, SessionMemory
 
 from conftest import FakeDoc, FakeLlama, FakeStore, FakeTts
@@ -41,6 +42,98 @@ def test_dividir_atomos_ignora_preambulo():
 
 def test_dividir_atomos_sem_cabecalho_vazio():
     assert dividir_atomos("texto solto sem heading nenhum") == []
+
+
+def test_dividir_atomos_sem_hash_mas_com_assinatura_de_atomo():
+    # Modo de falha REAL do Qwen2.5-7B-Instruct (medido no A/B): título + corpo +
+    # tags, sem o '## '. Antes virava [] -> _salvar_atomos colava tudo num arquivo.
+    texto = (
+        "Previsão do Tempo\nLisboa amanhã: 28°C.\n#zettelkasten_atomico #conhecimento_novo\n\n"
+        "Uso de TensorRT\nOtimiza inferência YOLO.\n#zettelkasten_atomico #conhecimento_novo\n"
+    )
+    blocos = dividir_atomos(texto)
+    assert len(blocos) == 2
+    assert "Previsão do Tempo" in blocos[0] and "TensorRT" in blocos[1]
+
+
+def test_dividir_atomos_prosa_solta_nao_vira_atomo():
+    # O fallback é conservador: sem tags nem Malha Neural, não há átomo — dois
+    # parágrafos de prosa continuam devolvendo [] (o fallback de _salvar_atomos assume).
+    assert dividir_atomos("um parágrafo qualquer\n\noutro parágrafo qualquer") == []
+
+
+# --- normalizar_atomo (o LLM dá a ideia, o Python dá a estrutura) -------------
+_AGORA = datetime(2026, 7, 17, 10, 30)
+
+
+def test_normalizar_impoe_tags_quando_o_modelo_esquece():
+    # Modo de falha do Qwen2.5-Coder: emite '##' e some com as tags -> sem TAG_NOVO,
+    # _consolidar_fontes nunca promove (o bug dos 169/177 no vault).
+    out = normalizar_atomo("## TensorRT\nAcelera o YOLO.", "Sintese", _AGORA)
+    assert prompts.TAG_NOVO in out and prompts.TAG_ATOMO in out
+    assert "## TensorRT" in out
+
+
+def test_normalizar_impoe_hash_quando_o_modelo_esquece():
+    # Modo de falha do Qwen2.5-Instruct: tags certas, sem '## '.
+    bruto = "Previsão do Tempo\nLisboa amanhã: 28°C.\n#zettelkasten_atomico #conhecimento_novo"
+    out = normalizar_atomo(bruto, "Conversa", _AGORA)
+    assert "## Previsão do Tempo" in out
+    assert dividir_atomos(out)          # agora é fatiável
+
+
+def test_normalizar_preserva_tags_inventadas_e_a_malha():
+    out = normalizar_atomo(
+        "## Clima\nSol.\n**Malha Neural:** [[Lisboa]]\n#tempo #meteorologia", "Conversa", _AGORA
+    )
+    assert "#tempo" in out and "#meteorologia" in out     # úteis no Obsidian, preservadas
+    assert "**Malha Neural:** [[Lisboa]]" in out
+    assert prompts.TAG_NOVO in out                        # e as canônicas garantidas
+
+
+def test_normalizar_nao_duplica_tag_pendurada_no_fim_da_linha():
+    # Visto no import real do Gemini: o modelo escreve a tag na MESMA linha da Malha
+    # Neural. Sem colher dali, a canônica era acrescentada de novo — 12 de 19 átomos
+    # saíam com #zettelkasten_atomico duas vezes.
+    bruto = "## Pressão de Oferta\nA oferta é alta.\n**Malha Neural:** [[Oferta]] #zettelkasten_atomico"
+    out = normalizar_atomo(bruto, "Gemini", _AGORA)
+    assert out.count(prompts.TAG_ATOMO) == 1
+    assert "**Malha Neural:** [[Oferta]]" in out       # a Malha sobrevive, sem a tag colada
+
+
+def test_normalizar_nao_confunde_cabecalho_com_tag():
+    # A regra de tag-no-fim exige espaço antes do '#': '## Título' nunca pode ser comido.
+    out = normalizar_atomo("## Título com # no meio\ncorpo", "Sintese", _AGORA)
+    assert "## Título com # no meio" in out
+
+
+def test_normalizar_e_idempotente():
+    once = normalizar_atomo("## A\ncorpo", "Sintese", _AGORA)
+    assert normalizar_atomo(once, "Sintese", _AGORA) == once   # re-normalizar não duplica nada
+
+
+def test_normalizar_nivel_de_cabecalho_vira_h2():
+    assert "## Titulo" in normalizar_atomo("# Titulo\ncorpo", "Sintese", _AGORA)
+    assert "### " not in normalizar_atomo("### Titulo\ncorpo", "Sintese", _AGORA)
+
+
+def test_normalizar_texto_quebrado_ainda_deriva_titulo():
+    # Sem título algum: melhor um derivado que um átomo sem cabeçalho.
+    out = normalizar_atomo("a lavadora moderna consome de 8 a 15 litros por ciclo.", "Sintese", _AGORA)
+    assert out.count("## ") == 1
+    assert dividir_atomos(out)
+
+
+def test_normalizar_proveniencia_nao_polui_o_indice():
+    # A proveniência vai em frontmatter DE PROPÓSITO: strip_frontmatter a remove antes
+    # do chunking, então 'colhido_em'/'origem' nunca entram no embedding nem no
+    # aterramento léxico (o vault já sofre com boilerplate em 97,6% das notas).
+    out = normalizar_atomo("## A\ncorpo", "Sintese", _AGORA)
+    assert out.startswith("---\n")
+    assert "colhido_em: 2026-07-17" in out
+    indexado = strip_frontmatter(out)
+    assert "colhido_em" not in indexado and "origem" not in indexado
+    assert "## A" in indexado and "corpo" in indexado
 
 
 # --- textutils.remover_tag (puro) --------------------------------------------
@@ -95,7 +188,7 @@ async def test_search_irrelevante_sem_fontes():
 
 # --- Agent._consolidar_fontes (promoção) -------------------------------------
 def _agent():
-    ctx = AppContext(settings=settings, memory=SessionMemory(settings))
+    ctx = AppContext(settings=settings)
     ctx.llama = FakeLlama([])
     ctx.tts = FakeTts()
     return Agent(ctx)
@@ -146,7 +239,7 @@ def _etl_com(resposta_llm, tmp_path, monkeypatch):
     os.makedirs(st.dir_conhecimento_novo, exist_ok=True)
     monkeypatch.setattr("agent.settings", st)   # summarize_dump lê o dump por aqui
     monkeypatch.setattr("agent.db.log_etl", lambda *a, **k: None)  # hermético: sem SQLite real
-    ctx = AppContext(settings=st, memory=SessionMemory(st))
+    ctx = AppContext(settings=st)
     ctx.llama = FakeLlama([resposta_llm])
     ctx.vectorstore = FakeVectorStore()
     return EtlProcessor(ctx), dump, st

@@ -5,6 +5,42 @@ e o registry. Tudo puro (sem GPU/LLM).
 import tools
 
 
+# --- e_efemero: gate de INGESTÃO (mais largo que o de roteamento) ------------
+def test_efemero_pega_as_perguntas_reais_que_poluiram_o_vault():
+    # Medido: 48 dos 177 átomos auto-colhidos eram previsão do tempo/cotação. Estas
+    # são as perguntas REAIS do histórico que os geraram.
+    for q in (
+        "Qual a previsão do tempo de Lisboa para amanhã?",
+        "Qual a previsão do tempo para Lisboa semana que vem?",
+        "como será o clima em lisboa para semana que vem?",
+        "como será o clima em lisboa para amanhã?",
+        "Olá, qual é a cotação do dólar hoje?",
+    ):
+        assert tools.e_efemero(q), q
+
+
+def test_efemero_e_mais_largo_que_o_gate_de_rota():
+    # O ponto do gate separado: "clima em lisboa amanhã" NÃO é time-sensitive pela
+    # lista de rota (que tem "clima hoje"), mas é tão perecível quanto. Reusar o gate
+    # de rota vazaria este caso — que é justamente um dos que poluíram o vault.
+    q = "como será o clima em lisboa para amanhã?"
+    assert tools.talvez_tempo_real(q) is False
+    assert tools.e_efemero(q) is True
+
+
+def test_efemero_nao_pega_conhecimento_duravel():
+    # Falso positivo aqui custa "não aprender um fato" (barato), mas ainda assim o
+    # gate não pode engolir o conhecimento técnico que É o ponto do vault.
+    for q in (
+        "como é o uso de tensor RT em yolo?",
+        "o que são notas atômicas Zettelkasten?",
+        "crie uma função recursiva em python",
+        "quanto tempo leva para treinar o YOLO?",
+        "como funciona o flash attention?",
+    ):
+        assert not tools.e_efemero(q), q
+
+
 # --- parse_decisao ---------------------------------------------------------
 def test_parse_decisao_json_limpo():
     d = tools.parse_decisao('{"tool":"calcular","args":{"expressao":"2+2"}}')

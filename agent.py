@@ -5,9 +5,13 @@ Mantém intactos os pilares da arquitetura:
 - GPU serializada (via LlamaManager).
 - Streaming + chunking de TTS (via SentenceChunker) para baixar o TTFA.
 - Speculative Pre-Fetch em background.
-- ETL Post-Chat só no idle (end_session), agora com PRIORIDADE para a inferência
-  interativa: o ETL espera `interactive_idle` entre documentos, então uma pergunta
-  do usuário não compete com a síntese pesada.
+- ETL Post-Chat só no idle (end_session), com PRIORIDADE REAL para a inferência
+  interativa. Antes esta linha mentia: o ETL esperava `interactive_idle` apenas
+  ENTRE documentos, então a pergunta que chegasse no meio de uma síntese esperava o
+  decode inteiro no lock da GPU (medido: 4,6s de TTFT, e o teto é max_tokens_sintese).
+  Agora o pipeline marca a GPU como ocupada e PREEMPTA o decode de background em
+  curso (llm.preempt), que morre em ~1 token e devolve o item pra fila — medido:
+  TTFT de 4605ms -> 26ms.
 - Anti-alucinação via system prompt.
 
 O pipeline não conhece o WebSocket: recebe um callback `send(dict) -> bool`.
@@ -26,9 +30,9 @@ import textutils
 import tools
 from audio import SentenceChunker
 from config import settings
-from llm import LlamaManager
-from rag import NENHUM, LocalResult
-from state import AppContext
+from llm import InferenciaPreemptada, LlamaManager
+from rag import NENHUM, LocalResult, strip_frontmatter
+from state import AppContext, SessionMemory
 from telemetry import db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
@@ -87,6 +91,27 @@ async def append_chat_dump(ator: str, texto: str) -> None:
 # ==========================================================================
 # Atomização de arquivos (um .md por ideia — Zettelkasten puro)
 # ==========================================================================
+# Linha só de tags ('#a #b') e a tag isolada — usadas para canonizar o rodapé do átomo.
+_TAG_LINHA_RE = re.compile(r"^\s*#[\w/\-]+(?:\s+#[\w/\-]+)*\s*$")
+_TAG_RE = re.compile(r"#[\w/\-]+")
+# Tags penduradas no FIM de uma linha de conteúdo. Visto no import real: o modelo
+# escreve '**Malha Neural:** [[X]] #zettelkasten_atomico' — a tag não está sozinha na
+# linha, então o _TAG_LINHA_RE não a via e normalizar_atomo acrescentava a canônica
+# de novo (12 de 19 átomos saíam com a tag duplicada). Exige espaço antes do '#',
+# então nunca casa um cabeçalho ('## Título').
+_TAGS_FIM_RE = re.compile(r"(?:\s+#[\w/\-]+)+\s*$")
+_MALHA = "**Malha Neural:**"
+
+
+def _parece_atomo(bloco: str) -> bool:
+    """O bloco tem a ASSINATURA de um átomo, mesmo sem o '## '?
+
+    Conservador de propósito: só a presença das tags canônicas ou da Malha Neural
+    conta. Prosa solta não vira átomo por acidente (ver dividir_atomos).
+    """
+    return prompts.TAG_ATOMO in bloco or prompts.TAG_NOVO in bloco or _MALHA in bloco
+
+
 def dividir_atomos(texto: str) -> List[str]:
     """Quebra a saída de síntese (vários '## título') em blocos atômicos individuais.
 
@@ -109,15 +134,124 @@ def dividir_atomos(texto: str) -> List[str]:
         bloco = "\n".join(atual).strip()
         if bloco:
             blocos.append(bloco)
-    return blocos
+    if blocos:
+        return blocos
+
+    # FALLBACK — medido no A/B (eval/ab_modelos.py): o Qwen2.5-7B-Instruct emite
+    # título + corpo + Malha Neural + as duas tags, e ESQUECE só o '## ' (2 de 3
+    # sínteses). Sem isto, dividir_atomos devolve [] e o fallback de _salvar_atomos
+    # cola a síntese INTEIRA num arquivo — matando o "um arquivo por átomo" e, com
+    # ele, a precisão da promoção. Separa por linha em branco e só aceita blocos com
+    # assinatura de átomo, então prosa solta continua devolvendo [].
+    candidatos = [b.strip() for b in re.split(r"\n\s*\n", texto) if b.strip()]
+    return [b for b in candidatos if _parece_atomo(b)]
 
 
 def _slug_titulo(bloco: str) -> str:
-    """Slug curto a partir do título (1ª linha '## ...') do átomo, para o nome do arquivo."""
-    primeira = bloco.splitlines()[0] if bloco.strip() else ""
-    titulo = primeira.lstrip("#").strip()
+    """Slug curto a partir do título ('## ...') do átomo, para o nome do arquivo.
+
+    Procura a linha do título em vez de assumir a 1ª: o átomo normalizado começa com
+    frontmatter, então `splitlines()[0]` seria '---'.
+    """
+    titulo = ""
+    for ln in bloco.splitlines():
+        if ln.lstrip().startswith("## "):
+            titulo = ln.lstrip("#").strip()
+            break
+    if not titulo:
+        primeira = bloco.splitlines()[0] if bloco.strip() else ""
+        titulo = primeira.lstrip("#").strip()
     slug = re.sub(r"[^a-z0-9]+", "_", textutils.normaliza(titulo)).strip("_")
     return slug[:40] or "atomo"
+
+
+def _e_titulo(linha: str) -> bool:
+    """Linha curta que não termina em pontuação de frase = título sem '#'."""
+    ln = linha.strip()
+    return bool(ln) and len(ln) <= 80 and not ln.endswith((".", "!", "?", ":", ";", ","))
+
+
+def normalizar_atomo(
+    bloco: str, origem: str, agora: datetime, tags: Tuple[str, ...] = (prompts.TAG_ATOMO, prompts.TAG_NOVO)
+) -> str:
+    """Impõe a ESTRUTURA do átomo em vez de PEDI-LA ao LLM. Puro/testável.
+
+    Por que existe: o A/B (eval/ab_modelos.py) provou que NENHUM modelo entrega o
+    formato de forma confiável — e que cada um falha de um jeito oposto. O
+    Qwen2.5-Coder emite '##' e esquece as tags (1 de 6 blocos com tag; no vault,
+    8 de 177) → `_consolidar_fontes` faz `if tag not in conteudo: return False`, ou
+    seja, a promoção vira no-op em 95% da base. O Qwen2.5-Instruct acerta as tags
+    (3/3) e esquece o '##' (2 de 3 sínteses) → colapso num arquivo só. Trocar de
+    modelo não conserta: move o defeito. Então o LLM entrega a IDEIA e o Python
+    entrega a ESTRUTURA.
+
+    - Título: qualquer nível de '#' vira '## '; 1ª linha solta e curta é promovida a
+      título; formato totalmente quebrado deriva das primeiras palavras.
+    - Tags: as canônicas são GARANTIDAS. As que o modelo inventou (#tempo, #financas)
+      são preservadas — são úteis no Obsidian e não custam nada.
+    - Proveniência: vai em FRONTMATTER, não no corpo. `rag.strip_frontmatter` já a
+      remove antes do chunking, então ela NÃO polui o embedding nem o aterramento
+      léxico (o vault já sofre com boilerplate: 'neural' aparece em 97,6% das notas).
+      O `colhido_em` é o que habilita a poda por idade depois, a custo zero de busca.
+    """
+    # Idempotência: um átomo já normalizado volta por aqui (re-síntese, passada de
+    # manutenção). Sem descascar o frontmatter, o '---' viraria o título ('## ---').
+    linhas = [ln.rstrip() for ln in strip_frontmatter(bloco.strip()).strip().splitlines()]
+    if not linhas:
+        return ""
+
+    titulo = ""
+    corpo: List[str] = []
+    achadas: List[str] = []          # tags que o próprio modelo emitiu
+    primeira_analisada = False
+    for ln in linhas:
+        if _TAG_LINHA_RE.match(ln):
+            achadas.extend(_TAG_RE.findall(ln))
+            continue
+        # Tag pendurada no fim de uma linha de conteúdo: colhe e limpa, senão a
+        # canônica seria acrescentada de novo mais abaixo (tag duplicada no arquivo).
+        fim = _TAGS_FIM_RE.search(ln)
+        if fim:
+            achadas.extend(_TAG_RE.findall(fim.group()))
+            ln = ln[: fim.start()].rstrip()
+            if not ln:
+                continue
+        if not primeira_analisada:
+            primeira_analisada = True
+            if ln.lstrip().startswith("#"):
+                titulo = ln.lstrip("#").strip()
+                continue
+            if _e_titulo(ln):
+                titulo = ln.strip()
+                continue
+        corpo.append(ln)
+
+    corpo_txt = "\n".join(corpo).strip()
+    if not titulo:
+        # Formato irrecuperável: melhor um título derivado que um átomo sem título.
+        titulo = " ".join(corpo_txt.split()[:6]) or "Atomo"
+
+    # `tags` (parâmetro) são as CANÔNICAS garantidas; `achadas` são as que o modelo
+    # inventou e que preservamos. O import de histórico passa (#zettelkasten_atomico,
+    # #memoria_legada): não é curiosidade auto-colhida, é o passado do usuário, então
+    # não nasce com #conhecimento_novo nem entra no ciclo de promoção.
+    for t in tags:
+        if t not in achadas:
+            achadas.append(t)
+    vistas: set = set()
+    finais = [t for t in achadas if not (t in vistas or vistas.add(t))]
+
+    out = [
+        "---",
+        f"origem: {origem}",
+        f"colhido_em: {agora.strftime('%Y-%m-%d')}",
+        "---",
+        f"## {titulo}",
+    ]
+    if corpo_txt:
+        out.append(corpo_txt)
+    out.append(" ".join(finais))
+    return "\n".join(out) + "\n"
 
 
 # ==========================================================================
@@ -182,7 +316,7 @@ class Agent:
         if resto:
             await self._falar(send, [resto])
 
-    def _ram_relevante(self, termos: str) -> List[str]:
+    def _ram_relevante(self, termos: str, mem: SessionMemory) -> List[str]:
         """Só injeta memória da sessão cujo TEMA casa com a pergunta atual.
 
         Corrige o Cache Hit falso: antes as 2 últimas entradas entravam sempre,
@@ -192,7 +326,7 @@ class Agent:
         if not chaves:
             return []
         out: List[str] = []
-        for tema, dados in reversed(self.ctx.memory.conhecimento_sessao):
+        for tema, dados in reversed(mem.conhecimento_sessao):
             if textutils.tem_sobreposicao(chaves, textutils.palavras_chave(tema)):
                 out.append(dados)
             if len(out) >= 2:
@@ -208,8 +342,9 @@ class Agent:
             partes.append("[Memória Fresca da Sessão]\n" + "\n\n".join(ram))
         return "\n".join(partes)
 
-    async def pipeline_resposta(self, texto_usuario: str, send: Sender) -> None:
-        self.ctx.interactive_idle.clear()  # sinaliza: GPU ocupada com interação
+    async def pipeline_resposta(
+        self, texto_usuario: str, send: Sender, mem: SessionMemory
+    ) -> None:
         # Instrumenta o TTFT/TTFA sem tocar no resto: cada msg passa pelo tracker.
         tracker = LatencyTracker()
 
@@ -217,8 +352,25 @@ class Agent:
             tracker.note(msg)
             return await send(msg)
 
+        # A ORDEM É O MECANISMO, e ela tem que ser esta:
+        #   1) `interativo()` faz o clear() -> o ETL que acordar agora volta a dormir;
+        #   2) `preempt()` corta o decode de ETL que JÁ estava rodando.
+        # Invertido, existe uma janela entre o preempt e o clear em que o ETL vê
+        # "GPU livre", pega o lock e começa OUTRA síntese — e a pergunta espera de novo.
+        async with self.ctx.interativo():
+            self.ctx.llama.preempt()
+            await self._pipeline(texto_usuario, send_medido, tracker, mem)
+
+    async def _pipeline(
+        self, texto_usuario: str, send_medido: Sender, tracker: LatencyTracker, mem: SessionMemory
+    ) -> None:
         rota = "web"
         try:
+            # EFEMERIDADE — decidida UMA vez, no topo, porque governa os DOIS caminhos
+            # de ingestão: a fila do ETL (web) e o dump da conversa (que o idle atomiza).
+            # Medido no vault: 45 dos 48 átomos-lixo vieram da fila, 3 do dump.
+            efemero = tools.e_efemero(texto_usuario)
+
             # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
             # roteador LLM. Pergunta de conhecimento nem paga essa chamada — cai
             # direto no pipeline afinado abaixo (TTFA preservado).
@@ -228,19 +380,20 @@ class Agent:
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
                     if texto_final:
-                        await append_chat_dump("IA", texto_final)
-                        self.ctx.memory.registrar_turno(texto_usuario, texto_final)
-                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, self.ctx.memory.conversa_id)
+                        if not efemero:
+                            await append_chat_dump("IA", texto_final)
+                        mem.registrar_turno(texto_usuario, texto_final)
+                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                         await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
                     return
 
-            termos = await self.optimizer.optimize(texto_usuario, self.ctx.memory.chat_history)
+            termos = await self.optimizer.optimize(texto_usuario, mem.chat_history)
             # Pergunta enriquecida com o histórico p/ o GERADOR da resposta (não a
             # recuperação, que já resolve o pronome via QueryOptimizer). Sem isso, um
             # follow-up cru como "poderia explicar melhor?" chegava ao LLM SEM antecedente
             # → ele dizia sentinela mesmo com os átomos certos na mão. Dump/memória/busca
             # seguem com o texto_usuario ORIGINAL; só o prompt de resposta recebe o contexto.
-            pergunta_resp = self._pergunta_com_contexto(texto_usuario)
+            pergunta_resp = self._pergunta_com_contexto(texto_usuario, mem)
 
             # FUSÃO EM CASCATA: cada fonte com átomos relevantes contribui com UM
             # parágrafo (passada de inferência própria), na ordem memória > banco > web.
@@ -267,12 +420,15 @@ class Agent:
             # (fresco, e sem pagar a passada local morta). Fora isso, cascata normal.
             if tools.talvez_tempo_real(texto_usuario):
                 telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
-                web = await self._responder_web(termos, pergunta_resp, send_medido, consulta_rank=texto_usuario)
+                web = await self._responder_web(
+                    termos, pergunta_resp, send_medido, mem,
+                    consulta_rank=texto_usuario, efemero=efemero,
+                )
                 if web:
                     paragrafos.append(web)
                     fontes.append("web")
             else:
-                ram = self._ram_relevante(termos)
+                ram = self._ram_relevante(termos, mem)
 
                 # ESTÁGIO 1 — RAM (memória fresca da sessão): a mais fresca, já por tema.
                 if ram:
@@ -300,7 +456,13 @@ class Agent:
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
-                    web = await self._responder_web(termos, pergunta_resp, send_medido, consulta_rank=texto_usuario)
+                    # `efemero` também aqui: é POR ESTE caminho que "clima em lisboa
+                    # amanhã" chega (o gate de rota não o pega), escala pra web e hoje
+                    # é ingerido. Sem isto o bloqueio vazaria os casos reais medidos.
+                    web = await self._responder_web(
+                        termos, pergunta_resp, send_medido, mem,
+                        consulta_rank=texto_usuario, efemero=efemero,
+                    )
                     if web:
                         paragrafos.append(web)
                         fontes.append("web")
@@ -309,16 +471,20 @@ class Agent:
             rota = "+".join(fontes) if fontes else "web"
 
             if texto_final:
-                await append_chat_dump("IA", texto_final)
-                self.ctx.memory.registrar_turno(texto_usuario, texto_final)
-                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, self.ctx.memory.conversa_id)
+                # Dump só do que pode virar conhecimento: o idle atomiza este arquivo,
+                # então um turno efêmero aqui vira "## Hora atual" no Zettelkasten. O
+                # turno segue no SQLite (histórico do usuário) e na RAM (follow-up).
+                if not efemero:
+                    await append_chat_dump("IA", texto_final)
+                mem.registrar_turno(texto_usuario, texto_final)
+                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                 await self._registrar_latencia(tracker, rota)
         except asyncio.CancelledError:
             raise  # barge-in: propaga para o LlamaManager parar o decode
         except Exception as exc:
             telemetry.error("PIPELINE", "Erro no pipeline de resposta", exc)
-        finally:
-            self.ctx.interactive_idle.set()  # GPU livre de novo
+        # Sem `finally` liberando o idle: quem faz isso é o `interativo()` do chamador,
+        # e só quando o ÚLTIMO pipeline em voo sair (ver AppContext.interativo).
 
     async def _registrar_latencia(self, tracker: LatencyTracker, rota: str) -> None:
         ttft, ttfa, total = (
@@ -381,7 +547,7 @@ class Agent:
             await send({"tipo": "audio", "base64": audio})
         return fala
 
-    def _pergunta_com_contexto(self, texto_usuario: str) -> str:
+    def _pergunta_com_contexto(self, texto_usuario: str, mem: SessionMemory) -> str:
         """Prefixa o histórico recente à pergunta, só para o LLM de RESPOSTA.
 
         A recuperação já resolve pronomes (QueryOptimizer), mas o gerador recebia o
@@ -389,7 +555,7 @@ class Agent:
         respondia sentinela mesmo com os átomos certos. Damos 2 turnos recentes (resposta
         anterior truncada) e marcamos [PERGUNTA ATUAL] para manter o foco. Sem histórico,
         devolve a pergunta intacta (custo zero na 1ª pergunta da sessão)."""
-        hist = self.ctx.memory.chat_history
+        hist = mem.chat_history
         if not hist:
             return texto_usuario
         turnos = []
@@ -506,7 +672,8 @@ class Agent:
         return msg
 
     async def _responder_web(
-        self, termos: str, texto_usuario: str, send: Sender, consulta_rank: str | None = None
+        self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
+        consulta_rank: str | None = None, efemero: bool = False,
     ) -> str:
         # Filler específico mascara a latência da busca web (diz o que está fazendo).
         await self._falar_status(send, self._msg_web(termos))
@@ -515,7 +682,11 @@ class Agent:
         # guia o ranking dos trechos do deep-fetch — o embedding é simétrico, então a
         # frase inteira casa melhor com os parágrafos das páginas que 5 keywords.
         dados_web = await self.ctx.web.search(termos, consulta=consulta_rank or termos)
-        self.ctx.track_task(self._prefetch(termos))  # background, web-only (ref. retida)
+        # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
+        # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
+        # engordava o vault com dezenas de notas por pergunta sobre o tempo.
+        if not efemero:
+            self.ctx.track_task(self._prefetch(termos, mem))  # background, web-only (ref. retida)
 
         # Sem dados locais NEM web (ex.: pergunta não-buscável): NÃO deixe o LLM falar
         # o sentinela cru "Não tenho informações suficientes". Fala um retorno gracioso
@@ -528,8 +699,13 @@ class Agent:
                 await send({"tipo": "audio", "base64": audio})
             return fala
 
-        self.ctx.memory.lembrar(termos, dados_web)
-        self.ctx.memory.enfileirar_etl(termos, dados_web)
+        # RAM SEMPRE: é memória de SESSÃO, morre com ela, e é o que faz o follow-up
+        # ("e amanhã?") enxergar o dado. O que não pode é virar átomo permanente.
+        mem.lembrar(termos, dados_web)
+        if efemero:
+            telemetry.track("ETL", f"'{termos}' é efêmero — fora da fila (não vira átomo).")
+        else:
+            mem.enfileirar_etl(termos, dados_web)
 
         # A web VOLTOU dados, mas eles podem não responder (projeto privado, snippet
         # sem o número etc.). Passa pelo MESMO guard anti-sentinela do local: se o LLM
@@ -549,14 +725,14 @@ class Agent:
             await send({"tipo": "audio", "base64": audio})
         return fala
 
-    async def _prefetch(self, tema: str) -> None:
+    async def _prefetch(self, tema: str, mem: SessionMemory) -> None:
         ctx_amplo = await self.ctx.web.prefetch(tema)
         if ctx_amplo:
-            self.ctx.memory.lembrar(tema, ctx_amplo)
+            mem.lembrar(tema, ctx_amplo)
             # A "curiosidade" — contexto amplo que veio junto mas NÃO era necessário
             # falar agora — também é enfileirada pro ETL: vira átomos #conhecimento_novo
             # e engorda a base sobre o que o usuário demonstrou interesse.
-            self.ctx.memory.enfileirar_etl(tema, ctx_amplo)
+            mem.enfileirar_etl(tema, ctx_amplo)
 
     async def _consolidar_fontes(self, fontes: List[str]) -> None:
         """Promoção: tira a tag #conhecimento_novo dos arquivos-fonte que foram usados
@@ -620,13 +796,22 @@ class EtlProcessor:
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
 
+        Todo bloco passa por `normalizar_atomo` ANTES de virar arquivo: o formato do
+        átomo é imposto no código, não confiado ao LLM (ver a docstring de lá — o A/B
+        mostrou que nenhum modelo o entrega de forma confiável, e sem as tags a
+        promoção nunca acontece).
+
         Fallback: se o LLM não usou nenhum '##' (formato quebrado), salva o texto inteiro
         como 1 átomo em vez de descartar o conhecimento em silêncio."""
         blocos = dividir_atomos(texto)
         if not blocos and texto.strip():
             blocos = [texto.strip()]
+        agora = datetime.now()
         salvos = 0
         for i, bloco in enumerate(blocos):
+            bloco = normalizar_atomo(bloco, prefixo, agora)
+            if not bloco.strip():
+                continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
             caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
 
@@ -647,17 +832,35 @@ class EtlProcessor:
             return
         telemetry.track("ETL_POST_CHAT", f"Sintetizando {len(itens)} pesquisas da sessão.")
         total = 0
-        for tema, dados in itens:
+        # Fila, não `for`: um item preemptado volta pro topo e é RETENTADO — a síntese
+        # dele foi jogada fora no meio, e descartar o item silenciosamente seria perder
+        # exatamente o conhecimento que este processo existe para reter.
+        pendentes = list(itens)
+        while pendentes:
+            # Cede a vez ANTES de cada tentativa: com o usuário falando, isto bloqueia
+            # aqui (barato) em vez de começar uma síntese que será cortada. É também o
+            # que impede o retry de virar spin — só reacorda quando a GPU está livre.
             await self._esperar_idle()
+            tema, dados = pendentes[0]
             try:
                 conteudo = await self.ctx.llama.collect(
                     prompts.prompt_sintese(tema, dados),
                     max_tokens=settings.max_tokens_sintese,
                     system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,   # background: a pergunta do usuário passa na frente
                 )
-                total += await self._salvar_atomos(conteudo, "Sintese", "ETL_POST_CHAT")
+            except InferenciaPreemptada:
+                telemetry.track("ETL_POST_CHAT", f"'{tema}' cedeu a GPU — será retomado no idle.")
+                continue                      # item continua em pendentes[0]
             except Exception as exc:
                 telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar '{tema}'", exc)
+                pendentes.pop(0)              # falha real: não retenta em loop
+                continue
+            pendentes.pop(0)
+            try:
+                total += await self._salvar_atomos(conteudo, "Sintese", "ETL_POST_CHAT")
+            except Exception as exc:
+                telemetry.error("ETL_POST_CHAT", f"Falha ao salvar átomos de '{tema}'", exc)
 
         await self.ctx.vectorstore.sync()
         telemetry.track("ETL_POST_CHAT", f"Banco Vetorial atualizado ({total} átomos).")
@@ -683,11 +886,19 @@ class EtlProcessor:
 
         await self._esperar_idle()
         telemetry.track("IDLE", "Atomizando histórico da conversa (Zettelkasten)...")
-        atomos = await self.ctx.llama.collect(
-            prompts.prompt_sintese_conversa(conteudo),
-            max_tokens=settings.max_tokens_resumo,
-            system_prompt=prompts.SYS_SINTESE_CONVERSA,
-        )
+        try:
+            atomos = await self.ctx.llama.collect(
+                prompts.prompt_sintese_conversa(conteudo),
+                max_tokens=settings.max_tokens_resumo,
+                system_prompt=prompts.SYS_SINTESE_CONVERSA,
+                preemptible=True,   # background: a pergunta do usuário passa na frente
+            )
+        except InferenciaPreemptada:
+            # Sair aqui é seguro E é o ponto: o dump só é limpo mais abaixo, depois de
+            # salvar. Cedemos a GPU sem tocar em nada, e a conversa inteira continua no
+            # arquivo para a próxima passada de idle.
+            telemetry.track("IDLE", "Atomização cedeu a GPU — dump preservado p/ a próxima.")
+            return
         atomos = atomos.strip()
 
         async def _limpar_dump() -> None:

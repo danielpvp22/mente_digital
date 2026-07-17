@@ -20,9 +20,10 @@ from typing import List, Optional
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
+import tools
 from agent import append_chat_dump
 from config import settings
-from state import AppContext
+from state import AppContext, SessionMemory
 from telemetry import db, telemetry
 
 _RECV_TIMEOUT = 0.5  # s — granularidade da checagem de silêncio
@@ -37,6 +38,11 @@ class LiveSession:
         self.last_audio_time = time.time()
         self.pipeline_task: Optional[asyncio.Task] = None
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
+        # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
+        # compartilhado por todas: o cliente reconecta sozinho (backoff) e reenvia
+        # `set_conversa` no onopen, então o último a conectar sobrescrevia o
+        # `conversa_id` de todos — e os turnos iam pro SQLite na conversa errada.
+        self.memory = SessionMemory(ctx.settings)
 
     # -- envio seguro (falha esperada durante barge-in/disconnect) --------------
     async def safe_send(self, data: dict) -> bool:
@@ -53,12 +59,25 @@ class LiveSession:
     def _start_pipeline(self, texto: str) -> None:
         self._cancel_pipeline()
         self.pipeline_task = asyncio.create_task(
-            self.ctx.agent.pipeline_resposta(texto, self.safe_send)
+            self.ctx.agent.pipeline_resposta(texto, self.safe_send, self.memory)
         )
+
+    async def _dump_pergunta(self, texto: str) -> None:
+        """Grava a pergunta no dump — MENOS quando é efêmera.
+
+        O dump é a matéria-prima que o idle atomiza em Zettelkasten permanente. Um
+        turno sobre cotação/clima ali vira nota eterna sobre um dado que expira em
+        horas (medido: 3 dos átomos-lixo entraram por aqui). O par IA é guardado pelo
+        mesmo critério, no pipeline. O turno em si não se perde: vai pro SQLite.
+        """
+        if tools.e_efemero(texto):
+            return
+        await append_chat_dump("User", texto)
 
     # -- loop principal ---------------------------------------------------------
     async def run(self) -> None:
         await self.ws.accept()
+        self.ctx.sessoes.add(self)
         if not self.ctx.llama.ready:
             await self.safe_send(
                 {"tipo": "status", "texto": "Modelo ainda carregando ou indisponível."}
@@ -85,6 +104,7 @@ class LiveSession:
         except Exception as exc:
             telemetry.error("WS", "Erro no loop do WebSocket", exc)
         finally:
+            self.ctx.sessoes.discard(self)
             self._cancel_pipeline()
             # Rede de segurança: se o cliente caiu SEM mandar end_session, a conversa
             # ainda é atomizada e a fila ETL sintetizada (senão o histórico se perdia).
@@ -100,7 +120,7 @@ class LiveSession:
             return
         self._finalizada = True
         telemetry.track("SERVER", "Sessão encerrada. Iniciando processamento IDLE...")
-        itens = self.ctx.memory.drenar_etl()
+        itens = self.memory.drenar_etl()
         self.ctx.track_task(self.ctx.etl.run_idle(itens))
 
     def _marcar_ativa(self) -> None:
@@ -134,7 +154,7 @@ class LiveSession:
             return
         self._marcar_ativa()
         await self.safe_send({"tipo": "transcricao", "texto": texto})
-        await append_chat_dump("User", texto)
+        await self._dump_pergunta(texto)
         self._start_pipeline(texto)
 
     # -- texto / controle -------------------------------------------------------
@@ -158,7 +178,7 @@ class LiveSession:
             # Reassocia o id da conversa atual (ex.: reconexão do WS) sem mexer no contexto.
             cid = (payload.get("id") or "").strip()
             if cid:
-                self.ctx.memory.conversa_id = cid
+                self.memory.conversa_id = cid
 
         elif tipo == "nova_conversa":
             # "Novo chat": id novo e contexto limpo. A conversa anterior já foi encerrada
@@ -166,7 +186,7 @@ class LiveSession:
             cid = (payload.get("id") or "").strip()
             if cid:
                 self._cancel_pipeline()
-                self.ctx.memory.nova_conversa(cid)
+                self.memory.nova_conversa(cid)
                 telemetry.track("WS", f"Nova conversa: {cid}")
 
         elif tipo == "carregar_conversa":
@@ -176,7 +196,7 @@ class LiveSession:
                 self._cancel_pipeline()
                 turnos_raw = await asyncio.to_thread(db.get_conversation, cid, settings.max_chat_history)
                 turnos = [(t["q"], t["a"]) for t in turnos_raw]
-                self.ctx.memory.carregar_conversa(cid, turnos)
+                self.memory.carregar_conversa(cid, turnos)
                 telemetry.track("WS", f"Conversa reaberta: {cid} ({len(turnos)} turnos)")
 
         elif tipo == "texto":
@@ -185,5 +205,5 @@ class LiveSession:
                 return
             self._marcar_ativa()
             await self.safe_send({"tipo": "transcricao", "texto": texto})
-            await append_chat_dump("User", texto)
+            await self._dump_pergunta(texto)
             self._start_pipeline(texto)
