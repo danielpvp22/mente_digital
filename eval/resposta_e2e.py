@@ -24,6 +24,12 @@ O que mede, por pergunta:
 Por que os dois braços numa passada só: o contexto é montado por braço mas o modelo é
 carregado UMA vez, então a comparação não mistura estado de VRAM/cache entre execuções.
 
+FIDELIDADE AO PIPELINE: cada pergunta é replayada com o histórico da conversa em que foi
+feita (SessionMemory.carregar_conversa, o mesmo caminho do ws.carregar_conversa), passa
+pelo QueryOptimizer real (resolve pronome) e pelo _pergunta_com_contexto real. Isto não
+é zelo: a 1ª versão julgou follow-ups sem histórico e INVERTEU certo e errado — ver
+`casos_reais`.
+
 As respostas cruas vão para eval/saidas/e2e_<braço>.json — leia-as. O julgamento fica
 com o humano de propósito: usar o mesmo 7B local como juiz das próprias respostas é
 evidência fraca, e fingir o contrário seria pior que não medir.
@@ -38,6 +44,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -50,14 +57,18 @@ os.environ.setdefault("MENTE_RAG_DEBUG", "false")
 import prompts  # noqa: E402
 import textutils  # noqa: E402
 import tools  # noqa: E402
-from agent import SENTINELA_INSUF  # noqa: E402
+from agent import SENTINELA_INSUF, Agent, QueryOptimizer  # noqa: E402
 from config import settings  # noqa: E402
 from llm import LlamaManager  # noqa: E402
 from rag import NENHUM, EmbeddingProvider, VectorStore  # noqa: E402
+from state import AppContext, SessionMemory  # noqa: E402
 from telemetry import db  # noqa: E402
 
 DIR_SAIDA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saidas")
 BRACOS = ("sem_malha", "com_malha")
+# id de conversa LEGADA: turnos antigos não têm `conversa_id` e o telemetry._CID os
+# agrupa por dia via COALESCE -> o id vira 'YYYY-MM-DD'. Ver `casos_reais`.
+_ID_LEGADO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _saida(braco: str) -> str:
@@ -87,30 +98,59 @@ async def _gerar(llama: LlamaManager, prompt: str, system: str) -> Tuple[str, di
     }
 
 
-def perguntas_reais(limite: int) -> List[str]:
-    """Perguntas do SQLite que a produção REALMENTE manda para o estágio Banco.
+def casos_reais(limite: int) -> List[Tuple[str, SessionMemory]]:
+    """Perguntas reais COM o histórico da conversa em que foram feitas.
 
-    Dois cortes, e ambos vieram de um erro medido: a 1ª versão deste script rodou a
-    passada do Banco sobre 'clima em Lisboa amanhã' e 'cotação do dólar hoje' e colheu
-    10 sentinelas em 12 — sentinelas CORRETOS (o vault não tem a previsão de amanhã),
-    mas irrelevantes: o `talvez_tempo_real` desvia essas perguntas para a web antes do
-    Banco. Medir o Banco nelas é medir um caminho que não existe.
+    Reconstruir o histórico não é luxo — sem ele o teste mede o próprio setup. Medido:
+    'quanto ele acelera o processamento de imagens yolo?' foi julgada sem histórico e o
+    modelo resolveu o 'ele' para *resize de imagem* (a outra coisa no contexto que
+    "acelera"), produzindo 407 chars sobre 2560x1440 -> 1280x720. Parecia a resposta
+    BOA do par; era a errada. A irmã explícita ('quanto o TENSOR RT acelera...') deu
+    sentinela — e estava CERTA, o vault não tem esse número. Julgar follow-up sem
+    histórico inverte certo e errado.
 
-    - time-sensitive / efêmera -> a produção vai direto pra web (agent.pipeline_resposta)
-    - curta demais -> follow-up ('E aí', 'e o eth?') que depende do histórico da sessão,
-      que este teste não reconstrói: mediria o setup, não o braço.
+    Em produção quem resolve o pronome é o QueryOptimizer contra `mem.chat_history`, e
+    quem dá contexto ao gerador é `_pergunta_com_contexto`. Aqui reusamos os dois, com
+    o histórico remontado pelo `SessionMemory.carregar_conversa` — o MESMO caminho que
+    o servidor usa ao reabrir uma conversa (ws.carregar_conversa).
+
+    CUIDADO com o histórico LEGADO: `get_conversations` agrupa turnos sem `conversa_id`
+    por DIA (o COALESCE em telemetry._CID), o que é ótimo para a sidebar e PÉSSIMO como
+    histórico — um dia inteiro de assuntos distintos vira "uma conversa". Medido: 65 dos
+    79 turnos do SQLite são legados, e reconstruí-los assim fez o QueryOptimizer extrair
+    'função recursiva python tende YOLO' de uma pergunta sobre recursão, e 'yolo 2015'
+    de 'como o yolo funciona?'. O vazamento era meu, não do pipeline: em produção o
+    turno novo tem `conversa_id` real. Para os legados, tratamos como SEM histórico —
+    que é a verdade sobre eles: não se sabe onde uma conversa terminava e a outra começava.
+
+    Fica de fora só o que a produção nunca manda ao Banco: time-sensitive/efêmera, que
+    o `talvez_tempo_real` desvia pra web antes (a 1ª versão deste script colheu 10/12
+    sentinelas CORRETOS e irrelevantes medindo um caminho que não existe).
     """
+    out: List[Tuple[str, SessionMemory]] = []
     vistas: set = set()
-    out: List[str] = []
-    for t in db.get_history(limit=1000):
-        q = (t.get("q") or "").strip()
-        chave = textutils.normaliza(q)
-        if len(q) < 12 or chave in vistas:
-            continue
-        vistas.add(chave)
-        if tools.talvez_tempo_real(q) or tools.e_efemero(q):
-            continue
-        out.append(q)
+    for conv in db.get_conversations(limit=200):
+        cid = str(conv["id"])
+        legado = bool(_ID_LEGADO.match(cid))
+        turnos = db.get_conversation(cid, limit=1000)
+        anteriores: List[Tuple[str, str]] = []
+        for t in turnos:
+            q = (t.get("q") or "").strip()
+            a = (t.get("a") or "").strip()
+            chave = textutils.normaliza(q)
+            if not q or chave in vistas:
+                anteriores.append((q, a))
+                continue
+            if tools.talvez_tempo_real(q) or tools.e_efemero(q):
+                anteriores.append((q, a))
+                continue
+            vistas.add(chave)
+            mem = SessionMemory(settings)
+            # Só os turnos ANTERIORES a este: o histórico que a pergunta teria de fato.
+            # Legado -> lista vazia: agrupamento por dia não é conversa (ver docstring).
+            mem.carregar_conversa(cid, [] if legado else list(anteriores))
+            out.append((q, mem))
+            anteriores.append((q, a))
     return out[:limite]
 
 
@@ -120,8 +160,8 @@ async def rodar() -> None:
     args = ap.parse_args()
 
     os.makedirs(DIR_SAIDA, exist_ok=True)
-    qs = perguntas_reais(args.n)
-    if not qs:
+    pares = casos_reais(args.n)
+    if not pares:
         print("ERRO: chat_history vazio.")
         return
 
@@ -133,18 +173,33 @@ async def rodar() -> None:
         print("ERRO: Chroma indisponível.")
         return
 
-    # CONTEXTO PRIMEIRO, MODELO DEPOIS: montar os dois contextos antes de carregar o
-    # .gguf mantém os embeddings e o LLM fora da VRAM ao mesmo tempo (a 3080 tem 10 GB;
-    # o commit do import documenta o llama.cpp derramando pra RAM em silêncio quando
-    # falta VRAM, e um teste que mede latência não pode ser a vítima disso).
-    print(f"[1/3] montando contexto de {len(qs)} perguntas nos {len(BRACOS)} braços...")
+    print(f"[1/3] carregando {os.path.basename(settings.caminho_modelo_llama)}...")
+    llama = LlamaManager()
+    await llama.load()
+    if not llama.ready:
+        print("ERRO: o modelo não carregou (VRAM? o servidor está rodando?).")
+        return
+
+    # O Agent REAL, com um AppContext de verdade: dá o `_pergunta_com_contexto` e o
+    # `_texto_busca` (HyDE) exatamente como a produção os executa. Reimplementá-los
+    # aqui seria medir a minha cópia, não o pipeline.
+    ctx = AppContext(settings=settings, llama=llama, vectorstore=store)
+    agente = Agent(ctx)
+    otimizador = QueryOptimizer(llama)
+
+    print(f"[2/3] montando contexto de {len(pares)} perguntas nos {len(BRACOS)} braços...")
     casos: List[dict] = []
-    for q in qs:
-        ctx: dict = {}
+    for q, mem in pares:
+        # CAMINHO DA PRODUÇÃO: o QueryOptimizer resolve o pronome contra o histórico
+        # ('quanto ELE acelera...' -> 'tensor rt acelera yolo'), e é o `termos` que faz
+        # o aterramento léxico. Pular isto foi o que inverteu certo e errado antes.
+        termos = await otimizador.optimize(q, mem.chat_history)
+        texto_busca = await agente._texto_busca(q, termos)
+        dados: dict = {}
         for braco in BRACOS:
             settings.malha_expandir = braco == "com_malha"
-            r = await store.search(q, texto_busca=q)
-            ctx[braco] = {
+            r = await store.search(termos, texto_busca=texto_busca)
+            dados[braco] = {
                 "contexto": r.texto,
                 "chars": 0 if r.texto == NENHUM else len(r.texto),
                 "relevante": r.relevante,
@@ -153,18 +208,20 @@ async def rodar() -> None:
             }
         # Só interessa onde o Banco de fato responderia. Sem âncora local o Agent vai
         # pra web, e aí o braço não muda nada — incluir só diluiria a comparação.
-        if ctx[BRACOS[0]]["relevante"]:
-            casos.append({"pergunta": q, **ctx})
-    print(f"      {len(casos)}/{len(qs)} perguntas com âncora local (as outras iriam pra web).")
+        if dados[BRACOS[0]]["relevante"]:
+            casos.append(
+                {
+                    "pergunta": q,
+                    "termos": termos,
+                    "turnos_historico": len(mem.chat_history),
+                    # O gerador recebe a pergunta COM a conversa recente, como em produção.
+                    "pergunta_resp": agente._pergunta_com_contexto(q, mem),
+                    **dados,
+                }
+            )
+    print(f"      {len(casos)}/{len(pares)} perguntas com âncora local (as outras iriam pra web).")
     if not casos:
         print("Nada a medir.")
-        return
-
-    print(f"[2/3] carregando {os.path.basename(settings.caminho_modelo_llama)}...")
-    llama = LlamaManager()
-    await llama.load()
-    if not llama.ready:
-        print("ERRO: o modelo não carregou (VRAM? o servidor está rodando?).")
         return
 
     print("[3/3] gerando respostas (2 decodes por pergunta)...\n")
@@ -178,12 +235,14 @@ async def rodar() -> None:
         for braco in ordem:
             texto, m = await _gerar(
                 llama,
-                prompts.prompt_resposta_atomos(caso[braco]["contexto"], caso["pergunta"]),
+                prompts.prompt_resposta_atomos(caso[braco]["contexto"], caso["pergunta_resp"]),
                 prompts.SYS_FUSAO,
             )
             resultados[braco].append(
                 {
                     "pergunta": caso["pergunta"],
+                    "termos": caso["termos"],
+                    "turnos_historico": caso["turnos_historico"],
                     "resposta": texto.strip(),
                     "sentinela": _e_sentinela(texto),
                     "chars_resposta": len(texto.strip()),
