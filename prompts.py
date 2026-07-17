@@ -289,6 +289,44 @@ def prompt_sintese_import(tema: str, trecho: str) -> str:
     )
 
 
+# --- Watcher ("me avise quando"): a condição foi satisfeita pelos dados da web? -----
+# Roda em background no SchedulerService. Saída MÁQUINA: 1ª palavra SIM/NAO (o código
+# só olha isso), seguida de uma frase curta para falar ao usuário quando SIM. Conservador
+# como o anti-alucinação: só diz SIM se os dados AFIRMAM a condição — um watcher que
+# dispara à toa ("o dólar passou de 5" quando não passou) é pior que checar de novo depois.
+SYS_WATCHER = (
+    "Você verifica se uma CONDIÇÃO já é verdadeira com base em DADOS da web. "
+    "Responda começando com SIM ou NAO (exatamente, sem acento). Se SIM, complete com "
+    "UMA frase curta dizendo o fato que confirma. Se os dados não bastam, responda NAO. "
+    "Nunca invente número que não esteja nos dados."
+)
+
+
+def prompt_watcher(condicao: str, dados_web: str) -> str:
+    return (
+        f"CONDIÇÃO a verificar: {condicao}\n\n"
+        f"DADOS DA WEB (agora):\n{dados_web}\n\n"
+        "A condição já é verdadeira segundo os dados? Comece com SIM ou NAO."
+    )
+
+
+# --- Briefing diário (o "flash briefing"): fala curta com os temas do usuário --------
+SYS_BRIEFING = (
+    "Você prepara um briefing falado, curto e caloroso, em português. Máximo 4 frases. "
+    "Sem markdown, sem listas, sem títulos — é para ser OUVIDO. Vá direto ao ponto."
+)
+
+
+def prompt_briefing(data_hoje: str, temas: str, contexto: str) -> str:
+    return (
+        f"Hoje é {data_hoje}. Prepare um briefing falado de bom dia.\n"
+        f"Temas que o usuário vem explorando: {temas or 'nenhum em especial'}.\n"
+        f"Informação recente para mencionar (se houver): {contexto or 'nenhuma'}.\n\n"
+        "Escreva 2 a 4 frases naturais, como se estivesse falando com ele. "
+        "Comece com uma saudação breve."
+    )
+
+
 def prompt_sintese_conversa(conteudo: str) -> str:
     return (
         "Extraia da conversa abaixo (entre Usuário e IA) as ideias de conhecimento "
