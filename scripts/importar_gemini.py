@@ -337,8 +337,51 @@ def e_fiel(atomo: str, trecho: str) -> Tuple[bool, str]:
     return True, ""
 
 
+_TOKEN_RE = re.compile(r"[^\W\d_][\w'\-]*", re.UNICODE)
+
+
+# Acima desta fração de tokens capitalizados, a caixa deixou de ser sinal: é Title Case.
+_FRACAO_TITLE_CASE = 0.8
+
+
+def entidades(assunto: str) -> set:
+    """As ENTIDADES do assunto (Zcash, YOLO, Tarkov) — não as palavras genéricas dele.
+
+    Puro/testável. Heurística sem corpus: é entidade o token CAPITALIZADO que não abre
+    a frase (a 1ª palavra é maiúscula por convenção, não por ser nome próprio), mais
+    qualquer token TODO em maiúsculas em qualquer posição (YOLO, NFT, GPU).
+
+      'Pool de mineração de Zcash'              -> {zcash}      (não 'pool')
+      'Fine-tuning de modelos YOLO para Tarkov' -> {yolo, tarkov}
+      'Clima no Paraguai'                       -> {paraguai}
+      'YOLO em Tarkov'                          -> {yolo, tarkov}  (ALL-CAPS conta na pos. 0)
+
+    Casa com o SYS_ASSUNTO, que já pede ao modelo "nomeando as entidades próprias".
+
+    TITLE CASE: o `descobrir_assunto` cai no `tema_do_arquivo` quando o modelo devolve
+    lixo, e nome de arquivo do Gemini vem Title-Cased ('Acessar Ollama Localmente Pelo
+    Celular'). Ali TODA palavra é maiúscula, então a caixa não distingue mais nada — a
+    1ª versão desta função devolvia {ollama, localmente, pelo, celular} e chamava 'Pelo'
+    de entidade. Detectado o Title Case, só ALL-CAPS conta; sem nenhum, devolve vazio e
+    o `garantir_assunto` cai na regra antiga (conservador: prefixar por prefixar é o
+    risco oposto, e assunto errado envenena).
+    """
+    toks = [t for t in _TOKEN_RE.findall(assunto.strip()) if len(t) >= 2]
+    if not toks:
+        return set()
+    caps = sum(1 for t in toks if t[:1].isupper())
+    title_case = caps / len(toks) >= _FRACAO_TITLE_CASE
+    out: set = set()
+    for i, t in enumerate(toks):
+        if t.isupper():                       # YOLO/NFT/GPU: inequívoco em qualquer caixa
+            out.add(textutils.normaliza(t))
+        elif not title_case and i > 0 and t[:1].isupper():
+            out.add(textutils.normaliza(t))
+    return out
+
+
 def garantir_assunto(bloco: str, assunto: str) -> str:
-    """Se o título do átomo não menciona o assunto, PREFIXA o assunto. Puro/testável.
+    """Se o título do átomo não menciona a ENTIDADE do assunto, PREFIXA o assunto. Puro.
 
     A trava determinística, na mesma filosofia do `normalizar_atomo`: o LLM entrega a
     ideia, o Python garante a propriedade. Medido, o modelo obedece a regra de
@@ -350,18 +393,41 @@ def garantir_assunto(bloco: str, assunto: str) -> str:
     assunto ERRADO, que é o bug que originou tudo isto (a nota do Tarkov casando com
     "economia da máquina de lavar louça" pela palavra 'economia').
 
-    Não mexe quando o modelo já fez o trabalho: se houver qualquer keyword em comum
-    entre título e assunto, o título fica intacto.
+    A 1ª versão desistia de prefixar quando havia QUALQUER keyword em comum entre
+    título e assunto. Uma palavra bastava — e a palavra em comum costuma ser a parte
+    GENÉRICA do assunto, não a entidade:
+
+      assunto 'Pool de mineração de Zcash'   + '## Conexão com a Pool'  -> deixava (pool)
+      assunto 'Fine-tuning ... YOLO/Tarkov'  + '## O Sweet Spot em fine-tuning' -> deixava
+
+    "Conexão com a Pool" — pool de quê? "Sweet Spot em fine-tuning" — de quê? Não são
+    auto-contidos, que é a única coisa que a função existe para garantir. Medido no
+    vault: só 66,9% dos 3.004 átomos têm assunto no título; os outros 993 saíram por
+    esta fresta. E a ablação de formato mediu o assunto no título valendo 0.029 de
+    distância — a maior peça do formato, o triplo da Malha.
+
+    Agora a exigência é a ENTIDADE (ver `entidades`). Sem entidade no assunto (assunto
+    todo genérico, ex.: 'economia da máquina de lavar louça'), cai na regra antiga de
+    sobreposição — prefixar por prefixar é o risco oposto, e assunto ERRADO envenena
+    (foi o que as notas _Pt<N>_ fizeram).
     """
     chaves_assunto = textutils.palavras_chave(assunto)
     if not chaves_assunto:
         return bloco
+    ents = entidades(assunto)
     linhas = bloco.strip().splitlines()
     for i, ln in enumerate(linhas):
         if not ln.lstrip().startswith("## "):
             continue
         titulo = ln.lstrip("#").strip()
-        if textutils.tem_sobreposicao(chaves_assunto, textutils.palavras_chave(titulo)):
+        chaves_titulo = textutils.palavras_chave(titulo)
+        # Com entidade: o título só passa se nomear UMA delas. Sem entidade: regra antiga.
+        ja_nomeia = (
+            bool(ents & chaves_titulo)
+            if ents
+            else textutils.tem_sobreposicao(chaves_assunto, chaves_titulo)
+        )
+        if ja_nomeia:
             return bloco                      # o modelo já nomeou o assunto
         linhas[i] = f"## {assunto}: {titulo}"
         return "\n".join(linhas)

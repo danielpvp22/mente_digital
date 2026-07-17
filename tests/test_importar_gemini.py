@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from importar_gemini import (  # noqa: E402
-    Deduplicador, Vigia, _nome_atomo, e_fiel, garantir_assunto, janelar, ler_turnos,
+    Deduplicador, Vigia, _nome_atomo, e_fiel, entidades, garantir_assunto, janelar, ler_turnos,
     tema_do_arquivo,
 )
 
@@ -430,3 +430,51 @@ def test_ler_turnos_ignora_mensagem_malformada(tmp_path):
         {"role": "user", "contents": [{"type": "text", "content": "esta é válida"}]},
     ])
     assert ler_turnos(p) == [("Usuário", "esta é válida")]
+
+
+# --- entidades / garantir_assunto ------------------------------------------
+# O título é INDEXADO junto com o corpo (split_markdown, strip_headers=False), e a
+# ablação de formato mediu o assunto no título valendo 0.029 de distância — a maior
+# peça do formato, o triplo da Malha. Quem garante essa peça é o garantir_assunto.
+def test_entidades_ignora_a_palavra_generica_do_assunto():
+    assert entidades("Pool de mineração de Zcash") == {"zcash"}          # não 'pool'
+    assert entidades("Clima no Paraguai") == {"paraguai"}                # não 'clima'
+
+
+def test_entidades_pega_all_caps_ate_na_primeira_posicao():
+    # 'YOLO' abre a frase mas é inequívoco; 'Fine-tuning' abre e é genérico
+    assert entidades("YOLO em Tarkov") == {"yolo", "tarkov"}
+    assert entidades("Fine-tuning de modelos YOLO para Tarkov") == {"yolo", "tarkov"}
+
+
+def test_entidades_nao_cai_no_title_case_do_nome_de_arquivo():
+    # REGRESSÃO: `descobrir_assunto` cai no tema_do_arquivo quando o modelo falha, e o
+    # nome vem Title-Cased. A 1ª versão chamava 'Pelo' e 'Localmente' de entidade.
+    assert entidades("Acessar Ollama Localmente Pelo Celular") == set()
+    # ALL-CAPS continua valendo mesmo em Title Case (é caixa deliberada, não convenção)
+    assert entidades("Como Usar GPU No Windows") == {"gpu"}
+
+
+def test_garantir_assunto_prefixa_quando_o_titulo_so_repete_a_palavra_generica():
+    # REGRESSÃO: bastava UMA keyword em comum para desistir de prefixar, e a comum
+    # costuma ser a genérica -> 'Conexão com a Pool' (pool de quê?) passava batido.
+    out = garantir_assunto("## Conexão com a Pool\ncorpo.", "Pool de mineração de Zcash")
+    assert out.splitlines()[0] == "## Pool de mineração de Zcash: Conexão com a Pool"
+
+    out = garantir_assunto("## O Sweet Spot em fine-tuning\ncorpo.",
+                           "Fine-tuning de modelos YOLO para Tarkov")
+    assert out.splitlines()[0].startswith("## Fine-tuning de modelos YOLO para Tarkov: ")
+
+
+def test_garantir_assunto_nao_mexe_no_titulo_que_ja_nomeia_a_entidade():
+    original = "## Raridade de Neve no Paraguai\ncorpo."
+    assert garantir_assunto(original, "Clima no Paraguai") == original
+    original = "## Equihash no Zcash\ncorpo."
+    assert garantir_assunto(original, "Pool de mineração de Zcash") == original
+
+
+def test_garantir_assunto_sem_entidade_cai_na_regra_antiga():
+    # Assunto todo genérico: não há entidade a exigir. Prefixar por prefixar é o risco
+    # oposto — assunto ERRADO envenena a recuperação (foi o mal das notas _Pt<N>_).
+    original = "## Economia mensal\ncorpo."
+    assert garantir_assunto(original, "economia da máquina de lavar louça") == original
