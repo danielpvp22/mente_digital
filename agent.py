@@ -368,6 +368,28 @@ def referencia_contexto(pergunta: str) -> bool:
     return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
 
 
+def lacuna_pesquisavel(termos: str) -> bool:
+    """A lacuna vale uma pesquisa proativa (autônoma, escreve no vault)? Puro/testável.
+
+    Dois defeitos medidos em produção, um filtro:
+    - TRIVIAL: 'ok'/'sim' (falso-positivo do VAD/Whisper, 0 keywords) escalava e a
+      proativa pesquisava a etimologia de "ok" — 8 átomos-lixo.
+    - SEM NÚCLEO: 'dolar 542' (moeda + número). Tirando o número e o gatilho efêmero,
+      não sobra ASSUNTO a pesquisar — e a resposta (cotação) expiraria de qualquer jeito.
+
+    Aplicar e_efemero cru aos termos seria agressivo demais: 'protocolo stratum v2
+    mineracao bitcoin' é efêmero pela palavra 'bitcoin', mas é pergunta técnica legítima.
+    Por isso o teste é ter NÚCLEO — ao menos 1 keyword que não seja número puro nem
+    gatilho efêmero. 'dolar 542' -> núcleo vazio; 'stratum...bitcoin' -> {protocolo,
+    stratum, mineracao}. Distingue o lixo do assunto real que só menciona cripto.
+    """
+    kws = textutils.palavras_chave(termos)
+    if len(kws) < settings.lacuna_min_keywords:
+        return False
+    nucleo = {k for k in kws if not k.isdigit() and not tools.e_efemero(k)}
+    return bool(nucleo)
+
+
 # ==========================================================================
 # Extrator de query (resolve pronomes cruzados)
 # ==========================================================================
@@ -582,11 +604,10 @@ class Agent:
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
                     # LACUNA: nem a RAM nem o banco tinham. Registra para a pesquisa
-                    # proativa do idle trazer isto pronto na próxima vez. Dois filtros:
-                    # efêmero ('clima amanhã' = dado que expira) e TRIVIAL — 'ok'/'sim'
-                    # do VAD/Whisper têm 0 keywords e a proativa pesquisava a etimologia
-                    # de "ok" (8 átomos-lixo medidos). Só vira lacuna pergunta de verdade.
-                    if not efemero and len(textutils.palavras_chave(termos)) >= settings.lacuna_min_keywords:
+                    # proativa do idle trazer isto pronto na próxima vez. `efemero` (da
+                    # pergunta original) barra 'clima amanhã'; `lacuna_pesquisavel` barra
+                    # o trivial ('ok') e o sem-núcleo ('dolar 542') — ver a função.
+                    if not efemero and lacuna_pesquisavel(termos):
                         await asyncio.to_thread(
                             db.save_lacuna, textutils.normaliza(termos), termos
                         )
@@ -1108,9 +1129,9 @@ class EtlProcessor:
                 break
             termos = lac["termos"]
             chave = textutils.normaliza(termos)
-            # Backstop contra lacuna trivial já na tabela (legada, de antes do filtro na
-            # escalada): 'ok'/'sim' nunca viram pesquisa. Marca e segue.
-            if len(textutils.palavras_chave(termos)) < settings.lacuna_min_keywords:
+            # Backstop contra lacuna inútil já na tabela (legada, de antes do filtro na
+            # escalada): 'ok' (trivial) e 'dolar 542' (sem núcleo) nunca viram pesquisa.
+            if not lacuna_pesquisavel(termos):
                 await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
                 continue
             await self._esperar_idle()

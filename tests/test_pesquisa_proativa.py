@@ -181,3 +181,28 @@ def test_proativa_pula_lacuna_trivial(tmp_path, monkeypatch):
     assert ctx.web.chamou == []                          # não gastou busca web em 'ok'
     assert saved == []                                   # não escreveu átomo
     assert d.get_lacunas() == []                         # marcada, sai da fila
+
+
+# --- lacuna_pesquisavel: núcleo substantivo ---------------------------------
+def test_lacuna_pesquisavel_distingue_lixo_de_assunto_real():
+    from agent import lacuna_pesquisavel
+    # trivial (0 keywords) e sem-núcleo (moeda + número) -> NÃO pesquisa
+    assert lacuna_pesquisavel("ok") is False
+    assert lacuna_pesquisavel("dolar 542") is False          # tira num+moeda -> vazio
+    # pergunta técnica que SÓ MENCIONA cripto -> núcleo {protocolo,stratum,mineracao}
+    # (aplicar e_efemero cru mataria esta — é o ponto do NÚCLEO em vez do gate cru)
+    assert lacuna_pesquisavel("protocolo stratum v2 mineracao bitcoin") is True
+    assert lacuna_pesquisavel("itens lista compra projeto esp32") is True
+    # número CENTRAL não vira lixo se há assunto junto ('crise' não é efêmero)
+    assert lacuna_pesquisavel("crise economica 1929") is True
+
+
+def test_lacuna_pesquisavel_e_secundario_ao_efemero():
+    # 'euro hoje' passa por lacuna_pesquisavel (núcleo={hoje}), MAS na escalada é
+    # barrado antes pelo `not efemero` da pergunta ORIGINAL (euro é gatilho). Este
+    # filtro é o 2º nível — resolve o que o efêmero não pega (número+moeda), não o
+    # que ele já pega. Documenta a divisão de trabalho.
+    import tools
+    from agent import lacuna_pesquisavel
+    assert tools.e_efemero("euro hoje") is True              # o efêmero pega
+    assert lacuna_pesquisavel("euro hoje") is True           # o núcleo, sozinho, não
