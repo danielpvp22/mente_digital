@@ -209,43 +209,82 @@ def prompt_assunto(trecho: str) -> str:
 # títulos genéricos ENVENENAM a recuperação: medido, a nota do Tarkov acima entrou no
 # contexto de uma pergunta sobre a economia da máquina de lavar louça, casada só pela
 # palavra "economia". Daí a REGRA CRÍTICA de auto-contenção abaixo.
+# A REGRA 1 aqui não é enfeite: é a mesma disciplina do SYS_RESPOSTA ("Baseie-se APENAS
+# nos dados fornecidos... NUNCA invente"), que na 1ª versão deste prompt eu esqueci de
+# trazer — e o resultado foi medido, átomo por átomo, contra a fonte:
+#   - conversa "520 rpm num quadro 700, quantos km/h?" (cuja resposta foi TRUNCADA na
+#     origem): o modelo inventou "a circunferência da roda de 700c é ~2,1 metros" e
+#     "o fator de velocidade é a rotação vezes a circunferência". Nada disso existe na
+#     fonte.
+#   - janela que TERMINA na pergunta "qual o tempo de liquidez de cada pool?": o modelo
+#     respondeu "1 a 7 dias" — número que não está em lugar nenhum do texto — e ignorou
+#     todo o conteúdo real da janela (Stratum, Equihash, shares).
+# Ou seja: pedir "extraia as ideias sobre X" o modelo lê como "escreva notas sobre X",
+# e ele preenche a lista com o que sabe. Um átomo inventado é pior que nenhum: ele entra
+# no vault com a autoridade do histórico do próprio usuário.
 SYS_SINTESE_IMPORT = (
-    "Você destila uma conversa em NOTAS ATÔMICAS Zettelkasten: cada nota é UMA ideia "
-    "auto-contida, que faz sentido sozinha. Português direto, sem texto fora do formato."
+    "Você EXTRAI notas de um texto que recebe. Você NÃO escreve sobre o assunto e NÃO "
+    "usa o seu próprio conhecimento: você reporta apenas o que o texto AFIRMA. "
+    "Português direto, sem nada fora do formato pedido."
 )
 
 
 def prompt_sintese_import(tema: str, trecho: str) -> str:
     return (
-        f"A conversa abaixo é sobre: **{tema}**.\n\n"
-        "Extraia dela as ideias de conhecimento DURÁVEL como NOTAS ATÔMICAS.\n\n"
-        "REGRA CRÍTICA — AUTO-CONTENÇÃO: cada nota será lida ISOLADA, meses depois, sem "
-        "esta conversa ao lado. O título E o corpo precisam dizer de que assunto se trata, "
-        f"nomeando '{tema}' ou a entidade concreta envolvida. Títulos genéricos como "
-        "'Economia necessária', 'Gemini' ou 'Configuração' são INÚTEIS e proibidos: "
-        "escreva 'Economia de munição necessária no Tarkov'. Nunca use pronome sem "
-        "antecedente ('ele', 'isso', 'esse valor', 'o script') — repita o nome.\n\n"
-        "REGRA — RECUPERAÇÃO: escreva cada nota como a RESPOSTA a uma pergunta que "
-        "alguém faria meses depois, usando as palavras que essa pessoa usaria ao "
-        "perguntar. Números e nomes próprios devem vir acompanhados do que medem.\n\n"
-        "REGRA — TÍTULOS DISTINTOS: cada nota trata de UMA ideia, então cada título "
-        "tem que ser DIFERENTE dos outros e nomear a ideia ESPECÍFICA daquela nota. "
-        f"NÃO repita '{tema}' como título de várias notas: ele é o contexto, não a "
-        "ideia. Se duas notas teriam o mesmo título, ou são a mesma nota (escreva UMA) "
-        "ou os títulos estão genéricos demais (diferencie-os).\n\n"
-        "REGRA — UMA IDEIA POR NOTA: não junte dois fatos numa nota nem repita o mesmo "
-        "fato em notas diferentes. Quantas notas? Quantas ideias houver — nem mais, nem "
-        "menos.\n\n"
-        "IGNORE: saudações, small talk, correções de rumo, pedidos de desculpa do "
-        "assistente, e QUALQUER dado perecível (cotação, clima, hora, preço de hoje).\n\n"
-        "Formato EXATO, uma ideia por nota, sem repetir:\n\n"
-        "## <título auto-contido, com o assunto dentro>\n"
-        "<a ideia em 1-3 frases afirmativas e completas>\n"
-        "**Malha Neural:** [[Conceito relacionado]]\n"
-        f"{TAG_ATOMO}\n\n"
-        "Separe as notas por uma linha em branco. Se não houver NADA durável a reter "
-        "neste trecho, responda apenas 'NADA'. Sem introdução e sem conclusão.\n\n"
-        f"CONVERSA:\n{trecho}"
+        "Extraia NOTAS ATÔMICAS do texto no fim desta mensagem.\n\n"
+        "REGRA 1 — FIDELIDADE (a mais importante de todas): cada nota tem que ser "
+        "sustentada por uma afirmação LITERAL do texto. NUNCA acrescente número, data, "
+        "medida, unidade ou fato que não esteja escrito ali. Se o texto FAZ uma pergunta "
+        "e não a responde, IGNORE a pergunta — não a responda com o que você sabe. Se um "
+        "cálculo é anunciado mas não concluído, não conclua. Na dúvida, OMITA a nota. "
+        "Escrever menos notas é sempre melhor que escrever uma nota inventada.\n\n"
+        "REGRA 2 — SÓ FATOS: uma nota só vale se carrega um fato concreto do texto. "
+        "É PROIBIDO escrever nota vazia como 'X é necessário para calcular Y', 'a "
+        "velocidade é calculada considerando A, B e C' ou 'há informações sobre Z'. "
+        "Se o trecho não afirma nenhum fato, responda apenas 'NADA'.\n\n"
+        f"CONTEXTO — o texto trata de '{tema}'. Isto serve para você escrever títulos "
+        "auto-contidos; NÃO é um filtro. Extraia TODAS as ideias do trecho, inclusive as "
+        "que fogem desse assunto.\n\n"
+        "REGRA 3 — AUTO-CONTENÇÃO: cada nota será lida ISOLADA, meses depois, sem este "
+        "texto ao lado. Título e corpo precisam dizer de que se trata, nomeando a "
+        "entidade concreta. Títulos genéricos como 'Economia necessária', 'Gemini' ou "
+        "'Resultado final' são inúteis e proibidos: escreva 'Economia de munição "
+        "necessária no Tarkov'. Nunca use pronome sem antecedente ('ele', 'isso', 'esse "
+        "valor', 'o script') — repita o nome.\n\n"
+        "REGRA 4 — TÍTULOS DISTINTOS: cada título tem que ser DIFERENTE dos outros e "
+        f"nomear a ideia ESPECÍFICA daquela nota. NÃO repita '{tema}' como título de "
+        "várias notas. Se duas notas teriam o mesmo título, ou são a mesma nota (escreva "
+        "UMA), ou os títulos estão genéricos demais (diferencie-os).\n\n"
+        # A regra da Malha é MEDIDA, não estética. A linha é INDEXADA junto com o corpo
+        # (só o frontmatter sai), então cada link acrescenta tokens ao vetor do átomo.
+        # Testado sobre um átomo de Equihash, comparando 1 link contra 6:
+        #   - links que REPETEM palavras do corpo ([[Equihash]], [[Zcash]], [[Prova de
+        #     Trabalho]]) não ganham nada e chegam a PIORAR (+0.008): mesma informação,
+        #     mais tokens, o vetor dilui.
+        #   - um link com conceito AUSENTE do corpo ([[ASIC]]) abriu um caminho novo:
+        #     "minerar Zcash com ASIC funciona?" foi de 0.512 para 0.463.
+        # Daí "conceitos que NÃO aparecem no texto da nota": é o que transforma uma
+        # ideia em várias portas de entrada, que é o ponto do Zettelkasten. A
+        # atomicidade nunca limitou os links — ela existe para PERMITI-los.
+        "REGRA 5 — MALHA NEURAL: liste de 2 a 4 conceitos relacionados, e prefira os "
+        "que NÃO aparecem escritos no corpo da nota. Um link que repete palavra já "
+        "presente no texto não acrescenta nada; um que traz um conceito novo (a "
+        "tecnologia adjacente, o problema que resolve, a categoria a que pertence) faz "
+        "a nota ser encontrada por quem pergunta de outro ângulo.\n\n"
+        "IGNORE: saudações, small talk, correções de rumo, pedidos de desculpa, e "
+        "qualquer dado perecível (cotação, clima, hora, preço de hoje).\n\n"
+        # NÃO peça a linha de tags aqui: `agent.normalizar_atomo` a impõe depois, no
+        # Python. Medido, o LLM gastava 7 dos 62 tokens de cada átomo emitindo
+        # "#zettelkasten_atomico" — 11% do decode, ~29 min do lote — para o Python
+        # reescrever a linha em seguida. Pedir ao modelo o que o código já garante é
+        # pagar duas vezes pela mesma coisa.
+        "Formato EXATO:\n\n"
+        "## <título auto-contido, com a entidade concreta>\n"
+        "<o fato, em 1-3 frases afirmativas, tudo sustentado pelo texto>\n"
+        "**Malha Neural:** [[Conceito A]] [[Conceito B]] [[Conceito C]]\n\n"
+        "NÃO escreva tags (#algo): são adicionadas depois, automaticamente.\n"
+        "Separe as notas por uma linha em branco. Sem introdução e sem conclusão.\n\n"
+        f"TEXTO:\n{trecho}"
     )
 
 

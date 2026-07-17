@@ -14,8 +14,209 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from importar_gemini import (  # noqa: E402
-    Deduplicador, garantir_assunto, janelar, ler_turnos, tema_do_arquivo,
+    Deduplicador, Vigia, _nome_atomo, e_fiel, garantir_assunto, janelar, ler_turnos,
+    tema_do_arquivo,
 )
+
+
+# --- _nome_atomo: nunca sobrescrever conhecimento ----------------------------
+def test_nome_e_legivel_e_nao_repete_o_assunto():
+    # O nome NÃO leva o slug da conversa de propósito: o garantir_assunto já prefixa o
+    # assunto no título, e pôr os dois dava
+    # 'como_funciona_a_pool_de_pool_de_mineracao_de_zcash_distribuicao_da_tarefa_0_1.md'.
+    n = _nome_atomo("Como-Funciona-a-Pool-de-Mineracao-Zcash.json",
+                    "## Pool de mineração de Zcash: Distribuição da Tarefa", 0, 1)
+    assert n == "pool_de_mineracao_de_zcash_distribuicao_da_tarefa_0_1.md"
+    assert "como_funciona" not in n           # a origem vive no frontmatter, não no nome
+
+
+def test_colisao_entre_conversas_nao_sobrescreve(tmp_path, monkeypatch):
+    # O bug REAL e silencioso: dois arquivos com um átomo de título parecido na mesma
+    # posição geravam o MESMO nome, e open(w) truncava o anterior. A unicidade é do
+    # _caminho_livre — o nome pode repetir, o arquivo não.
+    import importar_gemini as m
+    monkeypatch.setattr(m, "DIR_SAIDA", str(tmp_path))
+    nome = _nome_atomo("a.json", "## Conexão com a Pool\nUsa Stratum.", 0, 0)
+
+    p1 = m._caminho_livre(nome)
+    Path(p1).write_text("átomo da conversa A", encoding="utf-8")
+    p2 = m._caminho_livre(nome)          # mesma origem de nome, outra conversa
+
+    assert p1 != p2
+    assert Path(p1).read_text(encoding="utf-8") == "átomo da conversa A"   # intacto
+
+
+def test_nome_distingue_janela_e_indice():
+    atomo = "## X\ncorpo"
+    assert _nome_atomo("c.json", atomo, 0, 0) != _nome_atomo("c.json", atomo, 1, 0)
+    assert _nome_atomo("c.json", atomo, 0, 0) != _nome_atomo("c.json", atomo, 0, 1)
+
+
+def test_nome_preserva_o_que_distingue_os_atomos():
+    # Com o prefixo do garantir_assunto, 40 chars cortavam justamente o "MAI AP"/"BP".
+    a = _nome_atomo("t.json", "## Tarkov Arena Munições: Custo de 40 balas de MAI AP", 0, 0)
+    b = _nome_atomo("t.json", "## Tarkov Arena Munições: Custo de 30 balas de BP", 0, 1)
+    assert "mai_ap" in a and "bp" in b
+    assert a != b
+
+
+def test_nome_nao_corta_no_meio_da_palavra():
+    n = _nome_atomo("c.json", "## Diferenca entre dolar comercial e turismo internacional", 0, 0)
+    miolo = n.split("_0_0.md")[0]
+    assert not miolo.endswith("_")
+    for pedaco in ("turism", "interna"):          # cortes no meio que víamos antes
+        assert not miolo.endswith(pedaco)
+
+
+def test_nome_cabe_no_windows():
+    # MAX_PATH=260 e o caminho até o vault já gasta ~58.
+    n = _nome_atomo("C" * 80 + ".json", "## " + "T" * 200, 999, 99)
+    assert len(n) < 130
+
+
+# --- e_fiel: o portão de qualidade -------------------------------------------
+def test_fiel_pega_numero_inventado():
+    # O caso REAL: a conversa "520 rpm num quadro 700" teve a resposta TRUNCADA na
+    # origem, e o modelo inventou "a circunferência da roda de 700c é ~2,1 metros".
+    trecho = "**Usuário:** 520 rpm num quadro 700. Quantos km/h dará?"
+    atomo = "## Circunferência da roda\nA circunferência da roda de 700c é de aproximadamente 2,1 metros."
+    ok, motivo = e_fiel(atomo, trecho)
+    assert ok is False
+    assert "2.1" in motivo or "21" in motivo
+
+
+def test_fiel_aceita_numero_que_esta_na_fonte():
+    trecho = "uma cadência de 520 RPM é absurdamente alta; profissionais mal chegam a 170 ou 200 RPM"
+    atomo = "## Cadência de ciclistas profissionais\nProfissionais de pista chegam a 170 ou 200 RPM."
+    assert e_fiel(atomo, trecho)[0] is True
+
+
+def test_fiel_aceita_atomo_sem_numero():
+    # Sem número não há o que verificar: o portão não pode reprovar por omissão.
+    assert e_fiel("## Stratum\nO Stratum é o protocolo usado para conectar à pool.", "texto qualquer")[0] is True
+
+
+def test_fiel_normaliza_virgula_ponto_e_milhar():
+    # '2,1' na fonte e '2.1' no átomo são o mesmo número; '1.200' e '1200' também.
+    assert e_fiel("## X\nO valor é 2.1 metros.", "o valor é 2,1 metros")[0] is True
+    assert e_fiel("## X\nCusta 1200 reais.", "custa 1.200 reais")[0] is True
+
+
+def test_fiel_ignora_digito_solto_de_proposito():
+    # Limite ASSUMIDO: '1' e '7' aparecem em qualquer texto (listas, datas), então
+    # exigi-los reprovaria tudo. A rede pega número de 2+ dígitos ou com decimal.
+    ok, _ = e_fiel("## X\nVaria de 1 a 7 dias.", "texto sem esses numeros")
+    assert ok is True          # documenta o furo conhecido, não o esconde
+
+
+# --- janelar: não terminar em pergunta ---------------------------------------
+def test_janela_nao_termina_em_pergunta_do_usuario():
+    # O caso REAL: a janela 1 de "Pool de Mineração Zcash" acabava em "qual é o tempo
+    # de liquidez de cada pool?" (a resposta estava na janela seguinte) e o modelo
+    # inventou "1 a 7 dias" para respondê-la.
+    turnos = [
+        ("Usuário", "p1 " * 20), ("Assistente", "r1 " * 40),
+        ("Usuário", "p2 " * 20), ("Assistente", "r2 " * 40),
+    ]
+    janelas = janelar(turnos, limite=300)
+    assert len(janelas) > 1
+    for j in janelas[:-1]:                    # a última pode terminar em pergunta
+        assert not j.rstrip().split("\n\n")[-1].startswith("**Usuário:**")
+
+
+def test_janela_leva_a_pergunta_orfa_para_a_proxima():
+    turnos = [("Assistente", "r1 " * 40), ("Usuário", "pergunta orfa"), ("Assistente", "r2 " * 40)]
+    janelas = janelar(turnos, limite=200)
+    assert len(janelas) >= 2
+    assert "pergunta orfa" in janelas[1]       # foi junto da resposta dela
+    assert "pergunta orfa" not in janelas[0]
+
+
+def test_janela_so_de_perguntas_nao_trava():
+    # Se não há resposta nenhuma, não há o que adiar: emite em vez de empurrar pra sempre.
+    turnos = [("Usuário", "p%d " % i * 20) for i in range(6)]
+    janelas = janelar(turnos, limite=200)
+    assert janelas
+    assert all(len(j) <= 200 for j in janelas)
+
+
+def test_janela_adiada_ainda_respeita_o_limite():
+    # A garantia de TAMANHO vence a de "não terminar em pergunta": estourar o n_ctx
+    # some com a janela inteira; terminar em pergunta só arrisca um átomo.
+    turnos = [("Assistente", "r " * 10), ("Usuário", "p " * 80), ("Assistente", "r2 " * 80)]
+    janelas = janelar(turnos, limite=200)
+    assert all(len(j) <= 200 for j in janelas)
+
+
+# --- Vigia: detectar vazamento MÍNIMO e parar --------------------------------
+def _vigia(amostras, total=2885, tol_rss=1500.0):
+    """Vigia com RSS roteirizado. O amostrador é injetável pelo mesmo motivo que o
+    clock do LatencyTracker: sem isso, esta lógica só seria testável com 4h de GPU."""
+    it = iter(amostras)
+    ultimo = [amostras[0]]
+
+    def sampler():
+        try:
+            ultimo[0] = next(it)
+        except StopIteration:
+            pass
+        return ultimo[0]
+
+    v = Vigia(total, tol_rss, 600.0, amostrador=sampler)
+    v.base_rss = amostras[0]
+    v.base_vram_usada = None          # VRAM fora deste teste
+    return v
+
+
+def test_vigia_nao_para_processo_que_apenas_ASSENTA():
+    # O FALSO POSITIVO REAL que derrubou um lote saudável na janela ~244: a 1ª versão
+    # ancorava na janela 50 e extrapolava dali em reta. Mas o processo assenta — medido
+    # com o Deduplicador real, a inclinação cai 14x entre a janela 50 e a 3386 (0,099 ->
+    # 0,007 MB/janela) enquanto alocador, CUDA e llama.cpp acomodam. A janela deslizante
+    # enxerga isso: a inclinação RECENTE vai a zero.
+    import math
+    base = 6000.0
+    # curva de assentamento: cresce rápido no começo, achata (log)
+    amostras = [base + 120 * math.log1p(i / 40) for i in range(1200)]
+    v = _vigia(amostras, total=3386)
+    for _ in range(1000):
+        assert v.checar() is None
+
+
+def test_vigia_pega_vazamento_minimo_pela_projecao():
+    # 0,5 MB/janela é invisível como valor absoluto (150 MB na janela 300, bem abaixo do
+    # limite de 1500) mas são +1,5 GB nas 3386. É a PROJEÇÃO que o pega.
+    amostras = [6000.0 + 0.5 * i for i in range(1200)]
+    v = _vigia(amostras, total=3386)
+    motivo = None
+    for _ in range(1200):
+        motivo = v.checar()
+        if motivo:
+            break
+    assert motivo is not None
+    assert "MB/janela" in motivo
+    assert v.n <= 400            # pega cedo, com 3.000 janelas ainda pela frente
+
+
+def test_vigia_pega_estouro_absoluto_mesmo_sem_inclinacao():
+    # Um salto único (não uma inclinação) tem que parar pelo limite absoluto.
+    amostras = [5000.0] * 10 + [9000.0] * 50
+    v = _vigia(amostras)
+    motivos = [v.checar() for _ in range(30)]
+    assert any(m and "cresceu" in m for m in motivos)
+
+
+def test_vigia_nao_projeta_antes_de_ter_amostras():
+    # Antes de MIN_AMOSTRAS a inclinação recente é ruído: melhor calar que abortar à toa.
+    amostras = [5000.0 + 50.0 * i for i in range(400)]  # vazamento brutal
+    v = _vigia(amostras, tol_rss=1e9)                   # limite absoluto fora do caminho
+    for _ in range(Vigia.MIN_AMOSTRAS - 1):
+        assert v.checar() is None                       # ainda aquecendo
+
+
+def test_vigia_status_nao_quebra_sem_amostra():
+    v = Vigia(100, 1500.0, 600.0, amostrador=lambda: None)
+    assert "indisponível" in v.status()
 
 
 # --- Deduplicador: uma ideia, uma nota ---------------------------------------
@@ -160,12 +361,39 @@ def test_janelar_corta_so_em_fronteira_de_turno():
             assert bloco.startswith("**Usuário:**") or bloco.startswith("**Assistente:**")
 
 
-def test_janelar_turno_gigante_vira_janela_sozinho():
-    # Não pode sumir com o turno nem misturá-lo com outros: vai sozinho.
-    turnos = [("Usuário", "x" * 500), ("Assistente", "ok")]
-    janelas = janelar(turnos, limite=100)
-    assert len(janelas) == 2
-    assert "x" * 500 in janelas[0]
+def test_janelar_parte_turno_gigante_em_vez_de_estourar_o_contexto():
+    # O bug que matou o lote real: um paste de código virava uma janela de 17.660
+    # tokens e o llama.cpp levantava "exceed context window of 8192". Pior, em
+    # silêncio: o worker morria, collect devolvia "", e a janela era marcada como
+    # concluída com ZERO átomos. NENHUMA janela pode passar do limite.
+    turnos = [("Usuário", "palavra " * 500), ("Assistente", "ok")]
+    janelas = janelar(turnos, limite=200)
+    assert len(janelas) > 2
+    for j in janelas:
+        assert len(j) <= 200
+
+
+def test_janelar_ao_partir_nao_perde_conteudo():
+    texto = " ".join(f"tok{i}" for i in range(300))
+    janelas = janelar([("Usuário", texto)], limite=150)
+    juntas = " ".join(janelas)
+    for i in range(300):                    # nada some no corte
+        assert f"tok{i}" in juntas
+
+
+def test_janelar_pedaco_partido_recarrega_o_papel():
+    # Sem o papel em cada pedaço, o trecho 2..N chega ao LLM sem saber quem falou.
+    janelas = janelar([("Assistente", "palavra " * 200)], limite=200)
+    assert len(janelas) > 1
+    for j in janelas:
+        assert j.startswith("**Assistente:**")
+
+
+def test_janelar_palavra_unica_gigante_nao_trava():
+    # Sem espaço onde cortar (um base64, por exemplo): corta seco em vez de estourar.
+    janelas = janelar([("Usuário", "x" * 1000)], limite=120)
+    assert all(len(j) <= 120 for j in janelas)
+    assert "".join(j.replace("**Usuário:** ", "") for j in janelas) == "x" * 1000
 
 
 def test_janelar_preserva_todo_o_conteudo():
@@ -178,3 +406,27 @@ def test_janelar_preserva_todo_o_conteudo():
 
 def test_janelar_vazio():
     assert janelar([]) == []
+
+
+def test_ler_turnos_pula_json_que_nao_e_conversa(tmp_path):
+    # Achado no acervo real: 'danielpvp22_mente_digital_6dadd2.json' é um SBOM SPDX
+    # (gerado pelo dependency graph do GitHub) largado na pasta gemini/. Derrubava o
+    # lote inteiro com AttributeError. Um arquivo estranho pula; não mata 5h de import.
+    p = tmp_path / "sbom.json"
+    p.write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": []}), encoding="utf-8")
+    assert ler_turnos(str(p)) == []
+
+
+def test_ler_turnos_tolera_json_corrompido(tmp_path):
+    p = tmp_path / "quebrado.json"
+    p.write_text("{ isto não é json", encoding="utf-8")
+    assert ler_turnos(str(p)) == []
+
+
+def test_ler_turnos_ignora_mensagem_malformada(tmp_path):
+    p = _json(tmp_path, "c.json", [
+        "uma string solta no lugar de uma mensagem",
+        {"role": "user", "contents": "contents deveria ser lista"},
+        {"role": "user", "contents": [{"type": "text", "content": "esta é válida"}]},
+    ])
+    assert ler_turnos(p) == [("Usuário", "esta é válida")]
