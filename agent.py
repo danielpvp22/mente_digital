@@ -582,9 +582,11 @@ class Agent:
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
                     # LACUNA: nem a RAM nem o banco tinham. Registra para a pesquisa
-                    # proativa do idle trazer isto pronto na próxima vez. Efêmero não
-                    # conta — 'clima amanhã' não é dúvida a resolver, é dado que expira.
-                    if not efemero:
+                    # proativa do idle trazer isto pronto na próxima vez. Dois filtros:
+                    # efêmero ('clima amanhã' = dado que expira) e TRIVIAL — 'ok'/'sim'
+                    # do VAD/Whisper têm 0 keywords e a proativa pesquisava a etimologia
+                    # de "ok" (8 átomos-lixo medidos). Só vira lacuna pergunta de verdade.
+                    if not efemero and len(textutils.palavras_chave(termos)) >= settings.lacuna_min_keywords:
                         await asyncio.to_thread(
                             db.save_lacuna, textutils.normaliza(termos), termos
                         )
@@ -1106,6 +1108,11 @@ class EtlProcessor:
                 break
             termos = lac["termos"]
             chave = textutils.normaliza(termos)
+            # Backstop contra lacuna trivial já na tabela (legada, de antes do filtro na
+            # escalada): 'ok'/'sim' nunca viram pesquisa. Marca e segue.
+            if len(textutils.palavras_chave(termos)) < settings.lacuna_min_keywords:
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
             await self._esperar_idle()
             # Nível 1 — o banco já cobre? (cresceu desde que a lacuna foi vista)
             local = await self.ctx.vectorstore.search(termos, texto_busca=termos)

@@ -167,3 +167,17 @@ def test_ja_no_banco_fail_open_sem_embeddings(tmp_path):
     ctx.vectorstore = None
     etl = EtlProcessor(ctx)
     assert asyncio.run(etl._ja_no_banco("qualquer")) is False
+
+
+# --- lacuna trivial não é pesquisada (bug do 'ok' em produção) --------------
+def test_proativa_pula_lacuna_trivial(tmp_path, monkeypatch):
+    # 'ok' (0 keywords, falso-positivo do VAD/Whisper) escalou e a proativa pesquisou
+    # a ETIMOLOGIA de "ok" — 8 átomos-lixo. O backstop marca e não pesquisa.
+    etl, d, ctx, saved = _etl(tmp_path, monkeypatch, cobre=False)
+    d.save_lacuna("ok", "ok")
+
+    asyncio.run(etl.pesquisa_proativa())
+
+    assert ctx.web.chamou == []                          # não gastou busca web em 'ok'
+    assert saved == []                                   # não escreveu átomo
+    assert d.get_lacunas() == []                         # marcada, sai da fila

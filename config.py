@@ -209,6 +209,10 @@ class Settings(BaseSettings):
     idle_pesquisa_proativa: bool = True
     # Quantas lacunas pesquisar por ciclo de idle (cada uma: 1 busca web + 1 síntese).
     idle_pesquisa_max: int = 3
+    # Mínimo de keywords significativas para uma pergunta virar LACUNA pesquisável.
+    # Sem isto, 'ok'/'sim' (falso-positivo do VAD/Whisper, 0 keywords) escalavam pra web
+    # e a proativa pesquisava — medido: 8 átomos sobre a etimologia de "ok" no vault.
+    lacuna_min_keywords: int = 2
     # Dedup do átomo novo contra o banco: distância de cosseno abaixo da qual o átomo é
     # considerado DUPLICADO e descartado. Conservador (0.08 ≈ quase idêntico) para não
     # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
