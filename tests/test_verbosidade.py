@@ -40,3 +40,35 @@ def test_pergunta_longa_sem_pista_e_normal():
 def test_explica_vence_o_tamanho():
     # Curta MAS pede explicação -> não corta a 1 frase.
     assert classificar("explica RAG").nome == "detalhado"
+
+
+# -- explique-como-para-criança (#45) -----------------------------------------
+def test_crianca_detecta_variacoes():
+    for p in [
+        "me explica o que é RAG como para uma criança",
+        "o que é blockchain, pra criança de 5 anos",
+        "explica inflação como se eu fosse leigo",
+        "o que é um transformer, em linguagem simples",
+        "me explica ELI5 o que é uma GPU",
+    ]:
+        assert classificar(p).nome == "crianca", p
+
+
+def test_crianca_leva_instrucao_de_simplicidade():
+    n = classificar("explica computação quântica para uma criança")
+    assert n.nome == "crianca"
+    assert "criança de 5 anos" in n.instrucao
+    assert n.max_tokens == settings.max_tokens_resposta   # não corta: analogia precisa de espaço
+
+
+def test_crianca_vence_curto_e_detalhado():
+    # Curtíssima que seria "curto", mas o pedido de simplicidade vence (não 1 frase).
+    assert classificar("o que é RAG, bem simples").nome == "crianca"
+    # "explica" (detalhado) + "para criança" -> criança ganha.
+    assert classificar("explica RAG para uma criança").nome == "crianca"
+
+
+def test_pergunta_normal_nao_e_crianca():
+    # Não confundir uma pergunta comum com o pedido de ELI5.
+    assert classificar("qual a capital da França?").nome != "crianca"
+    assert classificar("me explica como funciona o RAG").nome == "detalhado"
