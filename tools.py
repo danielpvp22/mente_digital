@@ -547,7 +547,10 @@ async def _t_auditoria(args: dict, ctx) -> str:
             hora = datetime.fromisoformat(it["t"]).strftime("%H:%M")
         except (ValueError, TypeError):
             hora = ""
-        linhas.append(f"{hora} — {it['detalhe'] or it['acao']}")
+        # Tira a pontuação final do detalhe: senão o "." que fechamos a frase vira ".."
+        # ("...à lista de compras.." — visto no teste real).
+        det = (it["detalhe"] or it["acao"]).rstrip(" .;")
+        linhas.append(f"{hora} — {det}")
     return "Hoje eu: " + "; ".join(linhas) + "."
 
 

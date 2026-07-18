@@ -71,6 +71,14 @@ async def test_auditoria_hoje_fala(amb):
     assert "Hoje eu" in resp and "leite" in resp
 
 
+async def test_auditoria_sem_ponto_duplo(amb):
+    # detalhe que já termina em ponto não pode gerar ".." na fala (bug visto no teste real).
+    telemetry.db.registrar_auditoria("adicionar_item", "adicionei 'leite' à lista de compras.")
+    resp = await tools._t_auditoria({}, None)
+    assert ".." not in resp
+    assert resp.endswith(".")
+
+
 async def test_auditoria_vazia(amb):
     resp = await tools._t_auditoria({}, None)
     assert "nenhuma ação" in resp.lower()
