@@ -133,6 +133,9 @@ _GATILHOS_ACAO = (
     # Health-check falável (autoteste): acionado ao suspeitar de alucinação/falha.
     "diagnostico", "status do sistema", "autoteste", "voce esta funcionando",
     "esta funcionando", "checagem", "health check", "ta tudo ok", "esta tudo certo",
+    # Trilha de auditoria: "o que você fez hoje".
+    "o que voce fez", "que voce fez hoje", "trilha de auditoria", "suas acoes",
+    "historico de acoes", "o que aconteceu hoje", "seu historico de hoje",
 )
 
 
@@ -264,6 +267,9 @@ class Tool:
     # Zettelkasten — viravam átomos-lixo "## Lembrete: comprar pão". A persistência
     # delas é a própria tabela/nota, não o vault de conhecimento.
     registra_conhecimento: bool = True
+    # True: a ferramenta MUTA estado (cria/apaga/altera) e entra na trilha de auditoria
+    # (#27). Leituras (listar/ler/status/calcular) ficam False — não são "o que eu fiz".
+    auditavel: bool = False
 
 
 class ToolRegistry:
@@ -528,6 +534,23 @@ async def _t_capturar(args: dict, ctx) -> str:
     return f"anotado na inbox: {texto}"
 
 
+# --- Agente de Auditoria (trilha falável de ações) -------------------------------
+async def _t_auditoria(args: dict, ctx) -> str:
+    """Responde 'o que você fez hoje?' lendo a trilha de ações do dia."""
+    inicio_dia = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    itens = await asyncio.to_thread(db.get_auditoria, inicio_dia.isoformat(), 50)
+    if not itens:
+        return "hoje eu ainda não executei nenhuma ação."
+    linhas = []
+    for it in reversed(itens):  # cronológico na fala
+        try:
+            hora = datetime.fromisoformat(it["t"]).strftime("%H:%M")
+        except (ValueError, TypeError):
+            hora = ""
+        linhas.append(f"{hora} — {it['detalhe'] or it['acao']}")
+    return "Hoje eu: " + "; ".join(linhas) + "."
+
+
 # --- Agente de Health-check (autoteste falável) ----------------------------------
 async def _t_status(args: dict, ctx) -> str:
     """Reporta a saúde dos serviços — o usuário aciona isto ao suspeitar de alucinação
@@ -560,7 +583,7 @@ def criar_registry() -> ToolRegistry:
     reg.registrar(Tool(
         "salvar_nota",
         'salvar_nota(titulo, conteudo): grava uma nota no vault. Ex.: {"tool":"salvar_nota","args":{"titulo":"Reunião","conteudo":"amanhã 10h"}}',
-        _t_salvar_nota, terminal=True,
+        _t_salvar_nota, terminal=True, auditavel=True,
     ))
     reg.registrar(Tool(
         "listar_notas",
@@ -582,7 +605,7 @@ def criar_registry() -> ToolRegistry:
         "criar_lembrete",
         'criar_lembrete(quando, mensagem): agenda um lembrete/alarme/timer. Ex.: '
         '{"tool":"criar_lembrete","args":{"quando":"amanhã às 8h","mensagem":"reunião"}}',
-        _t_criar_lembrete, terminal=True, registra_conhecimento=False,
+        _t_criar_lembrete, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "listar_lembretes",
@@ -593,25 +616,25 @@ def criar_registry() -> ToolRegistry:
         "cancelar_lembrete",
         'cancelar_lembrete(id): cancela um lembrete pelo número. Ex.: '
         '{"tool":"cancelar_lembrete","args":{"id":"3"}}',
-        _t_cancelar_lembrete, terminal=True, registra_conhecimento=False,
+        _t_cancelar_lembrete, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "avisar_quando",
         'avisar_quando(condicao, termos): monitora a web e avisa quando a condição ocorrer. '
         'Ex.: {"tool":"avisar_quando","args":{"condicao":"dólar acima de 5,50","termos":"cotação dólar hoje"}}',
-        _t_avisar_quando, terminal=True, registra_conhecimento=False,
+        _t_avisar_quando, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "agendar_briefing",
         'agendar_briefing(hora): agenda um briefing diário falado. Ex.: '
         '{"tool":"agendar_briefing","args":{"hora":"07:00"}}',
-        _t_agendar_briefing, terminal=True, registra_conhecimento=False,
+        _t_agendar_briefing, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "adicionar_item",
         'adicionar_item(lista, item): adiciona um item a uma lista (compras/tarefas). Ex.: '
         '{"tool":"adicionar_item","args":{"lista":"compras","item":"pão"}}',
-        _t_adicionar_item, terminal=True, registra_conhecimento=False,
+        _t_adicionar_item, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "ler_lista",
@@ -622,18 +645,23 @@ def criar_registry() -> ToolRegistry:
         "remover_item",
         'remover_item(lista, item): remove um item de uma lista. Ex.: '
         '{"tool":"remover_item","args":{"lista":"compras","item":"pão"}}',
-        _t_remover_item, terminal=True, registra_conhecimento=False,
+        _t_remover_item, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "capturar_nota",
         'capturar_nota(texto): joga uma ideia na inbox sem processar (captura rápida). Ex.: '
         '{"tool":"capturar_nota","args":{"texto":"ideia de presente pro aniversário"}}',
-        _t_capturar, terminal=True, registra_conhecimento=False,
+        _t_capturar, terminal=True, registra_conhecimento=False, auditavel=True,
     ))
     reg.registrar(Tool(
         "status_sistema",
         'status_sistema(): reporta a saúde dos serviços (modelo, voz, memória). Ex.: '
         '{"tool":"status_sistema","args":{}}',
         _t_status, terminal=True, registra_conhecimento=False,
+    ))
+    reg.registrar(Tool(
+        "auditoria_hoje",
+        'auditoria_hoje(): lista o que os agentes fizeram hoje. Ex.: {"tool":"auditoria_hoje","args":{}}',
+        _t_auditoria, terminal=True, registra_conhecimento=False,
     ))
     return reg

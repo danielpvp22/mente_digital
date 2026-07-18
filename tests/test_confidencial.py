@@ -41,6 +41,8 @@ def _agent(monkeypatch, tmp_path):
     salvos = []
     monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: salvos.append(a))
     monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    # Hermético: não deixar o pipeline tocar o DB real do projeto (lacunas etc.).
+    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
     dump = tmp_path / "dump.md"
     monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(dump))
     return Agent(ctx), SessionMemory(settings), dump, salvos

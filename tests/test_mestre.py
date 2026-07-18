@@ -153,3 +153,10 @@ def test_modo_confidencial_desliga():
 def test_modo_confidencial_nao_e_comando():
     assert mestre.modo_confidencial("adiciona pão na lista") is None
     assert mestre.modo_confidencial("que horas são") is None
+
+
+# -- trilha de auditoria (#27) -------------------------------------------------
+def test_auditoria_parse():
+    for c in ["o que você fez hoje?", "trilha de auditoria", "quais suas ações hoje"]:
+        acoes = mestre.parse_rapido(c, AGORA)
+        assert acoes and acoes[0].tool == "auditoria_hoje"

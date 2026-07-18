@@ -94,10 +94,13 @@ def _etl(monkeypatch, interativo_livre: bool):
     else:
         ctx.interactive_idle.clear()          # usuário voltou
     etl = EtlProcessor(ctx)
-    # ETL real é irrelevante aqui: o foco é o unload no fim.
+    # ETL real é irrelevante aqui: o foco é o unload no fim. Stubamos TODAS as etapas
+    # pesadas — inclusive a pesquisa proativa, que senão leria o DB real (não hermético)
+    # e cairia em vectorstore=None quando houvesse lacunas de outros testes.
     async def _noop(*a, **k): ...
     monkeypatch.setattr(etl, "process_queue", _noop)
     monkeypatch.setattr(etl, "summarize_dump", _noop)
+    monkeypatch.setattr(etl, "pesquisa_proativa", _noop)
     return etl, ctx
 
 

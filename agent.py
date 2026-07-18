@@ -568,7 +568,7 @@ class Agent:
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
-                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial)
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
@@ -654,7 +654,9 @@ class Agent:
                     # proativa do idle trazer isto pronto na próxima vez. `efemero` (da
                     # pergunta original) barra 'clima amanhã'; `lacuna_pesquisavel` barra
                     # o trivial ('ok') e o sem-núcleo ('dolar 542') — ver a função.
-                    if not efemero and lacuna_pesquisavel(termos):
+                    # Modo confidencial (#5): a lacuna é um artefato DERIVADO da pergunta
+                    # sigilosa — persisti-la vazaria o assunto; fica de fora.
+                    if not efemero and not mem.confidencial and lacuna_pesquisavel(termos):
                         await asyncio.to_thread(
                             db.save_lacuna, textutils.normaliza(termos), termos
                         )
@@ -709,14 +711,15 @@ class Agent:
         )
         return tools.parse_decisao(bruto)
 
-    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira) -> str:
+    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira, auditar: bool = True) -> str:
         """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
 
         Ferramentas terminais (calcular/hora/salvar) encerram no 1º passo. As não
         terminais (buscar_web/ler_nota/listar_notas) podem encadear até
         `max_tool_steps`, mas o loop para assim que o roteador devolve 'responder'.
         A resposta final vai por streaming + chunking (TTS), preservando o pilar.
-        """
+
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
         observacoes: List[str] = []
         decisao = primeira
         passos = 0
@@ -729,6 +732,8 @@ class Agent:
             except Exception as exc:
                 telemetry.error("TOOL", f"Falha na ferramenta '{decisao.tool}'", exc)
                 obs = f"erro ao executar {decisao.tool}"
+            if auditar and tool.auditavel:
+                await asyncio.to_thread(db.registrar_auditoria, decisao.tool, obs)
             observacoes.append(f"[{decisao.tool}] {obs}")
             passos += 1
             if tool.terminal:
@@ -756,10 +761,12 @@ class Agent:
         await send({"tipo": "token", "texto": texto})
         await self._falar_texto(send, texto)
 
-    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender) -> str:
+    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True) -> str:
         """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
         sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
-        torna 'mestre, põe pão na lista' instantâneo e barato."""
+        torna 'mestre, põe pão na lista' instantâneo e barato.
+
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
         resultados: List[str] = []
         for dec in acoes:
             tool = self.tools.get(dec.tool)
@@ -770,6 +777,8 @@ class Agent:
             except Exception as exc:
                 telemetry.error("MESTRE", f"Falha na ferramenta '{dec.tool}'", exc)
                 obs = f"não consegui executar {dec.tool}"
+            if auditar and tool.auditavel:
+                await asyncio.to_thread(db.registrar_auditoria, dec.tool, obs)
             resultados.append(obs)
         final = " ".join(r for r in resultados if r) or "Pronto."
         await self._emitir_falado(send, final)
@@ -805,12 +814,12 @@ class Agent:
 
         acoes = mestre.parse_rapido(comando, datetime.now())
         if acoes:
-            texto_final = await self._executar_acoes_rapidas(acoes, send)
+            texto_final = await self._executar_acoes_rapidas(acoes, send, auditar=not mem.confidencial)
             rota = "mestre:rapido"
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
-                texto_final = await self._pipeline_tools(comando, send, decisao)
+                texto_final = await self._pipeline_tools(comando, send, decisao, auditar=not mem.confidencial)
                 rota = f"mestre:tool:{decisao.tool}"
             else:
                 # Não é ação reconhecida: recusa + registra para revisão.
