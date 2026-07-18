@@ -99,3 +99,64 @@ def test_composto_defere_ao_llm():
 
 def test_pergunta_conhecimento_nao_e_acao():
     assert mestre.parse_rapido("o que é RAG?", AGORA) is None
+
+
+# -- parse_rapido: CAPTURA RÁPIDA ----------------------------------------------
+def test_captura_com_dois_pontos():
+    acoes = mestre.parse_rapido("anota rápido: comprar presente pra ana", AGORA)
+    assert acoes == [mestre.tools.Decisao("capturar_nota", {"texto": "comprar presente pra ana"})]
+
+
+def test_captura_isso():
+    acoes = mestre.parse_rapido("captura isso: ideia de post sobre RAG", AGORA)
+    assert acoes[0].tool == "capturar_nota"
+    assert acoes[0].args["texto"] == "ideia de post sobre RAG"
+
+
+def test_captura_preserva_na_no_meio():
+    acoes = mestre.parse_rapido("anota comprar café na feira", AGORA)
+    assert acoes[0].args["texto"] == "comprar café na feira"
+
+
+def test_captura_joga_na_inbox():
+    acoes = mestre.parse_rapido("joga na inbox testar o cache de voz", AGORA)
+    assert acoes[0].args["texto"] == "testar o cache de voz"
+
+
+def test_captura_vazia_defere():
+    # Só o gatilho, sem conteúdo -> nada a capturar -> defere (não cria nota vazia).
+    assert mestre.parse_rapido("anota", AGORA) is None
+
+
+# -- parse_rapido: HEALTH-CHECK ------------------------------------------------
+def test_status_diagnostico():
+    assert mestre.parse_rapido("diagnóstico", AGORA) == [mestre.tools.Decisao("status_sistema", {})]
+
+
+def test_status_frases():
+    for c in ["status do sistema", "você está funcionando?", "faz um autoteste"]:
+        acoes = mestre.parse_rapido(c, AGORA)
+        assert acoes and acoes[0].tool == "status_sistema"
+
+
+# -- modo confidencial (#5) ----------------------------------------------------
+def test_modo_confidencial_liga():
+    for c in ["modo sigiloso", "ativar modo confidencial", "entra em modo privado"]:
+        assert mestre.modo_confidencial(c) is True
+
+
+def test_modo_confidencial_desliga():
+    for c in ["modo normal", "sair do sigilo", "pode registrar de novo"]:
+        assert mestre.modo_confidencial(c) is False
+
+
+def test_modo_confidencial_nao_e_comando():
+    assert mestre.modo_confidencial("adiciona pão na lista") is None
+    assert mestre.modo_confidencial("que horas são") is None
+
+
+# -- trilha de auditoria (#27) -------------------------------------------------
+def test_auditoria_parse():
+    for c in ["o que você fez hoje?", "trilha de auditoria", "quais suas ações hoje"]:
+        acoes = mestre.parse_rapido(c, AGORA)
+        assert acoes and acoes[0].tool == "auditoria_hoje"
