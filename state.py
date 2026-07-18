@@ -36,6 +36,10 @@ class SessionMemory:
         # Conversa ATUAL: todo turno gravado carrega este id, e o histórico agrupa por
         # ele (ver telemetry.get_conversations). None = ainda não definida pelo cliente.
         self.conversa_id: Optional[str] = None
+        # MODO CONFIDENCIAL (#5): quando True, o turno NÃO é persistido (sem dump, sem
+        # SQLite, sem fila de ETL) — vive só na RAM desta sessão e morre com ela. O
+        # follow-up ainda funciona (chat_history/conhecimento_sessao seguem em memória).
+        self.confidencial: bool = False
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -57,6 +61,7 @@ class SessionMemory:
         self.conversa_id = conversa_id
         self.chat_history.clear()
         self.conhecimento_sessao.clear()
+        self.confidencial = False   # chat novo volta ao modo normal (público)
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente

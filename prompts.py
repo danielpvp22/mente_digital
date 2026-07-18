@@ -327,6 +327,33 @@ def prompt_briefing(data_hoje: str, temas: str, contexto: str) -> str:
     )
 
 
+# --- Síntese sob Demanda (#23): "o que eu sei sobre X" via map-reduce ---------------
+# Fluxo SEPARADO do pipeline normal: em vez de empilhar dezenas de átomos num prompt só
+# (estouraria o n_ctx e enviesaria o corte), resume em LOTES (map) e depois combina os
+# resumos parciais (reduce). Cada chamada cabe no contexto.
+SYS_SINTESE_TEMA = (
+    "Você resume o que a pessoa JÁ registrou sobre um tema, com base SÓ nos átomos "
+    "fornecidos. Nunca invente nem complemente com conhecimento externo. Português direto."
+)
+
+
+def prompt_sintese_tema_map(tema: str, atomos: str) -> str:
+    return (
+        f"Tema: '{tema}'.\n\nÁtomos de conhecimento:\n{atomos}\n\n"
+        "Liste em tópicos curtos os FATOS que estes átomos trazem sobre o tema. "
+        "Só o que está escrito acima; ignore o que não for do tema. Sem introdução."
+    )
+
+
+def prompt_sintese_tema_reduce(tema: str, parciais: str) -> str:
+    return (
+        f"Tema: '{tema}'.\n\nResumos parciais do que a pessoa já sabe:\n{parciais}\n\n"
+        "Combine numa síntese FALADA, coerente e sem repetição, de 3 a 5 frases, do que "
+        "ela sabe sobre o tema. Comece direto (ex.: 'Sobre X, você tem anotado que...'). "
+        "Sem listas, sem markdown."
+    )
+
+
 def prompt_sintese_conversa(conteudo: str) -> str:
     return (
         "Extraia da conversa abaixo (entre Usuário e IA) as ideias de conhecimento "

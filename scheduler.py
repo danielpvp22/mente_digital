@@ -89,6 +89,7 @@ class SchedulerService:
     async def _disparar_lembrete(self, ag: dict, agora: datetime) -> None:
         entregue = await self._notificar_falado(ag["mensagem"])
         if entregue:
+            await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
             await self._reprogramar_ou_concluir(ag, agora)
         else:
             # Ninguém ouvindo: segura para a próxima conexão (não perde o lembrete).
@@ -178,6 +179,8 @@ class SchedulerService:
             entregue = await self._notificar_falado(msg)
             novo_status = "concluido" if entregue else "pendente_entrega"
             await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status=novo_status)
+            if entregue:
+                await asyncio.to_thread(db.registrar_auditoria, "watcher_satisfeito", msg)
             telemetry.track("SCHEDULER", f"Watcher {ag['id']} satisfeito -> {novo_status}.")
         else:
             await self._reprogramar_watcher(ag, agora)
@@ -193,6 +196,8 @@ class SchedulerService:
     async def _disparar_briefing(self, ag: dict, agora: datetime) -> None:
         texto = await self._montar_briefing(agora)
         entregue = await self._notificar_falado(texto) if texto else True
+        if entregue and texto:
+            await asyncio.to_thread(db.registrar_auditoria, "briefing_entregue", "Briefing diário")
         # Briefing é sempre recorrente (diário); reprograma independentemente da entrega.
         await self._reprogramar_ou_concluir(ag, agora)
 

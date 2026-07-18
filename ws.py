@@ -71,7 +71,7 @@ class LiveSession:
         horas (medido: 3 dos átomos-lixo entraram por aqui). O par IA é guardado pelo
         mesmo critério, no pipeline. O turno em si não se perde: vai pro SQLite.
         """
-        if tools.e_efemero(texto):
+        if tools.e_efemero(texto) or self.memory.confidencial:
             return
         await append_chat_dump("User", texto)
 

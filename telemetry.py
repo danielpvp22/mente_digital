@@ -133,6 +133,15 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS mestre_nao_reconhecido
                    (chave TEXT PRIMARY KEY, comando TEXT, n INTEGER DEFAULT 1, visto_em TEXT)"""
             )
+            # AUDITORIA (#27): trilha das AÇÕES que os agentes executaram (lembrete criado,
+            # item na lista, watcher satisfeito, briefing entregue...). É o que responde
+            # "o que você fez hoje?" — transparência e confiança. Só ações com efeito;
+            # leituras (listar/ler/status) não entram.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS auditoria
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
+                    acao TEXT, detalhe TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -378,6 +387,42 @@ class Database:
             return [{"comando": c, "n": n, "visto_em": v} for c, n, v in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler comandos desconhecidos", exc)
+            return []
+
+    # ---- Auditoria (#27): trilha de ações dos agentes ----
+    def registrar_auditoria(self, acao: str, detalhe: str) -> None:
+        """Registra UMA ação com efeito (não leituras). Best-effort: falhar aqui nunca
+        pode derrubar a ação em si."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO auditoria (data_hora, acao, detalhe) VALUES (?, ?, ?)",
+                    (datetime.now().isoformat(), acao, detalhe[:300]),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar auditoria", exc)
+
+    def get_auditoria(self, desde_iso: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """Ações registradas, mais recentes primeiro. `desde_iso` filtra por instante
+        (ex.: início do dia para 'o que você fez hoje')."""
+        try:
+            with self._conn() as conn:
+                if desde_iso:
+                    rows = conn.execute(
+                        "SELECT data_hora, acao, detalhe FROM auditoria "
+                        "WHERE data_hora >= ? ORDER BY id DESC LIMIT ?",
+                        (desde_iso, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT data_hora, acao, detalhe FROM auditoria "
+                        "ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+            return [{"t": t, "acao": a, "detalhe": d} for t, a, d in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler auditoria", exc)
             return []
 
     def get_history(self, limit: int = 200) -> list[dict]:

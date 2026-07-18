@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     max_tokens_query: int = 15
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
+    # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
+    # "explica") ganha uma resposta de UMA frase, com teto de tokens menor — menos GPU,
+    # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.
+    max_tokens_resposta_curto: int = 90
+    verbosidade_curto_max_palavras: int = 8
+    # Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo map-reduce SEPARADO —
+    # recupera muitos átomos e os resume em LOTES que cabem no n_ctx, depois combina.
+    sintese_top_k: int = 60             # átomos recuperados (largo — é uma varredura do tema)
+    sintese_lote_chars: int = 6000      # orçamento de chars por lote (map) — protege o n_ctx
+    max_tokens_sintese_tema: int = 400  # teto de cada resumo parcial (map)
 
     # --- Tuning llama.cpp (§7 do estudo de perf) -------------------------------
     # Flash attention: kernel de atenção fundido. Ganho DUPLO num card apertado —
@@ -193,6 +203,9 @@ class Settings(BaseSettings):
     vad_min_frames: int = 15            # ignora ruídos curtos
     tts_chunk_min_chars: int = 8        # frase mínima antes de sintetizar
     tts_chunk_max_chars: int = 180      # flush forçado em frases longas
+    # Cache de voz (#1): nº de frases sintetizadas mantidas em RAM (LRU). Frase
+    # recorrente (filler, confirmação, status) volta na hora, sem re-sintetizar.
+    tts_cache_size: int = 256
 
     # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
     # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar
@@ -261,6 +274,13 @@ class Settings(BaseSettings):
     @property
     def dir_listas(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_listas
+
+    @property
+    def arquivo_inbox(self) -> Path:
+        # Captura Rápida (GTD): tudo que o usuário "anota rápido" cai aqui, cru, com
+        # carimbo de tempo. Fica no vault (indexado, pesquisável); o ritual de revisão
+        # é trabalho do idle (destilar a inbox em átomos), não do momento da captura.
+        return Path(self.caminho_obsidian) / "Inbox_Captura.md"
 
     def ensure_dirs(self) -> None:
         """Cria as pastas necessárias. Chamado no startup, nunca no import."""

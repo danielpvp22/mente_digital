@@ -29,6 +29,7 @@ import mestre
 import prompts
 import textutils
 import tools
+import verbosidade
 from audio import SentenceChunker
 from config import settings
 from llm import InferenciaPreemptada, LlamaManager
@@ -399,6 +400,35 @@ _GATILHOS_CITACAO = {
 }
 
 
+# Gatilhos da Síntese sob Demanda (#23) — quem diz "o que eu sei sobre X" quer uma
+# varredura do tema X no vault, não a resposta pontual do pipeline normal.
+_GATILHOS_SINTESE = (
+    "o que eu sei sobre", "o que sei sobre", "o que eu tenho sobre", "o que tenho sobre",
+    "tudo que eu sei sobre", "tudo que sei sobre", "tudo sobre", "resuma o que",
+    "faca uma sintese sobre", "faz uma sintese sobre", "sintese sobre", "sintetiza sobre",
+    "me resuma sobre", "resuma sobre", "resuma tudo sobre",
+)
+
+
+def extrair_tema_sintese(pergunta: str) -> "str | None":
+    """Extrai o TEMA de um pedido de síntese ('o que eu sei sobre X' -> 'X'). Puro.
+
+    Casa o gatilho numa versão sem acento e length-preservada (para fatiar o original
+    pelos mesmos índices, preservando acentos do tema). None se não for um pedido."""
+    baixa = pergunta.lower()
+    ascii_b = textutils.sem_acento(baixa)
+    hay = ascii_b if len(ascii_b) == len(baixa) else baixa
+    for g in _GATILHOS_SINTESE:
+        i = hay.find(g)
+        if i != -1:
+            tema = pergunta[i + len(g):].strip(" ?.!:,\"'")
+            tema = re.sub(
+                r"^(?:o|a|os|as|meu|minha|sobre|tema|assunto)\s+", "", tema, flags=re.IGNORECASE
+            ).strip()
+            return tema or None
+    return None
+
+
 def frase_citada(pergunta: str) -> str:
     """Extrai a FRASE que a pergunta cita, quando ela é sobre uma expressão. Puro.
 
@@ -560,6 +590,15 @@ class Agent:
             # Medido no vault: 45 dos 48 átomos-lixo vieram da fila, 3 do dump.
             efemero = tools.e_efemero(texto_usuario)
 
+            # SÍNTESE SOB DEMANDA (#23): "o que eu sei sobre X" tem FLUXO PRÓPRIO
+            # (map-reduce sobre o vault), separado do pipeline de resposta pontual —
+            # é o que evita estourar o contexto num tema grande.
+            tema_sintese = extrair_tema_sintese(texto_usuario)
+            if tema_sintese:
+                telemetry.track("AGENT", f"Síntese sob demanda: '{tema_sintese}'.")
+                await self._sintese_sob_demanda(tema_sintese, send_medido, mem, tracker)
+                return
+
             # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
             # roteador LLM. Pergunta de conhecimento nem paga essa chamada — cai
             # direto no pipeline afinado abaixo (TTFA preservado).
@@ -568,14 +607,16 @@ class Agent:
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
-                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial)
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
-                        if not efemero and tool.registra_conhecimento:
+                        # Modo confidencial (#5) também não persiste nada (só a RAM).
+                        if not efemero and tool.registra_conhecimento and not mem.confidencial:
                             await append_chat_dump("IA", texto_final)
                         mem.registrar_turno(texto_usuario, texto_final)
-                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
+                        if not mem.confidencial:
+                            await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                         await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
                     return
 
@@ -594,6 +635,11 @@ class Agent:
             paragrafos: List[str] = []
             fontes: List[str] = []
 
+            # Verbosidade (#7): a pergunta define o tamanho da resposta (e a latência).
+            nivel = verbosidade.classificar(texto_usuario)
+            if nivel.nome != "normal":
+                telemetry.track("VERBOSIDADE", f"nível={nivel.nome} max_tokens={nivel.max_tokens}")
+
             async def passada(contexto: str, fonte: str) -> None:
                 # prefixo só quando JÁ há parágrafo antes (separa as passadas); é enviado
                 # dentro do _responder_contexto, na 1ª emissão real (não vaza se der sentinela).
@@ -602,6 +648,8 @@ class Agent:
                     prompt_fn=prompts.prompt_resposta_atomos,
                     system=prompts.SYS_FUSAO,
                     prefixo="\n\n" if paragrafos else "",
+                    max_tokens=nivel.max_tokens,
+                    instrucao_extra=nivel.instrucao,
                 )
                 if p:
                     paragrafos.append(p)
@@ -614,7 +662,7 @@ class Agent:
                 telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
                 web = await self._responder_web(
                     termos, pergunta_resp, send_medido, mem,
-                    consulta_rank=texto_usuario, efemero=efemero,
+                    consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
                 )
                 if web:
                     paragrafos.append(web)
@@ -652,7 +700,9 @@ class Agent:
                     # proativa do idle trazer isto pronto na próxima vez. `efemero` (da
                     # pergunta original) barra 'clima amanhã'; `lacuna_pesquisavel` barra
                     # o trivial ('ok') e o sem-núcleo ('dolar 542') — ver a função.
-                    if not efemero and lacuna_pesquisavel(termos):
+                    # Modo confidencial (#5): a lacuna é um artefato DERIVADO da pergunta
+                    # sigilosa — persisti-la vazaria o assunto; fica de fora.
+                    if not efemero and not mem.confidencial and lacuna_pesquisavel(termos):
                         await asyncio.to_thread(
                             db.save_lacuna, textutils.normaliza(termos), termos
                         )
@@ -661,7 +711,7 @@ class Agent:
                     # é ingerido. Sem isto o bloqueio vazaria os casos reais medidos.
                     web = await self._responder_web(
                         termos, pergunta_resp, send_medido, mem,
-                        consulta_rank=texto_usuario, efemero=efemero,
+                        consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
                     )
                     if web:
                         paragrafos.append(web)
@@ -674,10 +724,12 @@ class Agent:
                 # Dump só do que pode virar conhecimento: o idle atomiza este arquivo,
                 # então um turno efêmero aqui vira "## Hora atual" no Zettelkasten. O
                 # turno segue no SQLite (histórico do usuário) e na RAM (follow-up).
-                if not efemero:
+                # Modo confidencial (#5): nada é persistido — vive só na RAM da sessão.
+                if not efemero and not mem.confidencial:
                     await append_chat_dump("IA", texto_final)
                 mem.registrar_turno(texto_usuario, texto_final)
-                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
+                if not mem.confidencial:
+                    await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                 await self._registrar_latencia(tracker, rota)
         except asyncio.CancelledError:
             raise  # barge-in: propaga para o LlamaManager parar o decode
@@ -705,14 +757,15 @@ class Agent:
         )
         return tools.parse_decisao(bruto)
 
-    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira) -> str:
+    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira, auditar: bool = True) -> str:
         """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
 
         Ferramentas terminais (calcular/hora/salvar) encerram no 1º passo. As não
         terminais (buscar_web/ler_nota/listar_notas) podem encadear até
         `max_tool_steps`, mas o loop para assim que o roteador devolve 'responder'.
         A resposta final vai por streaming + chunking (TTS), preservando o pilar.
-        """
+
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
         observacoes: List[str] = []
         decisao = primeira
         passos = 0
@@ -725,6 +778,8 @@ class Agent:
             except Exception as exc:
                 telemetry.error("TOOL", f"Falha na ferramenta '{decisao.tool}'", exc)
                 obs = f"erro ao executar {decisao.tool}"
+            if auditar and tool.auditavel:
+                await asyncio.to_thread(db.registrar_auditoria, decisao.tool, obs)
             observacoes.append(f"[{decisao.tool}] {obs}")
             passos += 1
             if tool.terminal:
@@ -752,10 +807,12 @@ class Agent:
         await send({"tipo": "token", "texto": texto})
         await self._falar_texto(send, texto)
 
-    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender) -> str:
+    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True) -> str:
         """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
         sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
-        torna 'mestre, põe pão na lista' instantâneo e barato."""
+        torna 'mestre, põe pão na lista' instantâneo e barato.
+
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
         resultados: List[str] = []
         for dec in acoes:
             tool = self.tools.get(dec.tool)
@@ -766,6 +823,8 @@ class Agent:
             except Exception as exc:
                 telemetry.error("MESTRE", f"Falha na ferramenta '{dec.tool}'", exc)
                 obs = f"não consegui executar {dec.tool}"
+            if auditar and tool.auditavel:
+                await asyncio.to_thread(db.registrar_auditoria, dec.tool, obs)
             resultados.append(obs)
         final = " ".join(r for r in resultados if r) or "Pronto."
         await self._emitir_falado(send, final)
@@ -785,14 +844,28 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
+        # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
+        # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
+        modo = mestre.modo_confidencial(comando)
+        if modo is not None:
+            mem.confidencial = modo
+            fala = (
+                "Modo confidencial ativado. O que falarmos agora fica só nesta sessão — "
+                "não salvo nada nem transformo em conhecimento."
+                if modo else
+                "Voltando ao normal. As conversas voltam a ser salvas e aprendidas."
+            )
+            await self._emitir_falado(send, fala)
+            return
+
         acoes = mestre.parse_rapido(comando, datetime.now())
         if acoes:
-            texto_final = await self._executar_acoes_rapidas(acoes, send)
+            texto_final = await self._executar_acoes_rapidas(acoes, send, auditar=not mem.confidencial)
             rota = "mestre:rapido"
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
-                texto_final = await self._pipeline_tools(comando, send, decisao)
+                texto_final = await self._pipeline_tools(comando, send, decisao, auditar=not mem.confidencial)
                 rota = f"mestre:tool:{decisao.tool}"
             else:
                 # Não é ação reconhecida: recusa + registra para revisão.
@@ -806,10 +879,12 @@ class Agent:
                 rota = "mestre:desconhecido"
 
         # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
-        # (histórico) e na RAM (contexto de follow-up), como as demais ações.
+        # (histórico) e na RAM (contexto de follow-up), como as demais ações — salvo
+        # em modo confidencial, onde nada é persistido (só a RAM).
         if texto_final:
             mem.registrar_turno(comando, texto_final)
-            await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
+            if not mem.confidencial:
+                await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
             await self._registrar_latencia(tracker, rota)
 
     def _pergunta_com_contexto(self, texto_usuario: str, mem: SessionMemory) -> str:
@@ -866,6 +941,8 @@ class Agent:
         prompt_fn: Callable[[str, str], str] = prompts.prompt_resposta_cache,
         system: str = prompts.SYS_RESPOSTA,
         prefixo: str = "",
+        max_tokens: int | None = None,
+        instrucao_extra: str = "",
     ):
         """Responde por um contexto (RAM ou Banco) COM streaming, segurando o áudio até
         ter certeza de que não é o sentinela 'Não tenho informações suficientes'.
@@ -882,10 +959,13 @@ class Agent:
         texto_final = ""
         buffer = ""
         decidido = False
+        # Governador de verbosidade (#7): a pergunta define quanto a GPU decodifica e se
+        # há instrução de brevidade. Sem nível (None) = comportamento de sempre.
+        sistema = f"{system}\n{instrucao_extra}" if instrucao_extra else system
         async for token in self.ctx.llama.stream(
             prompt_fn(contexto, texto_usuario),
-            max_tokens=settings.max_tokens_resposta,
-            system_prompt=system,
+            max_tokens=max_tokens if max_tokens is not None else settings.max_tokens_resposta,
+            system_prompt=sistema,
         ):
             texto_final += token
             if decidido:
@@ -939,6 +1019,7 @@ class Agent:
     async def _responder_web(
         self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
         consulta_rank: str | None = None, efemero: bool = False,
+        nivel: "verbosidade.Nivel | None" = None,
     ) -> str:
         # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
         # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
@@ -955,8 +1036,9 @@ class Agent:
         dados_web = await self.ctx.web.search(query_web, consulta=consulta_rank or termos)
         # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
-        # engordava o vault com dezenas de notas por pergunta sobre o tempo.
-        if not efemero:
+        # engordava o vault com dezenas de notas por pergunta sobre o tempo. Em modo
+        # confidencial (#5) também não: a curiosidade viraria átomo permanente.
+        if not efemero and not mem.confidencial:
             self.ctx.track_task(self._prefetch(termos, mem))  # background, web-only (ref. retida)
 
         # Sem dados locais NEM web (ex.: pergunta não-buscável): NÃO deixe o LLM falar
@@ -975,6 +1057,8 @@ class Agent:
         mem.lembrar(termos, dados_web)
         if efemero:
             telemetry.track("ETL", f"'{termos}' é efêmero — fora da fila (não vira átomo).")
+        elif mem.confidencial:
+            telemetry.track("ETL", "Modo confidencial — resultado fora da fila (não vira átomo).")
         else:
             mem.enfileirar_etl(termos, dados_web)
 
@@ -986,6 +1070,8 @@ class Agent:
         resposta = await self._responder_contexto(
             dados_web, texto_usuario, send,
             prompt_fn=prompts.prompt_resposta_web, system=prompts.SYS_RESPOSTA_WEB,
+            max_tokens=nivel.max_tokens if nivel else None,
+            instrucao_extra=nivel.instrucao if nivel else "",
         )
         if resposta is not None:
             return resposta
@@ -1032,13 +1118,15 @@ class Agent:
         if promovidos:
             telemetry.track("PROMOCAO", f"{promovidos} nota(s) consolidada(s) (tirado {tag}).")
 
-    async def _responder_stream(self, prompt_resposta: str, send: Sender) -> str:
+    async def _responder_stream(
+        self, prompt_resposta: str, send: Sender, system: str = prompts.SYS_RESPOSTA
+    ) -> str:
         chunker = SentenceChunker()
         texto_final = ""
         async for token in self.ctx.llama.stream(
             prompt_resposta,
             max_tokens=settings.max_tokens_resposta,
-            system_prompt=prompts.SYS_RESPOSTA,
+            system_prompt=system,
         ):
             texto_final += token
             await send({"tipo": "token", "texto": token})
@@ -1049,6 +1137,66 @@ class Agent:
         if resto:
             await self._falar(send, [resto])
         return texto_final
+
+    @staticmethod
+    def _lotes_por_chars(itens: List[str], budget: int) -> List[List[str]]:
+        """Agrupa átomos em lotes cujo texto somado cabe em `budget` (protege o n_ctx)."""
+        lotes: List[List[str]] = []
+        atual: List[str] = []
+        tam = 0
+        for it in itens:
+            if atual and tam + len(it) > budget:
+                lotes.append(atual)
+                atual, tam = [], 0
+            atual.append(it)
+            tam += len(it)
+        if atual:
+            lotes.append(atual)
+        return lotes
+
+    async def _sintese_sob_demanda(
+        self, tema: str, send: Sender, mem: SessionMemory, tracker: LatencyTracker
+    ) -> None:
+        """Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo SEPARADO em map-reduce
+        para não estourar o n_ctx: recupera MUITOS átomos, resume em lotes (map) e combina
+        os parciais numa fala coerente (reduce). Só o banco local — é "o que EU sei"."""
+        await self._falar_status(send, f"Deixa eu reunir o que você tem sobre {tema}.")
+        atomos = await self.ctx.vectorstore.buscar_conteudos(tema, settings.sintese_top_k)
+
+        if not atomos:
+            texto_final = f"Não encontrei nada sobre {tema} nas suas notas."
+            await self._emitir_falado(send, texto_final)
+        else:
+            lotes = self._lotes_por_chars(atomos, settings.sintese_lote_chars)
+            parciais: List[str] = []
+            for lote in lotes:
+                p = await self.ctx.llama.collect(
+                    prompts.prompt_sintese_tema_map(tema, "\n\n".join(lote)),
+                    max_tokens=settings.max_tokens_sintese_tema,
+                    system_prompt=prompts.SYS_SINTESE_TEMA,
+                )
+                if p.strip():
+                    parciais.append(p.strip())
+            telemetry.track("SINTESE", f"'{tema}': {len(atomos)} átomos em {len(lotes)} lote(s).")
+            if not parciais:
+                texto_final = f"Tenho notas sobre {tema}, mas não consegui resumir agora."
+                await self._emitir_falado(send, texto_final)
+            else:
+                # REDUCE: combina os parciais numa fala (streaming). Um lote só também passa
+                # pelo reduce — ele limpa/encurta o resumo bruto do map numa fala coerente.
+                juntos = "\n\n".join(f"- {p}" for p in parciais)
+                texto_final = await self._responder_stream(
+                    prompts.prompt_sintese_tema_reduce(tema, juntos), send,
+                    system=prompts.SYS_SINTESE_TEMA,
+                )
+
+        if texto_final:
+            mem.registrar_turno(f"o que eu sei sobre {tema}", texto_final)
+            if not mem.confidencial:
+                await asyncio.to_thread(
+                    db.save_chat, f"o que eu sei sobre {tema}", texto_final, mem.conversa_id
+                )
+        await self._registrar_latencia(tracker, "sintese")
 
 
 # ==========================================================================

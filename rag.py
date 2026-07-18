@@ -540,6 +540,29 @@ class VectorStore:
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
 
+    async def buscar_conteudos(self, query: str, k: int) -> List[str]:
+        """Recuperação CRUA para a Síntese sob Demanda (#23): conteúdo (sem frontmatter)
+        dos top-k átomos, deduplicado — SEM gate nem orçamento. O chamador fatia em lotes
+        que cabem no n_ctx (map-reduce), então aqui a largura é livre. Vazio sem loja
+        (testes) ou query vazia — fail-open, como o resto do RAG."""
+        if self._store is None or not query.strip():
+            return []
+        try:
+            res = await asyncio.to_thread(
+                self._store.similarity_search_with_score, query, k=k
+            )
+        except Exception as exc:
+            telemetry.error("LOCAL", "Falha na busca para síntese", exc)
+            return []
+        vistos: set[str] = set()
+        out: List[str] = []
+        for doc, _score in res:
+            c = strip_frontmatter(doc.page_content).strip()
+            if c and c not in vistos:
+                vistos.add(c)
+                out.append(c)
+        return out
+
     async def search(self, termos: str, texto_busca: Optional[str] = None) -> LocalResult:
         """
         Busca híbrida local COM aterramento léxico.
