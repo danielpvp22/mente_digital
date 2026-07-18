@@ -147,8 +147,13 @@ class LlamaManager:
 
         return kwargs
 
-    async def load(self) -> None:
-        """Ancora o Qwen na GPU. Degradação graciosa se falhar."""
+    async def load(self, warmup: bool = True) -> None:
+        """Ancora o Qwen na GPU. Degradação graciosa se falhar.
+
+        `warmup=False` no religar sob demanda: a própria requisição que disparou o
+        reload já aquece o modelo, então pagar um decode extra de warm-up seria dobrar
+        a latência do 1º token pós-idle sem ganho.
+        """
         async with self._load_lock:
             if self._model is not None:
                 return
@@ -164,10 +169,54 @@ class LlamaManager:
                 )
                 self._ready = True
                 telemetry.track("VRAM", "Qwen 7B pronto na GPU.")
-                await self._warmup()
+                if warmup:
+                    await self._warmup()
             except Exception as exc:
                 self._ready = False
                 telemetry.error("VRAM", "Falha ao carregar o LLM — modo degradado", exc)
+
+    async def ensure_loaded(self) -> None:
+        """Religa o modelo se ele foi descarregado (unload no idle). Idempotente e
+        barato quando já está na GPU (só um teste de atributo). Sem warm-up: a
+        requisição do chamador é o próprio aquecimento."""
+        if self._model is None:
+            await self.load(warmup=False)
+
+    async def unload(self) -> None:
+        """Descarrega o Qwen da GPU, liberando a VRAM para OUTROS trabalhos fora do app.
+
+        Chamado ao fim da fase de idle (depois que ETL + pesquisa proativa terminaram —
+        eles PRECISAM do modelo). Religa sob demanda (ensure_loaded) na próxima mensagem,
+        novo chat, abertura do live, ou necessidade do pipeline.
+
+        Segurança do decode em curso: o fechamento roda no MESMO `gpu_executor` de uma
+        thread só, então é enfileirado ATRÁS de qualquer decode em andamento — nunca
+        puxa o modelo de baixo de uma inferência. E `_inference_lock` garante que nenhuma
+        stream nova comece durante o descarregamento. Só os embeddings (MiniLM, ~0.5GB)
+        ficam: o idle e o dedup dependem deles, e o custo em VRAM é ínfimo.
+        """
+        async with self._load_lock:
+            if self._model is None:
+                return
+            async with self._inference_lock:
+                modelo = self._model
+                self._model = None
+                self._ready = False
+
+                def _fechar() -> None:
+                    fechar = getattr(modelo, "close", None)
+                    if callable(fechar):
+                        fechar()
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(self._gpu_executor, _fechar)
+                    import gc
+
+                    gc.collect()
+                    telemetry.track("VRAM", "Qwen 7B descarregado — VRAM liberada para o idle.")
+                except Exception as exc:
+                    telemetry.error("VRAM", "Falha ao descarregar o LLM", exc)
 
     async def _warmup(self) -> None:
         """Prime o modelo para a 1ª resposta real não pagar o cold-start."""
@@ -196,8 +245,15 @@ class LlamaManager:
         `InferenciaPreemptada`. Use só em trabalho de background (ETL) — nunca numa
         resposta ao usuário, que jamais deve ser interrompida por outra coisa.
         """
+        # Religa sob demanda: se o idle descarregou o Qwen, a 1ª inferência o traz de
+        # volta em vez de falhar. Idempotente e barato quando já está na GPU. Só o
+        # decode PREEMPTÍVEL (ETL) não religa — se o modelo saiu, é porque o idle
+        # acabou; ressuscitá-lo para trabalho de fundo anularia o unload.
+        if self._model is None and not preemptible:
+            await self.ensure_loaded()
         if self._model is None:
-            telemetry.warn("LLM", "Inferência solicitada sem modelo carregado.")
+            if not preemptible:
+                telemetry.warn("LLM", "Inferência solicitada sem modelo carregado.")
             return
 
         temp = settings.temperatura_resposta if temperature is None else temperature

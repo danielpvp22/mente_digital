@@ -36,6 +36,7 @@ class LiveSession:
         self.audio_buffer: List["np.ndarray"] = []
         self.is_recording = False
         self.last_audio_time = time.time()
+        self.last_activity = time.time()   # qualquer interação: rearma o timer de idle
         self.pipeline_task: Optional[asyncio.Task] = None
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
         # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
@@ -78,9 +79,17 @@ class LiveSession:
     async def run(self) -> None:
         await self.ws.accept()
         self.ctx.sessoes.add(self)
+        # Entrega já os avisos que dispararam enquanto ninguém estava conectado
+        # (lembrete de ontem, watcher satisfeito de madrugada). Em background: não
+        # atrasa o handshake, e o loop do scheduler também os reentregaria no tick.
+        if self.ctx.scheduler is not None:
+            self.ctx.track_task(self.ctx.scheduler.entregar_pendentes())
+        # Abertura do live é sinal de uso: religa o modelo se o idle o descarregou,
+        # para a 1ª pergunta não pagar o reload em cima da latência normal.
         if not self.ctx.llama.ready:
+            self.ctx.track_task(self.ctx.llama.ensure_loaded())
             await self.safe_send(
-                {"tipo": "status", "texto": "Modelo ainda carregando ou indisponível."}
+                {"tipo": "status", "texto": "Modelo religando..."}
             )
         try:
             while True:
@@ -88,6 +97,7 @@ class LiveSession:
                     msg = await asyncio.wait_for(self.ws.receive(), timeout=_RECV_TIMEOUT)
                 except asyncio.TimeoutError:
                     await self._check_silence()
+                    self._check_inatividade()
                     continue
 
                 if msg.get("type") == "websocket.disconnect":
@@ -99,6 +109,7 @@ class LiveSession:
                     await self._on_text(msg["text"])
 
                 await self._check_silence()
+                self._check_inatividade()
         except WebSocketDisconnect:
             telemetry.track("WS", "Cliente desconectou.")
         except Exception as exc:
@@ -126,8 +137,26 @@ class LiveSession:
     def _marcar_ativa(self) -> None:
         """Nova mensagem/fala do usuário = conversa ABERTA: sai do idle e rearma o
         gatilho, para que um próximo end_session (ou disconnect) volte a consolidar o
-        conhecimento acumulado a partir daqui."""
+        conhecimento acumulado a partir daqui. Também rearma o timer de inatividade."""
         self._finalizada = False
+        self.last_activity = time.time()
+
+    def _check_inatividade(self) -> None:
+        """Chat ABERTO mas parado há `idle_inatividade_seconds` -> entra em idle
+        (consolida conhecimento + libera a GPU). Diferente do disconnect: a conexão
+        segue viva, e uma nova mensagem rearma via `_marcar_ativa`.
+
+        Não dispara se um pipeline está em voo (o usuário espera uma resposta) nem se o
+        idle já rodou (`_finalizada`). O `run_idle` do ETL cede a GPU à interação e, no
+        fim, descarrega o modelo — que a próxima mensagem religa sob demanda."""
+        if self._finalizada:
+            return
+        if self.pipeline_task and not self.pipeline_task.done():
+            return
+        if time.time() - self.last_activity < settings.idle_inatividade_seconds:
+            return
+        telemetry.track("SERVER", "Inatividade detectada — entrando em idle.")
+        self._finalizar_sessao()
 
     # -- áudio (VAD servidor) ---------------------------------------------------
     def _on_audio(self, raw: bytes) -> None:
@@ -187,6 +216,9 @@ class LiveSession:
             if cid:
                 self._cancel_pipeline()
                 self.memory.nova_conversa(cid)
+                self._marcar_ativa()
+                if not self.ctx.llama.ready:   # novo chat = uso: religa cedo
+                    self.ctx.track_task(self.ctx.llama.ensure_loaded())
                 telemetry.track("WS", f"Nova conversa: {cid}")
 
         elif tipo == "carregar_conversa":

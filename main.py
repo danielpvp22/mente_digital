@@ -27,6 +27,7 @@ from audio import SttService, TtsService  # noqa: E402
 from config import settings  # noqa: E402
 from llm import LlamaManager  # noqa: E402
 from rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
+from scheduler import SchedulerService  # noqa: E402
 from state import AppContext  # noqa: E402
 from telemetry import db, telemetry  # noqa: E402
 from ws import LiveSession  # noqa: E402
@@ -64,13 +65,19 @@ async def lifespan(app: FastAPI):
     ctx.vectorstore = VectorStore(embeddings)
     ctx.agent = Agent(ctx)
     ctx.etl = EtlProcessor(ctx)
+    ctx.scheduler = SchedulerService(ctx)
     app.state.ctx = ctx
 
     await _boot(ctx)
+    # Agendador (lembretes/alarmes/watchers/briefing): loop de background retido no ctx,
+    # então sobrevive a qualquer conexão individual. Lê a tabela `agendamentos` (persistente).
+    if settings.scheduler_enabled:
+        ctx.track_task(ctx.scheduler.run_forever())
     telemetry.track("SERVER", "Mente Digital online.")
     try:
         yield
     finally:
+        ctx.scheduler.parar()
         ctx.llama.shutdown()
         gc.collect()
         telemetry.track("SERVER", "Encerrado.")

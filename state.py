@@ -20,6 +20,7 @@ if TYPE_CHECKING:  # evita imports circulares em runtime
     from audio import SttService, TtsService
     from llm import LlamaManager
     from rag import VectorStore, WebSearcher
+    from scheduler import SchedulerService
 
 
 class SessionMemory:
@@ -119,6 +120,7 @@ class AppContext:
     web: "WebSearcher" = None             # type: ignore[assignment]
     agent: "Agent" = None                 # type: ignore[assignment]
     etl: "EtlProcessor" = None            # type: ignore[assignment]
+    scheduler: "SchedulerService" = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão

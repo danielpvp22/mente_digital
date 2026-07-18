@@ -13,9 +13,10 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
+import textutils
 from config import settings
 
 
@@ -100,6 +101,38 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     rota TEXT, ttft_ms INTEGER, ttfa_ms INTEGER, total_ms INTEGER)"""
             )
+            # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
+            # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
+            # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
+            # forma normalizada (agrupa 'o que é X?' e 'X, o que é'); `n` acumula.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS lacunas
+                   (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
+                    visto_em TEXT, pesquisado_em TEXT)"""
+            )
+            # AGENDAMENTOS: a "responsabilidade contínua" dos agentes (lembrete/alarme/
+            # timer, watcher "me avise quando", briefing diário). Persistente de propósito
+            # — o SchedulerService lê esta tabela e sobrevive a restart do servidor (a RAM
+            # da sessão morre com a conexão e não serviria para um alarme de amanhã).
+            #   tipo         : 'lembrete' | 'watcher' | 'briefing'
+            #   proximo_disparo: ISO — quando disparar (lembrete) ou checar (watcher)
+            #   recorrencia  : NULL (único) | 'diario' | 'semanal:<0-6>' | 'intervalo:<segs>'
+            #   payload      : JSON extra (watcher: termos+condicao)
+            #   status       : 'ativo' | 'pendente_entrega' | 'concluido' | 'cancelado'
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS agendamentos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, mensagem TEXT,
+                    proximo_disparo TEXT, recorrencia TEXT, payload TEXT,
+                    status TEXT DEFAULT 'ativo', criado_em TEXT, conversa_id TEXT)"""
+            )
+            # Comandos com a palavra-mestre que NEM o parser rápido NEM o roteador LLM
+            # reconheceram. É a lista de "melhorias a revisar": mostra que comandos o
+            # usuário tentou e o app não cobre — matéria-prima para ampliar os agentes.
+            # `chave` normalizada agrupa tentativas repetidas (UPSERT incrementa `n`).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS mestre_nao_reconhecido
+                   (chave TEXT PRIMARY KEY, comando TEXT, n INTEGER DEFAULT 1, visto_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -143,6 +176,209 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar latência", exc)
+
+    def save_lacuna(self, chave: str, termos: str) -> None:
+        """Registra (ou incrementa) uma pergunta que a RAM E o banco não responderam.
+
+        UPSERT: a mesma dúvida recorrente sobe o contador `n` em vez de virar N linhas —
+        assim a pesquisa proativa prioriza o que MAIS falta, não o que falta há mais tempo."""
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO lacunas (chave, termos, n, visto_em)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, termos, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar lacuna", exc)
+
+    def get_lacunas(self, limit: int = 20, nao_pesquisadas_ha_dias: int = 7) -> list[dict]:
+        """As maiores dúvidas por resolver, mais frequentes primeiro.
+
+        Pula lacunas pesquisadas há menos de `nao_pesquisadas_ha_dias` (não re-pesquisa
+        o que acabou de ser trazido). Ordena por n desc, depois recência."""
+        try:
+            corte = (datetime.now() - timedelta(days=nao_pesquisadas_ha_dias)).isoformat()
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT termos, n FROM lacunas
+                       WHERE pesquisado_em IS NULL OR pesquisado_em < ?
+                       ORDER BY n DESC, visto_em DESC LIMIT ?""",
+                    (corte, limit),
+                ).fetchall()
+            return [{"termos": t, "n": n} for t, n in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler lacunas", exc)
+            return []
+
+    def marcar_lacuna_pesquisada(self, chave: str) -> None:
+        """Carimba que a lacuna foi pesquisada — sai da fila por `nao_pesquisadas_ha_dias`."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE lacunas SET pesquisado_em = ? WHERE chave = ?",
+                    (datetime.now().isoformat(), chave),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar lacuna", exc)
+
+    # ---- Agendamentos (SchedulerService: lembretes/alarmes, watchers, briefing) ----
+    def criar_agendamento(
+        self, tipo: str, mensagem: str, proximo_disparo: str,
+        recorrencia: Optional[str] = None, payload: Optional[str] = None,
+        conversa_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """Insere um agendamento ATIVO e devolve o id (para o usuário poder cancelar)."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    """INSERT INTO agendamentos
+                       (tipo, mensagem, proximo_disparo, recorrencia, payload, status, criado_em, conversa_id)
+                       VALUES (?, ?, ?, ?, ?, 'ativo', ?, ?)""",
+                    (tipo, mensagem, proximo_disparo, recorrencia, payload,
+                     datetime.now().isoformat(), conversa_id),
+                )
+                conn.commit()
+                return cur.lastrowid
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar agendamento", exc)
+            return None
+
+    def get_agendamentos_vencidos(self, agora_iso: str) -> list[dict]:
+        """Agendamentos ATIVOS cujo horário já chegou — o scheduler dispara estes."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
+                       FROM agendamentos
+                       WHERE status = 'ativo' AND proximo_disparo <= ?
+                       ORDER BY proximo_disparo ASC""",
+                    (agora_iso,),
+                ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
+                 "recorrencia": r, "payload": pl, "conversa_id": c}
+                for i, t, m, p, r, pl, c in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler agendamentos vencidos", exc)
+            return []
+
+    def get_agendamentos_pendentes(self) -> list[dict]:
+        """Disparos que ocorreram sem ninguém conectado — entregues na próxima conexão."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
+                       FROM agendamentos WHERE status = 'pendente_entrega'
+                       ORDER BY proximo_disparo ASC""",
+                ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
+                 "recorrencia": r, "payload": pl, "conversa_id": c}
+                for i, t, m, p, r, pl, c in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler agendamentos pendentes", exc)
+            return []
+
+    def listar_agendamentos(self, tipos: Optional[tuple] = None) -> list[dict]:
+        """Agendamentos ATIVOS (para 'liste meus lembretes'). Filtra por tipo se dado."""
+        try:
+            with self._conn() as conn:
+                if tipos:
+                    marks = ",".join("?" * len(tipos))
+                    rows = conn.execute(
+                        f"""SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
+                            WHERE status = 'ativo' AND tipo IN ({marks})
+                            ORDER BY proximo_disparo ASC""",
+                        tuple(tipos),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
+                           WHERE status = 'ativo' ORDER BY proximo_disparo ASC""",
+                    ).fetchall()
+            return [
+                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p, "recorrencia": r}
+                for i, t, m, p, r in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar agendamentos", exc)
+            return []
+
+    def atualizar_agendamento(
+        self, ag_id: int, *, status: Optional[str] = None, proximo_disparo: Optional[str] = None,
+    ) -> None:
+        """Reprograma (próximo disparo da recorrência) ou muda o status de um agendamento."""
+        campos, valores = [], []
+        if status is not None:
+            campos.append("status = ?")
+            valores.append(status)
+        if proximo_disparo is not None:
+            campos.append("proximo_disparo = ?")
+            valores.append(proximo_disparo)
+        if not campos:
+            return
+        valores.append(ag_id)
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ?", valores
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao atualizar agendamento", exc)
+
+    def cancelar_agendamento(self, ag_id: int) -> bool:
+        """Marca como cancelado. True se um agendamento ATIVO foi de fato cancelado."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE agendamentos SET status = 'cancelado' WHERE id = ? AND status = 'ativo'",
+                    (ag_id,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao cancelar agendamento", exc)
+            return False
+
+    def registrar_comando_desconhecido(self, comando: str) -> None:
+        """Guarda um comando com palavra-mestre que nada reconheceu (para revisão/evolução)."""
+        chave = textutils.normaliza(comando)[:120]
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO mestre_nao_reconhecido (chave, comando, n, visto_em)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, comando, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar comando desconhecido", exc)
+
+    def get_comandos_desconhecidos(self, limit: int = 50) -> list[dict]:
+        """Comandos de agente que o app ainda não cobre, mais tentados primeiro."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT comando, n, visto_em FROM mestre_nao_reconhecido "
+                    "ORDER BY n DESC, visto_em DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [{"comando": c, "n": n, "visto_em": v} for c, n, v in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler comandos desconhecidos", exc)
+            return []
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:

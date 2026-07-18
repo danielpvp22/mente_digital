@@ -25,6 +25,7 @@ import time
 from datetime import datetime
 from typing import Awaitable, Callable, Deque, List, Tuple
 
+import mestre
 import prompts
 import textutils
 import tools
@@ -265,6 +266,7 @@ def normalizar_atomo(
         return ""
 
     titulo = ""
+    titulo_explicito = False          # veio de um '## ' real (não de linha promovida)
     corpo: List[str] = []
     achadas: List[str] = []          # tags que o próprio modelo emitiu
     primeira_analisada = False
@@ -292,6 +294,7 @@ def normalizar_atomo(
             primeira_analisada = True
             if ln.lstrip().startswith("#"):
                 titulo = ln.lstrip("#").strip()
+                titulo_explicito = True
                 continue
             if _e_titulo(ln):
                 titulo = ln.strip()
@@ -299,6 +302,28 @@ def normalizar_atomo(
         corpo.append(ln)
 
     corpo_txt = "\n".join(corpo).strip()
+
+    # PORTÃO NADA/vazio: um átomo sem FATO não é átomo. O sentinela "nada a extrair"
+    # vazava por bloco — o check de NADA do importador e do ETL só pega a saída INTEIRA,
+    # então uma síntese com átomos bons + um bloco "NADA" salvava '## Assunto: NADA'
+    # (corpo 'NADA'), medido: 11 na base. E '## Título\n**Malha**' sem corpo virava
+    # átomo oco (9 na base). Fatiar aqui protege OS DOIS caminhos (importar_gemini E
+    # criação de MD pós-conversa), porque ambos passam por normalizar_atomo.
+    #
+    # CUIDADO com o FALLBACK do ETL: quando o LLM manda prosa SEM '##', a 1ª linha é
+    # PROMOVIDA a título e o átomo fica sem corpo DE PROPÓSITO (não perder conhecimento
+    # — ver test_atomo_sem_cabecalho...). Esse caso tem título promovido, não explícito.
+    # Só rejeitamos corpo vazio quando o título era um '## ' REAL; a prosa promovida passa.
+    corpo_sem_malha = "\n".join(ln for ln in corpo if not ln.startswith(_MALHA)).strip()
+    nada = textutils.normaliza(corpo_sem_malha).strip(".!?") == "nada"
+    vazio_com_titulo_real = not corpo_sem_malha and titulo_explicito
+    # IDIOMA ERRADO: a síntese às vezes sai em chinês (medido: 30 na base). Um átomo
+    # cujo corpo é substancialmente CJK nunca serve a uma pergunta em PT e só dilui o
+    # contexto — rejeita na fonte (importador E ETL vivo E pesquisa proativa passam aqui).
+    lingua_errada = textutils.fracao_cjk(corpo_sem_malha) > 0.15
+    if nada or vazio_com_titulo_real or lingua_errada:
+        return ""
+
     if not titulo:
         # Formato irrecuperável: melhor um título derivado que um átomo sem título.
         titulo = " ".join(corpo_txt.split()[:6]) or "Atomo"
@@ -326,6 +351,78 @@ def normalizar_atomo(
     return "\n".join(out) + "\n"
 
 
+# Marcadores de que a pergunta REFERENCIA o contexto anterior (pronomes/demonstrativos
+# que apontam pra trás). Só quando um deles aparece vale passar o histórico ao extrator
+# — senão o LLM MISTURA o assunto velho no novo. Medido em produção: 'como funciona o
+# tensor RT?' (sem pronome, troca limpa de assunto) virou query 'tensor rt esp32',
+# puxando 'esp32' do turno anterior. Referência ausente -> pergunta é auto-contida.
+_REFERENCIAS_CONTEXTO = {
+    "ele", "ela", "eles", "elas", "dele", "dela", "deles", "delas", "nele", "nela",
+    "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta", "estes", "estas",
+    "nisso", "disso", "nesse", "neste", "nessa", "nesta", "aquele", "aquela", "aquilo",
+    "aqueles", "aquelas", "mesmo", "mesma", "tal", "ai", "assim", "acima", "citado",
+}
+
+
+def referencia_contexto(pergunta: str) -> bool:
+    """A pergunta aponta pra um assunto anterior (tem pronome/demonstrativo)? Puro."""
+    return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
+
+
+def lacuna_pesquisavel(termos: str) -> bool:
+    """A lacuna vale uma pesquisa proativa (autônoma, escreve no vault)? Puro/testável.
+
+    Dois defeitos medidos em produção, um filtro:
+    - TRIVIAL: 'ok'/'sim' (falso-positivo do VAD/Whisper, 0 keywords) escalava e a
+      proativa pesquisava a etimologia de "ok" — 8 átomos-lixo.
+    - SEM NÚCLEO: 'dolar 542' (moeda + número). Tirando o número e o gatilho efêmero,
+      não sobra ASSUNTO a pesquisar — e a resposta (cotação) expiraria de qualquer jeito.
+
+    Aplicar e_efemero cru aos termos seria agressivo demais: 'protocolo stratum v2
+    mineracao bitcoin' é efêmero pela palavra 'bitcoin', mas é pergunta técnica legítima.
+    Por isso o teste é ter NÚCLEO — ao menos 1 keyword que não seja número puro nem
+    gatilho efêmero. 'dolar 542' -> núcleo vazio; 'stratum...bitcoin' -> {protocolo,
+    stratum, mineracao}. Distingue o lixo do assunto real que só menciona cripto.
+    """
+    kws = textutils.palavras_chave(termos)
+    if len(kws) < settings.lacuna_min_keywords:
+        return False
+    nucleo = {k for k in kws if not k.isdigit() and not tools.e_efemero(k)}
+    return bool(nucleo)
+
+
+# Gatilhos de pergunta META-LINGUÍSTICA: quem pergunta "de onde saiu a EXPRESSÃO X"
+# está perguntando SOBRE a frase X, e X (não a moldura) é o alvo da busca.
+_GATILHOS_CITACAO = {
+    "expressao", "expressoes", "frase", "frases", "ditado", "ditados", "giria",
+    "girias", "proverbio", "proverbios", "dito", "ditado popular", "jargao",
+}
+
+
+def frase_citada(pergunta: str) -> str:
+    """Extrai a FRASE que a pergunta cita, quando ela é sobre uma expressão. Puro.
+
+    Bug medido em produção: "da onde saiu a expressão pega um prato faz a linha dá um
+    tiro na farinha?" → o extrator reduziu a 5 palavras e cuspiu 'saiu expressão pega
+    prato', JOGANDO FORA a expressão inteira — que é exatamente o que se busca. A query
+    de 5 palavras serve ao aterramento léxico LOCAL; para a web, a frase citada é o
+    alvo de maior sinal (o Google acha 'pega um prato...' num instante).
+
+    Pega tudo depois do gatilho ('expressão', 'ditado', ...). Exige >=3 palavras de
+    resto para não disparar em 'qual sua expressão favorita?' (moldura sem citação)."""
+    palavras = pergunta.strip().rstrip("?.!").split()
+    norm = [textutils.normaliza(w) for w in palavras]
+    for i, w in enumerate(norm):
+        if w in _GATILHOS_CITACAO:
+            resto = palavras[i + 1:]
+            # pula um conector logo após o gatilho ('o ditado QUE DIZ x', 'a frase: x')
+            while resto and textutils.normaliza(resto[0]) in {"que", "diz", "e", ":"}:
+                resto = resto[1:]
+            if len(resto) >= 3:
+                return " ".join(resto).strip(" :\"'")
+    return ""
+
+
 # ==========================================================================
 # Extrator de query (resolve pronomes cruzados)
 # ==========================================================================
@@ -341,8 +438,12 @@ class QueryOptimizer:
                 return textutils.limpar_query(historico[-1][0]) or historico[-1][0]
             return limpa
 
+        # SÓ passa o histórico se a pergunta REFERENCIA o assunto anterior. Uma pergunta
+        # auto-contida ('como funciona o tensor RT?') não pode ver o turno de 'esp32' —
+        # o extrator misturava os dois numa query só ('tensor rt esp32'). Sem referência,
+        # contexto="NENHUM": o assunto novo entra limpo.
         contexto = "NENHUM"
-        if historico:
+        if historico and referencia_contexto(pergunta):
             turnos = []
             for q, a in list(historico)[-2:]:
                 resumo = a[:150] + "..." if len(a) > 150 else a
@@ -411,7 +512,14 @@ class Agent:
         if local.texto != NENHUM:
             partes.append(f"[Banco Local]\n{local.texto}")
         if ram:
-            partes.append("[Memória Fresca da Sessão]\n" + "\n\n".join(ram))
+            # A RAM da sessão é SEMPRE prefetch da WEB (só o _prefetch chama lembrar).
+            # Rotulá-la como GENÉRICA impede que a fusão apresente um kit qualquer da
+            # web como se fosse a lista do PROJETO do usuário (medido: pergunta sobre
+            # 'a lista de compra do meu projeto' respondida com um kit ESP32 aleatório).
+            partes.append(
+                "[Contexto amplo da WEB — informação GENÉRICA, pode não ser específica "
+                "do caso do usuário]\n" + "\n\n".join(ram)
+            )
         return "\n".join(partes)
 
     async def pipeline_resposta(
@@ -438,6 +546,15 @@ class Agent:
     ) -> None:
         rota = "web"
         try:
+            # PALAVRA-MESTRE: se a mensagem começa por ela, é um COMANDO de agente e vai
+            # por um fluxo ISOLADO (determinístico primeiro, LLM só se necessário). Não
+            # cai no pipeline de conhecimento. Sem a palavra-mestre, tudo segue como hoje.
+            if settings.palavra_mestre_habilitada:
+                comando = mestre.separar(texto_usuario, settings.palavra_mestre)
+                if comando is not None:
+                    await self._fluxo_mestre(comando, send_medido, tracker, mem)
+                    return
+
             # EFEMERIDADE — decidida UMA vez, no topo, porque governa os DOIS caminhos
             # de ingestão: a fila do ETL (web) e o dump da conversa (que o idle atomiza).
             # Medido no vault: 45 dos 48 átomos-lixo vieram da fila, 3 do dump.
@@ -450,9 +567,12 @@ class Agent:
                 decisao = await self._rotear(texto_usuario)
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
+                    tool = self.tools.get(decisao.tool)
                     texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao)
                     if texto_final:
-                        if not efemero:
+                        # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
+                        # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
+                        if not efemero and tool.registra_conhecimento:
                             await append_chat_dump("IA", texto_final)
                         mem.registrar_turno(texto_usuario, texto_final)
                         await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
@@ -528,6 +648,14 @@ class Agent:
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
+                    # LACUNA: nem a RAM nem o banco tinham. Registra para a pesquisa
+                    # proativa do idle trazer isto pronto na próxima vez. `efemero` (da
+                    # pergunta original) barra 'clima amanhã'; `lacuna_pesquisavel` barra
+                    # o trivial ('ok') e o sem-núcleo ('dolar 542') — ver a função.
+                    if not efemero and lacuna_pesquisavel(termos):
+                        await asyncio.to_thread(
+                            db.save_lacuna, textutils.normaliza(termos), termos
+                        )
                     # `efemero` também aqui: é POR ESTE caminho que "clima em lisboa
                     # amanhã" chega (o gate de rota não o pega), escala pra web e hoje
                     # é ingerido. Sem isto o bloqueio vazaria os casos reais medidos.
@@ -618,6 +746,71 @@ class Agent:
         if audio:
             await send({"tipo": "audio", "base64": audio})
         return fala
+
+    async def _emitir_falado(self, send: Sender, texto: str) -> None:
+        """Emite um texto pronto: token (para a tela) + áudio (TTS). Sem LLM."""
+        await send({"tipo": "token", "texto": texto})
+        await self._falar_texto(send, texto)
+
+    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender) -> str:
+        """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
+        sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
+        torna 'mestre, põe pão na lista' instantâneo e barato."""
+        resultados: List[str] = []
+        for dec in acoes:
+            tool = self.tools.get(dec.tool)
+            if tool is None:
+                continue
+            try:
+                obs = await tool.executar(dec.args, self.ctx)
+            except Exception as exc:
+                telemetry.error("MESTRE", f"Falha na ferramenta '{dec.tool}'", exc)
+                obs = f"não consegui executar {dec.tool}"
+            resultados.append(obs)
+        final = " ".join(r for r in resultados if r) or "Pronto."
+        await self._emitir_falado(send, final)
+        return final
+
+    async def _fluxo_mestre(
+        self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
+    ) -> None:
+        """Fluxo ISOLADO da palavra-mestre: comando de agente, não pergunta.
+
+        1) `parse_rapido` resolve os comandos regulares SEM LLM. 2) Senão, o roteador
+        LLM tenta mapear numa ferramenta. 3) Se nem o roteador reconhece uma AÇÃO, o
+        comando é RECUSADO (isolamento rígido, decidido com o dono) e REGISTRADO como
+        melhoria a revisar — nunca vira uma resposta de conhecimento."""
+        if not comando.strip():
+            fala = f"Sim, {settings.palavra_mestre.capitalize()}? Pode falar."
+            await self._emitir_falado(send, fala)
+            return
+
+        acoes = mestre.parse_rapido(comando, datetime.now())
+        if acoes:
+            texto_final = await self._executar_acoes_rapidas(acoes, send)
+            rota = "mestre:rapido"
+        else:
+            decisao = await self._rotear(comando)
+            if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
+                texto_final = await self._pipeline_tools(comando, send, decisao)
+                rota = f"mestre:tool:{decisao.tool}"
+            else:
+                # Não é ação reconhecida: recusa + registra para revisão.
+                await asyncio.to_thread(db.registrar_comando_desconhecido, comando)
+                fala = (
+                    "Não reconheci um comando de agente aí. Posso, por exemplo, adicionar "
+                    "itens a uma lista, criar um lembrete ou avisar quando algo acontecer."
+                )
+                await self._emitir_falado(send, fala)
+                texto_final = fala
+                rota = "mestre:desconhecido"
+
+        # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
+        # (histórico) e na RAM (contexto de follow-up), como as demais ações.
+        if texto_final:
+            mem.registrar_turno(comando, texto_final)
+            await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
+            await self._registrar_latencia(tracker, rota)
 
     def _pergunta_com_contexto(self, texto_usuario: str, mem: SessionMemory) -> str:
         """Prefixa o histórico recente à pergunta, só para o LLM de RESPOSTA.
@@ -747,13 +940,19 @@ class Agent:
         self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
         consulta_rank: str | None = None, efemero: bool = False,
     ) -> str:
-        # Filler específico mascara a latência da busca web (diz o que está fazendo).
-        await self._falar_status(send, self._msg_web(termos))
+        # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
+        # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
+        # prato' em vez de 'pega um prato faz a linha dá um tiro na farinha'). Senão, a
+        # query enxuta de sempre.
+        query_web = frase_citada(consulta_rank or texto_usuario) or termos
 
-        # `termos` (query enxuta) faz o DDG; `consulta_rank` (pergunta natural crua)
-        # guia o ranking dos trechos do deep-fetch — o embedding é simétrico, então a
-        # frase inteira casa melhor com os parágrafos das páginas que 5 keywords.
-        dados_web = await self.ctx.web.search(termos, consulta=consulta_rank or termos)
+        # Filler específico mascara a latência da busca web (diz o que está fazendo).
+        await self._falar_status(send, self._msg_web(query_web))
+
+        # `query_web` faz o DDG; `consulta_rank` (pergunta natural crua) guia o ranking
+        # dos trechos do deep-fetch — o embedding é simétrico, então a frase inteira
+        # casa melhor com os parágrafos das páginas que 5 keywords.
+        dados_web = await self.ctx.web.search(query_web, consulta=consulta_rank or termos)
         # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
         # engordava o vault com dezenas de notas por pergunta sobre o tempo.
@@ -880,9 +1079,16 @@ class EtlProcessor:
             blocos = [texto.strip()]
         agora = datetime.now()
         salvos = 0
+        duplicados = 0
         for i, bloco in enumerate(blocos):
             bloco = normalizar_atomo(bloco, prefixo, agora)
             if not bloco.strip():
+                continue
+            # DEDUP contra o banco (pedido: "impeça a duplicação"). Um átomo quase
+            # idêntico a um já indexado não vira arquivo novo — senão a base incha com
+            # a mesma ideia e o rag_top_k recupera clones. Fail-open sem embeddings.
+            if await self._ja_no_banco(strip_frontmatter(bloco)):
+                duplicados += 1
                 continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
             caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
@@ -897,7 +1103,27 @@ class EtlProcessor:
                 salvos += 1
             except OSError as exc:
                 telemetry.error(tipo_log, f"Falha ao salvar átomo {nome}", exc)
+        if duplicados:
+            telemetry.track(tipo_log, f"Dedup: {duplicados} átomo(s) já no banco, ignorados.")
         return salvos
+
+    async def _ja_no_banco(self, corpo: str) -> bool:
+        """True se um átomo quase idêntico já está indexado (distância < dedup_dist_max).
+
+        Fail-open: sem embeddings/loja (testes) devolve False — dedup é uma trava de
+        qualidade, não pode virar bloqueio de escrita. Barato: 1 embedding + 1 vizinho."""
+        store = self.ctx.vectorstore
+        if store is None or getattr(store, "_store", None) is None or not corpo.strip():
+            return False
+        try:
+            res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
+        except Exception as exc:
+            telemetry.warn("DEDUP", f"Falha ao checar duplicata (seguindo com o save): {exc}")
+            return False
+        if not res:
+            return False
+        _doc, dist = res[0]
+        return dist < settings.dedup_dist_max
 
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:
@@ -996,7 +1222,86 @@ class EtlProcessor:
         else:
             telemetry.warn("IDLE", "Nenhum átomo salvo da conversa — dump preservado p/ retry.")
 
+    async def pesquisa_proativa(self) -> None:
+        """No idle, busca na web as maiores LACUNAS (perguntas que a RAM E o banco não
+        responderam), atomiza e insere — para a próxima vez já achar local. É o que faz
+        o app "sempre ter algo novo pronto" sobre as dúvidas reais do usuário.
+
+        Anti-duplicação em DOIS níveis:
+        1. ALVO: se o banco JÁ cobre a lacuna (relevante) — porque outra passada de idle
+           já a trouxe, ou a base cresceu — não re-pesquisa; só marca como resolvida.
+        2. ÁTOMO: `_salvar_atomos` descarta o que já está indexado (dedup_dist_max).
+
+        Preempção: cada síntese é `preemptible`. Se o usuário volta, InferenciaPreemptada
+        encerra a pesquisa — o idle acabou, e as lacunas não-tocadas ficam para a próxima."""
+        if not settings.idle_pesquisa_proativa:
+            return
+        lacunas = await asyncio.to_thread(db.get_lacunas, settings.idle_pesquisa_max * 4)
+        if not lacunas:
+            return
+        feitas = 0
+        for lac in lacunas:
+            if feitas >= settings.idle_pesquisa_max:
+                break
+            termos = lac["termos"]
+            chave = textutils.normaliza(termos)
+            # Backstop contra lacuna inútil já na tabela (legada, de antes do filtro na
+            # escalada): 'ok' (trivial) e 'dolar 542' (sem núcleo) nunca viram pesquisa.
+            if not lacuna_pesquisavel(termos):
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            await self._esperar_idle()
+            # Nível 1 — o banco já cobre? (cresceu desde que a lacuna foi vista)
+            local = await self.ctx.vectorstore.search(termos, texto_busca=termos)
+            if local.relevante:
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            dados = await self.ctx.web.search(termos, consulta=termos)
+            if not dados or dados == NENHUM:
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            try:
+                conteudo = await self.ctx.llama.collect(
+                    prompts.prompt_sintese(termos, dados),
+                    max_tokens=settings.max_tokens_sintese,
+                    system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,
+                )
+            except InferenciaPreemptada:
+                telemetry.track("ETL_PROATIVO", "Usuário voltou — pesquisa proativa adiada.")
+                return
+            except Exception as exc:
+                telemetry.error("ETL_PROATIVO", f"Falha ao sintetizar lacuna '{termos}'", exc)
+                await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+                continue
+            # Nível 2 (dedup por átomo) acontece dentro de _salvar_atomos.
+            salvos = await self._salvar_atomos(conteudo, "Proativa", "ETL_PROATIVO")
+            await asyncio.to_thread(db.marcar_lacuna_pesquisada, chave)
+            if salvos:
+                feitas += 1
+                telemetry.track("ETL_PROATIVO", f"Lacuna '{termos}': {salvos} átomo(s) novos.")
+        if feitas:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("ETL_PROATIVO", f"Pesquisa proativa: {feitas} lacuna(s) trazida(s) ao banco.")
+
     async def run_idle(self, itens: List[Tuple[str, str]]) -> None:
-        """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa."""
+        """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa,
+        3) PESQUISA PROATIVA das lacunas, 4) DESCARREGA o modelo, liberando a VRAM (o
+        pilar pedido: a GPU volta pra outros trabalhos quando o chat para).
+
+        A ordem importa e foi pedida assim: o ETL PRECISA do modelo, então o unload é o
+        ÚLTIMO passo. E só descarrega se ninguém voltou a interagir no meio-tempo —
+        `interactive_idle` está SETADO quando não há inferência interativa em voo; se o
+        usuário mandou algo, o pipeline o limpou e o unload é pulado (o próprio pipeline
+        religou/manteve o modelo). Se descarregar e a mensagem chegar logo depois,
+        `ensure_loaded` (no stream) religa: seguro nas duas direções."""
         await self.process_queue(itens)
         await self.summarize_dump()
+        await self.pesquisa_proativa()
+
+        if not settings.idle_descarregar_modelo:
+            return
+        if not self.ctx.interactive_idle.is_set():
+            telemetry.track("ETL_POST_CHAT", "Interação retomada no idle — modelo mantido.")
+            return
+        await self.ctx.llama.unload()

@@ -29,6 +29,23 @@ STOP = {
 }
 
 
+# Caracteres CJK (Han). Um átomo com corpo em chinês nunca ajuda uma pergunta em PT,
+# mas ocupa vaga no orçamento de contexto — a síntese saiu no idioma errado (medido:
+# 30 na base). `fracao_cjk` mede a proporção para poder podar/rejeitar.
+_CJK_RE = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿]")
+
+
+def fracao_cjk(s: str) -> float:
+    """Proporção de caracteres CJK entre os NÃO-brancos. ~0 para PT, alta p/ chinês.
+
+    Robusta a átomo em PT que cita um termo estrangeiro isolado (proporção baixa) —
+    só dispara quando o CORPO é substancialmente CJK."""
+    sem_espaco = [c for c in s if not c.isspace()]
+    if not sem_espaco:
+        return 0.0
+    return sum(1 for c in sem_espaco if _CJK_RE.match(c)) / len(sem_espaco)
+
+
 def sem_acento(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 

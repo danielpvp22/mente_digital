@@ -194,6 +194,55 @@ class Settings(BaseSettings):
     tts_chunk_min_chars: int = 8        # frase mínima antes de sintetizar
     tts_chunk_max_chars: int = 180      # flush forçado em frases longas
 
+    # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
+    # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar
+    # conhecimento e liberar a GPU. Diferente do vad_silence (fim de FALA, ~1s); este
+    # é fim de INTERAÇÃO. Uma nova mensagem/fala rearma. Maior = idle mais preguiçoso
+    # (menos reloads, VRAM presa por mais tempo); menor = libera a GPU mais cedo.
+    idle_inatividade_seconds: float = 90.0
+    # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
+    # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
+    idle_descarregar_modelo: bool = True
+    # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
+    # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
+    # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.
+    idle_pesquisa_proativa: bool = True
+    # Quantas lacunas pesquisar por ciclo de idle (cada uma: 1 busca web + 1 síntese).
+    idle_pesquisa_max: int = 3
+    # Mínimo de keywords significativas para uma pergunta virar LACUNA pesquisável.
+    # Sem isto, 'ok'/'sim' (falso-positivo do VAD/Whisper, 0 keywords) escalavam pra web
+    # e a proativa pesquisava — medido: 8 átomos sobre a etimologia de "ok" no vault.
+    lacuna_min_keywords: int = 2
+    # Dedup do átomo novo contra o banco: distância de cosseno abaixo da qual o átomo é
+    # considerado DUPLICADO e descartado. Conservador (0.08 ≈ quase idêntico) para não
+    # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
+    dedup_dist_max: float = 0.08
+
+    # --- Palavra-mestre (fluxo isolado dos agentes) -----------------------------
+    # Quando a mensagem COMEÇA por esta palavra, é tratada como COMANDO de agente
+    # (fluxo determinístico, LLM só se necessário) — não como pergunta de conhecimento.
+    # Sem ela, o pipeline de hoje não muda. Configurável por MENTE_PALAVRA_MESTRE.
+    palavra_mestre: str = "mestre"
+    palavra_mestre_habilitada: bool = True
+
+    # --- Agentes / Scheduler (lembretes, alarmes, watchers, briefing) -----------
+    # O SchedulerService é um loop de background que lê a tabela `agendamentos` e
+    # dispara os vencidos. É a "responsabilidade contínua" dos agentes tipo-Alexa.
+    scheduler_enabled: bool = True
+    # Granularidade do loop: de quanto em quanto tempo checa a tabela. 20s dá precisão
+    # de sub-minuto para lembretes sem custar quase nada (uma consulta SQLite indexada).
+    scheduler_tick_seconds: float = 20.0
+    # Watcher "me avise quando": intervalo padrão entre checagens da condição na web.
+    # Cada checagem gasta 1 busca web + 1 inferência (preemptível, cede à conversa).
+    watcher_intervalo_seconds: int = 1800     # 30 min
+    # Teto de vida de um watcher: expira sozinho depois disso (não fica checando a web
+    # para sempre por uma condição que talvez nunca ocorra).
+    watcher_expira_horas: int = 168           # 7 dias
+    # Briefing diário: horário padrão (HH:MM) quando o usuário não especifica.
+    briefing_hora_padrao: str = "07:00"
+    # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
+    subpasta_listas: str = "Listas"
+
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
     max_session_knowledge: int = 12
@@ -209,11 +258,16 @@ class Settings(BaseSettings):
     def dir_conhecimento_novo(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_conhecimento_novo
 
+    @property
+    def dir_listas(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_listas
+
     def ensure_dirs(self) -> None:
         """Cria as pastas necessárias. Chamado no startup, nunca no import."""
         os.makedirs(self.diretorio_banco_vetorial, exist_ok=True)
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
+        os.makedirs(self.dir_listas, exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)
