@@ -98,6 +98,70 @@ def modo_confidencial(comando: str) -> Optional[bool]:
     return None
 
 
+# DESFAZER (#8): gatilhos de "reverte a última ação". Mantidos ESPECÍFICOS (frases,
+# não o "cancela" cru) para não colidir com "cancela o lembrete 3" (que é uma ação
+# regular do parse_rapido). Já normalizados (sem acento): "desfaça"->"desfaca".
+_GATILHO_DESFAZER = (
+    "desfaz", "desfazer", "desfaca", "desfez", "desfeito",
+    "volta atras", "voltar atras", "anula", "anular",
+    "cancela isso", "cancelar isso", "cancela a ultima", "cancela a acao",
+    "esquece isso", "esquece o que eu disse", "esquece o ultimo",
+)
+
+
+def comando_desfazer(comando: str) -> bool:
+    """True se a mensagem pede para DESFAZER a última ação (#8). Puro/testável.
+
+    Tratado no fluxo-mestre (não numa ferramenta) porque a ação a reverter vive no
+    estado da SESSÃO (SessionMemory.ultima_reversivel), a que as ferramentas (só ctx)
+    não têm acesso — mesma razão do modo confidencial."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_DESFAZER)
+
+
+def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
+    """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
+    que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.
+
+    Puro/testável. Só reverte mutações com um inverso DETERMINÍSTICO e uma fonte
+    confiável do que reverter: add/remove de lista (o inverso é a outra ferramenta) e
+    lembrete (o inverso é cancelar o #id que a própria ferramenta reportou no resultado).
+    O resultado é inspecionado para não "reverter" uma ação que falhou (ex.: remover um
+    item que não existia). Captura/nota ficam de fora por ora (sem inverso registrado)."""
+    revs: List[tools.Decisao] = []
+    for dec, res in executadas:
+        r = _reverter_uma(dec, res or "")
+        if r is not None:
+            revs.append(r)
+    if not revs:
+        return None
+    revs.reverse()   # desfaz na ordem inversa da execução
+    return revs
+
+
+def _reverter_uma(dec: tools.Decisao, resultado: str) -> Optional[tools.Decisao]:
+    """Inverso de UMA ação, ou None se não for reversível/não tiver sido efetivada."""
+    args = dec.args or {}
+    baixa = resultado.lower()
+    if dec.tool == "adicionar_item" and baixa.startswith("adicionei"):
+        item = str(args.get("item", "")).strip()
+        if item:
+            return tools.Decisao("remover_item", {"lista": args.get("lista") or "compras", "item": item})
+    elif dec.tool == "remover_item" and baixa.startswith("removi"):
+        item = str(args.get("item", "")).strip()
+        if item:
+            return tools.Decisao("adicionar_item", {"lista": args.get("lista") or "compras", "item": item})
+    elif dec.tool == "criar_lembrete":
+        # A ferramenta reporta "lembrete #<id> criado ..." no sucesso; cancelar esse id
+        # desfaz. Numa falha ("não entendi o horário") não há '#<id>' -> None.
+        m = re.search(r"#(\d+)", resultado)
+        if m:
+            return tools.Decisao("cancelar_lembrete", {"id": m.group(1)})
+    return None
+
+
 def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
     """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM)."""
     if not comando or not comando.strip():

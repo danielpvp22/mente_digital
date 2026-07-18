@@ -160,3 +160,62 @@ def test_auditoria_parse():
     for c in ["o que você fez hoje?", "trilha de auditoria", "quais suas ações hoje"]:
         acoes = mestre.parse_rapido(c, AGORA)
         assert acoes and acoes[0].tool == "auditoria_hoje"
+
+
+# -- desfazer (#8): detecção -------------------------------------------------
+def test_comando_desfazer_reconhece():
+    for c in ["desfaça", "desfaz isso", "desfazer", "volta atrás", "anula",
+              "cancela isso", "cancela a última", "esquece isso"]:
+        assert mestre.comando_desfazer(c) is True, c
+
+
+def test_comando_desfazer_nao_colide_com_acao_regular():
+    # "cancela o lembrete 3" é uma AÇÃO (cancelar_lembrete), não um desfazer.
+    assert mestre.comando_desfazer("cancela o lembrete 3") is False
+    assert mestre.comando_desfazer("adiciona pão na lista") is False
+    assert mestre.comando_desfazer("o que é RAG") is False
+    # E o parse_rapido segue resolvendo o cancelamento por número normalmente.
+    acoes = mestre.parse_rapido("cancela o lembrete 3", AGORA)
+    assert acoes == [mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})]
+
+
+# -- desfazer (#8): cálculo da reversão --------------------------------------
+def test_reverter_add_vira_remove():
+    add = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    rev = mestre.reverter([(add, "adicionei 'pão' à lista de compras.")])
+    assert rev == [mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "pão"})]
+
+
+def test_reverter_remove_vira_add():
+    rem = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "leite"})
+    rev = mestre.reverter([(rem, "removi 'leite' da lista de compras.")])
+    assert rev == [mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "leite"})]
+
+
+def test_reverter_lembrete_vira_cancelar_pelo_id():
+    cri = mestre.tools.Decisao("criar_lembrete", {"quando": "daqui 4h", "mensagem": "Alarme"})
+    rev = mestre.reverter([(cri, "lembrete #7 criado para 17/07 às 18:30: Alarme")])
+    assert rev == [mestre.tools.Decisao("cancelar_lembrete", {"id": "7"})]
+
+
+def test_reverter_ignora_acao_que_falhou():
+    # Remover um item inexistente NÃO deve gerar um "re-adicionar" fantasma.
+    rem = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "xyz"})
+    assert mestre.reverter([(rem, "não achei 'xyz' na lista de compras.")]) is None
+    # Lembrete que falhou (sem #id) também não é reversível.
+    cri = mestre.tools.Decisao("criar_lembrete", {"quando": "?", "mensagem": "x"})
+    assert mestre.reverter([(cri, "não entendi o horário '?'.")]) is None
+
+
+def test_reverter_ordem_inversa():
+    # Duas adições -> a reversão remove na ORDEM INVERSA (desfaz da última p/ a primeira).
+    a1 = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    a2 = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "ovos"})
+    rev = mestre.reverter([(a1, "adicionei 'pão' à lista de compras."),
+                           (a2, "adicionei 'ovos' à lista de compras.")])
+    assert [r.args["item"] for r in rev] == ["ovos", "pão"]
+
+
+def test_reverter_nao_reverte_leitura():
+    ler = mestre.tools.Decisao("ler_lista", {"lista": "compras"})
+    assert mestre.reverter([(ler, "# Lista: compras\n- pão\n")]) is None

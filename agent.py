@@ -23,7 +23,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Awaitable, Callable, Deque, List, Tuple
+from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import mestre
 import prompts
@@ -607,7 +607,7 @@ class Agent:
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
-                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial)
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial, mem=mem)
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
@@ -757,7 +757,10 @@ class Agent:
         )
         return tools.parse_decisao(bruto)
 
-    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira, auditar: bool = True) -> str:
+    async def _pipeline_tools(
+        self, texto_usuario: str, send: Sender, primeira, auditar: bool = True,
+        mem: Optional[SessionMemory] = None,
+    ) -> str:
         """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
 
         Ferramentas terminais (calcular/hora/salvar) encerram no 1º passo. As não
@@ -765,8 +768,11 @@ class Agent:
         `max_tool_steps`, mas o loop para assim que o roteador devolve 'responder'.
         A resposta final vai por streaming + chunking (TTS), preservando o pilar.
 
-        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27).
+        `mem` (quando dado) recebe a reversão da mutação p/ o "mestre, desfaça" (#8) —
+        cobre o caminho LLM (ex.: "me lembra de ligar amanhã", que o parse_rapido defere)."""
         observacoes: List[str] = []
+        executadas: List[tuple] = []   # (Decisao, resultado) p/ computar a reversão (#8)
         decisao = primeira
         passos = 0
         while decisao and decisao.tool != "responder" and passos < settings.max_tool_steps:
@@ -781,10 +787,12 @@ class Agent:
             if auditar and tool.auditavel:
                 await asyncio.to_thread(db.registrar_auditoria, decisao.tool, obs)
             observacoes.append(f"[{decisao.tool}] {obs}")
+            executadas.append((decisao, obs))
             passos += 1
             if tool.terminal:
                 break
             decisao = await self._rotear(texto_usuario, "\n".join(observacoes))
+        self._lembrar_reversao(mem, executadas)
 
         resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"
         resposta = await self._responder_stream(
@@ -807,13 +815,19 @@ class Agent:
         await send({"tipo": "token", "texto": texto})
         await self._falar_texto(send, texto)
 
-    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True) -> str:
+    async def _executar_acoes_rapidas(
+        self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True,
+        mem: Optional[SessionMemory] = None, prefixo: str = "",
+    ) -> str:
         """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
         sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
         torna 'mestre, põe pão na lista' instantâneo e barato.
 
-        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27).
+        `mem` (quando dado) recebe a reversão desta ação p/ o "mestre, desfaça" (#8);
+        `prefixo` prefixa a fala (ex.: "Desfeito. " ao executar a própria reversão)."""
         resultados: List[str] = []
+        executadas: List[tuple] = []   # (Decisao, resultado) p/ computar a reversão
         for dec in acoes:
             tool = self.tools.get(dec.tool)
             if tool is None:
@@ -826,9 +840,37 @@ class Agent:
             if auditar and tool.auditavel:
                 await asyncio.to_thread(db.registrar_auditoria, dec.tool, obs)
             resultados.append(obs)
-        final = " ".join(r for r in resultados if r) or "Pronto."
+            executadas.append((dec, obs))
+        self._lembrar_reversao(mem, executadas)
+        final = prefixo + (" ".join(r for r in resultados if r) or "Pronto.")
         await self._emitir_falado(send, final)
         return final
+
+    def _lembrar_reversao(self, mem: Optional[SessionMemory], executadas: List[tuple]) -> None:
+        """Guarda na sessão as ações que DESFAZEM o que acabou de rodar (#8).
+
+        Só sobrescreve o alvo de undo quando há de fato algo reversível — assim uma
+        leitura (ler_lista) ou uma ação que falhou não apaga o undo pendente anterior."""
+        if mem is None or not executadas:
+            return
+        rev = mestre.reverter(executadas)
+        if rev:
+            mem.ultima_reversivel = rev
+
+    async def _desfazer(self, send: Sender, mem: SessionMemory, auditar: bool) -> tuple:
+        """Executa a reversão da última ação da sessão (#8). Devolve (fala, rota)."""
+        revs = mem.ultima_reversivel
+        if not revs:
+            fala = "Não tenho nenhuma ação recente para desfazer."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:desfazer_vazio"
+        # Consome ANTES de executar: a própria reversão não vira novo alvo de undo
+        # (mem=None abaixo), então "desfaça, desfaça" não fica num ping-pong.
+        mem.ultima_reversivel = None
+        fala = await self._executar_acoes_rapidas(
+            revs, send, auditar=auditar, mem=None, prefixo="Desfeito. "
+        )
+        return fala, "mestre:desfazer"
 
     async def _fluxo_mestre(
         self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
@@ -858,14 +900,21 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
-        acoes = mestre.parse_rapido(comando, datetime.now())
-        if acoes:
-            texto_final = await self._executar_acoes_rapidas(acoes, send, auditar=not mem.confidencial)
+        # DESFAZER (#8): meta-comando que reverte a última ação reversível da sessão.
+        # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
+        if mestre.comando_desfazer(comando):
+            texto_final, rota = await self._desfazer(send, mem, auditar=not mem.confidencial)
+        elif acoes := mestre.parse_rapido(comando, datetime.now()):
+            texto_final = await self._executar_acoes_rapidas(
+                acoes, send, auditar=not mem.confidencial, mem=mem
+            )
             rota = "mestre:rapido"
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
-                texto_final = await self._pipeline_tools(comando, send, decisao, auditar=not mem.confidencial)
+                texto_final = await self._pipeline_tools(
+                    comando, send, decisao, auditar=not mem.confidencial, mem=mem
+                )
                 rota = f"mestre:tool:{decisao.tool}"
             else:
                 # Não é ação reconhecida: recusa + registra para revisão.
