@@ -25,6 +25,7 @@ import time
 from datetime import datetime
 from typing import Awaitable, Callable, Deque, List, Tuple
 
+import mestre
 import prompts
 import textutils
 import tools
@@ -545,6 +546,15 @@ class Agent:
     ) -> None:
         rota = "web"
         try:
+            # PALAVRA-MESTRE: se a mensagem começa por ela, é um COMANDO de agente e vai
+            # por um fluxo ISOLADO (determinístico primeiro, LLM só se necessário). Não
+            # cai no pipeline de conhecimento. Sem a palavra-mestre, tudo segue como hoje.
+            if settings.palavra_mestre_habilitada:
+                comando = mestre.separar(texto_usuario, settings.palavra_mestre)
+                if comando is not None:
+                    await self._fluxo_mestre(comando, send_medido, tracker, mem)
+                    return
+
             # EFEMERIDADE — decidida UMA vez, no topo, porque governa os DOIS caminhos
             # de ingestão: a fila do ETL (web) e o dump da conversa (que o idle atomiza).
             # Medido no vault: 45 dos 48 átomos-lixo vieram da fila, 3 do dump.
@@ -736,6 +746,71 @@ class Agent:
         if audio:
             await send({"tipo": "audio", "base64": audio})
         return fala
+
+    async def _emitir_falado(self, send: Sender, texto: str) -> None:
+        """Emite um texto pronto: token (para a tela) + áudio (TTS). Sem LLM."""
+        await send({"tipo": "token", "texto": texto})
+        await self._falar_texto(send, texto)
+
+    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender) -> str:
+        """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
+        sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
+        torna 'mestre, põe pão na lista' instantâneo e barato."""
+        resultados: List[str] = []
+        for dec in acoes:
+            tool = self.tools.get(dec.tool)
+            if tool is None:
+                continue
+            try:
+                obs = await tool.executar(dec.args, self.ctx)
+            except Exception as exc:
+                telemetry.error("MESTRE", f"Falha na ferramenta '{dec.tool}'", exc)
+                obs = f"não consegui executar {dec.tool}"
+            resultados.append(obs)
+        final = " ".join(r for r in resultados if r) or "Pronto."
+        await self._emitir_falado(send, final)
+        return final
+
+    async def _fluxo_mestre(
+        self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
+    ) -> None:
+        """Fluxo ISOLADO da palavra-mestre: comando de agente, não pergunta.
+
+        1) `parse_rapido` resolve os comandos regulares SEM LLM. 2) Senão, o roteador
+        LLM tenta mapear numa ferramenta. 3) Se nem o roteador reconhece uma AÇÃO, o
+        comando é RECUSADO (isolamento rígido, decidido com o dono) e REGISTRADO como
+        melhoria a revisar — nunca vira uma resposta de conhecimento."""
+        if not comando.strip():
+            fala = f"Sim, {settings.palavra_mestre.capitalize()}? Pode falar."
+            await self._emitir_falado(send, fala)
+            return
+
+        acoes = mestre.parse_rapido(comando, datetime.now())
+        if acoes:
+            texto_final = await self._executar_acoes_rapidas(acoes, send)
+            rota = "mestre:rapido"
+        else:
+            decisao = await self._rotear(comando)
+            if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
+                texto_final = await self._pipeline_tools(comando, send, decisao)
+                rota = f"mestre:tool:{decisao.tool}"
+            else:
+                # Não é ação reconhecida: recusa + registra para revisão.
+                await asyncio.to_thread(db.registrar_comando_desconhecido, comando)
+                fala = (
+                    "Não reconheci um comando de agente aí. Posso, por exemplo, adicionar "
+                    "itens a uma lista, criar um lembrete ou avisar quando algo acontecer."
+                )
+                await self._emitir_falado(send, fala)
+                texto_final = fala
+                rota = "mestre:desconhecido"
+
+        # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
+        # (histórico) e na RAM (contexto de follow-up), como as demais ações.
+        if texto_final:
+            mem.registrar_turno(comando, texto_final)
+            await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
+            await self._registrar_latencia(tracker, rota)
 
     def _pergunta_com_contexto(self, texto_usuario: str, mem: SessionMemory) -> str:
         """Prefixa o histórico recente à pergunta, só para o LLM de RESPOSTA.
