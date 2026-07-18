@@ -340,6 +340,69 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
     return None
 
 
+# ENCADEAMENTO FALADO (#12): conectores que PODEM separar duas ações ("... e ...",
+# "... depois ...", "; ..."). O corte só acontece se o lado DIREITO começar uma nova
+# ação (senão o "e" é interno de lista: "leite, farinha e ovos" fica inteiro). "e depois"
+# / "e também" antes do "e" cru (alternância é leftmost-first).
+_CONECTOR_RE = re.compile(
+    r"\s+(?:e\s+depois|e\s+tambem|e|depois|tambem)\s+|\s*;\s*", re.I
+)
+# Radicais que MARCAM o começo de uma nova ação reconhecível pelo parse_rapido.
+_ACAO_START_RE = re.compile(
+    r"^(?:me\s+lembr|lembr|adicion|acrescent|coloc|poe|poem|bot[ae]|inclu|remov|tir[ae]|"
+    r"tirar|apag|exclu|delet|retir|cri[ae]|criar|marc|agend|program|anot|captur|cancel|"
+    r"avis|alarme|despertador|timer|cronometro|temporizador|lembrete)\w*",
+    re.I,
+)
+
+
+def dividir_comandos(comando: str) -> List[str]:
+    """Fatia um comando composto nas fronteiras entre AÇÕES (#12). Puro/testável.
+
+    Corta num conector só quando o texto seguinte começa uma nova ação — assim o "e"
+    interno de uma lista ("leite, farinha e ovos") NÃO vira fronteira. Casa posições
+    sobre a forma sem acento (comprimento preservado) e fatia o ORIGINAL."""
+    orig = comando.strip()
+    if not orig:
+        return []
+    baixa = orig.lower()
+    ms = textutils.sem_acento(baixa)
+    if len(ms) != len(baixa):
+        ms = baixa
+    cortes = []
+    for m in _CONECTOR_RE.finditer(ms):
+        if _ACAO_START_RE.match(ms[m.end():]):
+            cortes.append((m.start(), m.end()))
+    if not cortes:
+        return [orig]
+    segmentos, last = [], 0
+    for ini, fim in cortes:
+        segmentos.append(orig[last:ini].strip())
+        last = fim
+    segmentos.append(orig[last:].strip())
+    return [s for s in segmentos if s]
+
+
+def parse_composto(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
+    """Encadeamento falado (#12): resolve "faz X e faz Y" como VÁRIAS ações.
+
+    Divide nos pontos de fronteira e roda `parse_rapido` em cada parte. Se QUALQUER
+    parte não resolver deterministicamente, devolve None (defere o TODO ao LLM — nunca
+    executa metade). Comando sem encadeamento cai direto no parse_rapido (sem regressão)."""
+    if not comando or not comando.strip():
+        return None
+    partes = dividir_comandos(comando)
+    if len(partes) <= 1:
+        return parse_rapido(comando, agora)
+    todas: List[tools.Decisao] = []
+    for p in partes:
+        acoes = parse_rapido(p, agora)
+        if not acoes:
+            return None   # uma parte falhou -> defere o todo (não faz só metade)
+        todas.extend(acoes)
+    return todas
+
+
 def _texto_captura(orig: str) -> str:
     """Tira a moldura ('anota rápido:', 'captura isso') e devolve só o que foi anotado.
 

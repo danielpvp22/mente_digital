@@ -286,3 +286,46 @@ def test_descrever_acao():
     assert mestre.descrever_acao(d) == "cancelar o lembrete 3"
     r = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "pão"})
     assert "remover" in mestre.descrever_acao(r) and "pão" in mestre.descrever_acao(r)
+
+
+# -- encadeamento falado (#12) ------------------------------------------------
+def test_dividir_preserva_e_interno_de_lista():
+    # O "e" de "farinha e ovos" é interno da lista -> NÃO é fronteira de ação.
+    assert mestre.dividir_comandos("adiciona leite, farinha e ovos na lista") == \
+        ["adiciona leite, farinha e ovos na lista"]
+
+
+def test_dividir_corta_na_fronteira_de_acao():
+    partes = mestre.dividir_comandos("adiciona pão na lista e cancela o lembrete 3")
+    assert partes == ["adiciona pão na lista", "cancela o lembrete 3"]
+
+
+def test_dividir_conectores_variados():
+    assert len(mestre.dividir_comandos("adiciona pão na lista; remove leite da lista")) == 2
+    assert len(mestre.dividir_comandos("adiciona pão na lista e depois cancela o lembrete 2")) == 2
+
+
+def test_composto_duas_adicoes_em_listas_diferentes():
+    acoes = mestre.parse_composto("adiciona pão na lista e adiciona leite na lista de tarefas", AGORA)
+    assert [a.tool for a in acoes] == ["adicionar_item", "adicionar_item"]
+    assert acoes[0].args["lista"] == "compras" and acoes[0].args["item"] == "pão"
+    assert acoes[1].args["lista"] == "tarefas" and acoes[1].args["item"] == "leite"
+
+
+def test_composto_add_mais_cancelar():
+    acoes = mestre.parse_composto("adiciona pão na lista e cancela o lembrete 3", AGORA)
+    assert [a.tool for a in acoes] == ["adicionar_item", "cancelar_lembrete"]
+    assert acoes[1].args["id"] == "3"
+
+
+def test_composto_defere_se_uma_parte_falha():
+    # A 2ª parte tem MENSAGEM ("comprar") -> parse_rapido defere -> o TODO defere (None).
+    assert mestre.parse_composto(
+        "adiciona pão na lista e me lembra de comprar amanhã", AGORA
+    ) is None
+
+
+def test_composto_comando_simples_inalterado():
+    # Sem encadeamento, parse_composto == parse_rapido (sem regressão).
+    esperado = mestre.parse_rapido("adiciona pão na lista", AGORA)
+    assert mestre.parse_composto("adiciona pão na lista", AGORA) == esperado

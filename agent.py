@@ -981,10 +981,17 @@ class Agent:
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
             texto_final, rota = await self._corrigir(comando, send, mem, auditar=not mem.confidencial)
-        elif acoes := mestre.parse_rapido(comando, datetime.now()):
-            # COFRE (#25): ação destrutiva não-desfazível PARA aqui e pede confirmação.
+        elif acoes := mestre.parse_composto(comando, datetime.now()):
+            # #12 já pode ter devolvido VÁRIAS ações (comando encadeado "faz X e faz Y").
+            # COFRE (#25): se alguma é destrutiva não-desfazível, executa as SEGURAS já e
+            # deixa a destrutiva aguardando "confirma".
             confirmavel = self._acao_confirmavel(acoes)
             if confirmavel is not None:
+                seguras = [a for a in acoes if a is not confirmavel]
+                if seguras:
+                    await self._executar_acoes_rapidas(
+                        seguras, send, auditar=not mem.confidencial, mem=mem
+                    )
                 mem.confirmacao_pendente = confirmavel
                 texto_final = f"Confirma que quer {mestre.descrever_acao(confirmavel)}? Diga 'mestre, confirma'."
                 await self._emitir_falado(send, texto_final)
