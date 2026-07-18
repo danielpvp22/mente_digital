@@ -400,6 +400,35 @@ _GATILHOS_CITACAO = {
 }
 
 
+# Gatilhos da Síntese sob Demanda (#23) — quem diz "o que eu sei sobre X" quer uma
+# varredura do tema X no vault, não a resposta pontual do pipeline normal.
+_GATILHOS_SINTESE = (
+    "o que eu sei sobre", "o que sei sobre", "o que eu tenho sobre", "o que tenho sobre",
+    "tudo que eu sei sobre", "tudo que sei sobre", "tudo sobre", "resuma o que",
+    "faca uma sintese sobre", "faz uma sintese sobre", "sintese sobre", "sintetiza sobre",
+    "me resuma sobre", "resuma sobre", "resuma tudo sobre",
+)
+
+
+def extrair_tema_sintese(pergunta: str) -> "str | None":
+    """Extrai o TEMA de um pedido de síntese ('o que eu sei sobre X' -> 'X'). Puro.
+
+    Casa o gatilho numa versão sem acento e length-preservada (para fatiar o original
+    pelos mesmos índices, preservando acentos do tema). None se não for um pedido."""
+    baixa = pergunta.lower()
+    ascii_b = textutils.sem_acento(baixa)
+    hay = ascii_b if len(ascii_b) == len(baixa) else baixa
+    for g in _GATILHOS_SINTESE:
+        i = hay.find(g)
+        if i != -1:
+            tema = pergunta[i + len(g):].strip(" ?.!:,\"'")
+            tema = re.sub(
+                r"^(?:o|a|os|as|meu|minha|sobre|tema|assunto)\s+", "", tema, flags=re.IGNORECASE
+            ).strip()
+            return tema or None
+    return None
+
+
 def frase_citada(pergunta: str) -> str:
     """Extrai a FRASE que a pergunta cita, quando ela é sobre uma expressão. Puro.
 
@@ -560,6 +589,15 @@ class Agent:
             # de ingestão: a fila do ETL (web) e o dump da conversa (que o idle atomiza).
             # Medido no vault: 45 dos 48 átomos-lixo vieram da fila, 3 do dump.
             efemero = tools.e_efemero(texto_usuario)
+
+            # SÍNTESE SOB DEMANDA (#23): "o que eu sei sobre X" tem FLUXO PRÓPRIO
+            # (map-reduce sobre o vault), separado do pipeline de resposta pontual —
+            # é o que evita estourar o contexto num tema grande.
+            tema_sintese = extrair_tema_sintese(texto_usuario)
+            if tema_sintese:
+                telemetry.track("AGENT", f"Síntese sob demanda: '{tema_sintese}'.")
+                await self._sintese_sob_demanda(tema_sintese, send_medido, mem, tracker)
+                return
 
             # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
             # roteador LLM. Pergunta de conhecimento nem paga essa chamada — cai
@@ -1080,13 +1118,15 @@ class Agent:
         if promovidos:
             telemetry.track("PROMOCAO", f"{promovidos} nota(s) consolidada(s) (tirado {tag}).")
 
-    async def _responder_stream(self, prompt_resposta: str, send: Sender) -> str:
+    async def _responder_stream(
+        self, prompt_resposta: str, send: Sender, system: str = prompts.SYS_RESPOSTA
+    ) -> str:
         chunker = SentenceChunker()
         texto_final = ""
         async for token in self.ctx.llama.stream(
             prompt_resposta,
             max_tokens=settings.max_tokens_resposta,
-            system_prompt=prompts.SYS_RESPOSTA,
+            system_prompt=system,
         ):
             texto_final += token
             await send({"tipo": "token", "texto": token})
@@ -1097,6 +1137,66 @@ class Agent:
         if resto:
             await self._falar(send, [resto])
         return texto_final
+
+    @staticmethod
+    def _lotes_por_chars(itens: List[str], budget: int) -> List[List[str]]:
+        """Agrupa átomos em lotes cujo texto somado cabe em `budget` (protege o n_ctx)."""
+        lotes: List[List[str]] = []
+        atual: List[str] = []
+        tam = 0
+        for it in itens:
+            if atual and tam + len(it) > budget:
+                lotes.append(atual)
+                atual, tam = [], 0
+            atual.append(it)
+            tam += len(it)
+        if atual:
+            lotes.append(atual)
+        return lotes
+
+    async def _sintese_sob_demanda(
+        self, tema: str, send: Sender, mem: SessionMemory, tracker: LatencyTracker
+    ) -> None:
+        """Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo SEPARADO em map-reduce
+        para não estourar o n_ctx: recupera MUITOS átomos, resume em lotes (map) e combina
+        os parciais numa fala coerente (reduce). Só o banco local — é "o que EU sei"."""
+        await self._falar_status(send, f"Deixa eu reunir o que você tem sobre {tema}.")
+        atomos = await self.ctx.vectorstore.buscar_conteudos(tema, settings.sintese_top_k)
+
+        if not atomos:
+            texto_final = f"Não encontrei nada sobre {tema} nas suas notas."
+            await self._emitir_falado(send, texto_final)
+        else:
+            lotes = self._lotes_por_chars(atomos, settings.sintese_lote_chars)
+            parciais: List[str] = []
+            for lote in lotes:
+                p = await self.ctx.llama.collect(
+                    prompts.prompt_sintese_tema_map(tema, "\n\n".join(lote)),
+                    max_tokens=settings.max_tokens_sintese_tema,
+                    system_prompt=prompts.SYS_SINTESE_TEMA,
+                )
+                if p.strip():
+                    parciais.append(p.strip())
+            telemetry.track("SINTESE", f"'{tema}': {len(atomos)} átomos em {len(lotes)} lote(s).")
+            if not parciais:
+                texto_final = f"Tenho notas sobre {tema}, mas não consegui resumir agora."
+                await self._emitir_falado(send, texto_final)
+            else:
+                # REDUCE: combina os parciais numa fala (streaming). Um lote só também passa
+                # pelo reduce — ele limpa/encurta o resumo bruto do map numa fala coerente.
+                juntos = "\n\n".join(f"- {p}" for p in parciais)
+                texto_final = await self._responder_stream(
+                    prompts.prompt_sintese_tema_reduce(tema, juntos), send,
+                    system=prompts.SYS_SINTESE_TEMA,
+                )
+
+        if texto_final:
+            mem.registrar_turno(f"o que eu sei sobre {tema}", texto_final)
+            if not mem.confidencial:
+                await asyncio.to_thread(
+                    db.save_chat, f"o que eu sei sobre {tema}", texto_final, mem.conversa_id
+                )
+        await self._registrar_latencia(tracker, "sintese")
 
 
 # ==========================================================================

@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.
     max_tokens_resposta_curto: int = 90
     verbosidade_curto_max_palavras: int = 8
+    # Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo map-reduce SEPARADO —
+    # recupera muitos átomos e os resume em LOTES que cabem no n_ctx, depois combina.
+    sintese_top_k: int = 60             # átomos recuperados (largo — é uma varredura do tema)
+    sintese_lote_chars: int = 6000      # orçamento de chars por lote (map) — protege o n_ctx
+    max_tokens_sintese_tema: int = 400  # teto de cada resumo parcial (map)
 
     # --- Tuning llama.cpp (§7 do estudo de perf) -------------------------------
     # Flash attention: kernel de atenção fundido. Ganho DUPLO num card apertado —
