@@ -193,6 +193,9 @@ class Settings(BaseSettings):
     vad_min_frames: int = 15            # ignora ruídos curtos
     tts_chunk_min_chars: int = 8        # frase mínima antes de sintetizar
     tts_chunk_max_chars: int = 180      # flush forçado em frases longas
+    # Cache de voz (#1): nº de frases sintetizadas mantidas em RAM (LRU). Frase
+    # recorrente (filler, confirmação, status) volta na hora, sem re-sintetizar.
+    tts_cache_size: int = 256
 
     # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
     # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar

@@ -17,6 +17,7 @@ import base64
 import io
 import re
 import wave
+from collections import OrderedDict
 from typing import List, Optional
 
 import numpy as np
@@ -162,6 +163,13 @@ class TtsService:
 
     def __init__(self) -> None:
         self._voice = None
+        # CACHE DE VOZ (#1): a síntese Piper é determinística para o mesmo texto, então
+        # frases RECORRENTES (fillers, confirmações, status, "Pronto.") não precisam ser
+        # re-sintetizadas — TTFA≈0 na segunda vez em diante. LRU limitado por
+        # `tts_cache_size` (base64 é leve). Vive no event loop (leitura/escrita fora do
+        # to_thread), então não precisa de lock.
+        self._cache: "OrderedDict[str, str]" = OrderedDict()
+        self._cache_hits = 0
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup."""
@@ -184,12 +192,21 @@ class TtsService:
         return self._ALLOWED.sub("", texto).strip()
 
     async def synth_base64(self, texto: str) -> Optional[str]:
-        """Sintetiza uma frase em WAV base64. None se vazio ou indisponível."""
+        """Sintetiza uma frase em WAV base64. None se vazio ou indisponível.
+
+        Cache de voz (#1): frase recorrente já sintetizada volta na hora, sem tocar a
+        CPU do Piper (TTFA≈0). A chave é o texto JÁ normalizado — 'Pronto!' e 'pronto'
+        batem no mesmo áudio."""
         if self._voice is None or not texto.strip():
             return None
         texto_voz = self._normalizar(texto)
         if not texto_voz:
             return None
+        cached = self._cache.get(texto_voz)
+        if cached is not None:
+            self._cache.move_to_end(texto_voz)   # LRU: marca como recém-usado
+            self._cache_hits += 1
+            return cached
         try:
             def _run() -> bytes:
                 buf = io.BytesIO()
@@ -202,7 +219,11 @@ class TtsService:
                 return buf.getvalue()
 
             data = await asyncio.to_thread(_run)
-            return base64.b64encode(data).decode("utf-8")
+            b64 = base64.b64encode(data).decode("utf-8")
+            self._cache[texto_voz] = b64
+            while len(self._cache) > settings.tts_cache_size:
+                self._cache.popitem(last=False)   # descarta o menos recente
+            return b64
         except Exception as exc:
             telemetry.error("PIPER", "Erro ao sintetizar áudio", exc)
             return None
