@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
     # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
     rag_debug: bool = False
+    # EARLY-STOP DA CASCATA (#3): quando LIGADO, a cascata de resposta PARA na primeira
+    # fonte que responde com confiança (RAM > Banco > Web) — se a RAM já respondeu, nem
+    # roda a passada do Banco; se o Banco respondeu, não vai à web. Troca a fusão
+    # multi-fonte (cada fonte contribuía um parágrafo) por MENOS passes de inferência na
+    # GPU serializada = menos latência no próximo turno. Desligue (MENTE_EARLY_STOP_CASCATA
+    # =false) para voltar à fusão completa RAM+Banco. A web já era "só se nada respondeu".
+    early_stop_cascata: bool = True
     # HyDE (Hypothetical Document Embeddings): antes de buscar no vetor, o LLM gera
     # uma PASSAGEM hipotética no estilo das notas e ELA é embeddada — casa melhor com
     # os parágrafos do banco do que a query crua (o modelo de embedding é simétrico).
@@ -255,6 +262,16 @@ class Settings(BaseSettings):
     briefing_hora_padrao: str = "07:00"
     # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
     subpasta_listas: str = "Listas"
+    # COFRE DE CONFIRMAÇÃO (#25): ações destrutivas E não-desfazíveis (hoje só
+    # cancelar_lembrete — o undo #8 não recria um lembrete) exigem um "mestre, confirma"
+    # antes de rodar. As ações que o undo cobre (add/remove) NÃO são gateadas — confirmar
+    # o desfazível seria a "confirmação redundante" (#15) que se quer evitar. Desligue com
+    # MENTE_CONFIRMACAO_HABILITADA=false para executar direto.
+    confirmacao_habilitada: bool = True
+    # ATALHO DE INTENÇÃO FREQUENTE (#2): quantas vezes a MESMA intenção-mestre (forma
+    # normalizada) precisa se repetir para o app OFERECER um atalho nomeado. A oferta
+    # acontece UMA vez por intenção. 0/negativo desliga a sugestão (só conta).
+    atalho_sugestao_min: int = 3
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50

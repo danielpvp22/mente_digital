@@ -40,6 +40,21 @@ class SessionMemory:
         # SQLite, sem fila de ETL) — vive só na RAM desta sessão e morre com ela. O
         # follow-up ainda funciona (chat_history/conhecimento_sessao seguem em memória).
         self.confidencial: bool = False
+        # DESFAZER (#8): as ações que REVERTEM a última mutação da sessão (lista de
+        # `tools.Decisao`), guardadas na RAM. "mestre, desfaça" as executa e limpa este
+        # campo (consumo único — não se desfaz o desfazer). None = nada a desfazer.
+        # Vive só na sessão, então não persiste; um restart zera o histórico de undo.
+        self.ultima_reversivel: Optional[list] = None
+        # CORTA-E-CORRIGE (#9): as ações FORWARD (originais) da última mutação, para
+        # "mestre, corrige para X" REFAZER com o valor certo (desfaz via ultima_reversivel
+        # e reexecuta com o item corrigido). Anda junto com ultima_reversivel.
+        self.ultima_acao: Optional[list] = None
+        # COFRE DE CONFIRMAÇÃO (#25): a `tools.Decisao` destrutiva que está esperando um
+        # "mestre, confirma" para rodar. None = nada pendente. Vive só na RAM da sessão.
+        self.confirmacao_pendente: Optional[object] = None
+        # ATALHO DE INTENÇÃO FREQUENTE (#2): o texto do último comando-mestre RESOLVIDO —
+        # é o que "mestre, atalho X" grava sob o apelido X. None = nada a encurtar ainda.
+        self.ultimo_comando_mestre: Optional[str] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -62,6 +77,10 @@ class SessionMemory:
         self.chat_history.clear()
         self.conhecimento_sessao.clear()
         self.confidencial = False   # chat novo volta ao modo normal (público)
+        self.ultima_reversivel = None   # não se desfaz ação de outra conversa
+        self.ultima_acao = None
+        self.confirmacao_pendente = None
+        self.ultimo_comando_mestre = None
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -71,6 +90,10 @@ class SessionMemory:
         for q, a in turnos[-self.chat_history.maxlen:]:
             self.chat_history.append((q, a))
         self.conhecimento_sessao.clear()
+        self.ultima_reversivel = None   # reabrir conversa não herda undo pendente
+        self.ultima_acao = None
+        self.confirmacao_pendente = None
+        self.ultimo_comando_mestre = None
 
 
 class LruCache:

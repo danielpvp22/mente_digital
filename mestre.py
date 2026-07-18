@@ -98,6 +98,197 @@ def modo_confidencial(comando: str) -> Optional[bool]:
     return None
 
 
+# DESFAZER (#8): gatilhos de "reverte a última ação". Mantidos ESPECÍFICOS (frases,
+# não o "cancela" cru) para não colidir com "cancela o lembrete 3" (que é uma ação
+# regular do parse_rapido). Já normalizados (sem acento): "desfaça"->"desfaca".
+_GATILHO_DESFAZER = (
+    "desfaz", "desfazer", "desfaca", "desfez", "desfeito",
+    "volta atras", "voltar atras", "anula", "anular",
+    "cancela isso", "cancelar isso", "cancela a ultima", "cancela a acao",
+    "esquece isso", "esquece o que eu disse", "esquece o ultimo",
+)
+
+
+def comando_desfazer(comando: str) -> bool:
+    """True se a mensagem pede para DESFAZER a última ação (#8). Puro/testável.
+
+    Tratado no fluxo-mestre (não numa ferramenta) porque a ação a reverter vive no
+    estado da SESSÃO (SessionMemory.ultima_reversivel), a que as ferramentas (só ctx)
+    não têm acesso — mesma razão do modo confidencial."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_DESFAZER)
+
+
+def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
+    """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
+    que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.
+
+    Puro/testável. Só reverte mutações com um inverso DETERMINÍSTICO e uma fonte
+    confiável do que reverter: add/remove de lista (o inverso é a outra ferramenta) e
+    lembrete (o inverso é cancelar o #id que a própria ferramenta reportou no resultado).
+    O resultado é inspecionado para não "reverter" uma ação que falhou (ex.: remover um
+    item que não existia). Captura/nota ficam de fora por ora (sem inverso registrado)."""
+    revs: List[tools.Decisao] = []
+    for dec, res in executadas:
+        r = _reverter_uma(dec, res or "")
+        if r is not None:
+            revs.append(r)
+    if not revs:
+        return None
+    revs.reverse()   # desfaz na ordem inversa da execução
+    return revs
+
+
+def _reverter_uma(dec: tools.Decisao, resultado: str) -> Optional[tools.Decisao]:
+    """Inverso de UMA ação, ou None se não for reversível/não tiver sido efetivada."""
+    args = dec.args or {}
+    baixa = resultado.lower()
+    if dec.tool == "adicionar_item" and baixa.startswith("adicionei"):
+        item = str(args.get("item", "")).strip()
+        if item:
+            return tools.Decisao("remover_item", {"lista": args.get("lista") or "compras", "item": item})
+    elif dec.tool == "remover_item" and baixa.startswith("removi"):
+        item = str(args.get("item", "")).strip()
+        if item:
+            return tools.Decisao("adicionar_item", {"lista": args.get("lista") or "compras", "item": item})
+    elif dec.tool == "criar_lembrete":
+        # A ferramenta reporta "lembrete #<id> criado ..." no sucesso; cancelar esse id
+        # desfaz. Numa falha ("não entendi o horário") não há '#<id>' -> None.
+        m = re.search(r"#(\d+)", resultado)
+        if m:
+            return tools.Decisao("cancelar_lembrete", {"id": m.group(1)})
+    return None
+
+
+# CORTA-E-CORRIGE (#9): marcadores EXPLÍCITOS de correção (exige o marcador — não
+# basta um "era" solto — para não interceptar um add legítimo). Normalizados.
+# Radicais: "corrig" (corrige/corrigir/corrigido) NÃO cobre o imperativo "corrija"
+# (corri-J-a) nem "correção" — daí os três radicais.
+_GATILHO_CORRIGIR = ("corrig", "corrij", "correca", "na verdade", "quis dizer",
+                     "me enganei", "errei", "me equivoquei")
+# Marcador/preposição que ANTECEDE o valor certo, em ordem de prioridade.
+_CORR_TAIL = (
+    re.compile(r"\b(?:para|pra|por)\s+(.+)$"),        # corrige PARA leite / troca POR leite
+    re.compile(r"\bquis dizer\s+(.+)$"),              # quis dizer leite
+    re.compile(r"\bna verdade\s+(.+)$"),              # na verdade (era) leite
+    re.compile(r"\b(?:corri[gj]\w*|correca\w*)[\s:,\-]+(.+)$"),   # corrige:/corrija: leite
+    re.compile(r"\bera\s+(.+)$"),                     # (me enganei,) era leite
+)
+# Afirmativos/artigos que sobram na frente do valor após o corte.
+_CORR_LIMPA = re.compile(r"^(?:era|eh|e|seria|foi|para|pra|por|o|a|os|as|um|uma)\s+", re.I)
+
+
+def tem_correcao(comando: str) -> bool:
+    """True se a mensagem é um comando de CORREÇÃO (#9). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CORRIGIR)
+
+
+def parse_correcao(comando: str) -> Optional[str]:
+    """Extrai o VALOR CERTO de um comando de correção (#9), ou None. Puro/testável.
+
+    Cobre "corrige para X", "troca por X", "na verdade era X", "quis dizer X" e o
+    "corrige: era X, não Y" — o trecho negado (o que o usuário REJEITA, após "não") é
+    descartado. Casa posições sobre a forma SEM ACENTO (comprimento preservado) e fatia
+    o ORIGINAL, então o valor mantém os acentos ("pão")."""
+    if not tem_correcao(comando):
+        return None
+    orig = comando.strip()
+    baixa = orig.lower()
+    ms = textutils.sem_acento(baixa)
+    if len(ms) != len(baixa):
+        ms = baixa   # desalinhou (char exótico) -> usa o acentuado
+    for pat in _CORR_TAIL:
+        m = pat.search(ms)
+        if not m:
+            continue
+        bruto = orig[m.start(1):m.end(1)]
+        # o que vem depois de "não" é o valor REJEITADO -> fora.
+        bruto = re.split(r"\bn[ãa]o\b", bruto, maxsplit=1, flags=re.I)[0]
+        val = _CORR_LIMPA.sub("", bruto.strip()).strip(" ,.;:!?")
+        if val:
+            return val
+    return None
+
+
+# COFRE DE CONFIRMAÇÃO (#25). Gatilhos SÓ consultados quando há algo pendente, então
+# um "confirma"/"não" solto não afeta nada fora do fluxo de confirmação.
+_GATILHO_CONFIRMAR = ("confirma", "confirmo", "confirmado", "pode confirmar", "pode fazer",
+                      "pode ir", "isso mesmo", "sim pode", "manda ver", "positivo")
+# Sem "cancela"/"para": colidiriam com "cancela o lembrete 5" (uma ação legítima que o
+# usuário pode emitir enquanto uma confirmação está pendente).
+_GATILHO_ABORTAR = ("nao", "melhor nao", "deixa", "deixa pra la", "esquece",
+                    "nao precisa", "nao confirmo", "nega", "negativo")
+
+
+def comando_confirmar(comando: str) -> bool:
+    """True se o usuário CONFIRMOU a ação pendente (#25). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONFIRMAR)
+
+
+def comando_abortar(comando: str) -> bool:
+    """True se o usuário ABORTOU explicitamente a ação pendente (#25). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_ABORTAR)
+
+
+# ATALHO DE INTENÇÃO FREQUENTE (#2): "atalho <nome>" nomeia o último comando.
+_ATALHO_RE = re.compile(r"\batalho\b\s*(?:chamado|chamada|de|como|:)?\s*(.+)$", re.I)
+_ATALHO_LIMPA = re.compile(r"^(?:chamado|chamada|de|como|o|a|um|uma)\s+", re.I)
+
+
+def parse_atalho(comando: str) -> Optional[str]:
+    """Se o comando CRIA um atalho (#2), devolve o NOME (apelido); senão None.
+
+    'mestre, atalho compras' -> 'compras'. Puro/testável. O nome é curto (≤3 palavras)
+    — é um apelido, não uma frase; algo maior provavelmente não é um comando de atalho."""
+    if not comando:
+        return None
+    if "atalho" not in textutils.normaliza(comando):
+        return None
+    m = _ATALHO_RE.search(comando.strip())
+    if not m:
+        return None
+    nome = _ATALHO_LIMPA.sub("", m.group(1).strip()).strip(" .,:;\"'").lower()
+    return nome if nome and len(nome.split()) <= 3 else None
+
+
+def descrever_acao(dec: tools.Decisao) -> str:
+    """Frase curta do que a ação FARÁ, para pedir confirmação (#25). Puro/testável."""
+    args = dec.args or {}
+    if dec.tool == "cancelar_lembrete":
+        num = re.search(r"\d+", str(args.get("id", "")))
+        return f"cancelar o lembrete {num.group()}" if num else "cancelar esse lembrete"
+    if dec.tool == "remover_item":
+        return f"remover '{args.get('item', '')}' da lista de {args.get('lista', 'compras')}"
+    return f"executar {dec.tool}"
+
+
+def refazer_com(forward: List[tools.Decisao], certo: str) -> Optional[List[tools.Decisao]]:
+    """Refaz a última mutação de VALOR com o valor corrigido (#9). Puro/testável.
+
+    Hoje cobre `adicionar_item` (o caso "era leite, não pão"): clona a ação original
+    trocando só o item. Outras mutações (lembrete/captura) não são corrigíveis por ora."""
+    certo = (certo or "").strip()
+    if not certo:
+        return None
+    for dec in (forward or []):
+        if dec.tool == "adicionar_item":
+            args = dict(dec.args or {})
+            args["item"] = certo
+            return [tools.Decisao("adicionar_item", args)]
+    return None
+
+
 def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
     """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM)."""
     if not comando or not comando.strip():
@@ -168,6 +359,69 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
         return [tools.Decisao("ler_lista", {"lista": nome})]
 
     return None
+
+
+# ENCADEAMENTO FALADO (#12): conectores que PODEM separar duas ações ("... e ...",
+# "... depois ...", "; ..."). O corte só acontece se o lado DIREITO começar uma nova
+# ação (senão o "e" é interno de lista: "leite, farinha e ovos" fica inteiro). "e depois"
+# / "e também" antes do "e" cru (alternância é leftmost-first).
+_CONECTOR_RE = re.compile(
+    r"\s+(?:e\s+depois|e\s+tambem|e|depois|tambem)\s+|\s*;\s*", re.I
+)
+# Radicais que MARCAM o começo de uma nova ação reconhecível pelo parse_rapido.
+_ACAO_START_RE = re.compile(
+    r"^(?:me\s+lembr|lembr|adicion|acrescent|coloc|poe|poem|bot[ae]|inclu|remov|tir[ae]|"
+    r"tirar|apag|exclu|delet|retir|cri[ae]|criar|marc|agend|program|anot|captur|cancel|"
+    r"avis|alarme|despertador|timer|cronometro|temporizador|lembrete)\w*",
+    re.I,
+)
+
+
+def dividir_comandos(comando: str) -> List[str]:
+    """Fatia um comando composto nas fronteiras entre AÇÕES (#12). Puro/testável.
+
+    Corta num conector só quando o texto seguinte começa uma nova ação — assim o "e"
+    interno de uma lista ("leite, farinha e ovos") NÃO vira fronteira. Casa posições
+    sobre a forma sem acento (comprimento preservado) e fatia o ORIGINAL."""
+    orig = comando.strip()
+    if not orig:
+        return []
+    baixa = orig.lower()
+    ms = textutils.sem_acento(baixa)
+    if len(ms) != len(baixa):
+        ms = baixa
+    cortes = []
+    for m in _CONECTOR_RE.finditer(ms):
+        if _ACAO_START_RE.match(ms[m.end():]):
+            cortes.append((m.start(), m.end()))
+    if not cortes:
+        return [orig]
+    segmentos, last = [], 0
+    for ini, fim in cortes:
+        segmentos.append(orig[last:ini].strip())
+        last = fim
+    segmentos.append(orig[last:].strip())
+    return [s for s in segmentos if s]
+
+
+def parse_composto(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
+    """Encadeamento falado (#12): resolve "faz X e faz Y" como VÁRIAS ações.
+
+    Divide nos pontos de fronteira e roda `parse_rapido` em cada parte. Se QUALQUER
+    parte não resolver deterministicamente, devolve None (defere o TODO ao LLM — nunca
+    executa metade). Comando sem encadeamento cai direto no parse_rapido (sem regressão)."""
+    if not comando or not comando.strip():
+        return None
+    partes = dividir_comandos(comando)
+    if len(partes) <= 1:
+        return parse_rapido(comando, agora)
+    todas: List[tools.Decisao] = []
+    for p in partes:
+        acoes = parse_rapido(p, agora)
+        if not acoes:
+            return None   # uma parte falhou -> defere o todo (não faz só metade)
+        todas.extend(acoes)
+    return todas
 
 
 def _texto_captura(orig: str) -> str:

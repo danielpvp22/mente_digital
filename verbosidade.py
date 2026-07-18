@@ -33,10 +33,35 @@ _EXPLICA = (
     "descreve", "descreva", "compara", "compare", "diferenca entre", "resuma", "resumo",
 )
 
+# EXPLIQUE-COMO-PARA-CRIANÇA (#45): pedido de SIMPLICIDADE, não de tamanho. É um eixo
+# ORTOGONAL ao curto/detalhado (o usuário quer ANALOGIA e zero jargão), então tem
+# Nível próprio e vence os outros — inclusive um "explica X" que pediria detalhado, e
+# um "o que é X, simples" curtinho que seria cortado a 1 frase (simplificar precisa de
+# espaço p/ a analogia). Já normalizado (sem acento): "criança"->"crianca".
+_CRIANCA = (
+    "para uma crianca", "pra uma crianca", "para crianca", "pra crianca",
+    "como uma crianca", "como para uma crianca", "como se eu fosse crianca",
+    "como se eu fosse uma crianca", "como se eu tivesse 5 anos",
+    "como se eu tivesse cinco anos", "modo crianca", "explica como crianca",
+    "para leigos", "para um leigo", "como se eu fosse leigo", "para leigo",
+    "linguagem simples", "de forma bem simples", "de um jeito simples",
+    "de um jeito bem simples", "bem simples", "de forma simples", "explica simples",
+    "facil de entender", "eli5",
+)
+
 
 def classificar(pergunta: str) -> Nivel:
     """Decide a verbosidade da resposta a partir da pergunta. Puro/testável."""
     n = textutils.normaliza(pergunta)
+    # ELI5 (#45) primeiro: é sobre ESTILO (simples, com analogia) e vence tamanho/detalhe.
+    if any(p in n for p in _CRIANCA):
+        return Nivel(
+            "crianca",
+            settings.max_tokens_resposta,
+            "IMPORTANTE: explique de forma MUITO simples, como para uma criança de 5 anos. "
+            "Use uma analogia do dia a dia, evite jargão e termos técnicos, e prefira "
+            "frases curtas. Não use listas nem fórmulas.",
+        )
     if any(p in n for p in _EXPLICA):
         return Nivel("detalhado", settings.max_tokens_resposta, "")
     # Pergunta curta e direta = resposta curta e direta (o ganho de latência do #7).

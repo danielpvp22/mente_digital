@@ -270,6 +270,10 @@ class Tool:
     # True: a ferramenta MUTA estado (cria/apaga/altera) e entra na trilha de auditoria
     # (#27). Leituras (listar/ler/status/calcular) ficam False — não são "o que eu fiz".
     auditavel: bool = False
+    # True: ação DESTRUTIVA e não-desfazível (o undo #8 não a recupera) — o cofre de
+    # confirmação (#25) a segura até um "mestre, confirma". Deixe False no que o undo
+    # cobre: gatear o desfazível seria a confirmação REDUNDANTE (#15) que se evita.
+    confirmavel: bool = False
 
 
 class ToolRegistry:
@@ -620,6 +624,7 @@ def criar_registry() -> ToolRegistry:
         'cancelar_lembrete(id): cancela um lembrete pelo número. Ex.: '
         '{"tool":"cancelar_lembrete","args":{"id":"3"}}',
         _t_cancelar_lembrete, terminal=True, registra_conhecimento=False, auditavel=True,
+        confirmavel=True,   # destrutivo e não-desfazível (#25): o undo não recria o lembrete
     ))
     reg.registrar(Tool(
         "avisar_quando",

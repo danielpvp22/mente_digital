@@ -142,6 +142,21 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     acao TEXT, detalhe TEXT)"""
             )
+            # ATALHO DE INTENÇÃO FREQUENTE (#2): conta as intenções-mestre por forma
+            # normalizada (agrupa repetições idênticas: 'diagnóstico', 'o que tem na lista
+            # de compras'...). Quando `n` cruza o limiar, o app OFERECE um atalho — `sugerido`
+            # garante que a oferta acontece UMA vez só (não vira nag).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS mestre_frequencia
+                   (assinatura TEXT PRIMARY KEY, exemplo TEXT, n INTEGER DEFAULT 1,
+                    sugerido INTEGER DEFAULT 0, visto_em TEXT)"""
+            )
+            # ATALHOS nomeados (#2): apelido -> comando-mestre completo. "mestre, atalho X"
+            # grava o último comando sob o nome X; depois "mestre, X" expande de volta.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS mestre_atalhos
+                   (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -424,6 +439,71 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler auditoria", exc)
             return []
+
+    # ---- Atalho de intenção frequente (#2) ----
+    def registrar_frequencia(self, assinatura: str, exemplo: str) -> tuple[int, bool]:
+        """Conta +1 esta intenção-mestre. Devolve (n_total, ja_sugerido). Best-effort:
+        em erro devolve (0, True) — 0 nunca cruza o limiar, então não sugere nada."""
+        chave = (assinatura or "").strip()[:120]
+        if not chave:
+            return (0, True)
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO mestre_frequencia (assinatura, exemplo, n, sugerido, visto_em)
+                       VALUES (?, ?, 1, 0, ?)
+                       ON CONFLICT(assinatura) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, exemplo, datetime.now().isoformat()),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT n, sugerido FROM mestre_frequencia WHERE assinatura = ?", (chave,)
+                ).fetchone()
+            return (int(row[0]), bool(row[1])) if row else (0, True)
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar frequência", exc)
+            return (0, True)
+
+    def marcar_sugerido(self, assinatura: str) -> None:
+        """Marca que já ofereci um atalho para esta intenção (não oferecer de novo)."""
+        chave = (assinatura or "").strip()[:120]
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE mestre_frequencia SET sugerido = 1 WHERE assinatura = ?", (chave,)
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar sugestão", exc)
+
+    def salvar_atalho(self, nome: str, comando: str) -> None:
+        """Grava/atualiza um atalho nomeado: apelido -> comando-mestre completo."""
+        chave = (nome or "").strip().lower()[:60]
+        if not chave or not comando:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO mestre_atalhos (nome, comando, criado_em) VALUES (?, ?, ?)
+                       ON CONFLICT(nome) DO UPDATE SET comando = excluded.comando,
+                       criado_em = excluded.criado_em""",
+                    (chave, comando, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar atalho", exc)
+
+    def listar_atalhos(self) -> dict:
+        """Todos os atalhos (nome -> comando), para o Agent carregar em memória."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT nome, comando FROM mestre_atalhos").fetchall()
+            return {nome: comando for nome, comando in rows}
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar atalhos", exc)
+            return {}
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:

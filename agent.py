@@ -23,7 +23,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Awaitable, Callable, Deque, List, Tuple
+from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import mestre
 import prompts
@@ -502,6 +502,7 @@ class Agent:
         self.optimizer = QueryOptimizer(ctx.llama)
         self.tools = tools.criar_registry()
         self._filler_i = 0  # rotaciona o texto do filler p/ não ficar repetitivo
+        self._atalhos: Optional[dict] = None  # cache dos atalhos-mestre (#2), lazy do DB
 
     async def _falar(self, send: Sender, frases: List[str]) -> None:
         """Envia frases prontas para o TTS conforme o chunker fecha sentenças."""
@@ -607,7 +608,7 @@ class Agent:
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
-                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial)
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial, mem=mem)
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
@@ -675,23 +676,30 @@ class Agent:
                     telemetry.track("AGENT", f"Fusão: passada RAM ({len(ram)} tópico(s)).")
                     await passada(self._montar_contexto(NENHUM_LOCAL, ram), "ram")
 
-                # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base) colhe
-                # dezenas de átomos Zettelkasten e os funde num parágrafo.
-                texto_busca = await self._texto_busca(texto_usuario, termos)
-                local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
-                telemetry.track(
-                    "LOCAL",
-                    f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
-                )
-                if local.relevante:
-                    telemetry.track("AGENT", "Fusão: passada Banco.")
-                    antes = len(paragrafos)
-                    await passada(self._montar_contexto(local, []), "banco")
-                    # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
-                    # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
-                    # Em background: não pesa no TTFA da resposta atual.
-                    if len(paragrafos) > antes and local.fontes:
-                        self.ctx.track_task(self._consolidar_fontes(local.fontes))
+                # EARLY-STOP (#3): se uma fonte já respondeu com confiança (passada
+                # não-sentinela), PARA a cascata — não roda o Banco (nem a busca vetorial,
+                # nem sua passada de inferência). Economiza um decode na GPU serializada.
+                # Botão MENTE_EARLY_STOP_CASCATA; desligado, volta à fusão RAM+Banco.
+                if settings.early_stop_cascata and paragrafos:
+                    telemetry.track("AGENT", "Early-stop: RAM respondeu — pula Banco/Web.")
+                else:
+                    # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base)
+                    # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
+                    texto_busca = await self._texto_busca(texto_usuario, termos)
+                    local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
+                    telemetry.track(
+                        "LOCAL",
+                        f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
+                    )
+                    if local.relevante:
+                        telemetry.track("AGENT", "Fusão: passada Banco.")
+                        antes = len(paragrafos)
+                        await passada(self._montar_contexto(local, []), "banco")
+                        # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
+                        # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
+                        # Em background: não pesa no TTFA da resposta atual.
+                        if len(paragrafos) > antes and local.fontes:
+                            self.ctx.track_task(self._consolidar_fontes(local.fontes))
 
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
@@ -757,7 +765,10 @@ class Agent:
         )
         return tools.parse_decisao(bruto)
 
-    async def _pipeline_tools(self, texto_usuario: str, send: Sender, primeira, auditar: bool = True) -> str:
+    async def _pipeline_tools(
+        self, texto_usuario: str, send: Sender, primeira, auditar: bool = True,
+        mem: Optional[SessionMemory] = None,
+    ) -> str:
         """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
 
         Ferramentas terminais (calcular/hora/salvar) encerram no 1º passo. As não
@@ -765,8 +776,11 @@ class Agent:
         `max_tool_steps`, mas o loop para assim que o roteador devolve 'responder'.
         A resposta final vai por streaming + chunking (TTS), preservando o pilar.
 
-        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27).
+        `mem` (quando dado) recebe a reversão da mutação p/ o "mestre, desfaça" (#8) —
+        cobre o caminho LLM (ex.: "me lembra de ligar amanhã", que o parse_rapido defere)."""
         observacoes: List[str] = []
+        executadas: List[tuple] = []   # (Decisao, resultado) p/ computar a reversão (#8)
         decisao = primeira
         passos = 0
         while decisao and decisao.tool != "responder" and passos < settings.max_tool_steps:
@@ -781,10 +795,12 @@ class Agent:
             if auditar and tool.auditavel:
                 await asyncio.to_thread(db.registrar_auditoria, decisao.tool, obs)
             observacoes.append(f"[{decisao.tool}] {obs}")
+            executadas.append((decisao, obs))
             passos += 1
             if tool.terminal:
                 break
             decisao = await self._rotear(texto_usuario, "\n".join(observacoes))
+        self._lembrar_reversao(mem, executadas)
 
         resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"
         resposta = await self._responder_stream(
@@ -807,13 +823,19 @@ class Agent:
         await send({"tipo": "token", "texto": texto})
         await self._falar_texto(send, texto)
 
-    async def _executar_acoes_rapidas(self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True) -> str:
+    async def _executar_acoes_rapidas(
+        self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True,
+        mem: Optional[SessionMemory] = None, prefixo: str = "",
+    ) -> str:
         """Executa uma ou mais ferramentas determinísticas e FALA o resultado direto —
         sem passar pelo LLM (o texto de retorno da ferramenta já é amigável). É o que
         torna 'mestre, põe pão na lista' instantâneo e barato.
 
-        `auditar` (False em modo confidencial) controla o registro na trilha (#27)."""
+        `auditar` (False em modo confidencial) controla o registro na trilha (#27).
+        `mem` (quando dado) recebe a reversão desta ação p/ o "mestre, desfaça" (#8);
+        `prefixo` prefixa a fala (ex.: "Desfeito. " ao executar a própria reversão)."""
         resultados: List[str] = []
+        executadas: List[tuple] = []   # (Decisao, resultado) p/ computar a reversão
         for dec in acoes:
             tool = self.tools.get(dec.tool)
             if tool is None:
@@ -826,9 +848,120 @@ class Agent:
             if auditar and tool.auditavel:
                 await asyncio.to_thread(db.registrar_auditoria, dec.tool, obs)
             resultados.append(obs)
-        final = " ".join(r for r in resultados if r) or "Pronto."
+            executadas.append((dec, obs))
+        self._lembrar_reversao(mem, executadas)
+        final = prefixo + (" ".join(r for r in resultados if r) or "Pronto.")
         await self._emitir_falado(send, final)
         return final
+
+    def _lembrar_reversao(self, mem: Optional[SessionMemory], executadas: List[tuple]) -> None:
+        """Guarda na sessão as ações que DESFAZEM o que acabou de rodar (#8).
+
+        Só sobrescreve o alvo de undo quando há de fato algo reversível — assim uma
+        leitura (ler_lista) ou uma ação que falhou não apaga o undo pendente anterior."""
+        if mem is None or not executadas:
+            return
+        rev = mestre.reverter(executadas)
+        if rev:
+            mem.ultima_reversivel = rev
+            # guarda também as ações FORWARD p/ o "corrige" refazer com o valor certo (#9).
+            mem.ultima_acao = [dec for dec, _ in executadas]
+
+    async def _desfazer(self, send: Sender, mem: SessionMemory, auditar: bool) -> tuple:
+        """Executa a reversão da última ação da sessão (#8). Devolve (fala, rota)."""
+        revs = mem.ultima_reversivel
+        if not revs:
+            fala = "Não tenho nenhuma ação recente para desfazer."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:desfazer_vazio"
+        # Consome ANTES de executar: a própria reversão não vira novo alvo de undo
+        # (mem=None abaixo), então "desfaça, desfaça" não fica num ping-pong.
+        mem.ultima_reversivel = None
+        mem.ultima_acao = None
+        fala = await self._executar_acoes_rapidas(
+            revs, send, auditar=auditar, mem=None, prefixo="Desfeito. "
+        )
+        return fala, "mestre:desfazer"
+
+    async def _corrigir(self, comando: str, send: Sender, mem: SessionMemory, auditar: bool) -> tuple:
+        """Corta-e-corrige (#9): desfaz a última adição e refaz com o valor certo.
+
+        "mestre, corrige para leite" (após "adiciona pão") = remover pão + adicionar leite.
+        Reaproveita a reversão do #8 (undo) e refaz a ação forward trocando o valor."""
+        certo = mestre.parse_correcao(comando)
+        if not certo:
+            fala = "Não entendi a correção. Diga, por exemplo, 'corrige para leite'."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:corrige_incompleto"
+        redo = mestre.refazer_com(mem.ultima_acao or [], certo)
+        if not redo:
+            fala = "Não tenho uma ação recente de lista para corrigir."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:corrige_vazio"
+        undo = list(mem.ultima_reversivel or [])
+        mem.ultima_reversivel = None
+        mem.ultima_acao = None
+        # Executa undo + redo SEM registrar reversão automática (mem=None): abaixo
+        # definimos o alvo de undo manualmente como só o REDO — assim correções
+        # ENCADEADAS ("corrige para leite", depois "para água") ficam limpas, sem
+        # ressuscitar o valor original a cada nova correção.
+        fala = await self._executar_acoes_rapidas(
+            undo + list(redo), send, auditar=auditar, mem=None, prefixo="Corrigido. "
+        )
+        mem.ultima_acao = list(redo)
+        mem.ultima_reversivel = [tools.Decisao("remover_item", dict(d.args)) for d in redo]
+        return fala, "mestre:corrige"
+
+    async def _atalhos_cache(self) -> dict:
+        """Atalhos-mestre (#2) carregados do DB uma vez por processo (apelido -> comando)."""
+        if self._atalhos is None:
+            self._atalhos = await asyncio.to_thread(db.listar_atalhos)
+        return self._atalhos
+
+    async def _criar_atalho(self, nome: str, send: Sender, mem: SessionMemory) -> tuple:
+        """Grava um atalho nomeado para o ÚLTIMO comando-mestre resolvido (#2)."""
+        alvo = mem.ultimo_comando_mestre
+        if not alvo:
+            fala = "Não tenho um comando recente para transformar em atalho."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:atalho_vazio"
+        chave = textutils.normaliza(nome)
+        await asyncio.to_thread(db.salvar_atalho, chave, alvo)
+        # Já tem atalho -> não ofereça atalho de novo para essa intenção.
+        await asyncio.to_thread(db.marcar_sugerido, textutils.normaliza(alvo))
+        (await self._atalhos_cache())[chave] = alvo
+        fala = f"Pronto. Agora é só dizer '{settings.palavra_mestre}, {nome}' que eu faço isso."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:atalho_criado"
+
+    async def _talvez_sugerir_atalho(self, comando: str, send: Sender) -> Optional[str]:
+        """Conta a intenção e, se ela virou hábito (e ainda não foi sugerida), OFERECE um
+        atalho — uma vez só (#2). Devolve a fala da sugestão (p/ anexar ao histórico) ou None."""
+        minimo = settings.atalho_sugestao_min
+        if minimo <= 0:
+            return None
+        assinatura = textutils.normaliza(comando)
+        n, ja_sugerido = await asyncio.to_thread(db.registrar_frequencia, assinatura, comando)
+        if n < minimo or ja_sugerido:
+            return None
+        await asyncio.to_thread(db.marcar_sugerido, assinatura)
+        fala = (
+            f"Aliás, você já pediu isso {n} vezes. Se quiser um atalho, diga "
+            f"'{settings.palavra_mestre}, atalho' e um apelido curto."
+        )
+        await self._emitir_falado(send, fala)
+        return fala
+
+    def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
+        """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
+        `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
+        if not settings.confirmacao_habilitada:
+            return None
+        for dec in acoes:
+            tool = self.tools.get(dec.tool)
+            if tool is not None and tool.confirmavel:
+                return dec
+        return None
 
     async def _fluxo_mestre(
         self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
@@ -844,6 +977,25 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
+        # ATALHO (#2): se o comando INTEIRO casa um apelido salvo, expande para o comando
+        # original antes de qualquer coisa — daí segue o fluxo normal como se o usuário
+        # tivesse dito o comando completo.
+        atalhos = await self._atalhos_cache()
+        expandido = atalhos.get(textutils.normaliza(comando))
+        if expandido:
+            telemetry.track("MESTRE", f"Atalho '{comando}' -> '{expandido}'.")
+            comando = expandido
+
+        # COFRE DE CONFIRMAÇÃO (#25): se há uma ação destrutiva PENDENTE, "confirma" a
+        # executa e "não/deixa" a aborta (abort tem precedência — na dúvida, não faz).
+        # Qualquer OUTRO comando ABANDONA a pendência e segue normal (não prende o
+        # usuário). Os gatilhos só valem com algo pendente (#15: sem gatilho global).
+        pend = mem.confirmacao_pendente
+        abortando = pend is not None and mestre.comando_abortar(comando)
+        confirmando = pend is not None and not abortando and mestre.comando_confirmar(comando)
+        if pend is not None and not abortando and not confirmando:
+            mem.confirmacao_pendente = None   # comando novo supera a pendência
+
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
         modo = mestre.modo_confidencial(comando)
@@ -858,15 +1010,64 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
-        acoes = mestre.parse_rapido(comando, datetime.now())
-        if acoes:
-            texto_final = await self._executar_acoes_rapidas(acoes, send, auditar=not mem.confidencial)
-            rota = "mestre:rapido"
+        # CONFIRMAÇÃO PENDENTE (#25) tem prioridade sobre um comando novo.
+        if confirmando:
+            dec = mem.confirmacao_pendente
+            mem.confirmacao_pendente = None
+            texto_final = await self._executar_acoes_rapidas(
+                [dec], send, auditar=not mem.confidencial, mem=mem
+            )
+            rota = "mestre:confirmado"
+        elif abortando:
+            mem.confirmacao_pendente = None
+            texto_final = "Ok, não vou fazer isso."
+            await self._emitir_falado(send, texto_final)
+            rota = "mestre:confirmacao_abortada"
+        # ATALHO (#2): "mestre, atalho <nome>" nomeia o último comando resolvido.
+        elif (nome_atalho := mestre.parse_atalho(comando)) is not None:
+            texto_final, rota = await self._criar_atalho(nome_atalho, send, mem)
+        # DESFAZER (#8): meta-comando que reverte a última ação reversível da sessão.
+        # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
+        elif mestre.comando_desfazer(comando):
+            texto_final, rota = await self._desfazer(send, mem, auditar=not mem.confidencial)
+        elif mestre.tem_correcao(comando):
+            # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
+            # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
+            texto_final, rota = await self._corrigir(comando, send, mem, auditar=not mem.confidencial)
+        elif acoes := mestre.parse_composto(comando, datetime.now()):
+            # #12 já pode ter devolvido VÁRIAS ações (comando encadeado "faz X e faz Y").
+            # COFRE (#25): se alguma é destrutiva não-desfazível, executa as SEGURAS já e
+            # deixa a destrutiva aguardando "confirma".
+            confirmavel = self._acao_confirmavel(acoes)
+            if confirmavel is not None:
+                seguras = [a for a in acoes if a is not confirmavel]
+                if seguras:
+                    await self._executar_acoes_rapidas(
+                        seguras, send, auditar=not mem.confidencial, mem=mem
+                    )
+                mem.confirmacao_pendente = confirmavel
+                texto_final = f"Confirma que quer {mestre.descrever_acao(confirmavel)}? Diga 'mestre, confirma'."
+                await self._emitir_falado(send, texto_final)
+                rota = "mestre:aguarda_confirmacao"
+            else:
+                texto_final = await self._executar_acoes_rapidas(
+                    acoes, send, auditar=not mem.confidencial, mem=mem
+                )
+                rota = "mestre:rapido"
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
-                texto_final = await self._pipeline_tools(comando, send, decisao, auditar=not mem.confidencial)
-                rota = f"mestre:tool:{decisao.tool}"
+                tool = self.tools.get(decisao.tool)
+                if settings.confirmacao_habilitada and tool.confirmavel:
+                    mem.confirmacao_pendente = decisao
+                    texto_final = f"Confirma que quer {mestre.descrever_acao(decisao)}? Diga 'mestre, confirma'."
+                    await self._emitir_falado(send, texto_final)
+                    rota = "mestre:aguarda_confirmacao"
+                else:
+                    texto_final = await self._pipeline_tools(
+                        comando, send, decisao, auditar=not mem.confidencial, mem=mem
+                    )
+                    rota = f"mestre:tool:{decisao.tool}"
             else:
                 # Não é ação reconhecida: recusa + registra para revisão.
                 await asyncio.to_thread(db.registrar_comando_desconhecido, comando)
@@ -877,6 +1078,16 @@ class Agent:
                 await self._emitir_falado(send, fala)
                 texto_final = fala
                 rota = "mestre:desconhecido"
+
+        # ATALHO DE INTENÇÃO FREQUENTE (#2): só AÇÕES resolvidas contam como "intenção"
+        # (meta-comandos como desfazer/confirmar/atalho não). Guarda o último comando p/
+        # o "atalho <nome>" e, se a intenção virou hábito, OFERECE um atalho (uma vez).
+        if rota == "mestre:rapido" or rota.startswith("mestre:tool:"):
+            mem.ultimo_comando_mestre = comando
+            if not mem.confidencial:
+                sugestao = await self._talvez_sugerir_atalho(comando, send)
+                if sugestao and texto_final:
+                    texto_final = f"{texto_final} {sugestao}"   # anexa ao histórico
 
         # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
         # (histórico) e na RAM (contexto de follow-up), como as demais ações — salvo

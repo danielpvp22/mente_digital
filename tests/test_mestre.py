@@ -160,3 +160,185 @@ def test_auditoria_parse():
     for c in ["o que você fez hoje?", "trilha de auditoria", "quais suas ações hoje"]:
         acoes = mestre.parse_rapido(c, AGORA)
         assert acoes and acoes[0].tool == "auditoria_hoje"
+
+
+# -- desfazer (#8): detecção -------------------------------------------------
+def test_comando_desfazer_reconhece():
+    for c in ["desfaça", "desfaz isso", "desfazer", "volta atrás", "anula",
+              "cancela isso", "cancela a última", "esquece isso"]:
+        assert mestre.comando_desfazer(c) is True, c
+
+
+def test_comando_desfazer_nao_colide_com_acao_regular():
+    # "cancela o lembrete 3" é uma AÇÃO (cancelar_lembrete), não um desfazer.
+    assert mestre.comando_desfazer("cancela o lembrete 3") is False
+    assert mestre.comando_desfazer("adiciona pão na lista") is False
+    assert mestre.comando_desfazer("o que é RAG") is False
+    # E o parse_rapido segue resolvendo o cancelamento por número normalmente.
+    acoes = mestre.parse_rapido("cancela o lembrete 3", AGORA)
+    assert acoes == [mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})]
+
+
+# -- desfazer (#8): cálculo da reversão --------------------------------------
+def test_reverter_add_vira_remove():
+    add = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    rev = mestre.reverter([(add, "adicionei 'pão' à lista de compras.")])
+    assert rev == [mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "pão"})]
+
+
+def test_reverter_remove_vira_add():
+    rem = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "leite"})
+    rev = mestre.reverter([(rem, "removi 'leite' da lista de compras.")])
+    assert rev == [mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "leite"})]
+
+
+def test_reverter_lembrete_vira_cancelar_pelo_id():
+    cri = mestre.tools.Decisao("criar_lembrete", {"quando": "daqui 4h", "mensagem": "Alarme"})
+    rev = mestre.reverter([(cri, "lembrete #7 criado para 17/07 às 18:30: Alarme")])
+    assert rev == [mestre.tools.Decisao("cancelar_lembrete", {"id": "7"})]
+
+
+def test_reverter_ignora_acao_que_falhou():
+    # Remover um item inexistente NÃO deve gerar um "re-adicionar" fantasma.
+    rem = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "xyz"})
+    assert mestre.reverter([(rem, "não achei 'xyz' na lista de compras.")]) is None
+    # Lembrete que falhou (sem #id) também não é reversível.
+    cri = mestre.tools.Decisao("criar_lembrete", {"quando": "?", "mensagem": "x"})
+    assert mestre.reverter([(cri, "não entendi o horário '?'.")]) is None
+
+
+def test_reverter_ordem_inversa():
+    # Duas adições -> a reversão remove na ORDEM INVERSA (desfaz da última p/ a primeira).
+    a1 = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    a2 = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "ovos"})
+    rev = mestre.reverter([(a1, "adicionei 'pão' à lista de compras."),
+                           (a2, "adicionei 'ovos' à lista de compras.")])
+    assert [r.args["item"] for r in rev] == ["ovos", "pão"]
+
+
+def test_reverter_nao_reverte_leitura():
+    ler = mestre.tools.Decisao("ler_lista", {"lista": "compras"})
+    assert mestre.reverter([(ler, "# Lista: compras\n- pão\n")]) is None
+
+
+# -- corta-e-corrige (#9): detecção + extração do valor certo -----------------
+def test_tem_correcao():
+    # inclui o imperativo "corrija" (corri-J-a) e "correção" — radicais != "corrig".
+    for c in ["corrige para leite", "corrija para leite", "faz a correção para leite",
+              "na verdade era leite", "quis dizer leite", "me enganei, era leite"]:
+        assert mestre.tem_correcao(c) is True, c
+    for c in ["adiciona pão na lista", "o que tem na lista", "desfaça"]:
+        assert mestre.tem_correcao(c) is False, c
+
+
+def test_parse_correcao_para():
+    assert mestre.parse_correcao("corrige para leite") == "leite"
+    assert mestre.parse_correcao("corrija pra leite integral") == "leite integral"
+    assert mestre.parse_correcao("troca por leite") is None   # sem marcador de correção
+
+
+def test_parse_correcao_descarta_negado():
+    # "era X, não Y" -> o valor certo é X (o Y negado é descartado); preserva acento.
+    assert mestre.parse_correcao("corrige: era leite, não pão") == "leite"
+    assert mestre.parse_correcao("corrige para leite não pão") == "leite"
+
+
+def test_parse_correcao_na_verdade_e_quis_dizer():
+    assert mestre.parse_correcao("na verdade era café") == "café"
+    assert mestre.parse_correcao("quis dizer café") == "café"
+
+
+def test_parse_correcao_sem_valor():
+    assert mestre.parse_correcao("corrige") is None
+    assert mestre.parse_correcao("adiciona pão na lista") is None   # não é correção
+
+
+def test_refazer_com_troca_o_item():
+    add = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    redo = mestre.refazer_com([add], "leite")
+    assert redo == [mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "leite"})]
+
+
+def test_refazer_com_sem_acao_de_valor():
+    # Só um cancelar_lembrete na forward -> nada de item a corrigir.
+    canc = mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})
+    assert mestre.refazer_com([canc], "leite") is None
+    assert mestre.refazer_com([], "leite") is None
+
+
+# -- cofre de confirmação (#25) -----------------------------------------------
+def test_comando_confirmar():
+    for c in ["confirma", "confirmo", "pode confirmar", "isso mesmo", "pode fazer"]:
+        assert mestre.comando_confirmar(c) is True, c
+    assert mestre.comando_confirmar("adiciona pão") is False
+
+
+def test_comando_abortar():
+    for c in ["não", "deixa pra lá", "esquece", "melhor não", "não precisa"]:
+        assert mestre.comando_abortar(c) is True, c
+    # "cancela"/"para" NÃO abortam (colidem com "cancela o lembrete 5").
+    assert mestre.comando_abortar("cancela o lembrete 5") is False
+    assert mestre.comando_abortar("confirma") is False
+
+
+def test_descrever_acao():
+    d = mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})
+    assert mestre.descrever_acao(d) == "cancelar o lembrete 3"
+    r = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "pão"})
+    assert "remover" in mestre.descrever_acao(r) and "pão" in mestre.descrever_acao(r)
+
+
+# -- encadeamento falado (#12) ------------------------------------------------
+def test_dividir_preserva_e_interno_de_lista():
+    # O "e" de "farinha e ovos" é interno da lista -> NÃO é fronteira de ação.
+    assert mestre.dividir_comandos("adiciona leite, farinha e ovos na lista") == \
+        ["adiciona leite, farinha e ovos na lista"]
+
+
+def test_dividir_corta_na_fronteira_de_acao():
+    partes = mestre.dividir_comandos("adiciona pão na lista e cancela o lembrete 3")
+    assert partes == ["adiciona pão na lista", "cancela o lembrete 3"]
+
+
+def test_dividir_conectores_variados():
+    assert len(mestre.dividir_comandos("adiciona pão na lista; remove leite da lista")) == 2
+    assert len(mestre.dividir_comandos("adiciona pão na lista e depois cancela o lembrete 2")) == 2
+
+
+def test_composto_duas_adicoes_em_listas_diferentes():
+    acoes = mestre.parse_composto("adiciona pão na lista e adiciona leite na lista de tarefas", AGORA)
+    assert [a.tool for a in acoes] == ["adicionar_item", "adicionar_item"]
+    assert acoes[0].args["lista"] == "compras" and acoes[0].args["item"] == "pão"
+    assert acoes[1].args["lista"] == "tarefas" and acoes[1].args["item"] == "leite"
+
+
+def test_composto_add_mais_cancelar():
+    acoes = mestre.parse_composto("adiciona pão na lista e cancela o lembrete 3", AGORA)
+    assert [a.tool for a in acoes] == ["adicionar_item", "cancelar_lembrete"]
+    assert acoes[1].args["id"] == "3"
+
+
+def test_composto_defere_se_uma_parte_falha():
+    # A 2ª parte tem MENSAGEM ("comprar") -> parse_rapido defere -> o TODO defere (None).
+    assert mestre.parse_composto(
+        "adiciona pão na lista e me lembra de comprar amanhã", AGORA
+    ) is None
+
+
+def test_composto_comando_simples_inalterado():
+    # Sem encadeamento, parse_composto == parse_rapido (sem regressão).
+    esperado = mestre.parse_rapido("adiciona pão na lista", AGORA)
+    assert mestre.parse_composto("adiciona pão na lista", AGORA) == esperado
+
+
+# -- atalho de intenção frequente (#2): comando de criação --------------------
+def test_parse_atalho_extrai_nome():
+    assert mestre.parse_atalho("atalho compras") == "compras"
+    assert mestre.parse_atalho("cria um atalho chamado compras") == "compras"
+    assert mestre.parse_atalho("salva como atalho lista do mercado") == "lista do mercado"
+
+
+def test_parse_atalho_nao_e_atalho():
+    assert mestre.parse_atalho("adiciona pão na lista") is None
+    assert mestre.parse_atalho("atalho") is None        # sem nome
+    assert mestre.parse_atalho("") is None
