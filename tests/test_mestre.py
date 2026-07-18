@@ -137,3 +137,19 @@ def test_status_frases():
     for c in ["status do sistema", "você está funcionando?", "faz um autoteste"]:
         acoes = mestre.parse_rapido(c, AGORA)
         assert acoes and acoes[0].tool == "status_sistema"
+
+
+# -- modo confidencial (#5) ----------------------------------------------------
+def test_modo_confidencial_liga():
+    for c in ["modo sigiloso", "ativar modo confidencial", "entra em modo privado"]:
+        assert mestre.modo_confidencial(c) is True
+
+
+def test_modo_confidencial_desliga():
+    for c in ["modo normal", "sair do sigilo", "pode registrar de novo"]:
+        assert mestre.modo_confidencial(c) is False
+
+
+def test_modo_confidencial_nao_e_comando():
+    assert mestre.modo_confidencial("adiciona pão na lista") is None
+    assert mestre.modo_confidencial("que horas são") is None

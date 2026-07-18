@@ -572,10 +572,12 @@ class Agent:
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
-                        if not efemero and tool.registra_conhecimento:
+                        # Modo confidencial (#5) também não persiste nada (só a RAM).
+                        if not efemero and tool.registra_conhecimento and not mem.confidencial:
                             await append_chat_dump("IA", texto_final)
                         mem.registrar_turno(texto_usuario, texto_final)
-                        await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
+                        if not mem.confidencial:
+                            await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                         await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
                     return
 
@@ -674,10 +676,12 @@ class Agent:
                 # Dump só do que pode virar conhecimento: o idle atomiza este arquivo,
                 # então um turno efêmero aqui vira "## Hora atual" no Zettelkasten. O
                 # turno segue no SQLite (histórico do usuário) e na RAM (follow-up).
-                if not efemero:
+                # Modo confidencial (#5): nada é persistido — vive só na RAM da sessão.
+                if not efemero and not mem.confidencial:
                     await append_chat_dump("IA", texto_final)
                 mem.registrar_turno(texto_usuario, texto_final)
-                await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
+                if not mem.confidencial:
+                    await asyncio.to_thread(db.save_chat, texto_usuario, texto_final, mem.conversa_id)
                 await self._registrar_latencia(tracker, rota)
         except asyncio.CancelledError:
             raise  # barge-in: propaga para o LlamaManager parar o decode
@@ -785,6 +789,20 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
+        # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
+        # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
+        modo = mestre.modo_confidencial(comando)
+        if modo is not None:
+            mem.confidencial = modo
+            fala = (
+                "Modo confidencial ativado. O que falarmos agora fica só nesta sessão — "
+                "não salvo nada nem transformo em conhecimento."
+                if modo else
+                "Voltando ao normal. As conversas voltam a ser salvas e aprendidas."
+            )
+            await self._emitir_falado(send, fala)
+            return
+
         acoes = mestre.parse_rapido(comando, datetime.now())
         if acoes:
             texto_final = await self._executar_acoes_rapidas(acoes, send)
@@ -806,10 +824,12 @@ class Agent:
                 rota = "mestre:desconhecido"
 
         # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
-        # (histórico) e na RAM (contexto de follow-up), como as demais ações.
+        # (histórico) e na RAM (contexto de follow-up), como as demais ações — salvo
+        # em modo confidencial, onde nada é persistido (só a RAM).
         if texto_final:
             mem.registrar_turno(comando, texto_final)
-            await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
+            if not mem.confidencial:
+                await asyncio.to_thread(db.save_chat, comando, texto_final, mem.conversa_id)
             await self._registrar_latencia(tracker, rota)
 
     def _pergunta_com_contexto(self, texto_usuario: str, mem: SessionMemory) -> str:
@@ -955,8 +975,9 @@ class Agent:
         dados_web = await self.ctx.web.search(query_web, consulta=consulta_rank or termos)
         # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
-        # engordava o vault com dezenas de notas por pergunta sobre o tempo.
-        if not efemero:
+        # engordava o vault com dezenas de notas por pergunta sobre o tempo. Em modo
+        # confidencial (#5) também não: a curiosidade viraria átomo permanente.
+        if not efemero and not mem.confidencial:
             self.ctx.track_task(self._prefetch(termos, mem))  # background, web-only (ref. retida)
 
         # Sem dados locais NEM web (ex.: pergunta não-buscável): NÃO deixe o LLM falar
@@ -975,6 +996,8 @@ class Agent:
         mem.lembrar(termos, dados_web)
         if efemero:
             telemetry.track("ETL", f"'{termos}' é efêmero — fora da fila (não vira átomo).")
+        elif mem.confidencial:
+            telemetry.track("ETL", "Modo confidencial — resultado fora da fila (não vira átomo).")
         else:
             mem.enfileirar_etl(termos, dados_web)
 

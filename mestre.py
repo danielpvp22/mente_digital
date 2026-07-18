@@ -74,6 +74,28 @@ def separar(texto: str, palavra: str) -> Optional[str]:
     return (m.group(2) or "").strip()
 
 
+def modo_confidencial(comando: str) -> Optional[bool]:
+    """Detecta o comando de LIGAR/DESLIGAR o modo confidencial (#5). Puro/testável.
+
+    Devolve True (ligar), False (desligar) ou None (não é comando de modo). Precisa
+    ser tratado no fluxo-mestre, não numa ferramenta, porque mexe no estado da SESSÃO
+    (SessionMemory.confidencial), a que as ferramentas (só ctx) não têm acesso."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    ligar = ("modo sigiloso", "modo confidencial", "modo privado", "modo secreto",
+             "modo anonimo", "off the record", "fica em sigilo", "ativar sigilo",
+             "modo incognito", "nao registre isso", "nao salve isso")
+    desligar = ("modo normal", "modo publico", "sair do sigilo", "fim do sigilo",
+                "desligar sigilo", "desliga o sigilo", "pode registrar", "voltar ao normal",
+                "sair do modo sigiloso", "encerrar sigilo")
+    if any(g in n for g in desligar):
+        return False
+    if any(g in n for g in ligar):
+        return True
+    return None
+
+
 def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
     """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM)."""
     if not comando or not comando.strip():
