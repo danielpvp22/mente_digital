@@ -16,6 +16,7 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Optional
 
+import textutils
 from config import settings
 
 
@@ -123,6 +124,14 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, mensagem TEXT,
                     proximo_disparo TEXT, recorrencia TEXT, payload TEXT,
                     status TEXT DEFAULT 'ativo', criado_em TEXT, conversa_id TEXT)"""
+            )
+            # Comandos com a palavra-mestre que NEM o parser rápido NEM o roteador LLM
+            # reconheceram. É a lista de "melhorias a revisar": mostra que comandos o
+            # usuário tentou e o app não cobre — matéria-prima para ampliar os agentes.
+            # `chave` normalizada agrupa tentativas repetidas (UPSERT incrementa `n`).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS mestre_nao_reconhecido
+                   (chave TEXT PRIMARY KEY, comando TEXT, n INTEGER DEFAULT 1, visto_em TEXT)"""
             )
             conn.commit()
 
@@ -339,6 +348,37 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao cancelar agendamento", exc)
             return False
+
+    def registrar_comando_desconhecido(self, comando: str) -> None:
+        """Guarda um comando com palavra-mestre que nada reconheceu (para revisão/evolução)."""
+        chave = textutils.normaliza(comando)[:120]
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO mestre_nao_reconhecido (chave, comando, n, visto_em)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, comando, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar comando desconhecido", exc)
+
+    def get_comandos_desconhecidos(self, limit: int = 50) -> list[dict]:
+        """Comandos de agente que o app ainda não cobre, mais tentados primeiro."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT comando, n, visto_em FROM mestre_nao_reconhecido "
+                    "ORDER BY n DESC, visto_em DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [{"comando": c, "n": n, "visto_em": v} for c, n, v in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler comandos desconhecidos", exc)
+            return []
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:

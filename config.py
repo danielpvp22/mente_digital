@@ -218,6 +218,13 @@ class Settings(BaseSettings):
     # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
     dedup_dist_max: float = 0.08
 
+    # --- Palavra-mestre (fluxo isolado dos agentes) -----------------------------
+    # Quando a mensagem COMEÇA por esta palavra, é tratada como COMANDO de agente
+    # (fluxo determinístico, LLM só se necessário) — não como pergunta de conhecimento.
+    # Sem ela, o pipeline de hoje não muda. Configurável por MENTE_PALAVRA_MESTRE.
+    palavra_mestre: str = "mestre"
+    palavra_mestre_habilitada: bool = True
+
     # --- Agentes / Scheduler (lembretes, alarmes, watchers, briefing) -----------
     # O SchedulerService é um loop de background que lê a tabela `agendamentos` e
     # dispara os vencidos. É a "responsabilidade contínua" dos agentes tipo-Alexa.

@@ -87,3 +87,14 @@ async def test_avisar_quando_cria_watcher(ambiente):
     assert "aviso" in resp.lower() or "verificar" in resp.lower()
     watchers = telemetry.db.listar_agendamentos(("watcher",))
     assert len(watchers) == 1
+
+
+def test_comando_desconhecido_registra_e_agrupa(ambiente):
+    # Tentativas repetidas do mesmo comando agrupam (UPSERT incrementa n).
+    telemetry.db.registrar_comando_desconhecido("toca uma música")
+    telemetry.db.registrar_comando_desconhecido("Toca uma música")
+    telemetry.db.registrar_comando_desconhecido("acende a luz")
+    itens = telemetry.db.get_comandos_desconhecidos()
+    # UPSERT agrupa pela chave normalizada e mantém o texto da 1ª ocorrência.
+    assert itens[0]["comando"] == "toca uma música" and itens[0]["n"] == 2
+    assert {i["comando"] for i in itens} == {"toca uma música", "acende a luz"}
