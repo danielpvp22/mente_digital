@@ -675,23 +675,30 @@ class Agent:
                     telemetry.track("AGENT", f"Fusão: passada RAM ({len(ram)} tópico(s)).")
                     await passada(self._montar_contexto(NENHUM_LOCAL, ram), "ram")
 
-                # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base) colhe
-                # dezenas de átomos Zettelkasten e os funde num parágrafo.
-                texto_busca = await self._texto_busca(texto_usuario, termos)
-                local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
-                telemetry.track(
-                    "LOCAL",
-                    f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
-                )
-                if local.relevante:
-                    telemetry.track("AGENT", "Fusão: passada Banco.")
-                    antes = len(paragrafos)
-                    await passada(self._montar_contexto(local, []), "banco")
-                    # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
-                    # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
-                    # Em background: não pesa no TTFA da resposta atual.
-                    if len(paragrafos) > antes and local.fontes:
-                        self.ctx.track_task(self._consolidar_fontes(local.fontes))
+                # EARLY-STOP (#3): se uma fonte já respondeu com confiança (passada
+                # não-sentinela), PARA a cascata — não roda o Banco (nem a busca vetorial,
+                # nem sua passada de inferência). Economiza um decode na GPU serializada.
+                # Botão MENTE_EARLY_STOP_CASCATA; desligado, volta à fusão RAM+Banco.
+                if settings.early_stop_cascata and paragrafos:
+                    telemetry.track("AGENT", "Early-stop: RAM respondeu — pula Banco/Web.")
+                else:
+                    # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base)
+                    # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
+                    texto_busca = await self._texto_busca(texto_usuario, termos)
+                    local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
+                    telemetry.track(
+                        "LOCAL",
+                        f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
+                    )
+                    if local.relevante:
+                        telemetry.track("AGENT", "Fusão: passada Banco.")
+                        antes = len(paragrafos)
+                        await passada(self._montar_contexto(local, []), "banco")
+                        # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
+                        # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
+                        # Em background: não pesa no TTFA da resposta atual.
+                        if len(paragrafos) > antes and local.fontes:
+                            self.ctx.track_task(self._consolidar_fontes(local.fontes))
 
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:

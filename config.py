@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
     # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
     rag_debug: bool = False
+    # EARLY-STOP DA CASCATA (#3): quando LIGADO, a cascata de resposta PARA na primeira
+    # fonte que responde com confiança (RAM > Banco > Web) — se a RAM já respondeu, nem
+    # roda a passada do Banco; se o Banco respondeu, não vai à web. Troca a fusão
+    # multi-fonte (cada fonte contribuía um parágrafo) por MENOS passes de inferência na
+    # GPU serializada = menos latência no próximo turno. Desligue (MENTE_EARLY_STOP_CASCATA
+    # =false) para voltar à fusão completa RAM+Banco. A web já era "só se nada respondeu".
+    early_stop_cascata: bool = True
     # HyDE (Hypothetical Document Embeddings): antes de buscar no vetor, o LLM gera
     # uma PASSAGEM hipotética no estilo das notas e ELA é embeddada — casa melhor com
     # os parágrafos do banco do que a query crua (o modelo de embedding é simétrico).

@@ -57,6 +57,8 @@ Wiring fino em [main.py](main.py) (lifespan cria os serviços e injeta em `AppCo
 4. Se Cache Hit: responde com streaming, mas segura o áudio/tokens até confirmar que a resposta não é o sentinela anti-alucinação `"não tenho informações suficientes"` — se confirmar, escala para web sem nunca "falar" o sentinela (preserva TTFA).
 5. Cache Miss (ou escalada): dispara um filler falado para mascarar latência, busca na web, responde em streaming, e enfileira o resultado para o ETL idle.
 
+**Cascata RAM→Banco→Web + Early-stop (#3, Onda 2):** a fusão roda as fontes em ordem (RAM = memória fresca da sessão; Banco = vault Zettelkasten; Web = fallback). Com `MENTE_EARLY_STOP_CASCATA=true` (default), a cascata PARA na primeira fonte que responde com confiança (passada não-sentinela): se a RAM já respondeu, o Banco **nem é consultado** (pula a busca vetorial E o decode) — troca a fusão multi-fonte por menos passes de inferência na GPU serializada (= menos latência no próximo turno). Desligado, volta à fusão completa RAM+Banco (cada fonte contribui um parágrafo). A Web sempre foi "só se nenhuma fonte local respondeu".
+
 ### Correção do "Cache Hit falso"
 
 Ver [README.md](README.md) para o diagnóstico completo. Resumo: o gate antigo tratava "tem algum contexto" como Cache Hit; com um vault grande, quase toda pergunta achava algo vagamente parecido e a web nunca era consultada. A correção exige contexto **relevante** (aterramento léxico via `textutils.contem_alguma` OU `rag_score_confident`). O botão de calibração é `MENTE_RAG_SCORE_CONFIDENT` (default `0.8`; menor = mais rígido/mais web, maior = mais confiança no local) — cada pergunta loga `[LOCAL] melhor_dist=... relevante=...` para calibrar.
