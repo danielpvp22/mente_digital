@@ -219,3 +219,48 @@ def test_reverter_ordem_inversa():
 def test_reverter_nao_reverte_leitura():
     ler = mestre.tools.Decisao("ler_lista", {"lista": "compras"})
     assert mestre.reverter([(ler, "# Lista: compras\n- pão\n")]) is None
+
+
+# -- corta-e-corrige (#9): detecção + extração do valor certo -----------------
+def test_tem_correcao():
+    # inclui o imperativo "corrija" (corri-J-a) e "correção" — radicais != "corrig".
+    for c in ["corrige para leite", "corrija para leite", "faz a correção para leite",
+              "na verdade era leite", "quis dizer leite", "me enganei, era leite"]:
+        assert mestre.tem_correcao(c) is True, c
+    for c in ["adiciona pão na lista", "o que tem na lista", "desfaça"]:
+        assert mestre.tem_correcao(c) is False, c
+
+
+def test_parse_correcao_para():
+    assert mestre.parse_correcao("corrige para leite") == "leite"
+    assert mestre.parse_correcao("corrija pra leite integral") == "leite integral"
+    assert mestre.parse_correcao("troca por leite") is None   # sem marcador de correção
+
+
+def test_parse_correcao_descarta_negado():
+    # "era X, não Y" -> o valor certo é X (o Y negado é descartado); preserva acento.
+    assert mestre.parse_correcao("corrige: era leite, não pão") == "leite"
+    assert mestre.parse_correcao("corrige para leite não pão") == "leite"
+
+
+def test_parse_correcao_na_verdade_e_quis_dizer():
+    assert mestre.parse_correcao("na verdade era café") == "café"
+    assert mestre.parse_correcao("quis dizer café") == "café"
+
+
+def test_parse_correcao_sem_valor():
+    assert mestre.parse_correcao("corrige") is None
+    assert mestre.parse_correcao("adiciona pão na lista") is None   # não é correção
+
+
+def test_refazer_com_troca_o_item():
+    add = mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "pão"})
+    redo = mestre.refazer_com([add], "leite")
+    assert redo == [mestre.tools.Decisao("adicionar_item", {"lista": "compras", "item": "leite"})]
+
+
+def test_refazer_com_sem_acao_de_valor():
+    # Só um cancelar_lembrete na forward -> nada de item a corrigir.
+    canc = mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})
+    assert mestre.refazer_com([canc], "leite") is None
+    assert mestre.refazer_com([], "leite") is None

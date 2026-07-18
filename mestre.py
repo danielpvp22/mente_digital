@@ -162,6 +162,75 @@ def _reverter_uma(dec: tools.Decisao, resultado: str) -> Optional[tools.Decisao]
     return None
 
 
+# CORTA-E-CORRIGE (#9): marcadores EXPLÍCITOS de correção (exige o marcador — não
+# basta um "era" solto — para não interceptar um add legítimo). Normalizados.
+# Radicais: "corrig" (corrige/corrigir/corrigido) NÃO cobre o imperativo "corrija"
+# (corri-J-a) nem "correção" — daí os três radicais.
+_GATILHO_CORRIGIR = ("corrig", "corrij", "correca", "na verdade", "quis dizer",
+                     "me enganei", "errei", "me equivoquei")
+# Marcador/preposição que ANTECEDE o valor certo, em ordem de prioridade.
+_CORR_TAIL = (
+    re.compile(r"\b(?:para|pra|por)\s+(.+)$"),        # corrige PARA leite / troca POR leite
+    re.compile(r"\bquis dizer\s+(.+)$"),              # quis dizer leite
+    re.compile(r"\bna verdade\s+(.+)$"),              # na verdade (era) leite
+    re.compile(r"\b(?:corri[gj]\w*|correca\w*)[\s:,\-]+(.+)$"),   # corrige:/corrija: leite
+    re.compile(r"\bera\s+(.+)$"),                     # (me enganei,) era leite
+)
+# Afirmativos/artigos que sobram na frente do valor após o corte.
+_CORR_LIMPA = re.compile(r"^(?:era|eh|e|seria|foi|para|pra|por|o|a|os|as|um|uma)\s+", re.I)
+
+
+def tem_correcao(comando: str) -> bool:
+    """True se a mensagem é um comando de CORREÇÃO (#9). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CORRIGIR)
+
+
+def parse_correcao(comando: str) -> Optional[str]:
+    """Extrai o VALOR CERTO de um comando de correção (#9), ou None. Puro/testável.
+
+    Cobre "corrige para X", "troca por X", "na verdade era X", "quis dizer X" e o
+    "corrige: era X, não Y" — o trecho negado (o que o usuário REJEITA, após "não") é
+    descartado. Casa posições sobre a forma SEM ACENTO (comprimento preservado) e fatia
+    o ORIGINAL, então o valor mantém os acentos ("pão")."""
+    if not tem_correcao(comando):
+        return None
+    orig = comando.strip()
+    baixa = orig.lower()
+    ms = textutils.sem_acento(baixa)
+    if len(ms) != len(baixa):
+        ms = baixa   # desalinhou (char exótico) -> usa o acentuado
+    for pat in _CORR_TAIL:
+        m = pat.search(ms)
+        if not m:
+            continue
+        bruto = orig[m.start(1):m.end(1)]
+        # o que vem depois de "não" é o valor REJEITADO -> fora.
+        bruto = re.split(r"\bn[ãa]o\b", bruto, maxsplit=1, flags=re.I)[0]
+        val = _CORR_LIMPA.sub("", bruto.strip()).strip(" ,.;:!?")
+        if val:
+            return val
+    return None
+
+
+def refazer_com(forward: List[tools.Decisao], certo: str) -> Optional[List[tools.Decisao]]:
+    """Refaz a última mutação de VALOR com o valor corrigido (#9). Puro/testável.
+
+    Hoje cobre `adicionar_item` (o caso "era leite, não pão"): clona a ação original
+    trocando só o item. Outras mutações (lembrete/captura) não são corrigíveis por ora."""
+    certo = (certo or "").strip()
+    if not certo:
+        return None
+    for dec in (forward or []):
+        if dec.tool == "adicionar_item":
+            args = dict(dec.args or {})
+            args["item"] = certo
+            return [tools.Decisao("adicionar_item", args)]
+    return None
+
+
 def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
     """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM)."""
     if not comando or not comando.strip():

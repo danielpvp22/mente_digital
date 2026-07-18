@@ -45,6 +45,10 @@ class SessionMemory:
         # campo (consumo único — não se desfaz o desfazer). None = nada a desfazer.
         # Vive só na sessão, então não persiste; um restart zera o histórico de undo.
         self.ultima_reversivel: Optional[list] = None
+        # CORTA-E-CORRIGE (#9): as ações FORWARD (originais) da última mutação, para
+        # "mestre, corrige para X" REFAZER com o valor certo (desfaz via ultima_reversivel
+        # e reexecuta com o item corrigido). Anda junto com ultima_reversivel.
+        self.ultima_acao: Optional[list] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -68,6 +72,7 @@ class SessionMemory:
         self.conhecimento_sessao.clear()
         self.confidencial = False   # chat novo volta ao modo normal (público)
         self.ultima_reversivel = None   # não se desfaz ação de outra conversa
+        self.ultima_acao = None
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -78,6 +83,7 @@ class SessionMemory:
             self.chat_history.append((q, a))
         self.conhecimento_sessao.clear()
         self.ultima_reversivel = None   # reabrir conversa não herda undo pendente
+        self.ultima_acao = None
 
 
 class LruCache:

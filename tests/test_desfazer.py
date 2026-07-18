@@ -108,3 +108,50 @@ async def test_leitura_nao_vira_alvo_de_undo(monkeypatch, tmp_path):
     assert mem.ultima_reversivel is alvo                   # intacto
     await agent.pipeline_resposta("mestre, desfaça", send, mem)
     assert "café" not in _conteudo_lista()
+
+
+# ---------------------------------------------------------------------------
+# #9 — Corta-e-Corrige (desfaz a última adição e refaz com o valor certo)
+# ---------------------------------------------------------------------------
+async def test_corrige_troca_o_item(monkeypatch, tmp_path):
+    agent, mem = _agent(monkeypatch, tmp_path)
+    send, _ = make_send()
+
+    await agent.pipeline_resposta("mestre, adiciona pão na lista", send, mem)
+    await agent.pipeline_resposta("mestre, corrige: era leite, não pão", send, mem)
+    conteudo = _conteudo_lista()
+    assert "leite" in conteudo and "pão" not in conteudo   # trocou pão -> leite
+
+
+async def test_corrige_depois_desfaz_limpo(monkeypatch, tmp_path):
+    agent, mem = _agent(monkeypatch, tmp_path)
+    send, _ = make_send()
+
+    await agent.pipeline_resposta("mestre, adiciona pão na lista", send, mem)
+    await agent.pipeline_resposta("mestre, corrige para leite", send, mem)
+    # "desfaça" após corrigir remove só o item corrigido — não ressuscita o pão.
+    await agent.pipeline_resposta("mestre, desfaça", send, mem)
+    conteudo = _conteudo_lista()
+    assert "leite" not in conteudo and "pão" not in conteudo
+
+
+async def test_corrige_encadeado(monkeypatch, tmp_path):
+    agent, mem = _agent(monkeypatch, tmp_path)
+    send, _ = make_send()
+
+    await agent.pipeline_resposta("mestre, adiciona pão na lista", send, mem)
+    await agent.pipeline_resposta("mestre, corrige para leite", send, mem)
+    await agent.pipeline_resposta("mestre, corrige para água", send, mem)
+    conteudo = _conteudo_lista()
+    assert "água" in conteudo
+    assert "leite" not in conteudo and "pão" not in conteudo   # correções encadeadas limpas
+
+
+async def test_corrige_sem_acao_recente(monkeypatch, tmp_path):
+    agent, mem = _agent(monkeypatch, tmp_path)
+    send, enviados = make_send()
+
+    await agent.pipeline_resposta("mestre, corrige para leite", send, mem)
+    fala = "".join(m["texto"] for m in enviados if m.get("tipo") == "token")
+    assert "corrigir" in fala.lower()
+    assert _conteudo_lista() == ""   # não criou nada

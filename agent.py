@@ -856,6 +856,8 @@ class Agent:
         rev = mestre.reverter(executadas)
         if rev:
             mem.ultima_reversivel = rev
+            # guarda também as ações FORWARD p/ o "corrige" refazer com o valor certo (#9).
+            mem.ultima_acao = [dec for dec, _ in executadas]
 
     async def _desfazer(self, send: Sender, mem: SessionMemory, auditar: bool) -> tuple:
         """Executa a reversão da última ação da sessão (#8). Devolve (fala, rota)."""
@@ -867,10 +869,40 @@ class Agent:
         # Consome ANTES de executar: a própria reversão não vira novo alvo de undo
         # (mem=None abaixo), então "desfaça, desfaça" não fica num ping-pong.
         mem.ultima_reversivel = None
+        mem.ultima_acao = None
         fala = await self._executar_acoes_rapidas(
             revs, send, auditar=auditar, mem=None, prefixo="Desfeito. "
         )
         return fala, "mestre:desfazer"
+
+    async def _corrigir(self, comando: str, send: Sender, mem: SessionMemory, auditar: bool) -> tuple:
+        """Corta-e-corrige (#9): desfaz a última adição e refaz com o valor certo.
+
+        "mestre, corrige para leite" (após "adiciona pão") = remover pão + adicionar leite.
+        Reaproveita a reversão do #8 (undo) e refaz a ação forward trocando o valor."""
+        certo = mestre.parse_correcao(comando)
+        if not certo:
+            fala = "Não entendi a correção. Diga, por exemplo, 'corrige para leite'."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:corrige_incompleto"
+        redo = mestre.refazer_com(mem.ultima_acao or [], certo)
+        if not redo:
+            fala = "Não tenho uma ação recente de lista para corrigir."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:corrige_vazio"
+        undo = list(mem.ultima_reversivel or [])
+        mem.ultima_reversivel = None
+        mem.ultima_acao = None
+        # Executa undo + redo SEM registrar reversão automática (mem=None): abaixo
+        # definimos o alvo de undo manualmente como só o REDO — assim correções
+        # ENCADEADAS ("corrige para leite", depois "para água") ficam limpas, sem
+        # ressuscitar o valor original a cada nova correção.
+        fala = await self._executar_acoes_rapidas(
+            undo + list(redo), send, auditar=auditar, mem=None, prefixo="Corrigido. "
+        )
+        mem.ultima_acao = list(redo)
+        mem.ultima_reversivel = [tools.Decisao("remover_item", dict(d.args)) for d in redo]
+        return fala, "mestre:corrige"
 
     async def _fluxo_mestre(
         self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
@@ -904,6 +936,10 @@ class Agent:
         # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
         if mestre.comando_desfazer(comando):
             texto_final, rota = await self._desfazer(send, mem, auditar=not mem.confidencial)
+        elif mestre.tem_correcao(comando):
+            # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
+            # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
+            texto_final, rota = await self._corrigir(comando, send, mem, auditar=not mem.confidencial)
         elif acoes := mestre.parse_rapido(comando, datetime.now()):
             texto_final = await self._executar_acoes_rapidas(
                 acoes, send, auditar=not mem.confidencial, mem=mem
