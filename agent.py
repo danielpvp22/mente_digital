@@ -502,6 +502,7 @@ class Agent:
         self.optimizer = QueryOptimizer(ctx.llama)
         self.tools = tools.criar_registry()
         self._filler_i = 0  # rotaciona o texto do filler p/ não ficar repetitivo
+        self._atalhos: Optional[dict] = None  # cache dos atalhos-mestre (#2), lazy do DB
 
     async def _falar(self, send: Sender, frases: List[str]) -> None:
         """Envia frases prontas para o TTS conforme o chunker fecha sentenças."""
@@ -911,6 +912,46 @@ class Agent:
         mem.ultima_reversivel = [tools.Decisao("remover_item", dict(d.args)) for d in redo]
         return fala, "mestre:corrige"
 
+    async def _atalhos_cache(self) -> dict:
+        """Atalhos-mestre (#2) carregados do DB uma vez por processo (apelido -> comando)."""
+        if self._atalhos is None:
+            self._atalhos = await asyncio.to_thread(db.listar_atalhos)
+        return self._atalhos
+
+    async def _criar_atalho(self, nome: str, send: Sender, mem: SessionMemory) -> tuple:
+        """Grava um atalho nomeado para o ÚLTIMO comando-mestre resolvido (#2)."""
+        alvo = mem.ultimo_comando_mestre
+        if not alvo:
+            fala = "Não tenho um comando recente para transformar em atalho."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:atalho_vazio"
+        chave = textutils.normaliza(nome)
+        await asyncio.to_thread(db.salvar_atalho, chave, alvo)
+        # Já tem atalho -> não ofereça atalho de novo para essa intenção.
+        await asyncio.to_thread(db.marcar_sugerido, textutils.normaliza(alvo))
+        (await self._atalhos_cache())[chave] = alvo
+        fala = f"Pronto. Agora é só dizer '{settings.palavra_mestre}, {nome}' que eu faço isso."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:atalho_criado"
+
+    async def _talvez_sugerir_atalho(self, comando: str, send: Sender) -> Optional[str]:
+        """Conta a intenção e, se ela virou hábito (e ainda não foi sugerida), OFERECE um
+        atalho — uma vez só (#2). Devolve a fala da sugestão (p/ anexar ao histórico) ou None."""
+        minimo = settings.atalho_sugestao_min
+        if minimo <= 0:
+            return None
+        assinatura = textutils.normaliza(comando)
+        n, ja_sugerido = await asyncio.to_thread(db.registrar_frequencia, assinatura, comando)
+        if n < minimo or ja_sugerido:
+            return None
+        await asyncio.to_thread(db.marcar_sugerido, assinatura)
+        fala = (
+            f"Aliás, você já pediu isso {n} vezes. Se quiser um atalho, diga "
+            f"'{settings.palavra_mestre}, atalho' e um apelido curto."
+        )
+        await self._emitir_falado(send, fala)
+        return fala
+
     def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
         """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
         `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
@@ -935,6 +976,15 @@ class Agent:
             fala = f"Sim, {settings.palavra_mestre.capitalize()}? Pode falar."
             await self._emitir_falado(send, fala)
             return
+
+        # ATALHO (#2): se o comando INTEIRO casa um apelido salvo, expande para o comando
+        # original antes de qualquer coisa — daí segue o fluxo normal como se o usuário
+        # tivesse dito o comando completo.
+        atalhos = await self._atalhos_cache()
+        expandido = atalhos.get(textutils.normaliza(comando))
+        if expandido:
+            telemetry.track("MESTRE", f"Atalho '{comando}' -> '{expandido}'.")
+            comando = expandido
 
         # COFRE DE CONFIRMAÇÃO (#25): se há uma ação destrutiva PENDENTE, "confirma" a
         # executa e "não/deixa" a aborta (abort tem precedência — na dúvida, não faz).
@@ -973,6 +1023,9 @@ class Agent:
             texto_final = "Ok, não vou fazer isso."
             await self._emitir_falado(send, texto_final)
             rota = "mestre:confirmacao_abortada"
+        # ATALHO (#2): "mestre, atalho <nome>" nomeia o último comando resolvido.
+        elif (nome_atalho := mestre.parse_atalho(comando)) is not None:
+            texto_final, rota = await self._criar_atalho(nome_atalho, send, mem)
         # DESFAZER (#8): meta-comando que reverte a última ação reversível da sessão.
         # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
         elif mestre.comando_desfazer(comando):
@@ -1025,6 +1078,16 @@ class Agent:
                 await self._emitir_falado(send, fala)
                 texto_final = fala
                 rota = "mestre:desconhecido"
+
+        # ATALHO DE INTENÇÃO FREQUENTE (#2): só AÇÕES resolvidas contam como "intenção"
+        # (meta-comandos como desfazer/confirmar/atalho não). Guarda o último comando p/
+        # o "atalho <nome>" e, se a intenção virou hábito, OFERECE um atalho (uma vez).
+        if rota == "mestre:rapido" or rota.startswith("mestre:tool:"):
+            mem.ultimo_comando_mestre = comando
+            if not mem.confidencial:
+                sugestao = await self._talvez_sugerir_atalho(comando, send)
+                if sugestao and texto_final:
+                    texto_final = f"{texto_final} {sugestao}"   # anexa ao histórico
 
         # Comando de agente NÃO alimenta o dump (não é conhecimento). Segue no SQLite
         # (histórico) e na RAM (contexto de follow-up), como as demais ações — salvo

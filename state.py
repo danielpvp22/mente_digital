@@ -52,6 +52,9 @@ class SessionMemory:
         # COFRE DE CONFIRMAÇÃO (#25): a `tools.Decisao` destrutiva que está esperando um
         # "mestre, confirma" para rodar. None = nada pendente. Vive só na RAM da sessão.
         self.confirmacao_pendente: Optional[object] = None
+        # ATALHO DE INTENÇÃO FREQUENTE (#2): o texto do último comando-mestre RESOLVIDO —
+        # é o que "mestre, atalho X" grava sob o apelido X. None = nada a encurtar ainda.
+        self.ultimo_comando_mestre: Optional[str] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -77,6 +80,7 @@ class SessionMemory:
         self.ultima_reversivel = None   # não se desfaz ação de outra conversa
         self.ultima_acao = None
         self.confirmacao_pendente = None
+        self.ultimo_comando_mestre = None
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -89,6 +93,7 @@ class SessionMemory:
         self.ultima_reversivel = None   # reabrir conversa não herda undo pendente
         self.ultima_acao = None
         self.confirmacao_pendente = None
+        self.ultimo_comando_mestre = None
 
 
 class LruCache:

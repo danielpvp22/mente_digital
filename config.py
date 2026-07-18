@@ -268,6 +268,10 @@ class Settings(BaseSettings):
     # o desfazível seria a "confirmação redundante" (#15) que se quer evitar. Desligue com
     # MENTE_CONFIRMACAO_HABILITADA=false para executar direto.
     confirmacao_habilitada: bool = True
+    # ATALHO DE INTENÇÃO FREQUENTE (#2): quantas vezes a MESMA intenção-mestre (forma
+    # normalizada) precisa se repetir para o app OFERECER um atalho nomeado. A oferta
+    # acontece UMA vez por intenção. 0/negativo desliga a sugestão (só conta).
+    atalho_sugestao_min: int = 3
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50

@@ -329,3 +329,16 @@ def test_composto_comando_simples_inalterado():
     # Sem encadeamento, parse_composto == parse_rapido (sem regressão).
     esperado = mestre.parse_rapido("adiciona pão na lista", AGORA)
     assert mestre.parse_composto("adiciona pão na lista", AGORA) == esperado
+
+
+# -- atalho de intenção frequente (#2): comando de criação --------------------
+def test_parse_atalho_extrai_nome():
+    assert mestre.parse_atalho("atalho compras") == "compras"
+    assert mestre.parse_atalho("cria um atalho chamado compras") == "compras"
+    assert mestre.parse_atalho("salva como atalho lista do mercado") == "lista do mercado"
+
+
+def test_parse_atalho_nao_e_atalho():
+    assert mestre.parse_atalho("adiciona pão na lista") is None
+    assert mestre.parse_atalho("atalho") is None        # sem nome
+    assert mestre.parse_atalho("") is None

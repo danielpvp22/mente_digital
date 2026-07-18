@@ -241,6 +241,27 @@ def comando_abortar(comando: str) -> bool:
     return any(g in n for g in _GATILHO_ABORTAR)
 
 
+# ATALHO DE INTENÇÃO FREQUENTE (#2): "atalho <nome>" nomeia o último comando.
+_ATALHO_RE = re.compile(r"\batalho\b\s*(?:chamado|chamada|de|como|:)?\s*(.+)$", re.I)
+_ATALHO_LIMPA = re.compile(r"^(?:chamado|chamada|de|como|o|a|um|uma)\s+", re.I)
+
+
+def parse_atalho(comando: str) -> Optional[str]:
+    """Se o comando CRIA um atalho (#2), devolve o NOME (apelido); senão None.
+
+    'mestre, atalho compras' -> 'compras'. Puro/testável. O nome é curto (≤3 palavras)
+    — é um apelido, não uma frase; algo maior provavelmente não é um comando de atalho."""
+    if not comando:
+        return None
+    if "atalho" not in textutils.normaliza(comando):
+        return None
+    m = _ATALHO_RE.search(comando.strip())
+    if not m:
+        return None
+    nome = _ATALHO_LIMPA.sub("", m.group(1).strip()).strip(" .,:;\"'").lower()
+    return nome if nome and len(nome.split()) <= 3 else None
+
+
 def descrever_acao(dec: tools.Decisao) -> str:
     """Frase curta do que a ação FARÁ, para pedir confirmação (#25). Puro/testável."""
     args = dec.args or {}
