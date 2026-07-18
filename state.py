@@ -49,6 +49,9 @@ class SessionMemory:
         # "mestre, corrige para X" REFAZER com o valor certo (desfaz via ultima_reversivel
         # e reexecuta com o item corrigido). Anda junto com ultima_reversivel.
         self.ultima_acao: Optional[list] = None
+        # COFRE DE CONFIRMAÇÃO (#25): a `tools.Decisao` destrutiva que está esperando um
+        # "mestre, confirma" para rodar. None = nada pendente. Vive só na RAM da sessão.
+        self.confirmacao_pendente: Optional[object] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -73,6 +76,7 @@ class SessionMemory:
         self.confidencial = False   # chat novo volta ao modo normal (público)
         self.ultima_reversivel = None   # não se desfaz ação de outra conversa
         self.ultima_acao = None
+        self.confirmacao_pendente = None
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -84,6 +88,7 @@ class SessionMemory:
         self.conhecimento_sessao.clear()
         self.ultima_reversivel = None   # reabrir conversa não herda undo pendente
         self.ultima_acao = None
+        self.confirmacao_pendente = None
 
 
 class LruCache:

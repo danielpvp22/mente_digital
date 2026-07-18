@@ -215,6 +215,43 @@ def parse_correcao(comando: str) -> Optional[str]:
     return None
 
 
+# COFRE DE CONFIRMAÇÃO (#25). Gatilhos SÓ consultados quando há algo pendente, então
+# um "confirma"/"não" solto não afeta nada fora do fluxo de confirmação.
+_GATILHO_CONFIRMAR = ("confirma", "confirmo", "confirmado", "pode confirmar", "pode fazer",
+                      "pode ir", "isso mesmo", "sim pode", "manda ver", "positivo")
+# Sem "cancela"/"para": colidiriam com "cancela o lembrete 5" (uma ação legítima que o
+# usuário pode emitir enquanto uma confirmação está pendente).
+_GATILHO_ABORTAR = ("nao", "melhor nao", "deixa", "deixa pra la", "esquece",
+                    "nao precisa", "nao confirmo", "nega", "negativo")
+
+
+def comando_confirmar(comando: str) -> bool:
+    """True se o usuário CONFIRMOU a ação pendente (#25). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONFIRMAR)
+
+
+def comando_abortar(comando: str) -> bool:
+    """True se o usuário ABORTOU explicitamente a ação pendente (#25). Puro/testável."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_ABORTAR)
+
+
+def descrever_acao(dec: tools.Decisao) -> str:
+    """Frase curta do que a ação FARÁ, para pedir confirmação (#25). Puro/testável."""
+    args = dec.args or {}
+    if dec.tool == "cancelar_lembrete":
+        num = re.search(r"\d+", str(args.get("id", "")))
+        return f"cancelar o lembrete {num.group()}" if num else "cancelar esse lembrete"
+    if dec.tool == "remover_item":
+        return f"remover '{args.get('item', '')}' da lista de {args.get('lista', 'compras')}"
+    return f"executar {dec.tool}"
+
+
 def refazer_com(forward: List[tools.Decisao], certo: str) -> Optional[List[tools.Decisao]]:
     """Refaz a última mutação de VALOR com o valor corrigido (#9). Puro/testável.
 

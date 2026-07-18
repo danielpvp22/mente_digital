@@ -264,3 +264,25 @@ def test_refazer_com_sem_acao_de_valor():
     canc = mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})
     assert mestre.refazer_com([canc], "leite") is None
     assert mestre.refazer_com([], "leite") is None
+
+
+# -- cofre de confirmação (#25) -----------------------------------------------
+def test_comando_confirmar():
+    for c in ["confirma", "confirmo", "pode confirmar", "isso mesmo", "pode fazer"]:
+        assert mestre.comando_confirmar(c) is True, c
+    assert mestre.comando_confirmar("adiciona pão") is False
+
+
+def test_comando_abortar():
+    for c in ["não", "deixa pra lá", "esquece", "melhor não", "não precisa"]:
+        assert mestre.comando_abortar(c) is True, c
+    # "cancela"/"para" NÃO abortam (colidem com "cancela o lembrete 5").
+    assert mestre.comando_abortar("cancela o lembrete 5") is False
+    assert mestre.comando_abortar("confirma") is False
+
+
+def test_descrever_acao():
+    d = mestre.tools.Decisao("cancelar_lembrete", {"id": "3"})
+    assert mestre.descrever_acao(d) == "cancelar o lembrete 3"
+    r = mestre.tools.Decisao("remover_item", {"lista": "compras", "item": "pão"})
+    assert "remover" in mestre.descrever_acao(r) and "pão" in mestre.descrever_acao(r)

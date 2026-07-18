@@ -911,6 +911,17 @@ class Agent:
         mem.ultima_reversivel = [tools.Decisao("remover_item", dict(d.args)) for d in redo]
         return fala, "mestre:corrige"
 
+    def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
+        """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
+        `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
+        if not settings.confirmacao_habilitada:
+            return None
+        for dec in acoes:
+            tool = self.tools.get(dec.tool)
+            if tool is not None and tool.confirmavel:
+                return dec
+        return None
+
     async def _fluxo_mestre(
         self, comando: str, send: Sender, tracker: LatencyTracker, mem: SessionMemory
     ) -> None:
@@ -924,6 +935,16 @@ class Agent:
             fala = f"Sim, {settings.palavra_mestre.capitalize()}? Pode falar."
             await self._emitir_falado(send, fala)
             return
+
+        # COFRE DE CONFIRMAÇÃO (#25): se há uma ação destrutiva PENDENTE, "confirma" a
+        # executa e "não/deixa" a aborta (abort tem precedência — na dúvida, não faz).
+        # Qualquer OUTRO comando ABANDONA a pendência e segue normal (não prende o
+        # usuário). Os gatilhos só valem com algo pendente (#15: sem gatilho global).
+        pend = mem.confirmacao_pendente
+        abortando = pend is not None and mestre.comando_abortar(comando)
+        confirmando = pend is not None and not abortando and mestre.comando_confirmar(comando)
+        if pend is not None and not abortando and not confirmando:
+            mem.confirmacao_pendente = None   # comando novo supera a pendência
 
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
@@ -939,26 +960,54 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
+        # CONFIRMAÇÃO PENDENTE (#25) tem prioridade sobre um comando novo.
+        if confirmando:
+            dec = mem.confirmacao_pendente
+            mem.confirmacao_pendente = None
+            texto_final = await self._executar_acoes_rapidas(
+                [dec], send, auditar=not mem.confidencial, mem=mem
+            )
+            rota = "mestre:confirmado"
+        elif abortando:
+            mem.confirmacao_pendente = None
+            texto_final = "Ok, não vou fazer isso."
+            await self._emitir_falado(send, texto_final)
+            rota = "mestre:confirmacao_abortada"
         # DESFAZER (#8): meta-comando que reverte a última ação reversível da sessão.
         # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
-        if mestre.comando_desfazer(comando):
+        elif mestre.comando_desfazer(comando):
             texto_final, rota = await self._desfazer(send, mem, auditar=not mem.confidencial)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
             texto_final, rota = await self._corrigir(comando, send, mem, auditar=not mem.confidencial)
         elif acoes := mestre.parse_rapido(comando, datetime.now()):
-            texto_final = await self._executar_acoes_rapidas(
-                acoes, send, auditar=not mem.confidencial, mem=mem
-            )
-            rota = "mestre:rapido"
+            # COFRE (#25): ação destrutiva não-desfazível PARA aqui e pede confirmação.
+            confirmavel = self._acao_confirmavel(acoes)
+            if confirmavel is not None:
+                mem.confirmacao_pendente = confirmavel
+                texto_final = f"Confirma que quer {mestre.descrever_acao(confirmavel)}? Diga 'mestre, confirma'."
+                await self._emitir_falado(send, texto_final)
+                rota = "mestre:aguarda_confirmacao"
+            else:
+                texto_final = await self._executar_acoes_rapidas(
+                    acoes, send, auditar=not mem.confidencial, mem=mem
+                )
+                rota = "mestre:rapido"
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
-                texto_final = await self._pipeline_tools(
-                    comando, send, decisao, auditar=not mem.confidencial, mem=mem
-                )
-                rota = f"mestre:tool:{decisao.tool}"
+                tool = self.tools.get(decisao.tool)
+                if settings.confirmacao_habilitada and tool.confirmavel:
+                    mem.confirmacao_pendente = decisao
+                    texto_final = f"Confirma que quer {mestre.descrever_acao(decisao)}? Diga 'mestre, confirma'."
+                    await self._emitir_falado(send, texto_final)
+                    rota = "mestre:aguarda_confirmacao"
+                else:
+                    texto_final = await self._pipeline_tools(
+                        comando, send, decisao, auditar=not mem.confidencial, mem=mem
+                    )
+                    rota = f"mestre:tool:{decisao.tool}"
             else:
                 # Não é ação reconhecida: recusa + registra para revisão.
                 await asyncio.to_thread(db.registrar_comando_desconhecido, comando)

@@ -262,6 +262,12 @@ class Settings(BaseSettings):
     briefing_hora_padrao: str = "07:00"
     # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
     subpasta_listas: str = "Listas"
+    # COFRE DE CONFIRMAÇÃO (#25): ações destrutivas E não-desfazíveis (hoje só
+    # cancelar_lembrete — o undo #8 não recria um lembrete) exigem um "mestre, confirma"
+    # antes de rodar. As ações que o undo cobre (add/remove) NÃO são gateadas — confirmar
+    # o desfazível seria a "confirmação redundante" (#15) que se quer evitar. Desligue com
+    # MENTE_CONFIRMACAO_HABILITADA=false para executar direto.
+    confirmacao_habilitada: bool = True
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
