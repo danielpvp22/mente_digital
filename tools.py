@@ -127,6 +127,9 @@ _GATILHOS_ACAO = (
     "bota na lista", "coloca na lista", "lista de compras", "na minha lista",
     "remove da lista", "remover da lista", "tira da lista",
     "o que tem na lista", "mostra a lista", "ler lista", "le a lista",
+    # Captura Rápida (GTD): jogar algo na inbox sem processar, latência mínima.
+    "anota rapido", "anotar rapido", "anota isso", "anota ai", "captura isso",
+    "capturar", "nota rapida", "joga na inbox", "poe na inbox", "inbox",
 )
 
 
@@ -500,6 +503,28 @@ async def _t_remover_item(args: dict, ctx) -> str:
     return f"não achei '{item}' na lista de {lista}."
 
 
+# --- Agente de Captura Rápida (Inbox GTD) ----------------------------------------
+async def _t_capturar(args: dict, ctx) -> str:
+    texto = str(args.get("texto", "")).strip()
+    if not texto:
+        return "faltou dizer o que anotar."
+    caminho = str(settings.arquivo_inbox)
+    carimbo = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def _add() -> None:
+        novo = not os.path.exists(caminho)
+        with open(caminho, "a", encoding="utf-8") as f:
+            if novo:
+                # A inbox é uma nota do vault; o cabeçalho vira um átomo próprio na
+                # indexação por cabeçalho, sem misturar com as capturas.
+                f.write("# Inbox (Captura Rápida)\n\n")
+            f.write(f"- [{carimbo}] {texto}\n")
+
+    await asyncio.to_thread(_add)
+    ctx.track_task(ctx.vectorstore.sync())  # indexa a captura (ref. retida)
+    return f"anotado na inbox: {texto}"
+
+
 def criar_registry() -> ToolRegistry:
     """Monta o registry padrão de ferramentas do agente."""
     reg = ToolRegistry()
@@ -579,5 +604,11 @@ def criar_registry() -> ToolRegistry:
         'remover_item(lista, item): remove um item de uma lista. Ex.: '
         '{"tool":"remover_item","args":{"lista":"compras","item":"pão"}}',
         _t_remover_item, terminal=True, registra_conhecimento=False,
+    ))
+    reg.registrar(Tool(
+        "capturar_nota",
+        'capturar_nota(texto): joga uma ideia na inbox sem processar (captura rápida). Ex.: '
+        '{"tool":"capturar_nota","args":{"texto":"ideia de presente pro aniversário"}}',
+        _t_capturar, terminal=True, registra_conhecimento=False,
     ))
     return reg

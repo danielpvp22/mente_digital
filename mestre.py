@@ -45,6 +45,13 @@ _SEP_ITENS_RE = re.compile(r"\s*,\s*|\s+e\s+")
 
 _GATILHO_LEMBRETE = ("lembr", "alarme", "despertador", "timer", "cronometro",
                      "temporizador", "acorda", "acordar")
+_GATILHO_CAPTURA = ("anota", "anotar", "captur", "inbox", "nota rapida")
+# Palavras da MOLDURA da captura (não fazem parte do texto anotado) — consumidas só do
+# COMEÇO (o while abaixo), então um 'que'/'na' legítimo no meio do texto é preservado.
+_CAPTURA_MOLDURA_RE = re.compile(
+    r"\b(?:anota\w*|anotar|captur\w*|nota\s+rapida|joga\w*|poe|bota\w*|coloca\w*|manda\w*|"
+    r"guarda\w*|na|no|minha|meu|inbox|rapido|isso|ai|o\s+seguinte|que)\b"
+)
 
 
 def separar(texto: str, palavra: str) -> Optional[str]:
@@ -84,6 +91,12 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
     if "avis" in norm and "quando" in norm:
         return None
 
+    # CAPTURA RÁPIDA ("anota rápido: X", "captura isso: X"): jogar na inbox sem processar.
+    # Vem antes das listas: um gatilho de captura explícito sempre vence.
+    if any(g in norm for g in _GATILHO_CAPTURA):
+        texto = _texto_captura(orig)
+        return [tools.Decisao("capturar_nota", {"texto": texto})] if texto else None
+
     # -- lembretes: cancelar / listar / criar (alarme só-horário) --------------
     if tem_lembrete_cmd:
         if re.search(r"\bcancel\w*", norm) and "lembrete" in norm:
@@ -121,6 +134,30 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
         return [tools.Decisao("ler_lista", {"lista": nome})]
 
     return None
+
+
+def _texto_captura(orig: str) -> str:
+    """Tira a moldura ('anota rápido:', 'captura isso') e devolve só o que foi anotado.
+
+    Remove os termos de moldura só do COMEÇO (para não apagar um 'que'/'na' legítimo no
+    meio do texto), depois limpa pontuação inicial. O casamento é feito sobre uma versão
+    SEM ACENTO e minúscula (a moldura 'rápido'/'à' não bate com regex ascii), preservando
+    o comprimento para fatiar o texto ORIGINAL pelos mesmos índices."""
+    baixa = orig.lower()
+    ascii_baixa = textutils.sem_acento(baixa)
+    # sem_acento é 1:1 para os acentos do PT (á->a, ç->c...); se algum caractere exótico
+    # quebrar o alinhamento de comprimento, cai para o texto acentuado (sem o ganho ascii).
+    ms = ascii_baixa if len(ascii_baixa) == len(baixa) else baixa
+    o = orig
+    while True:
+        stripped = ms.lstrip()
+        m = _CAPTURA_MOLDURA_RE.match(stripped)
+        if not m:
+            break
+        desloc = len(ms) - len(stripped)
+        corte = desloc + m.end()
+        o, ms = o[corte:], ms[corte:]
+    return re.sub(r"^[\s:,.\-–]+", "", o).strip()
 
 
 def _nome_lista(low: str) -> str:

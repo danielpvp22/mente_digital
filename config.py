@@ -262,6 +262,13 @@ class Settings(BaseSettings):
     def dir_listas(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_listas
 
+    @property
+    def arquivo_inbox(self) -> Path:
+        # Captura Rápida (GTD): tudo que o usuário "anota rápido" cai aqui, cru, com
+        # carimbo de tempo. Fica no vault (indexado, pesquisável); o ritual de revisão
+        # é trabalho do idle (destilar a inbox em átomos), não do momento da captura.
+        return Path(self.caminho_obsidian) / "Inbox_Captura.md"
+
     def ensure_dirs(self) -> None:
         """Cria as pastas necessárias. Chamado no startup, nunca no import."""
         os.makedirs(self.diretorio_banco_vetorial, exist_ok=True)

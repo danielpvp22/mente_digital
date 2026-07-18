@@ -4,6 +4,8 @@ agente de Listas (adicionar/ler/remover num vault temporário).
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import telemetry
@@ -87,6 +89,26 @@ async def test_avisar_quando_cria_watcher(ambiente):
     assert "aviso" in resp.lower() or "verificar" in resp.lower()
     watchers = telemetry.db.listar_agendamentos(("watcher",))
     assert len(watchers) == 1
+
+
+async def test_captura_escreve_na_inbox(ambiente):
+    ctx = FakeCtx()
+    r1 = await tools._t_capturar({"texto": "ideia genial"}, ctx)
+    r2 = await tools._t_capturar({"texto": "outra ideia"}, ctx)
+    assert "anotado na inbox" in r1
+
+    def _ler():
+        with open(settings.arquivo_inbox, "r", encoding="utf-8") as f:
+            return f.read()
+    conteudo = await asyncio.to_thread(_ler)
+    assert "# Inbox" in conteudo
+    assert "ideia genial" in conteudo and "outra ideia" in conteudo
+
+
+async def test_captura_vazia(ambiente):
+    ctx = FakeCtx()
+    resp = await tools._t_capturar({"texto": "  "}, ctx)
+    assert "faltou" in resp.lower()
 
 
 def test_comando_desconhecido_registra_e_agrupa(ambiente):

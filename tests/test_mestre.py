@@ -99,3 +99,30 @@ def test_composto_defere_ao_llm():
 
 def test_pergunta_conhecimento_nao_e_acao():
     assert mestre.parse_rapido("o que é RAG?", AGORA) is None
+
+
+# -- parse_rapido: CAPTURA RÁPIDA ----------------------------------------------
+def test_captura_com_dois_pontos():
+    acoes = mestre.parse_rapido("anota rápido: comprar presente pra ana", AGORA)
+    assert acoes == [mestre.tools.Decisao("capturar_nota", {"texto": "comprar presente pra ana"})]
+
+
+def test_captura_isso():
+    acoes = mestre.parse_rapido("captura isso: ideia de post sobre RAG", AGORA)
+    assert acoes[0].tool == "capturar_nota"
+    assert acoes[0].args["texto"] == "ideia de post sobre RAG"
+
+
+def test_captura_preserva_na_no_meio():
+    acoes = mestre.parse_rapido("anota comprar café na feira", AGORA)
+    assert acoes[0].args["texto"] == "comprar café na feira"
+
+
+def test_captura_joga_na_inbox():
+    acoes = mestre.parse_rapido("joga na inbox testar o cache de voz", AGORA)
+    assert acoes[0].args["texto"] == "testar o cache de voz"
+
+
+def test_captura_vazia_defere():
+    # Só o gatilho, sem conteúdo -> nada a capturar -> defere (não cria nota vazia).
+    assert mestre.parse_rapido("anota", AGORA) is None
