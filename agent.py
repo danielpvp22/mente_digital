@@ -29,6 +29,7 @@ import mestre
 import prompts
 import textutils
 import tools
+import verbosidade
 from audio import SentenceChunker
 from config import settings
 from llm import InferenciaPreemptada, LlamaManager
@@ -596,6 +597,11 @@ class Agent:
             paragrafos: List[str] = []
             fontes: List[str] = []
 
+            # Verbosidade (#7): a pergunta define o tamanho da resposta (e a latência).
+            nivel = verbosidade.classificar(texto_usuario)
+            if nivel.nome != "normal":
+                telemetry.track("VERBOSIDADE", f"nível={nivel.nome} max_tokens={nivel.max_tokens}")
+
             async def passada(contexto: str, fonte: str) -> None:
                 # prefixo só quando JÁ há parágrafo antes (separa as passadas); é enviado
                 # dentro do _responder_contexto, na 1ª emissão real (não vaza se der sentinela).
@@ -604,6 +610,8 @@ class Agent:
                     prompt_fn=prompts.prompt_resposta_atomos,
                     system=prompts.SYS_FUSAO,
                     prefixo="\n\n" if paragrafos else "",
+                    max_tokens=nivel.max_tokens,
+                    instrucao_extra=nivel.instrucao,
                 )
                 if p:
                     paragrafos.append(p)
@@ -616,7 +624,7 @@ class Agent:
                 telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
                 web = await self._responder_web(
                     termos, pergunta_resp, send_medido, mem,
-                    consulta_rank=texto_usuario, efemero=efemero,
+                    consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
                 )
                 if web:
                     paragrafos.append(web)
@@ -665,7 +673,7 @@ class Agent:
                     # é ingerido. Sem isto o bloqueio vazaria os casos reais medidos.
                     web = await self._responder_web(
                         termos, pergunta_resp, send_medido, mem,
-                        consulta_rank=texto_usuario, efemero=efemero,
+                        consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
                     )
                     if web:
                         paragrafos.append(web)
@@ -895,6 +903,8 @@ class Agent:
         prompt_fn: Callable[[str, str], str] = prompts.prompt_resposta_cache,
         system: str = prompts.SYS_RESPOSTA,
         prefixo: str = "",
+        max_tokens: int | None = None,
+        instrucao_extra: str = "",
     ):
         """Responde por um contexto (RAM ou Banco) COM streaming, segurando o áudio até
         ter certeza de que não é o sentinela 'Não tenho informações suficientes'.
@@ -911,10 +921,13 @@ class Agent:
         texto_final = ""
         buffer = ""
         decidido = False
+        # Governador de verbosidade (#7): a pergunta define quanto a GPU decodifica e se
+        # há instrução de brevidade. Sem nível (None) = comportamento de sempre.
+        sistema = f"{system}\n{instrucao_extra}" if instrucao_extra else system
         async for token in self.ctx.llama.stream(
             prompt_fn(contexto, texto_usuario),
-            max_tokens=settings.max_tokens_resposta,
-            system_prompt=system,
+            max_tokens=max_tokens if max_tokens is not None else settings.max_tokens_resposta,
+            system_prompt=sistema,
         ):
             texto_final += token
             if decidido:
@@ -968,6 +981,7 @@ class Agent:
     async def _responder_web(
         self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
         consulta_rank: str | None = None, efemero: bool = False,
+        nivel: "verbosidade.Nivel | None" = None,
     ) -> str:
         # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
         # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
@@ -1018,6 +1032,8 @@ class Agent:
         resposta = await self._responder_contexto(
             dados_web, texto_usuario, send,
             prompt_fn=prompts.prompt_resposta_web, system=prompts.SYS_RESPOSTA_WEB,
+            max_tokens=nivel.max_tokens if nivel else None,
+            instrucao_extra=nivel.instrucao if nivel else "",
         )
         if resposta is not None:
             return resposta

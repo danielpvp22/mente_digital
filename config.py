@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     max_tokens_query: int = 15
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
+    # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
+    # "explica") ganha uma resposta de UMA frase, com teto de tokens menor — menos GPU,
+    # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.
+    max_tokens_resposta_curto: int = 90
+    verbosidade_curto_max_palavras: int = 8
 
     # --- Tuning llama.cpp (§7 do estudo de perf) -------------------------------
     # Flash attention: kernel de atenção fundido. Ganho DUPLO num card apertado —
