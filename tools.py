@@ -130,6 +130,9 @@ _GATILHOS_ACAO = (
     # Captura Rápida (GTD): jogar algo na inbox sem processar, latência mínima.
     "anota rapido", "anotar rapido", "anota isso", "anota ai", "captura isso",
     "capturar", "nota rapida", "joga na inbox", "poe na inbox", "inbox",
+    # Health-check falável (autoteste): acionado ao suspeitar de alucinação/falha.
+    "diagnostico", "status do sistema", "autoteste", "voce esta funcionando",
+    "esta funcionando", "checagem", "health check", "ta tudo ok", "esta tudo certo",
 )
 
 
@@ -525,6 +528,22 @@ async def _t_capturar(args: dict, ctx) -> str:
     return f"anotado na inbox: {texto}"
 
 
+# --- Agente de Health-check (autoteste falável) ----------------------------------
+async def _t_status(args: dict, ctx) -> str:
+    """Reporta a saúde dos serviços — o usuário aciona isto ao suspeitar de alucinação
+    ('mestre, diagnóstico'). Lê só os flags .ready já expostos (sem rede, sem GPU)."""
+    servicos = {
+        "modelo": getattr(getattr(ctx, "llama", None), "ready", False),
+        "transcrição": getattr(getattr(ctx, "stt", None), "ready", False),
+        "voz": getattr(getattr(ctx, "tts", None), "ready", False),
+        "memória": getattr(getattr(ctx, "vectorstore", None), "ready", False),
+    }
+    fora = [nome for nome, ok in servicos.items() if not ok]
+    if not fora:
+        return "Estou 100%: modelo, transcrição, voz e memória — todos ativos."
+    return "Atenção: " + ", ".join(fora) + " fora do ar. O resto está ativo."
+
+
 def criar_registry() -> ToolRegistry:
     """Monta o registry padrão de ferramentas do agente."""
     reg = ToolRegistry()
@@ -610,5 +629,11 @@ def criar_registry() -> ToolRegistry:
         'capturar_nota(texto): joga uma ideia na inbox sem processar (captura rápida). Ex.: '
         '{"tool":"capturar_nota","args":{"texto":"ideia de presente pro aniversário"}}',
         _t_capturar, terminal=True, registra_conhecimento=False,
+    ))
+    reg.registrar(Tool(
+        "status_sistema",
+        'status_sistema(): reporta a saúde dos serviços (modelo, voz, memória). Ex.: '
+        '{"tool":"status_sistema","args":{}}',
+        _t_status, terminal=True, registra_conhecimento=False,
     ))
     return reg

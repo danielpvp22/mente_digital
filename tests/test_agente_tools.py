@@ -111,6 +111,29 @@ async def test_captura_vazia(ambiente):
     assert "faltou" in resp.lower()
 
 
+class _Svc:
+    def __init__(self, ready):
+        self.ready = ready
+
+
+class CtxStatus:
+    def __init__(self, llm, stt, tts, vs):
+        self.llama, self.stt, self.tts, self.vectorstore = (
+            _Svc(llm), _Svc(stt), _Svc(tts), _Svc(vs)
+        )
+
+
+async def test_status_tudo_ok():
+    resp = await tools._t_status({}, CtxStatus(True, True, True, True))
+    assert "100%" in resp
+
+
+async def test_status_reporta_fora():
+    resp = await tools._t_status({}, CtxStatus(True, False, True, False))
+    assert "transcrição" in resp and "memória" in resp
+    assert "modelo" not in resp  # o que está ok não é listado
+
+
 def test_comando_desconhecido_registra_e_agrupa(ambiente):
     # Tentativas repetidas do mesmo comando agrupam (UPSERT incrementa n).
     telemetry.db.registrar_comando_desconhecido("toca uma música")

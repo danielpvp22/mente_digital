@@ -126,3 +126,14 @@ def test_captura_joga_na_inbox():
 def test_captura_vazia_defere():
     # Só o gatilho, sem conteúdo -> nada a capturar -> defere (não cria nota vazia).
     assert mestre.parse_rapido("anota", AGORA) is None
+
+
+# -- parse_rapido: HEALTH-CHECK ------------------------------------------------
+def test_status_diagnostico():
+    assert mestre.parse_rapido("diagnóstico", AGORA) == [mestre.tools.Decisao("status_sistema", {})]
+
+
+def test_status_frases():
+    for c in ["status do sistema", "você está funcionando?", "faz um autoteste"]:
+        acoes = mestre.parse_rapido(c, AGORA)
+        assert acoes and acoes[0].tool == "status_sistema"

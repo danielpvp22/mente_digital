@@ -46,6 +46,8 @@ _SEP_ITENS_RE = re.compile(r"\s*,\s*|\s+e\s+")
 _GATILHO_LEMBRETE = ("lembr", "alarme", "despertador", "timer", "cronometro",
                      "temporizador", "acorda", "acordar")
 _GATILHO_CAPTURA = ("anota", "anotar", "captur", "inbox", "nota rapida")
+_GATILHO_STATUS = ("diagnostico", "status", "autoteste", "health", "checagem",
+                   "esta funcionando", "voce esta bem", "esta tudo ok", "esta tudo certo")
 # Palavras da MOLDURA da captura (não fazem parte do texto anotado) — consumidas só do
 # COMEÇO (o while abaixo), então um 'que'/'na' legítimo no meio do texto é preservado.
 _CAPTURA_MOLDURA_RE = re.compile(
@@ -90,6 +92,10 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
     # WATCHER ("me avise quando X"): extrair condição/termos é fuzzy — defere ao LLM.
     if "avis" in norm and "quando" in norm:
         return None
+
+    # HEALTH-CHECK ("diagnóstico", "você está funcionando?"): autoteste dos serviços.
+    if any(g in norm for g in _GATILHO_STATUS):
+        return [tools.Decisao("status_sistema", {})]
 
     # CAPTURA RÁPIDA ("anota rápido: X", "captura isso: X"): jogar na inbox sem processar.
     # Vem antes das listas: um gatilho de captura explícito sempre vence.
