@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
-    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf")
+    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
     # Cache onde o faster-whisper baixa os pesos do Whisper na 1ª execução.
     caminho_cache_whisper: str = str(DIR_WHISPER)

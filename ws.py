@@ -20,6 +20,7 @@ from typing import List, Optional
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
+import mestre
 import tools
 from agent import append_chat_dump
 from config import settings
@@ -64,14 +65,21 @@ class LiveSession:
         )
 
     async def _dump_pergunta(self, texto: str) -> None:
-        """Grava a pergunta no dump — MENOS quando é efêmera.
+        """Grava a pergunta no dump — MENOS quando é efêmera OU é comando de agente.
 
         O dump é a matéria-prima que o idle atomiza em Zettelkasten permanente. Um
         turno sobre cotação/clima ali vira nota eterna sobre um dado que expira em
         horas (medido: 3 dos átomos-lixo entraram por aqui). O par IA é guardado pelo
         mesmo critério, no pipeline. O turno em si não se perde: vai pro SQLite.
+
+        COMANDO-MESTRE: o lado IA já é gateado (não vira conhecimento), mas o lado do
+        USUÁRIO vazava — "mestre, adiciona leite" e "mestre, modo sigiloso" viravam os
+        átomos "## Leite" e "## Modo Sigiloso" no idle (medido no teste real). Um comando
+        de agente NUNCA é conhecimento: se a msg começa pela palavra-mestre, fora do dump.
         """
         if tools.e_efemero(texto) or self.memory.confidencial:
+            return
+        if settings.palavra_mestre_habilitada and mestre.separar(texto, settings.palavra_mestre) is not None:
             return
         await append_chat_dump("User", texto)
 
