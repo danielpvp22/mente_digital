@@ -336,6 +336,25 @@ def comando_habitos_listar(comando: str) -> bool:
     return _casa(comando, _GATILHO_HABITOS_LISTAR)
 
 
+# TUTOR SOCRÁTICO (#44): liga/desliga o modo de sessão. Meta-comando (mexe no estado da
+# sessão, como o modo confidencial). Gatilhos de OFF próprios (não usa "modo normal", que
+# é do confidencial) para os dois modos serem independentes.
+def comando_tutor(comando: str) -> Optional[bool]:
+    """True (ligar), False (desligar) ou None (não é comando de tutor). Puro/testável."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    off = ("sai do tutor", "sair do tutor", "chega de tutor", "para de me ensinar",
+           "fim do tutor", "desliga o tutor", "desligar tutor", "encerra o tutor")
+    on = ("modo tutor", "modo socratico", "seja meu tutor", "vira tutor", "vira meu tutor",
+          "ativa o tutor", "ativar tutor", "quero um tutor", "me ensine socraticamente")
+    if any(g in n for g in off):
+        return False
+    if any(g in n for g in on):
+        return True
+    return None
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

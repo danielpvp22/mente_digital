@@ -60,6 +60,9 @@ class SessionMemory:
         # que é volátil é a fila da revisão atual). Como o cofre de confirmação, um comando
         # não-relacionado a abandona.
         self.revisao: Optional[dict] = None
+        # TUTOR SOCRÁTICO (#44): modo de sessão. Quando True, as respostas de conhecimento
+        # viram perguntas guiadas (via verbosidade.aplicar_tutor) em vez de resposta pronta.
+        self.tutor: bool = False
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -87,6 +90,7 @@ class SessionMemory:
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
         self.revisao = None             # revisão em andamento não atravessa conversas
+        self.tutor = False              # modo tutor não atravessa conversas
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -101,6 +105,7 @@ class SessionMemory:
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
         self.revisao = None
+        self.tutor = False
 
 
 class LruCache:

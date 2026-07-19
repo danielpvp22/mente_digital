@@ -642,6 +642,7 @@ class Agent:
 
             # Verbosidade (#7): a pergunta define o tamanho da resposta (e a latência).
             nivel = verbosidade.classificar(texto_usuario)
+            nivel = verbosidade.aplicar_tutor(nivel, mem.tutor)   # #44: modo tutor sobrepõe
             if nivel.nome != "normal":
                 telemetry.track("VERBOSIDADE", f"nível={nivel.nome} max_tokens={nivel.max_tokens}")
 
@@ -1298,6 +1299,20 @@ class Agent:
                 "não salvo nada nem transformo em conhecimento."
                 if modo else
                 "Voltando ao normal. As conversas voltam a ser salvas e aprendidas."
+            )
+            await self._emitir_falado(send, fala)
+            return
+
+        # TUTOR SOCRÁTICO (#44): meta-comando de SESSÃO (como o confidencial). Liga/desliga
+        # o modo em que as respostas viram perguntas guiadas (via verbosidade.aplicar_tutor).
+        tutor = mestre.comando_tutor(comando)
+        if tutor is not None:
+            mem.tutor = tutor
+            fala = (
+                "Modo tutor ativado. Vou te fazer perguntas pra você raciocinar, em vez de "
+                "dar a resposta pronta. Quando quiser parar, diga 'mestre, sai do tutor'."
+                if tutor else
+                "Modo tutor desligado. Volto a responder direto."
             )
             await self._emitir_falado(send, fala)
             return

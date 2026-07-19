@@ -50,6 +50,26 @@ _CRIANCA = (
 )
 
 
+# TUTOR SOCRÁTICO (#44): modo de SESSÃO (ativado por "mestre, modo tutor"). Em vez de dar
+# a resposta pronta, o assistente faz perguntas guiadas para o usuário raciocinar. Precisa
+# de diálogo sustentado (por isso é modo, não por-pergunta), e de ESPAÇO (tokens normais),
+# sobrepondo o corte de 1 frase do #7. Reusa a mesma fiação instrucao->LLM (local E web).
+_TUTOR_INSTRUCAO = (
+    "IMPORTANTE: você está em MODO TUTOR SOCRÁTICO. Em vez de entregar a resposta pronta, "
+    "faça UMA pergunta guiada que leve o usuário a raciocinar e chegar à resposta sozinho. "
+    "Se ele já respondeu algo, reaja (elogie o acerto, corrija com gentileza) e avance com a "
+    "próxima pergunta. Seja breve e encorajador; só dê a resposta direta se ele pedir ou travar."
+)
+
+
+def aplicar_tutor(nivel: Nivel, ativo: bool) -> Nivel:
+    """Se o modo tutor está ativo, sobrepõe o nível com a instrução socrática e tokens
+    normais (espaço para a pergunta guiada). Ortogonal ao resto; puro/testável."""
+    if not ativo:
+        return nivel
+    return Nivel("tutor", settings.max_tokens_resposta, _TUTOR_INSTRUCAO)
+
+
 def classificar(pergunta: str) -> Nivel:
     """Decide a verbosidade da resposta a partir da pergunta. Puro/testável."""
     n = textutils.normaliza(pergunta)
