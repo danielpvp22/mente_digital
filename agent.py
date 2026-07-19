@@ -656,11 +656,23 @@ class Agent:
                     paragrafos.append(p)
                     fontes.append(fonte)
 
+            # DEFINICIONAL DE CONHECIMENTO GERAL (Part A + lever B): "o que é X", "quem foi
+            # Y", "me explica Z". O vault do dono é PESSOAL — deixá-lo responder "o que é
+            # RAG" devolvia a nota-piada ("RAG = base do Tarkov"). LEVER B (não mais rota
+            # cega): a pergunta SEGUE a cascata local, mas o estágio Banco só é aceito se o
+            # vault cobrir o tema com FORÇA (>= definicional_min_atomos átomos); vault fraco
+            # escala pra web. Assim uma definição bem coberta responde local (rápido), e só
+            # o tema raso/piada vai à web. Pergunta pessoal é excluída em
+            # tools.pergunta_definicional. Botão MENTE_ROTEAR_DEFINICIONAL_WEB.
+            definicional = (
+                settings.rotear_definicional_web
+                and tools.pergunta_definicional(texto_usuario)
+            )
             # ATALHO TIME-SENSITIVE: cotação/preço agora, notícias/clima de hoje. O banco
             # é inútil e desatualizado nesses casos — pula RAM+Banco e vai DIRETO pra web
             # (fresco, e sem pagar a passada local morta). Fora isso, cascata normal.
             if tools.talvez_tempo_real(texto_usuario):
-                telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
+                telemetry.track("AGENT", f"time-sensitive — direto pra web: '{termos}'.")
                 web = await self._responder_web(
                     termos, pergunta_resp, send_medido, mem,
                     consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
@@ -691,7 +703,22 @@ class Agent:
                         "LOCAL",
                         f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
                     )
-                    if local.relevante:
+                    # LEVER B: numa pergunta definicional, o Banco só é aceito se o vault
+                    # cobre o tema com FORÇA (>= definicional_min_atomos átomos DISTINTOS
+                    # em `fontes`). O Tarkov era 1 átomo-piada → abaixo do mínimo → o Banco
+                    # é descartado e a resposta cai na escalada web (fonte autoritativa).
+                    # Tema bem coberto passa e responde local, sem pagar web.
+                    vault_fraco = (
+                        definicional
+                        and len(local.fontes) < settings.definicional_min_atomos
+                    )
+                    if local.relevante and vault_fraco:
+                        telemetry.track(
+                            "AGENT",
+                            f"Definicional com vault fraco ({len(local.fontes)} < "
+                            f"{settings.definicional_min_atomos} átomos) — escala pra web.",
+                        )
+                    elif local.relevante:
                         telemetry.track("AGENT", "Fusão: passada Banco.")
                         antes = len(paragrafos)
                         await passada(self._montar_contexto(local, []), "banco")

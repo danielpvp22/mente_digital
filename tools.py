@@ -174,6 +174,39 @@ def talvez_tempo_real(texto: str) -> bool:
     return any(g in t for g in _GATILHOS_TEMPO)
 
 
+# Perguntas DEFINICIONAIS de conhecimento GERAL ("o que é X", "quem foi Y", "me explica Z").
+# Roteadas DIRETO pra web (Part A, Onda 3), como o tempo_real. Conserta o sintoma "pergunta
+# geral puxa nota PESSOAL": "o que é RAG" casava a nota-piada do dono ("RAG = base do Tarkov")
+# porque "rag" é keyword rara e genuína naquela nota — o IDF do G3 NÃO ajuda aí (rara =
+# evidência forte), então a correção é de ROTA. Trailing space nos gatilhos evita casar
+# palavra maior ("o que e " não casa "o que estava"). Conservador de propósito.
+_GATILHOS_DEFINICIONAL = (
+    "o que e ", "o que sao ", "o que significa", "o que quer dizer",
+    "o que vem a ser", "o que representa", "quem e ", "quem foi ",
+    "defina ", "definicao de ", "significado de ", "conceito de ",
+    "para que serve", "me explica", "me explique",
+)
+# Marcadores de pergunta PESSOAL/ESPECÍFICA: se presentes, NÃO roteia pra web — o assunto
+# mora no vault do dono, não na web genérica. "reservando local pra pessoais". A síntese
+# "o que eu sei sobre X" (#23) já é interceptada antes, mas " eu " aqui protege o resto.
+_MARCADORES_PESSOAL = (
+    "meu ", "minha ", "meus ", "minhas ", " eu ", "que eu",
+    "nosso ", "nossa ", "a gente ",
+)
+
+
+def pergunta_definicional(texto: str) -> bool:
+    """True se é pergunta definicional de conhecimento GERAL → web-first (Part A).
+
+    Pergunta PESSOAL (meu/eu/nosso) é excluída e segue o pipeline local normal — o vault
+    responde-a melhor que a web. Puro/testável (só léxico), como os demais gates.
+    """
+    t = textutils.normaliza(texto)
+    if any(m in t for m in _MARCADORES_PESSOAL):
+        return False
+    return any(g in t for g in _GATILHOS_DEFINICIONAL)
+
+
 # Gate de INGESTÃO — deliberadamente MAIS LARGO que o de roteamento acima.
 #
 # Por que dois gates e não um: os custos são ASSIMÉTRICOS e opostos.
