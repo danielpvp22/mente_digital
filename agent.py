@@ -1140,6 +1140,31 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:revisao_diaria"
 
+    # -- Pomodoro (#19): ciclo foco/pausa via scheduler ------------------------
+    async def _pomodoro_iniciar(self, send: Sender, mem: SessionMemory) -> tuple:
+        """Cria o agendamento 'pomodoro' (1ª transição = fim do foco). O SchedulerService
+        cuida do ciclo foco<->pausa. Só um ativo por vez: cancela outro antes."""
+        ativos = await asyncio.to_thread(db.listar_agendamentos, ("pomodoro",))
+        for a in ativos:
+            await asyncio.to_thread(db.cancelar_agendamento, a["id"])
+        prox = (datetime.now() + timedelta(minutes=settings.pomodoro_foco_min)).isoformat()
+        await asyncio.to_thread(
+            db.criar_agendamento, "pomodoro", "Pomodoro", prox, None,
+            json.dumps({"fase": "foco"}), mem.conversa_id,
+        )
+        fala = (f"Pomodoro iniciado! Foco por {settings.pomodoro_foco_min} minutos — "
+                "eu aviso quando for a pausa.")
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:pomodoro_inicia"
+
+    async def _pomodoro_parar(self, send: Sender) -> tuple:
+        ativos = await asyncio.to_thread(db.listar_agendamentos, ("pomodoro",))
+        for a in ativos:
+            await asyncio.to_thread(db.cancelar_agendamento, a["id"])
+        fala = "Pomodoro encerrado." if ativos else "Você não tem um pomodoro ativo."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:pomodoro_para"
+
     # -- Rotinas compostas (#10): macros nomeadas ------------------------------
     async def _criar_rotina(self, nome: str, comando: str, send: Sender) -> tuple:
         await asyncio.to_thread(db.rotina_salvar, nome, comando)
@@ -1392,6 +1417,11 @@ class Agent:
         elif mestre.comando_agenda(comando):
             # #40: "o que tenho hoje" — leitura da agenda .ics local.
             texto_final, rota = await self._agenda_hoje(send, mem)
+        elif mestre.comando_pomodoro_parar(comando):
+            # #19: parar ANTES de iniciar (a frase de parar contém "pomodoro").
+            texto_final, rota = await self._pomodoro_parar(send)
+        elif mestre.comando_pomodoro_iniciar(comando):
+            texto_final, rota = await self._pomodoro_iniciar(send, mem)
         elif gatilho_spec is not None:
             # #11: cria a regra "quando eu adicionar X na lista, <ação>".
             evento, filtro, acao_txt = gatilho_spec

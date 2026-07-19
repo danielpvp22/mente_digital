@@ -405,6 +405,25 @@ def comando_rotina_remover(comando: str) -> Optional[str]:
     return textutils.normaliza(m.group(1)).strip() if m and m.group(1).strip() else None
 
 
+# POMODORO (#19): ciclo foco/pausa. PARAR vem antes de INICIAR (a frase de parar contém
+# "pomodoro"). Gatilhos de parar próprios (sem "cancela"/"para" cru p/ não colidir).
+_GATILHO_POMODORO_PARAR = (
+    "para o pomodoro", "parar o pomodoro", "para pomodoro", "encerra o pomodoro",
+    "encerrar pomodoro", "cancela o pomodoro", "chega de pomodoro", "para o foco",
+)
+_GATILHO_POMODORO_INICIAR = (
+    "pomodoro", "modo foco", "temporizador de foco", "sessao de foco", "ciclo de foco",
+)
+
+
+def comando_pomodoro_parar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_POMODORO_PARAR)
+
+
+def comando_pomodoro_iniciar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_POMODORO_INICIAR)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

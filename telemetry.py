@@ -541,8 +541,10 @@ class Database:
 
     def atualizar_agendamento(
         self, ag_id: int, *, status: Optional[str] = None, proximo_disparo: Optional[str] = None,
+        payload: Optional[str] = None,
     ) -> None:
-        """Reprograma (próximo disparo da recorrência) ou muda o status de um agendamento."""
+        """Reprograma (próximo disparo da recorrência), muda o status, e/ou atualiza o
+        payload (ex.: fase do pomodoro #19) de um agendamento."""
         campos, valores = [], []
         if status is not None:
             campos.append("status = ?")
@@ -550,6 +552,9 @@ class Database:
         if proximo_disparo is not None:
             campos.append("proximo_disparo = ?")
             valores.append(proximo_disparo)
+        if payload is not None:
+            campos.append("payload = ?")
+            valores.append(payload)
         if not campos:
             return
         valores.append(ag_id)

@@ -83,6 +83,8 @@ class SchedulerService:
             await self._checar_watcher(ag, agora)
         elif tipo == "briefing":
             await self._disparar_briefing(ag, agora)
+        elif tipo == "pomodoro":
+            await self._disparar_pomodoro(ag, agora)
         else:
             telemetry.warn("SCHEDULER", f"Tipo de agendamento desconhecido: {tipo!r} (id {ag['id']}).")
             await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
@@ -127,6 +129,27 @@ class SchedulerService:
             prox, guarda = seg, guarda + 1
         await asyncio.to_thread(
             db.atualizar_agendamento, ag["id"], status="ativo", proximo_disparo=prox.isoformat()
+        )
+
+    # -- pomodoro (#19): ciclo foco <-> pausa -----------------------------------
+    async def _disparar_pomodoro(self, ag: dict, agora: datetime) -> None:
+        """Fim de uma fase -> anuncia a transição e REPROGRAMA a próxima fase no MESMO
+        agendamento (alterna foco/pausa via payload). Cicla até o usuário cancelar. A
+        entrega é IGNORADA (é tempo-real: um aviso perdido enquanto ausente não faz sentido
+        segurar), como o briefing reprograma independentemente da entrega."""
+        fase = self._payload(ag).get("fase", "foco")
+        if fase == "foco":
+            msg = f"Fim do foco! Faça uma pausa de {settings.pomodoro_pausa_min} minutos."
+            prox_fase, prox_min = "pausa", settings.pomodoro_pausa_min
+        else:
+            msg = f"Pausa encerrada. De volta ao foco por {settings.pomodoro_foco_min} minutos!"
+            prox_fase, prox_min = "foco", settings.pomodoro_foco_min
+        await self._notificar_falado(msg)
+        await asyncio.to_thread(db.registrar_auditoria, "pomodoro", msg)
+        prox = (agora + timedelta(minutes=prox_min)).isoformat()
+        await asyncio.to_thread(
+            db.atualizar_agendamento, ag["id"], status="ativo",
+            proximo_disparo=prox, payload=json.dumps({"fase": prox_fase}),
         )
 
     # -- watcher ("me avise quando X") ------------------------------------------

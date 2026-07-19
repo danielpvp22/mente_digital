@@ -348,6 +348,13 @@ class Settings(BaseSettings):
     srs_intervalos_dias: list[int] = [1, 3, 7, 16, 35]
     srs_max_por_sessao: int = 10   # teto de cards por sessão de revisão (não cansar)
 
+    # --- Pomodoro (#19) --------------------------------------------------------
+    # Ciclo foco/pausa anunciado por voz (via SchedulerService, tipo 'pomodoro'): quando o
+    # foco acaba avisa a pausa; quando a pausa acaba, volta ao foco. Cicla até "para o
+    # pomodoro". Minutos por fase.
+    pomodoro_foco_min: int = 25
+    pomodoro_pausa_min: int = 5
+
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
     max_session_knowledge: int = 12
