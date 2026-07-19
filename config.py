@@ -265,6 +265,14 @@ class Settings(BaseSettings):
     # reconstrói do vault — SEM tocar o mtime dos .md (nada de reindex-ruim em
     # massa na origem). Best-effort, uma vez por processo. Desligue com false.
     indice_auto_recuperar: bool = True
+    # --- Fila Offline / Disjuntor da web (#31) ---------------------------------
+    # Circuit breaker anti-shadowban: N falhas de rede seguidas ABREM a busca web
+    # por um cooldown; enquanto aberto, a query nem toca o DDG (não apanha ban) e
+    # vai para uma fila em RAM, drenada (best-effort, p/ o cache) quando reabre.
+    web_disjuntor_habilitado: bool = True
+    web_disjuntor_limite_falhas: int = 3     # falhas seguidas p/ abrir
+    web_disjuntor_cooldown_seg: float = 900  # ~15 min de descanso do DDG
+    web_pendentes_max: int = 20              # teto da fila offline (em RAM)
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

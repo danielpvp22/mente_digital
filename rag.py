@@ -13,6 +13,7 @@ Correções sobre o monólito:
 from __future__ import annotations
 
 import asyncio
+import collections
 import glob
 import math
 import os
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import disjuntor as _disjuntor
 import egressao
 import grafo
 import textutils
@@ -923,6 +925,14 @@ class WebSearcher:
     def __init__(self, embeddings: Optional["EmbeddingProvider"] = None) -> None:
         self._cache = LruCache(settings.max_web_cache)
         self._embeddings = embeddings  # p/ o ranking do RAG efêmero (opcional)
+        # #31: disjuntor anti-shadowban + fila offline (em RAM).
+        self._disjuntor = _disjuntor.Disjuntor(
+            settings.web_disjuntor_limite_falhas, settings.web_disjuntor_cooldown_seg
+        )
+        self._pendentes: "collections.deque[Tuple[str, Optional[str]]]" = collections.deque(
+            maxlen=settings.web_pendentes_max
+        )
+        self._retry_task = None  # ref forte: sem ela o GC come o drain (war story #2)
 
     async def _ddg(self, termo: str, max_results: int) -> list:
         # Guarda de Egressão (#6): este é o ÚNICO ponto onde texto do usuário sai
@@ -1050,9 +1060,20 @@ class WebSearcher:
         cached = self._cache.get(termo)
         if cached is not None:
             return cached
+        # #31: disjuntor ABERTO -> não toca o DDG (anti-shadowban); enfileira e sai.
+        if settings.web_disjuntor_habilitado and self._disjuntor.aberto():
+            self._pendentes.append((termo, consulta))
+            telemetry.warn(
+                "DDG_API",
+                f"Web em cooldown ({self._disjuntor.segundos_restantes():.0f}s) — "
+                f"query enfileirada, sem bater no DDG.",
+            )
+            return NENHUM
+        self._talvez_retomar_pendentes()  # cooldown passou? drena a fila em background
         telemetry.track("DDG_API", f"Disparando pesquisa web para: '{termo}'")
         try:
             res = await self._ddg(termo, settings.web_max_results)
+            self._disjuntor.registrar_sucesso()  # canal respondeu (mesmo que vazio)
             if not res:
                 return NENHUM
 
@@ -1070,19 +1091,49 @@ class WebSearcher:
             self._cache.put(termo, ctx)
             return ctx
         except Exception as exc:
+            self._disjuntor.registrar_falha()  # falha de CANAL -> aproxima do cooldown
+            self._pendentes.append((termo, consulta))
             telemetry.error("DDG_API", "Erro na busca web", exc)
             return NENHUM
 
+    def _talvez_retomar_pendentes(self) -> None:
+        """Se o cooldown já passou e há fila offline, drena em background. Segura a
+        ref da task (self._retry_task) — sem isso o GC mata o drain (war story #2)."""
+        if not self._pendentes:
+            return
+        if self._retry_task is not None and not self._retry_task.done():
+            return  # já tem um drain rodando
+        try:
+            self._retry_task = asyncio.get_running_loop().create_task(self._retomar_pendentes())
+        except RuntimeError:
+            pass  # sem loop (contexto síncrono/teste) — sem drenagem, sem crash
+
+    async def _retomar_pendentes(self) -> None:
+        """Re-executa as buscas enfileiradas durante o cooldown. Best-effort: o
+        resultado cai no cache LRU, então uma re-pergunta idêntica sai na hora. Se
+        uma falhar de novo, o disjuntor reabre e o resto volta para a fila."""
+        while self._pendentes and not self._disjuntor.aberto():
+            termo, consulta = self._pendentes.popleft()
+            if self._cache.get(termo) is not None:
+                continue  # já resolvido nesse meio tempo
+            await self.search(termo, consulta)
+
     async def prefetch(self, tema: str) -> Optional[str]:
         """Speculative Pre-fetch: busca ampla para antecipar a próxima pergunta."""
+        # #31: pre-fetch é ESPECULATIVO — durante o cooldown, jamais gastar uma
+        # chamada ao DDG só para antecipar (é o 1º a cortar sob risco de ban).
+        if settings.web_disjuntor_habilitado and self._disjuntor.aberto():
+            return None
         telemetry.track("PRE_FETCH", f"Baixando contexto amplo sobre '{tema}'...")
         try:
             res = await self._ddg(f"{tema} resumo geral historico", settings.web_prefetch_results)
+            self._disjuntor.registrar_sucesso()
             if not res:
                 return None
             ctx = "\n".join(f"- CONTEXTO AMPLO ({r['title']}): {r['body']}" for r in res)
             telemetry.track("PRE_FETCH", "Contexto amplo pronto para a RAM.")
             return ctx
         except Exception as exc:
+            self._disjuntor.registrar_falha()
             telemetry.error("PRE_FETCH", "Erro no pre-fetch", exc)
             return None
