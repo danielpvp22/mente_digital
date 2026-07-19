@@ -31,6 +31,20 @@ def test_carregar_vence_abrir_historico():
     assert "tensorrt" in nav["tema"]
 
 
+def test_retoma_a_conversa_sobre_tema_e_carregar_nao_fio():
+    # Regressão: "retoma a conversa SOBRE X" é abrir X (carregar c/ tema), não o
+    # genérico "onde paramos" do #35 — que perderia o tema.
+    nav = mestre.parse_navegacao("retoma a conversa sobre tensorrt")
+    assert nav["acao"] == "carregar_conversa"
+    assert "tensorrt" in nav["tema"]
+
+
+def test_retoma_o_fio_generico_nao_e_navegacao():
+    # "retoma o fio" / "onde paramos" NÃO têm tema -> não são carregar; caem no #35.
+    assert mestre.parse_navegacao("retoma o fio") is None
+    assert mestre.parse_navegacao("onde paramos?") is None
+
+
 def test_nao_e_navegacao():
     assert mestre.parse_navegacao("qual a capital da Itália?") is None
     assert mestre.parse_navegacao("") is None

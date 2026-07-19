@@ -1543,14 +1543,16 @@ class Agent:
             # DIAPASÃO (#36): "mestre, como você me vê?" — diz o perfil de estilo
             # aprendido no idle. Só lê o cache em ctx; insight sob demanda.
             texto_final, rota = await self._reportar_perfil(send)
+        elif settings.navegacao_voz_habilitada and (nav := mestre.parse_navegacao(comando)):
+            # NAVEGAÇÃO POR VOZ (#14): opera a UI (nova conversa, histórico, abrir uma
+            # conversa por tema). ANTES do #35: "retoma a conversa SOBRE X" é o pedido
+            # específico (abrir X) e vence o genérico "onde paramos" — parse_navegacao
+            # só casa carregar quando há o tema, então "retoma o fio" ainda cai no #35.
+            texto_final, rota = await self._navegar(nav, send, mem)
         elif mestre.comando_retomar_fio(comando):
             # FIO DA CONVERSA (#35): "mestre, onde paramos?" — resgata o assunto de
             # uma conversa anterior. Momento oportuno = o usuário pediu.
             texto_final, rota = await self._retomar_fio(send, mem)
-        elif settings.navegacao_voz_habilitada and (nav := mestre.parse_navegacao(comando)):
-            # NAVEGAÇÃO POR VOZ (#14): opera a UI (nova conversa, histórico, abrir uma
-            # conversa por tema). O backend manda {tipo:"navegar"}; o front executa.
-            texto_final, rota = await self._navegar(nav, send, mem)
         elif mestre.comando_revisao_diaria(comando):
             # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
             # "revisão" e cairia na revisão de cards.

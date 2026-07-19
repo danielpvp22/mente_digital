@@ -195,9 +195,11 @@ _NAV_NOVA = ("nova conversa", "novo chat", "comeca uma conversa", "comecar uma c
 _NAV_ABRIR_HIST = ("mostra o historico", "abre o historico", "abrir historico",
                    "minhas conversas", "lista de conversas", "abre o menu", "mostra as conversas")
 _NAV_FECHAR_HIST = ("fecha o historico", "fechar historico", "fecha o menu", "esconde o historico")
-# "abrir a conversa sobre <tema>" / "carrega a conversa de <tema>"
+# "abrir a conversa sobre <tema>" / "carrega a conversa de <tema>". Inclui "retoma a
+# conversa sobre X" — senão o gatilho genérico do #35 ("retoma a conversa") o engoliria
+# e perderia o TEMA (abrir a conversa certa é mais específico que "onde paramos").
 _NAV_CARREGAR_RE = re.compile(
-    r"(?:abr(?:e|ir)|carreg(?:a|ar)|volta(?:r)? (?:pra|para)|reabr(?:e|ir))\s+"
+    r"(?:abr(?:e|ir)|carreg(?:a|ar)|volta(?:r)? (?:pra|para)|reabr(?:e|ir)|retoma(?:r)?)\s+"
     r"(?:a\s+|o\s+)?(?:conversa|chat)\s+(?:sobre\s+|de\s+|do\s+|da\s+)?(.+)"
 )
 
