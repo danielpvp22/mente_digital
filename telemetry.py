@@ -182,6 +182,12 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, data TEXT,
                     criado_em TEXT, UNIQUE(nome, data))"""
             )
+            # ROTINAS COMPOSTAS (#10): macro NOMEADA -> comando composto salvo. "rotina manhã"
+            # expande para o `comando` e o fluxo normal (parse_composto) executa os passos.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS rotinas
+                   (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -339,6 +345,46 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao listar hábitos", exc)
             return []
+
+    # -- Rotinas compostas (#10) -----------------------------------------------
+    def rotina_salvar(self, nome: str, comando: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO rotinas (nome, comando, criado_em) VALUES (?, ?, ?)",
+                    (nome, comando, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar rotina", exc)
+
+    def rotina_get(self, nome: str) -> Optional[str]:
+        try:
+            with self._conn() as conn:
+                row = conn.execute("SELECT comando FROM rotinas WHERE nome = ?", (nome,)).fetchone()
+            return row[0] if row else None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler rotina", exc)
+            return None
+
+    def rotinas_listar(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT nome, comando FROM rotinas ORDER BY nome").fetchall()
+            return [{"nome": r[0], "comando": r[1]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar rotinas", exc)
+            return []
+
+    def rotina_remover(self, nome: str) -> bool:
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM rotinas WHERE nome = ?", (nome,))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao remover rotina", exc)
+            return False
 
     def save_latency(
         self,

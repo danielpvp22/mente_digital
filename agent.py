@@ -1140,6 +1140,28 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:revisao_diaria"
 
+    # -- Rotinas compostas (#10): macros nomeadas ------------------------------
+    async def _criar_rotina(self, nome: str, comando: str, send: Sender) -> tuple:
+        await asyncio.to_thread(db.rotina_salvar, nome, comando)
+        fala = f"Rotina '{nome}' salva. Diga 'mestre, rotina {nome}' pra executar."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:rotina_criada"
+
+    async def _rotinas_listar(self, send: Sender) -> tuple:
+        rs = await asyncio.to_thread(db.rotinas_listar)
+        if not rs:
+            fala = "Você não tem rotinas salvas."
+        else:
+            fala = "Suas rotinas: " + "; ".join(f"{r['nome']} ({r['comando']})" for r in rs) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:rotinas_listar"
+
+    async def _rotina_remover(self, nome: str, send: Sender) -> tuple:
+        ok = await asyncio.to_thread(db.rotina_remover, nome)
+        fala = f"Rotina '{nome}' removida." if ok else f"Não achei a rotina '{nome}'."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:rotina_removida"
+
     # -- Diário de hábitos (#37): fluxo independente ---------------------------
     async def _habito_marcar(self, nome: str, send: Sender, mem: SessionMemory) -> tuple:
         """Marca o hábito HOJE e fala a sequência (streak) atual."""
@@ -1266,6 +1288,16 @@ class Agent:
             telemetry.track("MESTRE", f"Atalho '{comando}' -> '{expandido}'.")
             comando = expandido
 
+        # ROTINAS (#10): "rotina <nome>" (sem ':') EXPANDE para o comando composto salvo, e
+        # o fluxo normal (parse_composto abaixo) executa os passos. Criar/listar/remover não
+        # expandem (têm ':'/'=' ou verbo de remoção — ver parse_rotina_rodar).
+        nome_rotina = mestre.parse_rotina_rodar(comando)
+        if nome_rotina:
+            salva = await asyncio.to_thread(db.rotina_get, nome_rotina)
+            if salva:
+                telemetry.track("MESTRE", f"Rotina '{nome_rotina}' -> '{salva}'.")
+                comando = salva
+
         # COFRE DE CONFIRMAÇÃO (#25): se há uma ação destrutiva PENDENTE, "confirma" a
         # executa e "não/deixa" a aborta (abort tem precedência — na dúvida, não faz).
         # Qualquer OUTRO comando ABANDONA a pendência e segue normal (não prende o
@@ -1288,6 +1320,8 @@ class Agent:
         gatilho_spec = mestre.parse_gatilho(comando, datetime.now())
         # HÁBITOS (#37): nome do hábito a marcar ("fiz X" / "marca que ..."), ou None.
         habito_nome = mestre.parse_habito_marcar(comando)
+        # ROTINAS (#10): criação "rotina <nome>: <cmd>" (a execução já foi expandida acima).
+        rotina_nova = mestre.parse_rotina_criar(comando)
 
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
@@ -1366,6 +1400,13 @@ class Agent:
             texto_final, rota = await self._gatilho_remover(gid, send)
         elif mestre.comando_gatilhos_listar(comando):
             texto_final, rota = await self._gatilhos_listar(send)
+        elif rotina_nova is not None:
+            # #10: cria a rotina "rotina <nome>: <comando composto>".
+            texto_final, rota = await self._criar_rotina(rotina_nova[0], rotina_nova[1], send)
+        elif (rot_rem := mestre.comando_rotina_remover(comando)) is not None:
+            texto_final, rota = await self._rotina_remover(rot_rem, send)
+        elif mestre.comando_rotinas_listar(comando):
+            texto_final, rota = await self._rotinas_listar(send)
         elif mestre.comando_habitos_listar(comando):
             texto_final, rota = await self._habitos_listar(send, mem)
         elif habito_nome is not None:

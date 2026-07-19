@@ -355,6 +355,56 @@ def comando_tutor(comando: str) -> Optional[bool]:
     return None
 
 
+# ROTINAS COMPOSTAS (#10): macro NOMEADA de comandos. Criar tem ':'/'=' separando nome e
+# corpo; rodar é só "rotina <nome>" (expande para o corpo e o parse_composto executa).
+def parse_rotina_criar(comando: str) -> Optional[tuple]:
+    """'(cria/salva a) rotina <nome>: <comando>' ou 'rotina <nome> = <comando>' ->
+    (nome_normalizado, comando). Puro/testável."""
+    if not comando or "rotina" not in textutils.normaliza(comando):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+|chamada\s+)?(.+?)\s*[:=]\s*(.+)", comando)
+    if not m:
+        return None
+    nome, corpo = textutils.normaliza(m.group(1)).strip(), m.group(2).strip()
+    return (nome, corpo) if nome and corpo else None
+
+
+def parse_rotina_rodar(comando: str) -> Optional[str]:
+    """Nome da rotina a EXECUTAR em 'rotina <nome>' / 'executa a rotina <nome>'. None se é
+    criação (tem ':'/'=') ou listar/remover. Puro."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    if "rotina" not in n or ":" in comando or "=" in comando:
+        return None
+    if any(v in n for v in ("remov", "apag", "exclu", "delet", "quais", "quantas", "liste", "minhas rotinas")):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+)?(.+)", comando)
+    if not m:
+        return None
+    nome = textutils.normaliza(m.group(1)).strip()
+    return nome or None
+
+
+_GATILHO_ROTINAS_LISTAR = (
+    "quais rotinas", "minhas rotinas", "listar rotinas", "que rotinas", "lista de rotinas",
+    "quantas rotinas",
+)
+
+
+def comando_rotinas_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_ROTINAS_LISTAR)
+
+
+def comando_rotina_remover(comando: str) -> Optional[str]:
+    """Nome da rotina a remover em 'remove a rotina <nome>', ou None. Puro."""
+    n = textutils.normaliza(comando or "")
+    if "rotina" not in n or not any(v in n for v in ("remov", "apag", "exclu", "delet")):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+)?(.+)", comando)
+    return textutils.normaliza(m.group(1)).strip() if m and m.group(1).strip() else None
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.
