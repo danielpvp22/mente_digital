@@ -659,8 +659,19 @@ class Agent:
             # ATALHO TIME-SENSITIVE: cotação/preço agora, notícias/clima de hoje. O banco
             # é inútil e desatualizado nesses casos — pula RAM+Banco e vai DIRETO pra web
             # (fresco, e sem pagar a passada local morta). Fora isso, cascata normal.
-            if tools.talvez_tempo_real(texto_usuario):
-                telemetry.track("AGENT", f"Time-sensitive — direto pra web: '{termos}'.")
+            # DEFINICIONAL DE CONHECIMENTO GERAL (Part A): "o que é X", "quem foi Y",
+            # "me explica Z" vão DIRETO pra web, como o time-sensitive. O vault do dono é
+            # PESSOAL — deixá-lo responder "o que é RAG" devolvia a nota-piada ("RAG = base
+            # do Tarkov"). Pergunta pessoal é excluída em tools.pergunta_definicional e cai
+            # na cascata normal. Botão MENTE_ROTEAR_DEFINICIONAL_WEB. Trade-off assumido:
+            # uma definição que o vault cobriria bem também vai à web (mais autoritativa).
+            definicional = (
+                settings.rotear_definicional_web
+                and tools.pergunta_definicional(texto_usuario)
+            )
+            if tools.talvez_tempo_real(texto_usuario) or definicional:
+                motivo = "time-sensitive" if not definicional else "definicional (geral)"
+                telemetry.track("AGENT", f"{motivo} — direto pra web: '{termos}'.")
                 web = await self._responder_web(
                     termos, pergunta_resp, send_medido, mem,
                     consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,

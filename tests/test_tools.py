@@ -41,6 +41,44 @@ def test_efemero_nao_pega_conhecimento_duravel():
         assert not tools.e_efemero(q), q
 
 
+# --- pergunta_definicional: conhecimento GERAL -> web-first (Part A) ----------
+def test_definicional_pega_perguntas_gerais():
+    # O caso que motivou (Tarkov): "o que é RAG" casava a nota-piada pessoal em vez do
+    # conceito. Definição geral vai pra web.
+    for q in (
+        "o que é RAG?",
+        "o que são embeddings?",
+        "o que significa overfitting?",
+        "quem foi Alan Turing?",
+        "me explica o transformer",
+        "defina entropia",
+        "significado de idempotência",
+    ):
+        assert tools.pergunta_definicional(q), q
+
+
+def test_definicional_exclui_pergunta_pessoal():
+    # "reservando local pra pessoais": marcador de posse/1ª pessoa mantém no vault.
+    for q in (
+        "o que é o meu projeto?",
+        "me explica o meu código",
+        "o que eu anotei sobre RAG?",
+        "o que é a nossa arquitetura?",
+    ):
+        assert tools.pergunta_definicional(q) is False, q
+
+
+def test_definicional_nao_pega_nao_definicional():
+    # Sem gatilho definicional -> segue a cascata local normal (falso NEGATIVO é barato).
+    for q in (
+        "como funciona o flash attention?",
+        "o que estava acontecendo no servidor?",   # trailing-space guard: != "o que e "
+        "qual a cotação do dólar hoje?",
+        "resuma a reunião de ontem",
+    ):
+        assert tools.pergunta_definicional(q) is False, q
+
+
 # --- parse_decisao ---------------------------------------------------------
 def test_parse_decisao_json_limpo():
     d = tools.parse_decisao('{"tool":"calcular","args":{"expressao":"2+2"}}')

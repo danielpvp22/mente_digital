@@ -129,6 +129,24 @@ class Settings(BaseSettings):
     # o bastante para valer como Cache Hit MESMO sem casar palavra-chave. Ajuste
     # olhando o log "[LOCAL] melhor_dist=..." com os seus próprios dados.
     rag_score_confident: float = 0.8
+    # ATERRAMENTO PONDERADO POR IDF (G3, Onda 2/Graphify): o aterramento léxico é um OR
+    # booleano — bastava a nota conter UMA keyword da pergunta. Uma keyword comum (que
+    # escapou do STOP, ex.: "base", "sistema") aterrava a nota ERRADA (a mesma falha que a
+    # Malha evita de propósito, ver rag.MalhaIndex). Agora só uma keyword RARA
+    # (idf_palavra >= este mínimo) conta como evidência; se TODAS forem hub, não há
+    # aterramento léxico (a nota ainda pode entrar por confiança semântica). O IDF é sobre
+    # o CORPUS de átomos (log(N/df)), construído junto com a Malha. Calibre como o
+    # rag_score_confident: 0 desliga; MAIOR = mais rígido (mais web); menor = mais frouxo.
+    # Default afinado para o vault real (~3k átomos); revise em vault pequeno (idf é menor).
+    aterramento_idf_min: float = 1.5
+    # ROTEAR DEFINICIONAL PARA A WEB (Part A, Onda 3): perguntas de conhecimento GERAL
+    # ("o que é X", "quem foi Y", "me explica Z") vão DIRETO pra web, pulando o local —
+    # como o talvez_tempo_real já faz. Conserta o sintoma "pergunta geral puxa nota
+    # pessoal" (o Tarkov: "o que é RAG" devolvia a nota-piada do usuário). O IDF (acima)
+    # NÃO resolve esse caso (keyword rara genuína), então a correção é de ROTA. Pergunta
+    # PESSOAL ("meu projeto", "o que eu anotei") é excluída e segue local (ver
+    # tools.pergunta_definicional). Desligue com MENTE_ROTEAR_DEFINICIONAL_WEB=false.
+    rotear_definicional_web: bool = True
     # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
     # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
     rag_debug: bool = False

@@ -253,6 +253,7 @@ class MalhaIndex:
         self._conceitos_de: dict = {}       # source -> lista de conceitos normalizados
         self._texto_de: dict = {}           # source -> texto do átomo (concat dos chunks)
         self._meta_de: dict = {}            # source -> metadado (1º chunk basta)
+        self._df_palavra: dict = {}         # palavra normalizada -> nº de átomos que a contêm (G3)
 
     @property
     def n_atomos(self) -> int:
@@ -266,6 +267,7 @@ class MalhaIndex:
         """(Re)constrói o índice a partir do dump do Chroma. Idempotente."""
         self._por_conceito, self._conceitos_de = {}, {}
         self._texto_de, self._meta_de = {}, {}
+        self._df_palavra = {}
         for texto, md in zip(documentos, metadatas):
             src = str((md or {}).get("source") or "")
             if not src:
@@ -282,10 +284,29 @@ class MalhaIndex:
             self._conceitos_de[src] = conceitos
             for c in conceitos:
                 self._por_conceito.setdefault(c, set()).add(src)
+        # DOCUMENT-FREQUENCY DE PALAVRAS (G3): conta em quantos ÁTOMOS cada palavra
+        # aparece (não ocorrências), para o IDF do aterramento léxico. Feito num 2º passe
+        # sobre o texto JÁ concatenado por átomo (`_texto_de`), então um átomo multi-chunk
+        # conta uma vez só — o mesmo cuidado do índice de conceitos acima.
+        for texto in self._texto_de.values():
+            for w in set(textutils.tokens(texto)):
+                self._df_palavra[w] = self._df_palavra.get(w, 0) + 1
 
     def idf(self, conceito: str) -> float:
         """log(N/df). Conceito ausente devolve 0.0 — não pontua, em vez de explodir."""
         df = len(self._por_conceito.get(textutils.normaliza(conceito), ()))
+        if df <= 0 or self.n_atomos <= 0:
+            return 0.0
+        return math.log(self.n_atomos / df)
+
+    def idf_palavra(self, palavra: str) -> float:
+        """log(N/df) de uma PALAVRA sobre o corpus de átomos (G3, aterramento léxico).
+
+        Gêmeo de `idf` mas sobre `_df_palavra` (palavra→nº de átomos) em vez de conceitos.
+        Palavra ausente do corpus devolve 0.0 (não pontua): uma keyword que nenhum átomo
+        contém não aterra nada de qualquer forma, então descartá-la é inócuo.
+        """
+        df = self._df_palavra.get(textutils.normaliza(palavra), 0)
         if df <= 0 or self.n_atomos <= 0:
             return 0.0
         return math.log(self.n_atomos / df)
@@ -591,7 +612,20 @@ class VectorStore:
             melhor = min(score for _, score in res)
             validos = [(score, doc) for doc, score in res if score < settings.rag_score_max]
             chaves = textutils.palavras_chave(termos)
-            aterrados = [(s, d) for s, d in validos if textutils.contem_alguma(d.page_content, chaves)]
+            # ATERRAMENTO PONDERADO POR IDF (G3): o aterramento antigo era um OR sem peso —
+            # uma keyword comum (que escapou do STOP) casava a nota errada. Agora só a
+            # keyword RARA (idf sobre o corpus de átomos >= mínimo) vale como evidência.
+            # Se TODAS forem hub, `chaves_aterr` fica vazio → nada aterra léxico (a nota
+            # ainda pode entrar por confiança semântica abaixo). Guardas: desligado com
+            # idf_min<=0, e sem malha construída (n_atomos==0, ex.: testes) mantém o OR
+            # original — nunca fica MAIS rígido do que dá para calibrar.
+            chaves_aterr = chaves
+            if settings.aterramento_idf_min > 0 and self.malha.n_atomos > 0:
+                chaves_aterr = {
+                    k for k in chaves
+                    if self.malha.idf_palavra(k) >= settings.aterramento_idf_min
+                }
+            aterrados = [(s, d) for s, d in validos if textutils.contem_alguma(d.page_content, chaves_aterr)]
 
             if settings.rag_debug:
                 telemetry.track(
