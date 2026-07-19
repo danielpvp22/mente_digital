@@ -217,6 +217,68 @@ def comando_agenda(comando: str) -> bool:
     return _casa(comando, _GATILHO_AGENDA)
 
 
+# GATILHOS CONDICIONAIS INTERNOS (#11): "quando eu adicionar X na lista, <ação>". Reage a
+# um EVENTO do app (v1: só lista_add) executando uma ação. Distinto do watcher (que reage à
+# WEB e só avisa). Só ativa quando a condição casa um evento CONHECIDO — senão cai no fluxo
+# normal (um "quando o dólar subir, me avise" segue pro roteador/watcher, não é recusado aqui).
+def separar_gatilho(comando: str) -> Optional[tuple]:
+    """'quando <condição>, <ação>' -> (condicao, acao). Divide na 1ª vírgula ou 'então'/
+    'faça'. None se não começa por 'quando' ou não tem separador. Puro/testável."""
+    if not comando or not textutils.normaliza(comando).startswith("quando"):
+        return None
+    corpo = re.sub(r"(?i)^\s*quando\s+", "", comando.strip())
+    m = re.search(r",|\s+ent[aã]o\s+|\s+fa[cç]a\s+", corpo, re.IGNORECASE)
+    if not m:
+        return None
+    condicao, acao = corpo[: m.start()].strip(), corpo[m.end():].strip()
+    if not condicao or not acao:
+        return None
+    return condicao, acao
+
+
+def evento_da_condicao(condicao: str, agora: datetime) -> Optional[tuple]:
+    """Mapeia a condição para (evento, filtro). v1: só 'eu adicionar X na lista' ->
+    ('lista_add', X). Reusa o parse_rapido para extrair item/lista. Puro."""
+    c = re.sub(r"(?i)^\s*eu\s+", "", condicao.strip())
+    decs = parse_rapido(c, agora)
+    if decs and len(decs) == 1 and decs[0].tool == "adicionar_item":
+        return "lista_add", str(decs[0].args.get("item", "")).strip()
+    return None
+
+
+def parse_gatilho(comando: str, agora: datetime) -> Optional[tuple]:
+    """(evento, filtro, acao_texto) se é um gatilho RECONHECIDO, senão None (fluxo normal).
+    A ação em si é parseada pelo Agent (pode precisar do roteador LLM). Puro."""
+    sep = separar_gatilho(comando)
+    if sep is None:
+        return None
+    ev = evento_da_condicao(sep[0], agora)
+    if ev is None:
+        return None
+    return ev[0], ev[1], sep[1]
+
+
+_GATILHO_LISTAR_GAT = (
+    "quais gatilhos", "meus gatilhos", "listar gatilhos", "lista de gatilhos",
+    "que gatilhos", "meus automatismos", "quais automatismos",
+)
+
+
+def comando_gatilhos_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_LISTAR_GAT)
+
+
+def comando_gatilho_remover(comando: str) -> Optional[int]:
+    """ID a remover em 'remove/apaga o gatilho N', ou None. Puro."""
+    n = textutils.normaliza(comando or "")
+    if "gatilho" not in n:
+        return None
+    if not any(v in n for v in ("remov", "apag", "exclu", "delet", "tira", "cancel")):
+        return None
+    m = re.search(r"\d+", n)
+    return int(m.group()) if m else None
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

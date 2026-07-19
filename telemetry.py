@@ -165,6 +165,16 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, frente TEXT, verso TEXT,
                     proxima_revisao TEXT, estagio INTEGER DEFAULT 0, criado_em TEXT)"""
             )
+            # GATILHOS CONDICIONAIS INTERNOS (#11): "quando <evento interno>, faça <ação>".
+            #   evento : nome do evento do app (v1: 'lista_add')
+            #   filtro : substring que o contexto do evento precisa conter ('' = qualquer)
+            #   acao   : JSON de uma lista de Decisões [{"tool":..,"args":..}] a executar
+            #   descricao: frase legível (para "quais gatilhos tenho")
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS gatilhos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, evento TEXT, filtro TEXT,
+                    acao TEXT, descricao TEXT, criado_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -241,6 +251,52 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao reagendar card SRS", exc)
+
+    # -- Gatilhos condicionais internos (#11) ----------------------------------
+    def gatilho_criar(self, evento: str, filtro: str, acao_json: str, descricao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO gatilhos (evento, filtro, acao, descricao, criado_em) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (evento, filtro, acao_json, descricao, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar gatilho", exc)
+
+    def gatilhos_por_evento(self, evento: str) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, filtro, acao, descricao FROM gatilhos WHERE evento = ?",
+                    (evento,),
+                ).fetchall()
+            return [{"id": r[0], "filtro": r[1], "acao": r[2], "descricao": r[3]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler gatilhos", exc)
+            return []
+
+    def gatilhos_listar(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, descricao FROM gatilhos ORDER BY id"
+                ).fetchall()
+            return [{"id": r[0], "descricao": r[1]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar gatilhos", exc)
+            return []
+
+    def gatilho_remover(self, gatilho_id: int) -> bool:
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM gatilhos WHERE id = ?", (gatilho_id,))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao remover gatilho", exc)
+            return False
 
     def save_latency(
         self,

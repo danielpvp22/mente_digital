@@ -19,6 +19,7 @@ O pipeline não conhece o WebSocket: recebe um callback `send(dict) -> bool`.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -881,6 +882,11 @@ class Agent:
         self._lembrar_reversao(mem, executadas)
         final = prefixo + (" ".join(r for r in resultados if r) or "Pronto.")
         await self._emitir_falado(send, final)
+        # GATILHOS (#11): um item adicionado à lista é um EVENTO interno — dispara as regras
+        # que casam. Rodam DEPOIS da fala principal e por um caminho direto (sem re-emitir).
+        for dec, obs in executadas:
+            if dec.tool == "adicionar_item" and textutils.normaliza(obs or "").startswith("adicionei"):
+                await self._disparar_gatilhos("lista_add", str(dec.args.get("item", "")), send)
         return final
 
     def _lembrar_reversao(self, mem: Optional[SessionMemory], executadas: List[tuple]) -> None:
@@ -1092,6 +1098,67 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:agenda"
 
+    # -- Gatilhos condicionais internos (#11) ----------------------------------
+    async def _criar_gatilho(self, evento: str, filtro: str, acao_txt: str, send: Sender, mem: SessionMemory) -> tuple:
+        """Cria a regra "quando <evento/filtro>, <ação>". A ação é parseada agora (rápido
+        ou roteador LLM) e ARMAZENADA como JSON de Decisões, para reexecutar no disparo."""
+        decisoes = mestre.parse_composto(acao_txt, datetime.now())
+        if not decisoes:
+            decisao = await self._rotear(acao_txt)
+            if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
+                decisoes = [decisao]
+        if not decisoes:
+            fala = ("Entendi a condição, mas não a ação. Tente algo simples, como adicionar "
+                    "a outra lista ou criar um lembrete.")
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:gatilho_acao_invalida"
+        acao_json = json.dumps([{"tool": d.tool, "args": d.args} for d in decisoes], ensure_ascii=False)
+        descricao = f"quando adicionar '{filtro}' à lista → {mestre.descrever_acao(decisoes[0])}"
+        await asyncio.to_thread(db.gatilho_criar, evento, filtro, acao_json, descricao)
+        fala = f"Combinado: {descricao}."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:gatilho_criado"
+
+    async def _disparar_gatilhos(self, evento: str, contexto: str, send: Sender) -> None:
+        """Executa as regras que casam um EVENTO. As ações rodam DIRETO (não via
+        _executar_acoes_rapidas), então NÃO re-emitem eventos — sem risco de loop."""
+        gatilhos = await asyncio.to_thread(db.gatilhos_por_evento, evento)
+        ctx_norm = textutils.normaliza(contexto)
+        for g in gatilhos:
+            filtro = (g.get("filtro") or "").strip()
+            if filtro and textutils.normaliza(filtro) not in ctx_norm:
+                continue
+            try:
+                decs = json.loads(g["acao"])
+            except (ValueError, TypeError):
+                continue
+            for d in decs:
+                tool = self.tools.get(d.get("tool"))
+                if tool is None:
+                    continue
+                try:
+                    obs = await tool.executar(d.get("args") or {}, self.ctx)
+                except Exception as exc:
+                    telemetry.error("GATILHO", f"Falha na ação do gatilho {g['id']}", exc)
+                    continue
+                await self._emitir_falado(send, f"Gatilho automático: {obs}")
+
+    async def _gatilhos_listar(self, send: Sender) -> tuple:
+        gs = await asyncio.to_thread(db.gatilhos_listar)
+        if not gs:
+            fala = "Você não tem gatilhos configurados."
+        else:
+            partes = [f"{g['id']}: {g['descricao']}" for g in gs]
+            fala = "Seus gatilhos: " + "; ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:gatilhos_listar"
+
+    async def _gatilho_remover(self, gatilho_id: int, send: Sender) -> tuple:
+        ok = await asyncio.to_thread(db.gatilho_remover, gatilho_id)
+        fala = f"Gatilho {gatilho_id} removido." if ok else f"Não achei o gatilho {gatilho_id}."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:gatilho_removido"
+
     def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
         """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
         `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
@@ -1141,6 +1208,11 @@ class Agent:
         # sub-comandos (mostra/acertei/errei/parar) seguem para o handler de revisão abaixo.
         if mem.revisao is not None and not mestre.comando_srs_sub(comando):
             mem.revisao = None
+
+        # GATILHOS (#11): "quando eu adicionar X na lista, <ação>". Só vira gatilho se a
+        # condição casa um evento CONHECIDO; senão None e segue o fluxo normal (o watcher
+        # "me avise quando ..." e o roteador continuam intactos).
+        gatilho_spec = mestre.parse_gatilho(comando, datetime.now())
 
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
@@ -1193,6 +1265,14 @@ class Agent:
         elif mestre.comando_agenda(comando):
             # #40: "o que tenho hoje" — leitura da agenda .ics local.
             texto_final, rota = await self._agenda_hoje(send, mem)
+        elif gatilho_spec is not None:
+            # #11: cria a regra "quando eu adicionar X na lista, <ação>".
+            evento, filtro, acao_txt = gatilho_spec
+            texto_final, rota = await self._criar_gatilho(evento, filtro, acao_txt, send, mem)
+        elif (gid := mestre.comando_gatilho_remover(comando)) is not None:
+            texto_final, rota = await self._gatilho_remover(gid, send)
+        elif mestre.comando_gatilhos_listar(comando):
+            texto_final, rota = await self._gatilhos_listar(send)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
