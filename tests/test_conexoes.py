@@ -47,7 +47,34 @@ def test_temas_que_coocorrem_muito_nao_sao_ponte():
     assert grafo.descobrir_pontes(por_conceito, conceitos_de, df_min=3, coocorrencia_max=1, limite=3) == []
 
 
-def test_ordena_por_forca_e_respeita_limite():
+def test_ranking_por_surpresa_vizinhanca_disjunta_vem_primeiro():
+    # b_disj liga temas de DOMÍNIOS diferentes (vizinhanças disjuntas -> surpresa 1.0);
+    # b_sobrep liga dois temas do MESMO domínio (compartilham 'codigo' -> surpresa baixa).
+    # O par cross-domínio deve vir primeiro, mesmo com temas menores.
+    por_conceito = {
+        # domínio tech: python e web convivem com 'codigo'
+        "python": {"p1", "p2", "p3", "b_sobrep"}, "web": {"w1", "w2", "w3", "b_sobrep"},
+        "codigo": {"p1", "p2", "p3", "w1", "w2", "w3"},
+        # domínios separados: musica<->arte, fisica<->ciencia
+        "musica": {"m1", "m2", "m3", "b_disj"}, "fisica": {"f1", "f2", "f3", "b_disj"},
+        "arte": {"m1", "m2", "m3"}, "ciencia": {"f1", "f2", "f3"},
+    }
+    conceitos_de = {
+        "p1": ["python", "codigo"], "p2": ["python", "codigo"], "p3": ["python", "codigo"],
+        "w1": ["web", "codigo"], "w2": ["web", "codigo"], "w3": ["web", "codigo"],
+        "b_sobrep": ["python", "web"],
+        "m1": ["musica", "arte"], "m2": ["musica", "arte"], "m3": ["musica", "arte"],
+        "f1": ["fisica", "ciencia"], "f2": ["fisica", "ciencia"], "f3": ["fisica", "ciencia"],
+        "b_disj": ["musica", "fisica"],
+    }
+    pontes = grafo.descobrir_pontes(por_conceito, conceitos_de, df_min=3, coocorrencia_max=1, limite=3)
+    assert [p.source for p in pontes] == ["b_disj", "b_sobrep"]   # cross-domínio primeiro
+    assert pontes[0].surpresa > pontes[1].surpresa
+
+
+def test_desempata_por_tamanho_e_respeita_limite():
+    # Duas pontes IGUALMENTE surpreendentes (vizinhanças disjuntas dos dois lados):
+    # desempata pelo tema MAIOR. E `limite` corta.
     por_conceito = {
         "python": {f"p{i}" for i in range(5)} | {"b1"},   # df 6
         "musica": {f"m{i}" for i in range(5)} | {"b1"},   # df 6
@@ -59,11 +86,11 @@ def test_ordena_por_forca_e_respeita_limite():
         **{f"m{i}": ["musica"] for i in range(5)},
         **{f"r{i}": ["arte"] for i in range(3)},
         **{f"f{i}": ["fisica"] for i in range(3)},
-        "b1": ["python", "musica"],     # força min(6,6)/1 = 6
-        "b2": ["arte", "fisica"],       # força min(4,4)/1 = 4
+        "b1": ["python", "musica"],     # ambos df 6 -> maior
+        "b2": ["arte", "fisica"],       # ambos df 4
     }
     todas = grafo.descobrir_pontes(por_conceito, conceitos_de, df_min=3, coocorrencia_max=1, limite=3)
-    assert [p.source for p in todas] == ["b1", "b2"]     # mais forte primeiro
+    assert [p.source for p in todas] == ["b1", "b2"]     # empate em surpresa -> maior 1º
     top1 = grafo.descobrir_pontes(por_conceito, conceitos_de, df_min=3, coocorrencia_max=1, limite=1)
     assert [p.source for p in top1] == ["b1"]
 

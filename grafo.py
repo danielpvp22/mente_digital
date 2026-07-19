@@ -20,7 +20,21 @@ class Ponte:
     source: str          # átomo que faz a ponte (a nota)
     conceito_a: str      # os dois temas ligados (normalizados, como na malha)
     conceito_b: str
-    forca: float         # min(df_a, df_b) / coocorrência — temas grandes, raramente ligados
+    surpresa: float      # 1 - sobreposição das VIZINHANÇAS de conceito (domínios disjuntos = 1.0)
+    tamanho: int         # min(df_a, df_b) — desempate: entre igualmente surpreendentes, o maior tema
+
+
+def _vizinhanca(por_conceito, conceitos_de, cache, c):
+    """Conceitos que CO-OCORREM com `c` em algum átomo (o "domínio" dele na malha).
+    Cacheado: um mesmo conceito participa de várias pontes candidatas."""
+    v = cache.get(c)
+    if v is None:
+        v = set()
+        for src in por_conceito.get(c, ()):
+            v.update(conceitos_de.get(src, ()))
+        v.discard(c)
+        cache[c] = v
+    return v
 
 
 def descobrir_pontes(
@@ -30,13 +44,19 @@ def descobrir_pontes(
     coocorrencia_max: int,
     limite: int,
 ) -> List[Ponte]:
-    """As `limite` pontes mais fortes do vault.
+    """As `limite` pontes mais SURPREENDENTES do vault.
 
     PONTE = uma nota liga dois conceitos com df >= `df_min` (temas ESTABELECIDOS, não
-    menção solta) que co-ocorrem em <= `coocorrencia_max` átomos (quase nunca juntos). A
-    força = min(df_a, df_b) / coocorrência: recompensa dois temas grandes ligados em pouquíssimos
-    lugares. Determinístico: ordena por (força desc, conceito_a, conceito_b, source) e dedup
-    por PAR de conceitos (a mesma ponte pode nascer em 2 átomos quando coocorrência==2)."""
+    menção solta) que co-ocorrem em <= `coocorrencia_max` átomos (quase nunca juntos).
+
+    O ranking é por SURPRESA = 1 - Jaccard das vizinhanças de conceito dos dois temas.
+    Vizinhanças DISJUNTAS (domínios diferentes: 'bateria' e 'tensorflow') = surpresa 1.0;
+    vizinhanças que se sobrepõem (mesmo domínio: 'python' e 'vram') = surpresa baixa. Isto
+    corrige o ranking ingênuo `min(df)/coocorrência`, que só surfava PARES DE TEMAS GRANDES
+    (python↔vram) — estatisticamente triviais, não "temas que você mantém separados".
+    Desempate por tamanho (temas maiores primeiro), depois nomes/source. Determinístico;
+    dedup por PAR de conceitos (a mesma ponte pode nascer em 2 átomos quando coocorrência==2)."""
+    cache: dict = {}
     candidatas: List[Ponte] = []
     for src, conceitos in conceitos_de.items():
         temas = sorted({c for c in conceitos if len(por_conceito.get(c, ())) >= df_min})
@@ -46,10 +66,13 @@ def descobrir_pontes(
             coocor = len(pa & pb)
             if coocor < 1 or coocor > coocorrencia_max:
                 continue
-            forca = min(len(pa), len(pb)) / coocor
-            candidatas.append(Ponte(src, a, b, forca))
+            va = _vizinhanca(por_conceito, conceitos_de, cache, a)
+            vb = _vizinhanca(por_conceito, conceitos_de, cache, b)
+            uniao = len(va | vb)
+            overlap = len(va & vb) / uniao if uniao else 0.0
+            candidatas.append(Ponte(src, a, b, 1.0 - overlap, min(len(pa), len(pb))))
 
-    candidatas.sort(key=lambda p: (-p.forca, p.conceito_a, p.conceito_b, p.source))
+    candidatas.sort(key=lambda p: (-p.surpresa, -p.tamanho, p.conceito_a, p.conceito_b, p.source))
     vistos: set = set()
     out: List[Ponte] = []
     for p in candidatas:
