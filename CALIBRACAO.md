@@ -68,6 +68,25 @@ agressiva (risco de podar átomo legítimo); `0` ou `1.0` desliga (mantém só o
 **Régua:** é o menos observável no log; `0.9` (quase idêntico) é seguro. Só baixe se notar
 o mesmo fato repetido no contexto.
 
+### `MENTE_MALHA_SIM_MIN` (default `0.5`) — G5′
+Só vale quando `MENTE_MALHA_EXPANDIR=true` (a expansão da malha, hoje off). Filtra o
+vizinho da malha por similaridade de cosseno com a PERGUNTA: só entra o >= este mínimo.
+É o conserto que torna a expansão viável (conceito raro E proximidade). **Régua:** religue
+`MALHA_EXPANDIR`, veja `[LOCAL_DBG] vizinhos_malha=N/M` e meça o TTFT; suba `SIM_MIN` se
+vier vizinho fora do assunto, baixe se cortar demais. `0` desliga o filtro.
+
+### `MENTE_SINTESE_HUBS_PRIMEIRO` (default `true`) — G7
+Reordena os átomos da Síntese sob Demanda por centralidade (backbone do tema nos primeiros
+lotes do map-reduce). Sem malha, mantém a ordem vetorial. Não tem número a afinar — é
+liga/desliga; desligue se preferir a ordem por similaridade pura.
+
+### `MENTE_CONEXAO_DF_MIN` / `_COOCORRENCIA_MAX` / `_LIMITE` (3 / 1 / 3) — G8
+"mestre, alguma conexão nova?" acha PONTES: notas ligando dois conceitos com df >= `DF_MIN`
+(temas estabelecidos) que co-ocorrem em <= `COOCORRENCIA_MAX` átomos (quase nunca juntos).
+`LIMITE` = quantas a fala traz. **Régua:** poucas/nenhuma ponte → baixe `DF_MIN` (aceita
+temas menos consolidados) ou suba `COOCORRENCIA_MAX` (aceita temas que já se cruzam um
+pouco); pontes óbvias demais → o contrário.
+
 ---
 
 ## Ordem crítica ao calibrar
