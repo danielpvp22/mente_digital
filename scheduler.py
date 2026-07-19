@@ -28,8 +28,10 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
 import agenda
+import calendario
 import prompts
 import textutils
+import vram
 from config import settings
 from rag import NENHUM
 from telemetry import db, telemetry
@@ -42,6 +44,10 @@ class SchedulerService:
     def __init__(self, ctx: "AppContext") -> None:
         self.ctx = ctx
         self._parado = asyncio.Event()
+        # #28: detector de vazamento de VRAM, alimentado a cada tick.
+        self._monitor_vram = vram.MonitorVram(
+            settings.vram_leak_amostras, settings.vram_leak_slack_bytes
+        )
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -65,6 +71,7 @@ class SchedulerService:
 
     async def tick(self, agora: Optional[datetime] = None) -> None:
         agora = agora or datetime.now()
+        await self._probe_vram()  # #28/#29: amostra a VRAM 1x por tick
         vencidos = await asyncio.to_thread(db.get_agendamentos_vencidos, agora.isoformat())
         for ag in vencidos:
             await self._disparar(ag, agora)
@@ -72,6 +79,28 @@ class SchedulerService:
         if self._ha_sessoes():
             for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
                 await self._entregar_pendente(ag, agora)
+
+    async def _probe_vram(self) -> None:
+        """#28: alimenta o detector de vazamento e avisa se disparar. #29: recalibra
+        o orçamento de tokens de fundo pela VRAM livre. No-op sem CUDA ou desligado."""
+        if not settings.vram_monitor_habilitado:
+            return
+        uso = await asyncio.to_thread(vram.ler_uso)
+        if uso is None:
+            return
+        if self._monitor_vram.registrar(uso["usado"]):
+            telemetry.warn(
+                "VRAM",
+                f"Possível vazamento: uso subiu de forma sustentada "
+                f"(agora {uso['usado'] / 1e9:.2f} GB de {uso['total'] / 1e9:.2f} GB).",
+            )
+        self.ctx.orcamento_fundo = vram.orcamento_tokens(
+            uso["livre_frac"],
+            settings.vram_orcamento_base_tokens,
+            settings.vram_orcamento_min_tokens,
+            settings.vram_frac_min,
+            settings.vram_frac_ok,
+        )
 
     # -- despacho por tipo ------------------------------------------------------
     async def _disparar(self, ag: dict, agora: datetime) -> None:
@@ -82,6 +111,8 @@ class SchedulerService:
             await self._checar_watcher(ag, agora)
         elif tipo == "briefing":
             await self._disparar_briefing(ag, agora)
+        elif tipo == "pomodoro":
+            await self._disparar_pomodoro(ag, agora)
         else:
             telemetry.warn("SCHEDULER", f"Tipo de agendamento desconhecido: {tipo!r} (id {ag['id']}).")
             await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
@@ -126,6 +157,27 @@ class SchedulerService:
             prox, guarda = seg, guarda + 1
         await asyncio.to_thread(
             db.atualizar_agendamento, ag["id"], status="ativo", proximo_disparo=prox.isoformat()
+        )
+
+    # -- pomodoro (#19): ciclo foco <-> pausa -----------------------------------
+    async def _disparar_pomodoro(self, ag: dict, agora: datetime) -> None:
+        """Fim de uma fase -> anuncia a transição e REPROGRAMA a próxima fase no MESMO
+        agendamento (alterna foco/pausa via payload). Cicla até o usuário cancelar. A
+        entrega é IGNORADA (é tempo-real: um aviso perdido enquanto ausente não faz sentido
+        segurar), como o briefing reprograma independentemente da entrega."""
+        fase = self._payload(ag).get("fase", "foco")
+        if fase == "foco":
+            msg = f"Fim do foco! Faça uma pausa de {settings.pomodoro_pausa_min} minutos."
+            prox_fase, prox_min = "pausa", settings.pomodoro_pausa_min
+        else:
+            msg = f"Pausa encerrada. De volta ao foco por {settings.pomodoro_foco_min} minutos!"
+            prox_fase, prox_min = "foco", settings.pomodoro_foco_min
+        await self._notificar_falado(msg)
+        await asyncio.to_thread(db.registrar_auditoria, "pomodoro", msg)
+        prox = (agora + timedelta(minutes=prox_min)).isoformat()
+        await asyncio.to_thread(
+            db.atualizar_agendamento, ag["id"], status="ativo",
+            proximo_disparo=prox, payload=json.dumps({"fase": prox_fase}),
         )
 
     # -- watcher ("me avise quando X") ------------------------------------------
@@ -217,6 +269,19 @@ class SchedulerService:
                     contexto = dados[:1500]
             except Exception as exc:
                 telemetry.warn("SCHEDULER", f"Briefing sem web ({exc}).")
+        # AGENDA LOCAL (#40): compromissos de HOJE entram no briefing. Computado ANTES do
+        # LLM para ser falado mesmo se a inferência for adiada (usuário voltou / preempção).
+        try:
+            eventos = await asyncio.to_thread(
+                calendario.ler_pasta, str(settings.dir_agenda), agora.date()
+            )
+        except Exception:
+            eventos = []
+        agenda_txt = ""
+        if eventos:
+            partes = "; ".join(f"{dt.strftime('%H:%M')} {t}" for dt, t in eventos)
+            agenda_txt = f"Na sua agenda hoje: {partes}. "
+
         data_hoje = agora.strftime("%d/%m/%Y")
         await self.ctx.interactive_idle.wait()
         try:
@@ -228,8 +293,8 @@ class SchedulerService:
             )
         except Exception as exc:
             telemetry.track("SCHEDULER", f"Briefing adiado ({type(exc).__name__}).")
-            return None
-        return fala.strip() or None
+            return agenda_txt.strip() or None
+        return (agenda_txt + fala).strip() or None
 
     # -- push falado para as sessões vivas --------------------------------------
     def _ha_sessoes(self) -> bool:

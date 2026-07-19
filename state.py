@@ -40,6 +40,12 @@ class SessionMemory:
         # SQLite, sem fila de ETL) — vive só na RAM desta sessão e morre com ela. O
         # follow-up ainda funciona (chat_history/conhecimento_sessao seguem em memória).
         self.confidencial: bool = False
+        # MODO ECONÔMICO (#30): quando ligado, a busca local IGNORA o gate de
+        # relevância e aceita QUALQUER átomo válido como contexto — responde do
+        # vault em vez de escalar pra web (economiza chamada web + latência). É o
+        # trade-off OPT-IN inverso do gate: menos precisão (reabre o risco do
+        # "Cache Hit falso") por menos web. Meta-comando de sessão, como o confidencial.
+        self.economico: bool = False
         # DESFAZER (#8): as ações que REVERTEM a última mutação da sessão (lista de
         # `tools.Decisao`), guardadas na RAM. "mestre, desfaça" as executa e limpa este
         # campo (consumo único — não se desfaz o desfazer). None = nada a desfazer.
@@ -55,6 +61,14 @@ class SessionMemory:
         # ATALHO DE INTENÇÃO FREQUENTE (#2): o texto do último comando-mestre RESOLVIDO —
         # é o que "mestre, atalho X" grava sob o apelido X. None = nada a encurtar ainda.
         self.ultimo_comando_mestre: Optional[str] = None
+        # SRS (#43): sessão de revisão EM ANDAMENTO. dict {"pendentes": [cards], "atual":
+        # card, "revelado": bool} ou None. Vive só na RAM (os cards persistem no SQLite; o
+        # que é volátil é a fila da revisão atual). Como o cofre de confirmação, um comando
+        # não-relacionado a abandona.
+        self.revisao: Optional[dict] = None
+        # TUTOR SOCRÁTICO (#44): modo de sessão. Quando True, as respostas de conhecimento
+        # viram perguntas guiadas (via verbosidade.aplicar_tutor) em vez de resposta pronta.
+        self.tutor: bool = False
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -77,10 +91,13 @@ class SessionMemory:
         self.chat_history.clear()
         self.conhecimento_sessao.clear()
         self.confidencial = False   # chat novo volta ao modo normal (público)
+        self.economico = False      # chat novo volta ao modo normal (com gate)
         self.ultima_reversivel = None   # não se desfaz ação de outra conversa
         self.ultima_acao = None
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
+        self.revisao = None             # revisão em andamento não atravessa conversas
+        self.tutor = False              # modo tutor não atravessa conversas
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -94,6 +111,9 @@ class SessionMemory:
         self.ultima_acao = None
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
+        self.revisao = None
+        self.tutor = False
+        self.economico = False
 
 
 class LruCache:
@@ -149,6 +169,14 @@ class AppContext:
     agent: "Agent" = None                 # type: ignore[assignment]
     etl: "EtlProcessor" = None            # type: ignore[assignment]
     scheduler: "SchedulerService" = None  # type: ignore[assignment]
+
+    # #29: orçamento de tokens de fundo, recalibrado pelo scheduler a cada tick a
+    # partir da VRAM livre. None = sem leitura (sem CUDA) -> o fundo usa o max_tokens
+    # configurado normalmente.
+    orcamento_fundo: Optional[int] = None
+    # #36 Diapasão: perfil de COMO o usuário prefere ser respondido. Carregado no
+    # boot, refinado pelo idle, lido no hot-path (injetado na instrução de resposta).
+    perfil_conversa: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão

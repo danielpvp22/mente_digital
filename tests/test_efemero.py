@@ -38,7 +38,7 @@ class FakeWeb:
 class FakeVectorStoreVazio:
     """Banco local sem nada relevante -> o pipeline escala pra web."""
 
-    async def search(self, termos, texto_busca=None):
+    async def search(self, termos, texto_busca=None, economico=False):
         return LocalResult(NENHUM, None, False)
 
     async def sync(self):

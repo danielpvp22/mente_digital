@@ -21,12 +21,29 @@ def test_marca_primeiro_token_e_primeiro_audio():
     assert round(tracker.total(), 3) == 0.9
 
 
-def test_so_marca_o_primeiro_de_cada_tipo():
-    # o 2º token não deve mexer no ttft (nem consumir o clock)
+def test_ttft_e_do_primeiro_token_mas_conta_todos():
+    # O TTFT é o 1º token; os demais NÃO mexem no ttft, mas SÃO cronometrados (F4: cada
+    # token marca o último instante e soma n_tokens, para derivar o tok/s do decode).
+    tracker = LatencyTracker(clock=_clock_de([0.0, 1.0, 2.0]))
+    tracker.note({"tipo": "token"})   # t=1.0 -> ttft
+    tracker.note({"tipo": "token"})   # t=2.0 -> último token
+    assert tracker.ttft == 1.0
+    assert tracker.n_tokens == 2
+
+
+def test_decode_tok_s():
+    # 3 tokens: 1º em t=1, último em t=3 -> janela de decode = 2s; (3-1)/2 = 1.0 tok/s.
+    tracker = LatencyTracker(clock=_clock_de([0.0, 1.0, 2.0, 3.0]))
+    for _ in range(3):
+        tracker.note({"tipo": "token"})
+    assert tracker.decode_tok_s() == 1.0
+
+
+def test_decode_tok_s_none_com_menos_de_dois_tokens():
+    # Sem janela de decode medível (< 2 tokens) -> None, não divide por zero.
     tracker = LatencyTracker(clock=_clock_de([0.0, 1.0]))
     tracker.note({"tipo": "token"})
-    tracker.note({"tipo": "token"})
-    assert tracker.ttft == 1.0
+    assert tracker.decode_tok_s() is None
 
 
 def test_tipos_desconhecidos_nao_marcam():

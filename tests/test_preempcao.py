@@ -119,7 +119,7 @@ class FakeVectorStore:
     async def sync(self):
         self.syncs += 1
 
-    async def search(self, termos, texto_busca=None):
+    async def search(self, termos, texto_busca=None, economico=False):
         from rag import NENHUM, LocalResult
         return LocalResult(NENHUM, None, False)
 

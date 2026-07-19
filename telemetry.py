@@ -101,6 +101,14 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     rota TEXT, ttft_ms INTEGER, ttfa_ms INTEGER, total_ms INTEGER)"""
             )
+            # F4 — timing por estágio: colunas extras (migração idempotente p/ bancos
+            # antigos, como o conversa_id acima). stt_ms=transcrição, decode_tok_s=tok/s
+            # do decode, n_tokens=tokens gerados na resposta.
+            lat_cols = [r[1] for r in c.execute("PRAGMA table_info(metricas_latencia)").fetchall()]
+            for _col, _tipo in (("stt_ms", "INTEGER"), ("decode_tok_s", "REAL"),
+                                ("n_tokens", "INTEGER")):
+                if _col not in lat_cols:
+                    c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
             # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
             # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
             # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
@@ -157,7 +165,79 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS mestre_atalhos
                    (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
             )
+            # SRS (#43): cards de repetição espaçada. `frente`/`verso` da carta (a última
+            # troca marcada), `proxima_revisao` (ISO) e `estagio` (caixa de Leitner). A
+            # revisão é sob demanda, mas o CRONOGRAMA é persistente (sobrevive a restart).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS srs_cards
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, frente TEXT, verso TEXT,
+                    proxima_revisao TEXT, estagio INTEGER DEFAULT 0, criado_em TEXT)"""
+            )
+            # GATILHOS CONDICIONAIS INTERNOS (#11): "quando <evento interno>, faça <ação>".
+            #   evento : nome do evento do app (v1: 'lista_add')
+            #   filtro : substring que o contexto do evento precisa conter ('' = qualquer)
+            #   acao   : JSON de uma lista de Decisões [{"tool":..,"args":..}] a executar
+            #   descricao: frase legível (para "quais gatilhos tenho")
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS gatilhos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, evento TEXT, filtro TEXT,
+                    acao TEXT, descricao TEXT, criado_em TEXT)"""
+            )
+            # HÁBITOS (#37): uma linha por (hábito, DIA cumprido). UNIQUE evita contar duas
+            # vezes o mesmo dia; a sequência (streak) é derivada das datas. Fluxo independente.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS habitos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, data TEXT,
+                    criado_em TEXT, UNIQUE(nome, data))"""
+            )
+            # ROTINAS COMPOSTAS (#10): macro NOMEADA -> comando composto salvo. "rotina manhã"
+            # expande para o `comando` e o fluxo normal (parse_composto) executa os passos.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS rotinas
+                   (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
+            )
+            # DETECTOR DE CONTRADIÇÃO (#24): pares de átomos que o idle marcou como
+            # afirmando fatos incompatíveis. UNIQUE(fonte_a, fonte_b) evita re-gravar o
+            # mesmo par a cada varredura. `resolvido` fica para futura curadoria.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS contradicoes
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, fonte_a TEXT, fonte_b TEXT,
+                    resumo TEXT, data TEXT, resolvido INTEGER DEFAULT 0,
+                    UNIQUE(fonte_a, fonte_b))"""
+            )
+            # DIAPASÃO (#36): perfil de COMO o usuário prefere ser respondido. Uma linha
+            # (chave fixa 'conversa'); o idle refina, o hot-path lê. Diretriz de estilo.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS perfil_conversa
+                   (chave TEXT PRIMARY KEY, valor TEXT, atualizado_em TEXT)"""
+            )
             conn.commit()
+
+    def salvar_perfil(self, valor: str, chave: str = "conversa") -> None:
+        """Grava/atualiza o perfil de conversa (#36)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO perfil_conversa (chave, valor, atualizado_em) VALUES (?, ?, ?)
+                       ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor,
+                       atualizado_em = excluded.atualizado_em""",
+                    (chave, valor, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar perfil de conversa", exc)
+
+    def ler_perfil(self, chave: str = "conversa") -> Optional[str]:
+        """O perfil de conversa guardado, ou None (#36)."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT valor FROM perfil_conversa WHERE chave = ?", (chave,)
+                ).fetchone()
+            return row[0] if row else None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler perfil de conversa", exc)
+            return None
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
         try:
@@ -183,19 +263,196 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar histórico", exc)
 
+    # -- SRS (#43): repetição espaçada -----------------------------------------
+    def srs_criar_card(self, frente: str, verso: str, proxima_revisao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO srs_cards (frente, verso, proxima_revisao, estagio, criado_em) "
+                    "VALUES (?, ?, ?, 0, ?)",
+                    (frente, verso, proxima_revisao, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar card SRS", exc)
+
+    def srs_vencidos(self, agora_iso: str, limite: int) -> list:
+        """Cards com revisão vencida (proxima_revisao <= agora), do mais atrasado ao menos."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, frente, verso, proxima_revisao, estagio FROM srs_cards "
+                    "WHERE proxima_revisao <= ? ORDER BY proxima_revisao LIMIT ?",
+                    (agora_iso, limite),
+                ).fetchall()
+            return [
+                {"id": r[0], "frente": r[1], "verso": r[2], "proxima_revisao": r[3], "estagio": r[4]}
+                for r in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao buscar cards SRS vencidos", exc)
+            return []
+
+    def srs_contar_vencidos(self, agora_iso: str) -> int:
+        try:
+            with self._conn() as conn:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM srs_cards WHERE proxima_revisao <= ?", (agora_iso,)
+                ).fetchone()[0]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao contar cards SRS", exc)
+            return 0
+
+    def srs_reagendar(self, card_id: int, estagio: int, proxima_revisao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE srs_cards SET estagio = ?, proxima_revisao = ? WHERE id = ?",
+                    (estagio, proxima_revisao, card_id),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao reagendar card SRS", exc)
+
+    # -- Gatilhos condicionais internos (#11) ----------------------------------
+    def gatilho_criar(self, evento: str, filtro: str, acao_json: str, descricao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO gatilhos (evento, filtro, acao, descricao, criado_em) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (evento, filtro, acao_json, descricao, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar gatilho", exc)
+
+    def gatilhos_por_evento(self, evento: str) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, filtro, acao, descricao FROM gatilhos WHERE evento = ?",
+                    (evento,),
+                ).fetchall()
+            return [{"id": r[0], "filtro": r[1], "acao": r[2], "descricao": r[3]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler gatilhos", exc)
+            return []
+
+    def gatilhos_listar(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, descricao FROM gatilhos ORDER BY id"
+                ).fetchall()
+            return [{"id": r[0], "descricao": r[1]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar gatilhos", exc)
+            return []
+
+    def gatilho_remover(self, gatilho_id: int) -> bool:
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM gatilhos WHERE id = ?", (gatilho_id,))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao remover gatilho", exc)
+            return False
+
+    # -- Hábitos (#37) ---------------------------------------------------------
+    def habito_marcar(self, nome: str, data_iso: str) -> None:
+        """Registra o hábito num DIA. UNIQUE(nome, data) -> marcar duas vezes o mesmo dia
+        é inócuo (INSERT OR IGNORE)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO habitos (nome, data, criado_em) VALUES (?, ?, ?)",
+                    (nome, data_iso, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar hábito", exc)
+
+    def habito_datas(self, nome: str) -> list:
+        """Todas as datas (ISO) em que o hábito foi cumprido."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT data FROM habitos WHERE nome = ? ORDER BY data", (nome,)
+                ).fetchall()
+            return [r[0] for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler hábito", exc)
+            return []
+
+    def habitos_nomes(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT DISTINCT nome FROM habitos ORDER BY nome").fetchall()
+            return [r[0] for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar hábitos", exc)
+            return []
+
+    # -- Rotinas compostas (#10) -----------------------------------------------
+    def rotina_salvar(self, nome: str, comando: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO rotinas (nome, comando, criado_em) VALUES (?, ?, ?)",
+                    (nome, comando, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar rotina", exc)
+
+    def rotina_get(self, nome: str) -> Optional[str]:
+        try:
+            with self._conn() as conn:
+                row = conn.execute("SELECT comando FROM rotinas WHERE nome = ?", (nome,)).fetchone()
+            return row[0] if row else None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler rotina", exc)
+            return None
+
+    def rotinas_listar(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT nome, comando FROM rotinas ORDER BY nome").fetchall()
+            return [{"nome": r[0], "comando": r[1]} for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar rotinas", exc)
+            return []
+
+    def rotina_remover(self, nome: str) -> bool:
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM rotinas WHERE nome = ?", (nome,))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao remover rotina", exc)
+            return False
+
     def save_latency(
         self,
         rota: str,
         ttft_ms: Optional[int],
         ttfa_ms: Optional[int],
         total_ms: Optional[int],
+        stt_ms: Optional[int] = None,
+        decode_tok_s: Optional[float] = None,
+        n_tokens: Optional[int] = None,
     ) -> None:
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO metricas_latencia (data_hora, rota, ttft_ms, ttfa_ms, total_ms) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms),
+                    "INSERT INTO metricas_latencia "
+                    "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, n_tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms,
+                     stt_ms, decode_tok_s, n_tokens),
                 )
                 conn.commit()
         except Exception as exc:
@@ -338,8 +595,10 @@ class Database:
 
     def atualizar_agendamento(
         self, ag_id: int, *, status: Optional[str] = None, proximo_disparo: Optional[str] = None,
+        payload: Optional[str] = None,
     ) -> None:
-        """Reprograma (próximo disparo da recorrência) ou muda o status de um agendamento."""
+        """Reprograma (próximo disparo da recorrência), muda o status, e/ou atualiza o
+        payload (ex.: fase do pomodoro #19) de um agendamento."""
         campos, valores = [], []
         if status is not None:
             campos.append("status = ?")
@@ -347,6 +606,9 @@ class Database:
         if proximo_disparo is not None:
             campos.append("proximo_disparo = ?")
             valores.append(proximo_disparo)
+        if payload is not None:
+            campos.append("payload = ?")
+            valores.append(payload)
         if not campos:
             return
         valores.append(ag_id)
@@ -505,6 +767,39 @@ class Database:
             telemetry.error("SQLITE", "Erro ao listar atalhos", exc)
             return {}
 
+    def registrar_contradicao(self, fonte_a: str, fonte_b: str, resumo: str) -> bool:
+        """Grava um par contraditório (#24). O par é ordenado para (A,B) e (B,A) não
+        virarem dois registros; UNIQUE ignora repetição. Devolve True se gravou novo."""
+        a, b = sorted([str(fonte_a or ""), str(fonte_b or "")])
+        if not a or not b or a == b:
+            return False
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO contradicoes (fonte_a, fonte_b, resumo, data)
+                       VALUES (?, ?, ?, ?)""",
+                    (a, b, resumo, datetime.now().isoformat()),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar contradição", exc)
+            return False
+
+    def contradicoes_abertas(self, limite: int = 5) -> list[dict]:
+        """Contradições ainda não resolvidas, mais recentes primeiro (#24)."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT fonte_a, fonte_b, resumo FROM contradicoes "
+                    "WHERE resolvido = 0 ORDER BY id DESC LIMIT ?",
+                    (limite,),
+                ).fetchall()
+            return [{"a": a, "b": b, "resumo": r} for a, b, r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler contradições", exc)
+            return []
+
     def get_history(self, limit: int = 200) -> list[dict]:
         try:
             with self._conn() as conn:
@@ -578,14 +873,16 @@ class Database:
                     ).fetchall()
                 ]
                 lat = conn.execute(
-                    "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms) "
-                    "FROM metricas_latencia"
+                    "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms), "
+                    "AVG(stt_ms), AVG(decode_tok_s) FROM metricas_latencia"
                 ).fetchone()
                 latencia = {
                     "amostras": lat[0] or 0,
                     "ttft_ms_medio": round(lat[1]) if lat[1] is not None else None,
                     "ttfa_ms_medio": round(lat[2]) if lat[2] is not None else None,
                     "total_ms_medio": round(lat[3]) if lat[3] is not None else None,
+                    "stt_ms_medio": round(lat[4]) if lat[4] is not None else None,
+                    "decode_tok_s_medio": round(lat[5], 1) if lat[5] is not None else None,
                 }
             return {
                 "total_conversas": total_chat,

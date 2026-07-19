@@ -323,6 +323,7 @@
             if (estado === 'listening') statusText.innerText = "Ouvindo…";
             else if (estado === 'thinking') statusText.innerText = "Processando…";
             else if (estado === 'speaking') statusText.innerText = "Respondendo…";
+            else if (estado === 'dormindo') statusText.innerText = "Dormindo — diga 'mestre'";
         }
 
         inputTexto.addEventListener('input', () => { document.getElementById('btn-send-text').style.display = inputTexto.value.trim() ? 'flex' : 'none'; });
@@ -386,6 +387,17 @@
                     appendMsg("🔔 " + data.texto, 'ia');
                     currentIaBubble = null;
                 }
+                else if (data.tipo === "navegar") {
+                    // Navegação por voz (#14): o servidor manda operar a UI. Reusa as
+                    // MESMAS funções dos botões — nada de lógica de navegação duplicada.
+                    if (data.acao === "nova_conversa") novoChat();
+                    else if (data.acao === "abrir_historico") abrirSidebar();
+                    else if (data.acao === "fechar_historico") fecharSidebar();
+                    else if (data.acao === "carregar_conversa" && data.id) carregarConversa(data.id);
+                    // F3 — wake-word: o servidor avisa que acordou / dormiu o live.
+                    else if (data.acao === "ativar_live") { if (isLiveMode) atualizarEstadoOrb('listening'); toast("Acordei — pode falar."); }
+                    else if (data.acao === "dormir_live") { if (isLiveMode) atualizarEstadoOrb('dormindo'); toast("Dormindo — diga 'mestre' para acordar."); }
+                }
                 else if (data.tipo === "status") { toast(data.texto); }
                 else if (data.tipo === "erro") { toast("Erro: " + data.texto); }
             };
@@ -434,21 +446,35 @@
                 processor = audioCtx.createScriptProcessor(1024, 1, 1);
                 source.connect(processor); processor.connect(gainNode); gainNode.connect(audioCtx.destination);
 
+                // F5 (barge-in só do dono, Tier 1): só interrompe o narrador com voz ALTA
+                // e SUSTENTADA. Limiar maior (0.08 -> 0.12) descarta ruído/voz de fundo mais
+                // baixa; exigir BARGE_FRAMES seguidos ("mais uma chance") descarta estalos
+                // curtos. NÃO distingue a SUA voz de outra igualmente alta/perto — isso é o
+                // Tier 2 (speaker-ID), adiado. Ajuste os dois números conforme o seu ambiente
+                // (~64ms/frame @16kHz -> 4 frames ≈ 250ms de fala contínua).
+                const BARGE_RMS = 0.12, BARGE_FRAMES = 4;
+                let bargeFrames = 0;
                 processor.onaudioprocess = function (e) {
                     if (!isLiveMode) return;
                     const inputData = e.inputBuffer.getChannelData(0);
                     let sum = 0; for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
                     let avg = sum / inputData.length;
 
-                    if (iaFalando && avg > 0.08) {           // barge-in
-                        audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-                        iaFalando = false; atualizarEstadoOrb('listening');
-                        wsEnviar({ tipo: "barge_in" });
-                    }
-                    if (!iaFalando && wsAberto()) {
-                        const pcm16 = new Int16Array(inputData.length);
-                        for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
-                        ws.send(pcm16.buffer);
+                    if (iaFalando) {                          // barge-in gateado (F5)
+                        bargeFrames = avg > BARGE_RMS ? bargeFrames + 1 : 0;
+                        if (bargeFrames >= BARGE_FRAMES) {
+                            bargeFrames = 0;
+                            audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+                            iaFalando = false; atualizarEstadoOrb('listening');
+                            wsEnviar({ tipo: "barge_in" });
+                        }
+                    } else {
+                        bargeFrames = 0;
+                        if (wsAberto()) {
+                            const pcm16 = new Int16Array(inputData.length);
+                            for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+                            ws.send(pcm16.buffer);
+                        }
                     }
                 };
             } catch (err) {

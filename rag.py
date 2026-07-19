@@ -13,14 +13,20 @@ Correções sobre o monólito:
 from __future__ import annotations
 
 import asyncio
+import collections
 import glob
 import math
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import antiinjecao
+import disjuntor as _disjuntor
+import egressao
+import grafo
 import textutils
 from config import settings
 from state import LruCache
@@ -311,6 +317,37 @@ class MalhaIndex:
             return 0.0
         return math.log(self.n_atomos / df)
 
+    def pontes(self, df_min: int, coocorrencia_max: int, limite: int) -> list:
+        """Descobridor de Conexões (G8): delega ao `grafo.descobrir_pontes` os mapas da
+        malha (conceito->átomos, átomo->conceitos). Mantém a lógica de grafo pura e fora
+        da camada de dados. Vazio se a malha não foi construída."""
+        return grafo.descobrir_pontes(
+            self._por_conceito, self._conceitos_de, df_min, coocorrencia_max, limite
+        )
+
+    def centralidade(self, sources: List[str]) -> dict:
+        """Score de centralidade de cada `source` DENTRO do conjunto dado (G7).
+
+        Para cada átomo, soma sobre seus conceitos `idf(conceito) * (nº de OUTROS átomos
+        DO CONJUNTO que compartilham esse conceito)`. É a "hub-ness" do átomo em relação ao
+        próprio tema recuperado: um átomo cujos conceitos RAROS reaparecem nos vizinhos do
+        conjunto é o backbone do tema. Conceito-hub (idf baixo) quase não pontua — a mesma
+        régua da `vizinhos`. Source fora da malha (sem conceitos) recebe 0.0."""
+        conjunto = [s for s in sources if s in self._conceitos_de]
+        no_conjunto = set(conjunto)
+        scores: dict = {}
+        for s in conjunto:
+            total = 0.0
+            for c in self._conceitos_de.get(s, ()):  # já normalizados
+                peso = self.idf(c)
+                if peso <= 0:
+                    continue
+                portadores = self._por_conceito.get(c, ())
+                n_outros = sum(1 for o in portadores if o != s and o in no_conjunto)
+                total += peso * n_outros
+            scores[s] = total
+        return scores
+
     def vizinhos(
         self, sementes: List[str], limite: int, idf_min: float
     ) -> List[Tuple[float, "_DocVizinho"]]:
@@ -358,6 +395,23 @@ class LocalResult:
 # ==========================================================================
 # Embeddings (carregado uma vez)
 # ==========================================================================
+def _com_prefixos(inner, q_prefix: str, p_prefix: str):
+    """Envelopa um Embeddings para prefixar query/passagem (família e5). TODO caminho
+    de produção (Chroma index/busca, malha G5', RAG efêmero web) passa por embed_query/
+    embed_documents — então prefixar aqui, num ponto só, cobre tudo. Só é usado quando
+    há prefixo configurado (o chamador nem envelopa se ambos forem vazios)."""
+    from langchain_core.embeddings import Embeddings
+
+    class _Prefixado(Embeddings):
+        def embed_documents(self, texts):
+            return inner.embed_documents([p_prefix + t for t in texts])
+
+        def embed_query(self, text):
+            return inner.embed_query(q_prefix + text)
+
+    return _Prefixado()
+
+
 class EmbeddingProvider:
     def __init__(self) -> None:
         self._embeddings = None
@@ -377,12 +431,17 @@ class EmbeddingProvider:
                 cuda_ok = False
             device = resolve_device(settings.embedding_device, cuda_ok)
 
-            self._embeddings = HuggingFaceEmbeddings(
+            hf = HuggingFaceEmbeddings(
                 model_name=settings.embedding_model,
                 model_kwargs={"device": device},
                 encode_kwargs={"normalize_embeddings": False},
             )
-            telemetry.track("EMBED", f"Embeddings multilingues carregados (singleton, {device}).")
+            # Prefixos e5 (query:/passage:) se configurados — no-op para o MiniLM atual.
+            qp = settings.embedding_query_prefix
+            pp = settings.embedding_passage_prefix
+            self._embeddings = _com_prefixos(hf, qp, pp) if (qp or pp) else hf
+            extra = f", prefixos q='{qp}' p='{pp}'" if (qp or pp) else ""
+            telemetry.track("EMBED", f"Embeddings multilingues carregados (singleton, {device}{extra}).")
         except Exception as exc:
             telemetry.error("EMBED", "Falha ao carregar embeddings", exc)
 
@@ -400,6 +459,7 @@ class VectorStore:
         self._store = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
         self.malha = MalhaIndex()
+        self._recuperado_ja = False  # #33: recupera índice no máximo 1x por processo
 
     @property
     def ready(self) -> bool:
@@ -409,30 +469,58 @@ class VectorStore:
         """Síncrono — chamar via asyncio.to_thread no startup."""
         self._embeddings.load()
 
+    def _construir_store(self):
+        """Constrói o cliente Chroma (síncrono — chamar via to_thread). Isolado do
+        open() para o caminho de auto-recuperação poder reabrir sem duplicar código."""
+        from langchain_chroma import Chroma
+
+        return Chroma(
+            embedding_function=self._embeddings.instance,
+            persist_directory=settings.diretorio_banco_vetorial,
+            # Distância de COSSENO (não o L2 padrão). Os embeddings não são
+            # normalizados (norma ~4-5), então o L2 dá distâncias ~15 e os
+            # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
+            # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
+            # Com cosseno, um bom match fica ~0.3 e o gate funciona.
+            collection_metadata={"hnsw:space": "cosine"},
+        )
+
+    async def _abrir_e_provar(self):
+        """Abre o Chroma E o PROVA com uma leitura mínima. A prova é o que
+        distingue 'abriu' de 'abriu íntegro': um HNSW/sqlite corrompido às vezes
+        constrói o objeto e só estoura na 1ª leitura. Levanta se algo falhar."""
+        store = await asyncio.to_thread(self._construir_store)
+        await asyncio.to_thread(lambda: store.get(limit=1))  # probe
+        return store
+
     async def open(self) -> None:
         if self._embeddings.instance is None:
             telemetry.warn("DB", "VectorStore sem embeddings — indexação desativada.")
             return
-        try:
-            from langchain_chroma import Chroma
-
-            async with self._write_lock:
-                self._store = await asyncio.to_thread(
-                    lambda: Chroma(
-                        embedding_function=self._embeddings.instance,
-                        persist_directory=settings.diretorio_banco_vetorial,
-                        # Distância de COSSENO (não o L2 padrão). Os embeddings não são
-                        # normalizados (norma ~4-5), então o L2 dá distâncias ~15 e os
-                        # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
-                        # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
-                        # Com cosseno, um bom match fica ~0.3 e o gate funciona.
-                        collection_metadata={"hnsw:space": "cosine"},
-                    )
+        async with self._write_lock:
+            try:
+                self._store = await self._abrir_e_provar()
+                telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
+            except Exception as exc:
+                # #33: índice corrompido. Como o vault é a fonte de verdade, move o
+                # banco corrompido para o lado e reabre vazio — o sync() seguinte
+                # reconstrói do vault (sem tocar mtime dos .md). Uma vez por processo.
+                if not (settings.indice_auto_recuperar and not self._recuperado_ja):
+                    telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
+                    return
+                self._recuperado_ja = True
+                telemetry.error("DB", "ChromaDB corrompido — recuperando do vault", exc)
+                await asyncio.to_thread(
+                    mover_indice_corrompido, settings.diretorio_banco_vetorial
                 )
-            telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
+                try:
+                    self._store = await self._abrir_e_provar()
+                    telemetry.track("DB", "Índice recuperado: banco vazio reaberto, sync reconstrói do vault.")
+                except Exception as exc2:
+                    telemetry.error("DB", "Recuperação do índice falhou", exc2)
+                    return
+        if self._store is not None:
             await self._reconstruir_malha()
-        except Exception as exc:
-            telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
 
     async def _reconstruir_malha(self) -> None:
         """Recarrega o índice de conceitos do que está no Chroma.
@@ -576,17 +664,30 @@ class VectorStore:
             telemetry.error("LOCAL", "Falha na busca para síntese", exc)
             return []
         vistos: set[str] = set()
-        out: List[str] = []
+        itens: List[Tuple[str, str]] = []   # (conteúdo, source)
         for doc, _score in res:
             c = strip_frontmatter(doc.page_content).strip()
             if c and c not in vistos:
                 vistos.add(c)
-                out.append(c)
-        return out
+                itens.append((c, str(doc.metadata.get("source") or "")))
+        # HUBS PRIMEIRO (G7): reordena por centralidade na malha para o backbone do tema
+        # cair nos primeiros lotes do map-reduce. Ordenação ESTÁVEL: empate preserva a
+        # relevância vetorial. Sem malha construída (n_atomos==0, testes), mantém a ordem.
+        if settings.sintese_hubs_primeiro and self.malha.n_atomos > 0:
+            cent = self.malha.centralidade([s for _, s in itens])
+            itens.sort(key=lambda it: -cent.get(it[1], 0.0))
+        return [c for c, _ in itens]
 
-    async def search(self, termos: str, texto_busca: Optional[str] = None) -> LocalResult:
+    async def search(
+        self, termos: str, texto_busca: Optional[str] = None, economico: bool = False
+    ) -> LocalResult:
         """
         Busca híbrida local COM aterramento léxico.
+
+        `economico=True` (Modo Econômico #30) BYPASSA o gate: aceita qualquer átomo
+        VÁLIDO (< rag_score_max) como contexto, mesmo sem aterramento nem confiança —
+        reabre o "Cache Hit falso" DE PROPÓSITO (opt-in), para responder local em vez
+        de escalar pra web. Trade-off do usuário: menos web, menos precisão.
 
         Um chunk só conta como contexto relevante se (a) menciona alguma keyword da
         pergunta OU (b) é semanticamente muito próximo (distância < rag_score_confident).
@@ -653,7 +754,12 @@ class VectorStore:
             checa_near = 0.0 < limiar_dedup < 1.0
             tokens_vistos: List[set] = []
             candidatos: List[Tuple[float, object]] = []
-            for s, d in aterrados + confiaveis:
+            # Modo Econômico (#30): ignora aterramento/confiança e considera TODOS os
+            # válidos — assim uma pergunta sem match forte ainda responde do vault.
+            fonte_candidatos = validos if economico else (aterrados + confiaveis)
+            if economico and validos:
+                telemetry.track("LOCAL", "Modo econômico: gate bypassado, ingerindo todos os válidos.")
+            for s, d in fonte_candidatos:
                 if d.page_content in vistos:
                     continue
                 if checa_near:
@@ -677,13 +783,35 @@ class VectorStore:
                     src = str(d.metadata.get("source") or "")
                     if src and src not in sementes:
                         sementes.append(src)
+                brutos: List[object] = []
                 for _score, dv in self.malha.vizinhos(
                     sementes, settings.malha_max_vizinhos, settings.malha_idf_min
                 ):
                     if dv.page_content in vistos:
                         continue
                     vistos.add(dv.page_content)
-                    vizinhos.append((None, dv))
+                    brutos.append(dv)
+                # G5′: FILTRO DE PROXIMIDADE À PERGUNTA. A malha traz o vizinho pelo conceito
+                # raro COMPARTILHADO, mas medido: vem "do assunto certo, da pergunta errada".
+                # Rankeia os vizinhos pela similaridade de cosseno com a PERGUNTA (embedding já
+                # carregado) e corta os abaixo de malha_sim_min — exige conceito raro E
+                # proximidade. Fail-open: sem embeddings (testes), botão 0, ou erro, mantém
+                # todos (comportamento anterior). Já sai ordenado por proximidade (melhor 1º).
+                emb = self._embeddings.instance if self._embeddings else None
+                if emb is not None and brutos and settings.malha_sim_min > 0:
+                    try:
+                        qv = await asyncio.to_thread(emb.embed_query, consulta)
+                        textos = [d.page_content for d in brutos]
+                        vv = await asyncio.to_thread(emb.embed_documents, textos)
+                        por_texto = {d.page_content: d for d in brutos}
+                        rankeados = rankear_por_similaridade(qv, list(zip(textos, vv)))
+                        brutos = [
+                            por_texto[t] for sim, t in rankeados
+                            if sim >= settings.malha_sim_min
+                        ]
+                    except Exception as exc:
+                        telemetry.error("MALHA", "Falha no filtro de proximidade do vizinho", exc)
+                vizinhos = [(None, dv) for dv in brutos]
 
             # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
@@ -761,6 +889,32 @@ def buscar_com_fallback(fetch_backend, backends: List[str]) -> list:
     return []
 
 
+def mover_indice_corrompido(diretorio: str) -> Optional[str]:
+    """Move um índice Chroma corrompido para `<dir>.corrompido` (best-effort). Puro
+    o bastante para teste: só toca o filesystem do próprio banco vetorial, nunca o
+    vault. Devolve o destino, ou None se não havia dir (ou o move falhou — ex.: lock
+    de sqlite no Windows, caso comum em corrupção pós-abertura).
+
+    Guardamos a cópia corrompida (em vez de apagar) para inspeção; só mantemos a
+    MAIS RECENTE (a anterior é descartada) para não vazar disco a cada recuperação.
+    """
+    if not os.path.isdir(diretorio):
+        return None
+    destino = diretorio.rstrip("/\\") + ".corrompido"
+    try:
+        if os.path.exists(destino):
+            shutil.rmtree(destino, ignore_errors=True)
+        os.rename(diretorio, destino)
+        return destino
+    except OSError as exc:
+        # No Windows, um sqlite ainda aberto trava o rename. Não conseguimos mover;
+        # o chamador degrada graciosamente (deixa claro o que fazer na mão).
+        telemetry.warn(
+            "DB", f"Não consegui mover o índice corrompido ({exc}). Apague '{diretorio}' na mão."
+        )
+        return None
+
+
 def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     """Quebra um texto corrido em pedaços para o ranking efêmero. Puro/testável."""
     from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -806,8 +960,23 @@ class WebSearcher:
     def __init__(self, embeddings: Optional["EmbeddingProvider"] = None) -> None:
         self._cache = LruCache(settings.max_web_cache)
         self._embeddings = embeddings  # p/ o ranking do RAG efêmero (opcional)
+        # #31: disjuntor anti-shadowban + fila offline (em RAM).
+        self._disjuntor = _disjuntor.Disjuntor(
+            settings.web_disjuntor_limite_falhas, settings.web_disjuntor_cooldown_seg
+        )
+        self._pendentes: "collections.deque[Tuple[str, Optional[str]]]" = collections.deque(
+            maxlen=settings.web_pendentes_max
+        )
+        self._retry_task = None  # ref forte: sem ela o GC come o drain (war story #2)
 
     async def _ddg(self, termo: str, max_results: int) -> list:
+        # Guarda de Egressão (#6): este é o ÚNICO ponto onde texto do usuário sai
+        # para a rede. Mascara PII antes de o termo virar uma query no DDG.
+        if settings.egressao_guarda:
+            termo, pii = egressao.mascarar_pii(termo)
+            if pii:
+                telemetry.warn("EGRESSAO", f"PII mascarada na query web: {', '.join(pii)}")
+
         def _fetch() -> list:
             from ddgs import DDGS
 
@@ -895,6 +1064,16 @@ class WebSearcher:
         if not chunks:
             return None
 
+        # #26: conteúdo web é NÃO-confiável — dropa os trechos com injeção de prompt
+        # ANTES de eles virarem contexto do LLM. Se sobrou algo limpo, refaz com ele;
+        # se a página inteira era payload, cai para os snippets (return None).
+        if settings.antiinjecao_web:
+            chunks, removidos = antiinjecao.filtrar_chunks(chunks)
+            if removidos:
+                telemetry.warn("ANTIINJECAO", f"{removidos} trecho(s) web suspeito(s) de injeção — dropados.")
+            if not chunks:
+                return None
+
         try:
             vecs = await asyncio.to_thread(emb.embed_documents, chunks)
             qvec = await asyncio.to_thread(emb.embed_query, consulta)
@@ -926,9 +1105,20 @@ class WebSearcher:
         cached = self._cache.get(termo)
         if cached is not None:
             return cached
+        # #31: disjuntor ABERTO -> não toca o DDG (anti-shadowban); enfileira e sai.
+        if settings.web_disjuntor_habilitado and self._disjuntor.aberto():
+            self._pendentes.append((termo, consulta))
+            telemetry.warn(
+                "DDG_API",
+                f"Web em cooldown ({self._disjuntor.segundos_restantes():.0f}s) — "
+                f"query enfileirada, sem bater no DDG.",
+            )
+            return NENHUM
+        self._talvez_retomar_pendentes()  # cooldown passou? drena a fila em background
         telemetry.track("DDG_API", f"Disparando pesquisa web para: '{termo}'")
         try:
             res = await self._ddg(termo, settings.web_max_results)
+            self._disjuntor.registrar_sucesso()  # canal respondeu (mesmo que vazio)
             if not res:
                 return NENHUM
 
@@ -946,19 +1136,49 @@ class WebSearcher:
             self._cache.put(termo, ctx)
             return ctx
         except Exception as exc:
+            self._disjuntor.registrar_falha()  # falha de CANAL -> aproxima do cooldown
+            self._pendentes.append((termo, consulta))
             telemetry.error("DDG_API", "Erro na busca web", exc)
             return NENHUM
 
+    def _talvez_retomar_pendentes(self) -> None:
+        """Se o cooldown já passou e há fila offline, drena em background. Segura a
+        ref da task (self._retry_task) — sem isso o GC mata o drain (war story #2)."""
+        if not self._pendentes:
+            return
+        if self._retry_task is not None and not self._retry_task.done():
+            return  # já tem um drain rodando
+        try:
+            self._retry_task = asyncio.get_running_loop().create_task(self._retomar_pendentes())
+        except RuntimeError:
+            pass  # sem loop (contexto síncrono/teste) — sem drenagem, sem crash
+
+    async def _retomar_pendentes(self) -> None:
+        """Re-executa as buscas enfileiradas durante o cooldown. Best-effort: o
+        resultado cai no cache LRU, então uma re-pergunta idêntica sai na hora. Se
+        uma falhar de novo, o disjuntor reabre e o resto volta para a fila."""
+        while self._pendentes and not self._disjuntor.aberto():
+            termo, consulta = self._pendentes.popleft()
+            if self._cache.get(termo) is not None:
+                continue  # já resolvido nesse meio tempo
+            await self.search(termo, consulta)
+
     async def prefetch(self, tema: str) -> Optional[str]:
         """Speculative Pre-fetch: busca ampla para antecipar a próxima pergunta."""
+        # #31: pre-fetch é ESPECULATIVO — durante o cooldown, jamais gastar uma
+        # chamada ao DDG só para antecipar (é o 1º a cortar sob risco de ban).
+        if settings.web_disjuntor_habilitado and self._disjuntor.aberto():
+            return None
         telemetry.track("PRE_FETCH", f"Baixando contexto amplo sobre '{tema}'...")
         try:
             res = await self._ddg(f"{tema} resumo geral historico", settings.web_prefetch_results)
+            self._disjuntor.registrar_sucesso()
             if not res:
                 return None
             ctx = "\n".join(f"- CONTEXTO AMPLO ({r['title']}): {r['body']}" for r in res)
             telemetry.track("PRE_FETCH", "Contexto amplo pronto para a RAM.")
             return ctx
         except Exception as exc:
+            self._disjuntor.registrar_falha()
             telemetry.error("PRE_FETCH", "Erro no pre-fetch", exc)
             return None

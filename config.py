@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
-    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
     # Cache onde o faster-whisper baixa os pesos do Whisper na 1ª execução.
     caminho_cache_whisper: str = str(DIR_WHISPER)
@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo map-reduce SEPARADO —
     # recupera muitos átomos e os resume em LOTES que cabem no n_ctx, depois combina.
     sintese_top_k: int = 60             # átomos recuperados (largo — é uma varredura do tema)
+    # HUBS PRIMEIRO na síntese (G7, Onda 3): o map-reduce fatia os átomos em lotes; se o
+    # tema é grande, os últimos lotes podem nem influenciar tanto o reduce. Reordenar os
+    # átomos por CENTRALIDADE na malha (o "backbone" do tema — átomos cujos conceitos raros
+    # reaparecem nos vizinhos do próprio conjunto) faz o núcleo do tema entrar nos PRIMEIROS
+    # lotes. Sem malha construída, mantém a ordem vetorial. Desligue com off.
+    sintese_hubs_primeiro: bool = True
     sintese_lote_chars: int = 6000      # orçamento de chars por lote (map) — protege o n_ctx
     max_tokens_sintese_tema: int = 400  # teto de cada resumo parcial (map)
 
@@ -83,6 +89,17 @@ class Settings(BaseSettings):
     # espaço para embeddings/Whisper. EXIGE flash_attn=True (o cache V quantizado
     # só funciona com flash attention no llama.cpp). Ver _build_llama_kwargs.
     kv_cache_type: str = "f16"
+    # --- Qwen3: raciocínio e a tag <think> --------------------------------------
+    # O Qwen3 ABRE toda resposta com um bloco <think>…</think>. "/no_think" no system
+    # prompt desliga o raciocínio (o bloco sai VAZIO), mas a TAG continua saindo — e sem
+    # removê-la ela vaza para o SentenceChunker e o TTS "fala" a marcação. Os dois botões
+    # andam juntos e são NO-OP em modelos que não usam <think> (Qwen2.5, Llama…), por isso
+    # são flags e não default. Ligue os dois ao apontar o LLM para um Qwen3.
+    # LIGADOS por default porque o modelo default É um Qwen3. Ao apontar o LLM para um
+    # modelo SEM <think> (Qwen2.5, Llama…), desligue os dois — o strip vira no-op sozinho,
+    # mas o "/no_think" viraria texto solto no system prompt.
+    llm_no_think: bool = True       # prefixa "/no_think" no system prompt
+    llm_strip_think: bool = True    # remove o bloco <think>…</think> do início do stream
 
     # --- Speculative decoding (§5) — prompt-lookup ------------------------------
     # DESLIGADO por default após benchmark no RTX 3080 (2026-07): o
@@ -108,6 +125,16 @@ class Settings(BaseSettings):
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
     # (e acelera a reindexação). Force com MENTE_EMBEDDING_DEVICE=cpu se precisar.
     embedding_device: str = "auto"
+    # PREFIXOS DE INSTRUÇÃO (família e5): modelos como intfloat/multilingual-e5-* foram
+    # treinados com "query: " nas perguntas e "passage: " nos documentos — sem isso
+    # perdem boa parte da qualidade. VAZIOS por padrão (o MiniLM atual não usa prefixo);
+    # ao trocar para um e5, ligue no .env: MENTE_EMBEDDING_QUERY_PREFIX="query: " e
+    # MENTE_EMBEDDING_PASSAGE_PREFIX="passage: ". Aplicados no EmbeddingProvider (rag.py),
+    # cobrindo TODO caminho (Chroma index/busca, malha, RAG efêmero web) de uma vez.
+    # ATENÇÃO: trocar o modelo/prefixo EXIGE reindexar o vault (apagar banco_vetorial_*)
+    # E recalibrar os thresholds do gate — a escala de distância muda com o modelo.
+    embedding_query_prefix: str = ""
+    embedding_passage_prefix: str = ""
 
     # --- RAG / Busca -----------------------------------------------------------
     # Nº de candidatos recuperados do vetor. A base é ZETTELKASTEN ATÔMICA — cada
@@ -210,6 +237,15 @@ class Settings(BaseSettings):
     # Compartilhar um conceito raro é evidência de vizinhança; compartilhar [[IA]] não é.
     # Subir = expansão mais conservadora (só conceito muito específico conecta).
     malha_idf_min: float = 4.0
+    # G5′ (Onda 3): FILTRO DE PROXIMIDADE do vizinho da malha à PERGUNTA. A medição que
+    # desligou a expansão mostrou o vizinho vindo "do assunto certo, da pergunta errada"
+    # (fine-tuning de YOLO numa pergunta sobre TensorRT). Agora, além do conceito raro
+    # (malha_idf_min), o vizinho só entra se a similaridade de cosseno do seu texto com a
+    # PERGUNTA for >= este mínimo (usa o embedding já carregado, rankear_por_similaridade).
+    # Assim a expansão exige conceito raro E proximidade — o conserto que torna
+    # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
+    # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
+    malha_sim_min: float = 0.5
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000
@@ -237,6 +273,71 @@ class Settings(BaseSettings):
     web_rank_top_k: int = 12            # nº de trechos rankeados que entram no contexto
     # Orçamento de chars do contexto web montado (protege o n_ctx, como o do RAG local).
     web_context_char_budget: int = 6000
+    # --- Guarda de Egressão (#6): anti-PII na query web ------------------------
+    # A ÚNICA saída de rede é o WebSearcher. Antes de a query ir ao DDG, mascara
+    # PII do dono (e-mail, CPF/CNPJ, cartão via Luhn, telefone) por um token
+    # semântico ([email], [cpf], ...). Conservador de propósito p/ não estragar
+    # busca legítima; toda máscara é logada. Desligue com MENTE_EGRESSAO_GUARDA=false.
+    egressao_guarda: bool = True
+    # --- Auto-recuperação de Índice (#33) --------------------------------------
+    # Se o ChromaDB abrir corrompido (HNSW truncado, sqlite quebrado), o RAG local
+    # morria em silêncio até um restart + apagar o banco na mão. Como o vault é a
+    # FONTE DE VERDADE, a recuperação move o índice corrompido para o lado e
+    # reconstrói do vault — SEM tocar o mtime dos .md (nada de reindex-ruim em
+    # massa na origem). Best-effort, uma vez por processo. Desligue com false.
+    indice_auto_recuperar: bool = True
+    # --- Fila Offline / Disjuntor da web (#31) ---------------------------------
+    # Circuit breaker anti-shadowban: N falhas de rede seguidas ABREM a busca web
+    # por um cooldown; enquanto aberto, a query nem toca o DDG (não apanha ban) e
+    # vai para uma fila em RAM, drenada (best-effort, p/ o cache) quando reabre.
+    web_disjuntor_habilitado: bool = True
+    web_disjuntor_limite_falhas: int = 3     # falhas seguidas p/ abrir
+    web_disjuntor_cooldown_seg: float = 900  # ~15 min de descanso do DDG
+    web_pendentes_max: int = 20              # teto da fila offline (em RAM)
+    # --- Modo Econômico (#30): botão-mestre da feature --------------------------
+    # Se false, o meta-comando "modo econômico" fica inerte (o gate nunca é
+    # bypassado). Default on = feature disponível, mas SEMPRE opt-in por sessão.
+    modo_economico_habilitada: bool = True
+    # --- Anti-injeção no conteúdo web (#26) ------------------------------------
+    # O deep-fetch passa corpo de página (dado NÃO-confiável) ao LLM. Trechos com
+    # imperativos de override ("ignore as instruções anteriores") são DROPADOS antes
+    # de entrar no contexto; os limpos seguem. Desligue com MENTE_ANTIINJECAO_WEB=false.
+    antiinjecao_web: bool = True
+    # --- Detector de Contradição (#24, no idle) --------------------------------
+    # Após atomizar no idle, cada átomo novo é comparado com seu VIZINHO semântico
+    # "relacionado mas distinto" (dist na banda [dedup_dist_max, contradicao_dist_max))
+    # — é aí que mora a contradição. Um veredito LLM (preemptível) por par, capado por
+    # ciclo. "mestre, alguma contradição?" reporta as achadas. Desligue com false.
+    contradicao_detectar: bool = True
+    contradicao_dist_max: float = 0.6        # teto da banda de "mesmo tema" (cosseno)
+    contradicao_max_por_ciclo: int = 3       # tetos de chamadas LLM por atomização
+    max_tokens_contradicao: int = 60         # veredito é curto (SIM/NAO + motivo)
+    # --- Governador de VRAM (#28) + orçamento de tokens de fundo (#29) ----------
+    # #28: o scheduler amostra o uso de VRAM a cada tick e AVISA se detectar
+    # crescimento sustentado (vazamento). Só observa. #29: calibra quantos tokens
+    # o trabalho de FUNDO (ETL, contradição) pode gerar pela fração de VRAM livre —
+    # pouca folga -> gera menos, para não competir com a inferência interativa.
+    vram_monitor_habilitado: bool = True
+    vram_leak_amostras: int = 12             # janela do detector de vazamento
+    vram_leak_slack_bytes: int = 400_000_000  # ~400 MB de crescimento p/ alertar
+    vram_orcamento_base_tokens: int = 512    # teto de tokens de fundo com VRAM folgada
+    vram_orcamento_min_tokens: int = 128     # piso de tokens de fundo com VRAM apertada
+    vram_frac_min: float = 0.08              # abaixo disso, aperto (usa o piso)
+    vram_frac_ok: float = 0.35               # acima disso, folga (usa a base)
+    # --- Diapasão (#36): perfil de COMO o dono prefere conversar ---------------
+    # No idle, destila da conversa uma diretriz de ESTILO (curto/detalhado, exemplos,
+    # tom técnico) e a injeta na instrução de resposta — adapta o COMO, não imita o
+    # tom, não muda o conteúdo. "mestre, como você me vê?" reporta. Desligue com false.
+    diapasao_habilitado: bool = True
+    max_tokens_perfil: int = 80              # o perfil é 1-2 frases
+    # --- Fio da Conversa (#35) -------------------------------------------------
+    # "mestre, onde paramos?" resgata o assunto de uma conversa anterior. Só conta
+    # como fio uma conversa com >= fio_min_turnos trocas (assunto real, não um 'oi').
+    fio_min_turnos: int = 2
+    # --- Navegação por Voz (#14) -----------------------------------------------
+    # "mestre, nova conversa" / "mostra o histórico" / "abre a conversa sobre X"
+    # operam a UI: o backend manda {tipo:"navegar"} e o front executa. Desligue com false.
+    navegacao_voz_habilitada: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
@@ -284,6 +385,14 @@ class Settings(BaseSettings):
     # Sem ela, o pipeline de hoje não muda. Configurável por MENTE_PALAVRA_MESTRE.
     palavra_mestre: str = "mestre"
     palavra_mestre_habilitada: bool = True
+    # F3 — WAKE-WORD "mestre" (modo tipo Alexa): quando LIGADO, a sessão live começa
+    # DORMENTE e só processa fala DEPOIS de a palavra-mestre acordá-la; após
+    # `mestre_sleep_seconds` de silêncio, dorme de novo (só "mestre" reacorda). Assim a
+    # voz de outra pessoa por perto NÃO dispara nada. DESLIGADO (default) = sempre ativa,
+    # como hoje. Gate no servidor: só vale com o live conectado (mic já streamando).
+    # Ligue com MENTE_MESTRE_WAKE=true.
+    mestre_wake: bool = False
+    mestre_sleep_seconds: float = 15.0
 
     # --- Agentes / Scheduler (lembretes, alarmes, watchers, briefing) -----------
     # O SchedulerService é um loop de background que lê a tabela `agendamentos` e
@@ -302,6 +411,10 @@ class Settings(BaseSettings):
     briefing_hora_padrao: str = "07:00"
     # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
     subpasta_listas: str = "Listas"
+    # LEITOR DE AGENDA .ics (#40): 100% LOCAL. Aponte para uma pasta (dentro do vault por
+    # default) com .ics exportados do seu calendário (Google/Outlook). O app lê os
+    # compromissos de HOJE para "mestre, o que tenho hoje" e para o briefing. Nada vai à nuvem.
+    subpasta_agenda: str = "Agenda"
     # COFRE DE CONFIRMAÇÃO (#25): ações destrutivas E não-desfazíveis (hoje só
     # cancelar_lembrete — o undo #8 não recria um lembrete) exigem um "mestre, confirma"
     # antes de rodar. As ações que o undo cobre (add/remove) NÃO são gateadas — confirmar
@@ -312,6 +425,29 @@ class Settings(BaseSettings):
     # normalizada) precisa se repetir para o app OFERECER um atalho nomeado. A oferta
     # acontece UMA vez por intenção. 0/negativo desliga a sugestão (só conta).
     atalho_sugestao_min: int = 3
+    # DESCOBRIDOR DE CONEXÕES (G8, Onda 3): "mestre, alguma conexão nova?" acha PONTES no
+    # vault — notas que ligam dois conceitos ESTABELECIDOS (cada um em >= conexao_df_min
+    # átomos) que quase nunca co-ocorrem (<= conexao_coocorrencia_max átomos juntos). É o
+    # "descobridor de conexões" (#22) por DEMANDA, sem push. Roda sobre a malha de conceitos.
+    # Menor df_min = temas menos consolidados entram; maior coocorrencia_max = pontes menos
+    # "surpreendentes" (temas que já se cruzam mais). limite = quantas pontes a fala traz.
+    conexao_df_min: int = 3
+    conexao_coocorrencia_max: int = 1
+    conexao_limite: int = 3
+
+    # --- SRS: repetição espaçada (#43) -----------------------------------------
+    # "mestre, revisa isso" cria um card da última troca; "mestre, revisão" puxa os cards
+    # vencidos (SOB DEMANDA, sem push). Leitner: acerto avança a caixa (intervalo maior),
+    # erro volta à primeira. Intervalos em DIAS por caixa (0 a N). Persistente no SQLite.
+    srs_intervalos_dias: list[int] = [1, 3, 7, 16, 35]
+    srs_max_por_sessao: int = 10   # teto de cards por sessão de revisão (não cansar)
+
+    # --- Pomodoro (#19) --------------------------------------------------------
+    # Ciclo foco/pausa anunciado por voz (via SchedulerService, tipo 'pomodoro'): quando o
+    # foco acaba avisa a pausa; quando a pausa acaba, volta ao foco. Cicla até "para o
+    # pomodoro". Minutos por fase.
+    pomodoro_foco_min: int = 25
+    pomodoro_pausa_min: int = 5
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
@@ -333,6 +469,10 @@ class Settings(BaseSettings):
         return Path(self.caminho_obsidian) / self.subpasta_listas
 
     @property
+    def dir_agenda(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_agenda
+
+    @property
     def arquivo_inbox(self) -> Path:
         # Captura Rápida (GTD): tudo que o usuário "anota rápido" cai aqui, cru, com
         # carimbo de tempo. Fica no vault (indexado, pesquisável); o ritual de revisão
@@ -345,6 +485,7 @@ class Settings(BaseSettings):
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
         os.makedirs(self.dir_listas, exist_ok=True)
+        os.makedirs(self.dir_agenda, exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)

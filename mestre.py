@@ -121,6 +121,430 @@ def comando_desfazer(comando: str) -> bool:
     return any(g in n for g in _GATILHO_DESFAZER)
 
 
+# DESCOBRIDOR DE CONEXÕES (#22/G8): frases que pedem as PONTES do vault ("o que liga meus
+# temas?"). É meta-comando de INSIGHT, não uma ação de agente — tratado no fluxo-mestre
+# (lê a malha em ctx), como o desfazer lê o estado da sessão.
+_GATILHO_CONEXAO = (
+    "alguma conexao nova", "conexoes novas", "conexao nova", "alguma conexao",
+    "que conexoes", "quais conexoes", "conexoes entre", "descobriu conexao",
+    "achou conexao", "liga meus temas", "conectando", "pontes",
+)
+
+
+def comando_conexoes(comando: str) -> bool:
+    """True se a mensagem pede as PONTES do vault (G8, descobridor de conexões). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONEXAO)
+
+
+# DETECTOR DE CONTRADIÇÃO (#24): pede o RELATÓRIO das contradições que o idle achou.
+# Insight sob demanda (lê a tabela), como o descobridor de conexões.
+_GATILHO_CONTRADICAO = (
+    "alguma contradicao", "contradicoes", "contradicao", "tem contradicao",
+    "notas que se contradizem", "algo se contradiz", "conflito nas notas",
+    "notas conflitantes", "achou contradicao",
+)
+
+
+def comando_contradicoes(comando: str) -> bool:
+    """True se a mensagem pede o relatório de contradições do vault (#24). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONTRADICAO)
+
+
+# DIAPASÃO (#36): pede para o assistente DIZER o perfil de conversa que aprendeu.
+_GATILHO_PERFIL = (
+    "como voce me ve", "como voce me enxerga", "qual meu perfil", "meu perfil de conversa",
+    "como eu gosto de conversar", "o que voce aprendeu sobre como", "como voce acha que eu",
+)
+
+
+def comando_perfil(comando: str) -> bool:
+    """True se a mensagem pede o perfil de conversa aprendido (#36). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_PERFIL)
+
+
+# FIO DA CONVERSA (#35): pede para RETOMAR um assunto de uma conversa anterior.
+_GATILHO_FIO = (
+    "onde paramos", "onde a gente parou", "retoma o fio", "retomar o fio",
+    "continua de onde paramos", "o que a gente estava falando", "o que estavamos falando",
+    "sobre o que a gente conversou", "retoma a conversa", "de volta ao assunto",
+)
+
+
+def comando_retomar_fio(comando: str) -> bool:
+    """True se a mensagem pede para retomar o fio de uma conversa anterior (#35). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_FIO)
+
+
+# NAVEGAÇÃO POR VOZ (#14): comandos que operam a INTERFACE (não o conhecimento).
+# O parser é puro; a AÇÃO reconhecida vira uma mensagem {tipo:"navegar"} que o front
+# executa. "abrir a conversa sobre X" carrega um tema (o backend resolve o id).
+_NAV_NOVA = ("nova conversa", "novo chat", "comeca uma conversa", "comecar uma conversa",
+             "conversa nova", "limpa a conversa", "recomecar")
+_NAV_ABRIR_HIST = ("mostra o historico", "abre o historico", "abrir historico",
+                   "minhas conversas", "lista de conversas", "abre o menu", "mostra as conversas")
+_NAV_FECHAR_HIST = ("fecha o historico", "fechar historico", "fecha o menu", "esconde o historico")
+# "abrir a conversa sobre <tema>" / "carrega a conversa de <tema>". Inclui "retoma a
+# conversa sobre X" — senão o gatilho genérico do #35 ("retoma a conversa") o engoliria
+# e perderia o TEMA (abrir a conversa certa é mais específico que "onde paramos").
+_NAV_CARREGAR_RE = re.compile(
+    r"(?:abr(?:e|ir)|carreg(?:a|ar)|volta(?:r)? (?:pra|para)|reabr(?:e|ir)|retoma(?:r)?)\s+"
+    r"(?:a\s+|o\s+)?(?:conversa|chat)\s+(?:sobre\s+|de\s+|do\s+|da\s+)?(.+)"
+)
+
+
+def parse_navegacao(comando: str) -> Optional[dict]:
+    """Mapeia um comando de VOZ para uma ação de navegação da UI (#14). Puro.
+
+    Devolve {'acao': ...} — 'nova_conversa' | 'abrir_historico' | 'fechar_historico'
+    | {'acao':'carregar_conversa','tema': <texto>} — ou None se não é navegação.
+    O 'carregar' é checado por REGEX antes das listas (tem argumento)."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    m = _NAV_CARREGAR_RE.search(n)
+    if m and m.group(1).strip():
+        return {"acao": "carregar_conversa", "tema": m.group(1).strip()}
+    if any(g in n for g in _NAV_FECHAR_HIST):
+        return {"acao": "fechar_historico"}
+    if any(g in n for g in _NAV_ABRIR_HIST):
+        return {"acao": "abrir_historico"}
+    if any(g in n for g in _NAV_NOVA):
+        return {"acao": "nova_conversa"}
+    return None
+
+
+# SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
+# cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
+# de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma
+# revisão em andamento — fora dela, "acertei" é palavra comum e não deve ativar nada.
+_GATILHO_SRS_MARCAR = (
+    "revisa isso", "revise isso", "revisar isso", "marca pra revisar", "marca para revisar",
+    "guarda pra revisao", "guarda para revisao", "adiciona a revisao", "coloca na revisao",
+    "quero revisar isso", "guarda isso pra revisar",
+)
+_GATILHO_SRS_INICIAR = (
+    "revisao", "revisar", "hora de revisar", "me faz revisar", "vamos revisar",
+    "quero revisar", "bora revisar", "comecar a revisao", "iniciar revisao",
+)
+_GATILHO_SRS_MOSTRAR = (
+    "mostra", "mostrar", "revela", "revelar", "qual a resposta", "qual e a resposta",
+    "nao sei", "nao lembro", "me mostra", "abre",
+)
+_GATILHO_SRS_ACERTEI = ("acertei", "sabia", "lembrava", "acertou", "certo", "lembrei", "acerto")
+_GATILHO_SRS_ERREI = ("errei", "nao sabia", "nao lembrava", "esqueci", "errou", "errado", "nao lembrei")
+_GATILHO_SRS_PARAR = (
+    "para a revisao", "parar a revisao", "parar revisao", "chega de revisao",
+    "encerra a revisao", "encerrar revisao", "sair da revisao", "chega por hoje",
+)
+
+
+def _casa(comando: str, gatilhos) -> bool:
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in gatilhos)
+
+
+def comando_srs_marcar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_MARCAR)
+
+
+def comando_srs_iniciar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_INICIAR)
+
+
+def comando_srs_mostrar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_MOSTRAR)
+
+
+def comando_srs_acertei(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_ACERTEI)
+
+
+def comando_srs_errei(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_ERREI)
+
+
+def comando_srs_parar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_PARAR)
+
+
+def comando_srs_sub(comando: str) -> bool:
+    """É um sub-comando de uma revisão EM ANDAMENTO (mostra/acertei/errei/parar)? Só deve
+    ser consultado quando há revisão ativa — fora dela, essas palavras são comuns."""
+    return (
+        comando_srs_mostrar(comando) or comando_srs_acertei(comando)
+        or comando_srs_errei(comando) or comando_srs_parar(comando)
+    )
+
+
+# LEITOR DE AGENDA (#40): "o que tenho hoje" / "minha agenda". Só LEITURA (não muta nada).
+_GATILHO_AGENDA = (
+    "o que tenho hoje", "o que tenho pra hoje", "o que tenho para hoje", "minha agenda",
+    "meus compromissos", "compromissos de hoje", "agenda de hoje", "agenda hoje",
+    "tenho algum compromisso", "reunioes de hoje", "o que tem na agenda", "meus horarios de hoje",
+)
+
+
+def comando_agenda(comando: str) -> bool:
+    """True se o usuário pergunta os compromissos de hoje (#40, leitor .ics local). Puro."""
+    return _casa(comando, _GATILHO_AGENDA)
+
+
+# GATILHOS CONDICIONAIS INTERNOS (#11): "quando eu adicionar X na lista, <ação>". Reage a
+# um EVENTO do app (v1: só lista_add) executando uma ação. Distinto do watcher (que reage à
+# WEB e só avisa). Só ativa quando a condição casa um evento CONHECIDO — senão cai no fluxo
+# normal (um "quando o dólar subir, me avise" segue pro roteador/watcher, não é recusado aqui).
+def separar_gatilho(comando: str) -> Optional[tuple]:
+    """'quando <condição>, <ação>' -> (condicao, acao). Divide na 1ª vírgula ou 'então'/
+    'faça'. None se não começa por 'quando' ou não tem separador. Puro/testável."""
+    if not comando or not textutils.normaliza(comando).startswith("quando"):
+        return None
+    corpo = re.sub(r"(?i)^\s*quando\s+", "", comando.strip())
+    m = re.search(r",|\s+ent[aã]o\s+|\s+fa[cç]a\s+", corpo, re.IGNORECASE)
+    if not m:
+        return None
+    condicao, acao = corpo[: m.start()].strip(), corpo[m.end():].strip()
+    if not condicao or not acao:
+        return None
+    return condicao, acao
+
+
+def evento_da_condicao(condicao: str, agora: datetime) -> Optional[tuple]:
+    """Mapeia a condição para (evento, filtro). v1: só 'eu adicionar X na lista' ->
+    ('lista_add', X). Reusa o parse_rapido para extrair item/lista. Puro."""
+    c = re.sub(r"(?i)^\s*eu\s+", "", condicao.strip())
+    decs = parse_rapido(c, agora)
+    if decs and len(decs) == 1 and decs[0].tool == "adicionar_item":
+        return "lista_add", str(decs[0].args.get("item", "")).strip()
+    return None
+
+
+def parse_gatilho(comando: str, agora: datetime) -> Optional[tuple]:
+    """(evento, filtro, acao_texto) se é um gatilho RECONHECIDO, senão None (fluxo normal).
+    A ação em si é parseada pelo Agent (pode precisar do roteador LLM). Puro."""
+    sep = separar_gatilho(comando)
+    if sep is None:
+        return None
+    ev = evento_da_condicao(sep[0], agora)
+    if ev is None:
+        return None
+    return ev[0], ev[1], sep[1]
+
+
+_GATILHO_LISTAR_GAT = (
+    "quais gatilhos", "meus gatilhos", "listar gatilhos", "lista de gatilhos",
+    "que gatilhos", "meus automatismos", "quais automatismos",
+)
+
+
+def comando_gatilhos_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_LISTAR_GAT)
+
+
+def comando_gatilho_remover(comando: str) -> Optional[int]:
+    """ID a remover em 'remove/apaga o gatilho N', ou None. Puro."""
+    n = textutils.normaliza(comando or "")
+    if "gatilho" not in n:
+        return None
+    if not any(v in n for v in ("remov", "apag", "exclu", "delet", "tira", "cancel")):
+        return None
+    m = re.search(r"\d+", n)
+    return int(m.group()) if m else None
+
+
+# REVISÃO DIÁRIA (#21): fechamento do dia (o que fiz + inbox + agenda/lembretes de amanhã).
+# Gatilhos DISTINTOS do SRS ("revisão"/"revisar") de propósito — e por isso este é checado
+# ANTES do SRS no fluxo, senão "revisão do dia" cairia na revisão de cards.
+_GATILHO_REVISAO_DIA = (
+    "resumo do dia", "revisao do dia", "fechamento do dia", "fechar o dia", "fecha o dia",
+    "como foi meu dia", "resumo de hoje", "balanco do dia", "revisao diaria", "meu dia",
+)
+
+
+def comando_revisao_diaria(comando: str) -> bool:
+    """True se o usuário pede o fechamento do dia (#21). Puro."""
+    return _casa(comando, _GATILHO_REVISAO_DIA)
+
+
+# DIÁRIO DE HÁBITOS (#37): marcar que cumpriu um hábito hoje. Formas CLARAS (verbo de
+# conclusão ou "habito") para não capturar "marca reunião" à toa; exclui lista/lembrete.
+def _limpa_habito(s: str) -> Optional[str]:
+    nome = textutils.normaliza(s)
+    while True:
+        novo = re.sub(r"^(?:o|a|meu|minha|de)\s+", "", nome).strip()
+        if novo == nome:
+            break
+        nome = novo
+    nome = re.sub(r"\s+hoje$", "", nome).strip()
+    return nome or None
+
+
+def parse_habito_marcar(comando: str) -> Optional[str]:
+    """Nome do hábito cumprido, ou None. 'fiz X' / 'completei X' / 'marca que <X>' /
+    '...habito [de] X'. Exclui comandos de lista/lembrete. Puro/testável."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    if "lista" in n or "lembret" in n:
+        return None
+    m = re.search(r"(?i)h[aá]bito(?:\s+de)?\s+(.+)", comando)
+    if m and any(v in n for v in ("marc", "registr", "fiz", "meu", "cumpri")):
+        return _limpa_habito(m.group(1))
+    m = re.match(r"(?i)\s*(?:fiz|completei|conclui|terminei|pratiquei|cumpri)\s+(.+)", comando)
+    if m:
+        return _limpa_habito(m.group(1))
+    m = re.match(r"(?i)\s*marca\w*\s+que\s+(?:eu\s+)?(.+)", comando)
+    if m:
+        return _limpa_habito(m.group(1))
+    return None
+
+
+_GATILHO_HABITOS_LISTAR = (
+    "meus habitos", "quais habitos", "como estao meus habitos", "como vao meus habitos",
+    "minhas sequencias", "meus streaks", "resumo dos habitos", "status dos habitos",
+)
+
+
+def comando_habitos_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_HABITOS_LISTAR)
+
+
+# TUTOR SOCRÁTICO (#44): liga/desliga o modo de sessão. Meta-comando (mexe no estado da
+# sessão, como o modo confidencial). Gatilhos de OFF próprios (não usa "modo normal", que
+# é do confidencial) para os dois modos serem independentes.
+def comando_tutor(comando: str) -> Optional[bool]:
+    """True (ligar), False (desligar) ou None (não é comando de tutor). Puro/testável."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    off = ("sai do tutor", "sair do tutor", "chega de tutor", "para de me ensinar",
+           "fim do tutor", "desliga o tutor", "desligar tutor", "encerra o tutor")
+    on = ("modo tutor", "modo socratico", "seja meu tutor", "vira tutor", "vira meu tutor",
+          "ativa o tutor", "ativar tutor", "quero um tutor", "me ensine socraticamente")
+    if any(g in n for g in off):
+        return False
+    if any(g in n for g in on):
+        return True
+    return None
+
+
+def comando_economico(comando: str) -> Optional[bool]:
+    """Liga/desliga o Modo Econômico (#30): True/False/None. Puro/testável. Como o
+    confidencial/tutor, mexe no estado da SESSÃO — tratado no fluxo-mestre, não numa
+    ferramenta. Desligar é checado ANTES de ligar (ambos contêm 'modo economico')."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    off = ("modo economico off", "sai do modo economico", "sair do economico",
+           "desliga o economico", "desligar economico", "fim do modo economico",
+           "modo normal de busca", "volta a usar a web", "pode usar a web")
+    on = ("modo economico", "modo economia", "economiza web", "economizar web",
+          "nao use a web", "sem web", "so local", "responde do que voce ja sabe")
+    if any(g in n for g in off):
+        return False
+    if any(g in n for g in on):
+        return True
+    return None
+
+
+# ROTINAS COMPOSTAS (#10): macro NOMEADA de comandos. Criar tem ':'/'=' separando nome e
+# corpo; rodar é só "rotina <nome>" (expande para o corpo e o parse_composto executa).
+def parse_rotina_criar(comando: str) -> Optional[tuple]:
+    """'(cria/salva a) rotina <nome>: <comando>' ou 'rotina <nome> = <comando>' ->
+    (nome_normalizado, comando). Puro/testável."""
+    if not comando or "rotina" not in textutils.normaliza(comando):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+|chamada\s+)?(.+?)\s*[:=]\s*(.+)", comando)
+    if not m:
+        return None
+    nome, corpo = textutils.normaliza(m.group(1)).strip(), m.group(2).strip()
+    return (nome, corpo) if nome and corpo else None
+
+
+def parse_rotina_rodar(comando: str) -> Optional[str]:
+    """Nome da rotina a EXECUTAR em 'rotina <nome>' / 'executa a rotina <nome>'. None se é
+    criação (tem ':'/'=') ou listar/remover. Puro."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    if "rotina" not in n or ":" in comando or "=" in comando:
+        return None
+    if any(v in n for v in ("remov", "apag", "exclu", "delet", "quais", "quantas", "liste", "minhas rotinas")):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+)?(.+)", comando)
+    if not m:
+        return None
+    nome = textutils.normaliza(m.group(1)).strip()
+    return nome or None
+
+
+_GATILHO_ROTINAS_LISTAR = (
+    "quais rotinas", "minhas rotinas", "listar rotinas", "que rotinas", "lista de rotinas",
+    "quantas rotinas",
+)
+
+
+def comando_rotinas_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_ROTINAS_LISTAR)
+
+
+def comando_rotina_remover(comando: str) -> Optional[str]:
+    """Nome da rotina a remover em 'remove a rotina <nome>', ou None. Puro."""
+    n = textutils.normaliza(comando or "")
+    if "rotina" not in n or not any(v in n for v in ("remov", "apag", "exclu", "delet")):
+        return None
+    m = re.search(r"(?i)rotina\s+(?:de\s+)?(.+)", comando)
+    return textutils.normaliza(m.group(1)).strip() if m and m.group(1).strip() else None
+
+
+# POMODORO (#19): ciclo foco/pausa. PARAR vem antes de INICIAR (a frase de parar contém
+# "pomodoro"). Gatilhos de parar próprios (sem "cancela"/"para" cru p/ não colidir).
+_GATILHO_POMODORO_PARAR = (
+    "para o pomodoro", "parar o pomodoro", "para pomodoro", "encerra o pomodoro",
+    "encerrar pomodoro", "cancela o pomodoro", "chega de pomodoro", "para o foco",
+)
+_GATILHO_POMODORO_INICIAR = (
+    "pomodoro", "modo foco", "temporizador de foco", "sessao de foco", "ciclo de foco",
+)
+
+
+def comando_pomodoro_parar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_POMODORO_PARAR)
+
+
+def comando_pomodoro_iniciar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_POMODORO_INICIAR)
+
+
+# AJUDA (/help falável): "mestre, ajuda" / "mestre /ajuda" / "o que você pode fazer".
+# Descoberta de comandos — checada TARDE no fluxo (depois dos comandos específicos), pois
+# "ajuda" é gatilho largo; um "me ajuda a somar" cai aqui, e tudo bem (lista as capacidades).
+_GATILHO_AJUDA = (
+    "ajuda", "/ajuda", "me ajuda", "o que voce pode fazer", "o que voce faz",
+    "o que voce sabe fazer", "o que voce consegue fazer", "quais comandos",
+    "seus comandos", "lista de comandos", "o que posso pedir", "help", "socorro",
+    "o que da pra fazer",
+)
+
+
+def comando_ajuda(comando: str) -> bool:
+    """True se o usuário pede a lista de capacidades (/help falável). Puro."""
+    return _casa(comando, _GATILHO_AJUDA)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

@@ -4,7 +4,7 @@
 
 ### Assistente Omni **100% local** — voz e texto, sem nuvem, sem API key, sem telemetria de terceiros.
 
-*Um segundo cérebro que fala: conversa por voz, responde a partir das **suas** notas do Obsidian, recorre à web só quando precisa — e, enquanto você não está olhando, destila o que aprendeu em novas notas atômicas.*
+*Um segundo cérebro que fala: conversa por voz, responde a partir das **suas** notas do Obsidian, recorre à web só quando precisa — **age** por comando falado (lembretes, listas, rotinas), **cuida** de coisas sozinho (alarmes, briefings, pomodoro) e, enquanto você não está olhando, destila o que aprendeu em novas notas atômicas.*
 
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
@@ -12,7 +12,8 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-cosine-FF6B6B)
 ![faster-whisper](https://img.shields.io/badge/faster--whisper-CTranslate2-5A67D8)
 ![Piper](https://img.shields.io/badge/Piper_TTS-ONNX-8E44AD)
-![Testes](https://img.shields.io/badge/testes-80_passed-success)
+![Testes](https://img.shields.io/badge/testes-560_passed-success)
+![Deps novas](https://img.shields.io/badge/deps_novas_nas_3_ondas-zero-blue)
 ![Nuvem](https://img.shields.io/badge/nuvem-zero-critical)
 
 **Alvo:** RTX 3080 (10 GB) · Ryzen 9 7950X3D · Windows
@@ -25,11 +26,13 @@
 
 | | | |
 |---|---|---|
-| [O que é](#-o-que-é) | [Passo a passo](#-passo-a-passo-o-que-acontece-quando-você-fala) | [Evolução](#-evolução-do-projeto) |
-| [Anatomia em 30s](#-anatomia-em-30-segundos) | [O banco vetorial](#-o-banco-vetorial-como-ele-é-formado) | [War stories](#-war-stories-os-bugs-que-moldaram-a-arquitetura) |
-| [Stack](#-stack-e-como-cada-peça-é-usada) | [Ciclo do conhecimento](#-o-ciclo-de-vida-do-conhecimento) | [Casos de uso](#-casos-de-uso) |
-| [Papel de cada módulo](#-papel-de-cada-módulo) | [Por que cada formato](#-por-que-cada-formato) | [Outros contextos](#-além-do-assistente-pessoal) |
-| [Setup](#-setup--instalação) | [Skills demonstradas](#-skills-de-engenharia-demonstradas) | [Em aberto](#-não-features-intencionais-e-pontos-em-aberto) |
+| [O que é](#-o-que-é) | [📓 Patch Notes](#-patch-notes) | [Anatomia em 30s](#-anatomia-em-30-segundos) |
+| [Os dois planos](#-os-dois-planos-pergunta-e-comando) | [O plano de comando](#-o-plano-de-comando-a-palavra-mestre) | [Agentes proativos](#-agentes-proativos-a-responsabilidade-contínua) |
+| [Stack](#-stack-e-como-cada-peça-é-usada) | [Papel de cada módulo](#-papel-de-cada-módulo) | [Passo a passo](#-passo-a-passo-o-que-acontece-quando-você-fala) |
+| [A Malha](#-a-malha-um-grafo-sobre-as-suas-notas) | [O banco vetorial](#-o-banco-vetorial-como-ele-é-formado) | [Ciclo do conhecimento](#-o-ciclo-de-vida-do-conhecimento) |
+| [Por que cada formato](#-por-que-cada-formato) | [Skills demonstradas](#-skills-de-engenharia-demonstradas) | [Evolução](#-evolução-do-projeto) |
+| [War stories](#-war-stories-os-bugs-que-moldaram-a-arquitetura) | [Casos de uso](#-casos-de-uso) | [Outros contextos](#-além-do-assistente-pessoal) |
+| [Setup](#-setup--instalação) | [Configuração](#-configuração) | [API e protocolo](#-api-e-protocolo) |
 
 ---
 
@@ -37,7 +40,9 @@
 
 **Mente Digital** é um assistente de voz e texto que roda inteiramente na sua máquina. Você fala; ele ouve, pensa e responde falando — em GPU local, com o primeiro áudio saindo enquanto o modelo ainda está decodificando o resto da frase. Nada sai do computador, exceto uma busca web quando (e somente quando) o conhecimento local não basta.
 
-A diferença para um "chatbot com RAG" está em três teses que atravessam cada linha do código:
+Mas ele não só **responde**. Ele **age** (crie um lembrete, adicione à lista, salve uma nota, grave uma rotina — tudo por voz), **cuida** de coisas por conta própria (alarmes que disparam, "me avise quando o dólar passar de X", um briefing diário, um ciclo pomodoro) e **lembra** (desfazer, corrigir, confirmar — a última ação sempre tem um inverso). São três verbos, e a arquitetura mantém uma **parede rígida** entre eles.
+
+A diferença para um "chatbot com RAG" está em teses que atravessam cada linha do código:
 
 **1. A base de conhecimento é sua, e é um vault Obsidian.** Não um banco vetorial opaco — arquivos `.md` que você lê, edita e versiona. O ChromaDB é um índice **derivado e descartável**; a fonte de verdade é o filesystem. Trocar o modelo de embedding é uma reindexação, não uma perda de dados.
 
@@ -45,9 +50,102 @@ A diferença para um "chatbot com RAG" está em três teses que atravessam cada 
 
 **3. Anti-alucinação é problema de controle de fluxo, não de prompt.** O assistente prefere dizer "não sei" a inventar. Mas "não sei" é um **sinal interno de controle** — o usuário nunca o ouve: o sistema segura o áudio, detecta o sentinela ainda em streaming, descarta a resposta e escala para a web sem que uma sílaba tenha vazado.
 
-E há um quarto pilar, mais raro: **o sistema faz trabalho quando ninguém está olhando.** No fim da sessão, um ETL idle destila as pesquisas e a própria conversa em notas Zettelkasten atômicas — que nascem marcadas `#conhecimento_novo` e só "amadurecem" (perdem a tag) quando você de fato as reusa numa resposta futura. A base cresce da sua curiosidade e se cura pelo seu uso.
+**4. Comando não é conversa — e a fronteira é física, não uma dica no prompt.** Perguntar é uma coisa; mandar fazer é outra. Uma frase que **começa** pela palavra-mestre (`"mestre, …"`) entra num fluxo **isolado e determinístico**: resolvido por regex sem pagar LLM sempre que possível, e — crucialmente — **nunca vira conhecimento**. "Mestre, me lembra de ligar pro médico" não polui o Zettelkasten com uma nota sobre médicos. A persistência de um comando é a tabela/lista/alarme dele, não o vault.
 
-> Este é o pacote modularizado (**V2**) de um MVP monolítico anterior (`mvp_mente.py`). A herança importa: quase toda heurística deste repositório carrega no comentário o bug real que ela conserta. Elas não são estilo — são cicatrizes.
+**5. O sistema faz trabalho quando ninguém está olhando — dos dois lados.** No fim da sessão, um ETL idle destila as pesquisas e a própria conversa em notas Zettelkasten atômicas — que nascem marcadas `#conhecimento_novo` e só "amadurecem" (perdem a tag) quando você de fato as reusa. E, em paralelo, um scheduler persistente carrega a **responsabilidade contínua** — dispara os alarmes que venceram, checa os watchers, entrega o briefing — falando por conta própria, com PUSH de áudio, e cedendo a GPU para a conversa ao vivo sempre que ela acontece.
+
+> Este é o pacote modularizado (**V2**) de um MVP monolítico anterior (`mvp_mente.py`), estendido por três "ondas" de agentes. A herança importa: quase toda heurística deste repositório carrega no comentário o bug real que ela conserta. Elas não são estilo — são cicatrizes. E as três ondas inteiras foram feitas com **zero dependência nova**: cada agente é módulo puro testável + comando-mestre + (quando preciso) uma tabela SQLite.
+
+---
+
+## 📓 Patch Notes
+
+Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é uma feature real, com o comando de voz (`mestre, …`) ou o botão `.env` quando existe. As seções técnicas mais abaixo aprofundam o *como* e o *porquê*; aqui é o *o quê*.
+
+<details open>
+<summary><b>🔧 Modelos &amp; Voz — recuperação 2×, wake-word "mestre" e a análise de tempo (mais recente)</b></summary>
+
+Cada troca foi decidida por **A/B medido**, não por intuição — os harnesses ficaram no repositório (`eval/`). O que mudou e o que esperar de cada mudança:
+
+| Mudança | Resultado esperado |
+|---|---|
+| **Embedding: MiniLM → `intfloat/multilingual-e5-base`**. Exige prefixos `query:`/`passage:` (`MENTE_EMBEDDING_QUERY_PREFIX`/`_PASSAGE_PREFIX`), **reindex** do vault (`scripts/reindexar.py`) e gate recalibrado (`MENTE_RAG_SCORE_CONFIDENT` 0.55→**0.16**, derivado por `eval/calibrar_gate.py`) | **~2× no ranqueamento** (known-item MRR@10 0.20→0.375, Recall@1 0.145→0.288). Mais pergunta respondida **do vault** e menos escalada desnecessária à web. Medido: pergunta do vault casa em `dist 0.06–0.17` |
+| **STT: `small` → `large-v3-turbo`** (`MENTE_WHISPER_MODEL`) | Transcrição bem mais fiel em PT-BR. **Custo:** na CPU roda a ~0,8× tempo real (~4 s para 5 s de fala) — mova para a GPU se a latência incomodar |
+| **KV-cache: `f16` → `q8_0`** (`MENTE_KV_CACHE_TYPE`, exige `flash_attn`) | ~Metade da VRAM de KV, abrindo espaço para o embedding maior. **Stack completo medido: 8,9 / 10 GB** (Qwen3-8B + e5 na GPU; ~1,3 GB de folga) |
+| **Modelo-base: `Qwen2.5-7B-Instruct` → `Qwen3-8B`**, decidido por A/B (`eval/ab_modelos.py --no-think`). Exigiu dois botões novos — `MENTE_LLM_NO_THINK` (desliga o raciocínio) e `MENTE_LLM_STRIP_THINK` (remove o bloco `<think>` do stream) | O Qwen3 **lê muito melhor os átomos recuperados**: sentinela com contexto na mão cai de **33% para 8%**, e a atomização melhora (tags 25%→50-62%). Custo: **~9% menos `tok/s`** (93,8 vs 102,5), TTFT equivalente. Sem o strip, o TTS **falaria a tag `<think>`** |
+| **Higiene:** ~21 GB de GGUFs não usados removidos de `modelos/` | Ficam só os 4 modelos que o código realmente carrega (LLM, voz Piper, Whisper, embedding) |
+| **Wake-word "mestre" (#F3)** — modo tipo Alexa; opt-in por `MENTE_MESTRE_WAKE` (+ `MENTE_MESTRE_SLEEP_SECONDS`) | Com o live aberto ele começa **dormente**: a voz de outra pessoa por perto **não dispara nada**. Dizer *"mestre…"* acorda e processa; 15 s de silêncio faz dormir de novo. Desligado (default), o live se comporta como antes |
+| **Barge-in só do dono (#F5)** — limiar + debounce no cliente (`BARGE_RMS`/`BARGE_FRAMES` no `index.html`) | Interromper o narrador passa a exigir voz **alta e sustentada**: ruído e voz de fundo curta **não cortam mais** a resposta. (Tier 1 — reconhecer *a sua* voz por speaker-ID é o Tier 2, adiado) |
+| **Timing por estágio (#F4)** — `LatencyTracker` + `/api/metrics` + colunas novas em `metricas_latencia` | Cada resposta passa a registrar **decode `tok/s`** e o tempo de **STT** (além de TTFT/TTFA/total/nº de tokens): dá para ver **onde** o tempo vai. Medido ao vivo: `tok/s≈85`, TTFT≈1,1 s numa resposta do vault |
+
+> Roteiro de verificação (o que já foi validado automaticamente e o que exige microfone) em [`TESTE_MANUAL.md`](TESTE_MANUAL.md).
+
+</details>
+
+<details>
+<summary><b>🌊 Onda 3 — a base que pensa sobre si, se protege e se adapta</b></summary>
+
+**🕸 A Malha (GraphRAG sobre o seu vault)** — um grafo de conceitos construído dos `[[links]]` que o ETL escreve em cada átomo, sem nenhuma lib de grafo:
+- **Aterramento por IDF** — o gate de relevância passou a pesar keyword **rara** mais que genérica; consertou perguntas gerais puxando notas pessoais.
+- **Dedup near-duplicate** — tira quase-duplicatas do contexto por Jaccard antes do prefill (`MENTE_RAG_DEDUP_NEAR_JACCARD`). Velocidade pura.
+- **Hubs primeiro na síntese** — "o que eu sei sobre X" ordena os átomos pela centralidade na Malha (`MENTE_SINTESE_HUBS_PRIMEIRO`).
+- **Vizinhança filtrada pela pergunta** — a expansão da Malha só injeta o vizinho se ele for próximo da *pergunta* (`MENTE_MALHA_SIM_MIN`).
+- **Descobridor de Conexões** — *"mestre, alguma conexão nova?"* fala **pontes**: notas que ligam dois temas estabelecidos que quase nunca co-ocorrem (ranking por **surpresa** = vizinhanças disjuntas).
+
+**🗓 Cluster de produtividade** — 8 agentes novos + ajuda falável:
+- **Repetição espaçada (SRS)** — *"mestre, revisa isso"* / *"mestre, revisão"* (Leitner, `MENTE_SRS_*`).
+- **Leitor de agenda `.ics`** — *"o que tenho hoje?"* (100% local, integra ao briefing).
+- **Gatilhos condicionais** — *"quando eu adicionar X na lista, me lembra de Y"*.
+- **Revisão Diária** — *"resumo do dia"* agrega auditoria + inbox + agenda de amanhã.
+- **Diário de Hábitos** — *"fiz X"* / *"meus hábitos"* com sequência (streak).
+- **Tutor Socrático** — *"mestre, modo tutor"*: responde com perguntas guiadas.
+- **Rotinas Compostas** — *"rotina manhã: adiciona café e cria lembrete às 7h"* → *"mestre, rotina manhã"*.
+- **Pomodoro** — ciclo foco/pausa por voz, com push falado.
+- **/ajuda** — *"mestre, ajuda"*: lista os comandos falando.
+
+**🛡 Robustez & privacidade** — a base se protege sozinha:
+- **Guarda de Egressão (#6)** — mascara PII (e-mail, CPF/CNPJ, cartão via Luhn, telefone) na query **antes** de ir ao DuckDuckGo (`MENTE_EGRESSAO_GUARDA`).
+- **Auto-recuperação de Índice (#33)** — ChromaDB corrompido é movido para o lado e reconstruído do vault, sem tocar o `mtime` dos `.md`.
+- **Fila Offline / disjuntor (#31)** — N falhas de rede seguidas **abrem** a busca web por um cooldown (anti-shadowban do DDG); a query vai para uma fila e é drenada quando reabre.
+- **Anti-injeção web (#26)** — dropa trechos de página com "ignore as instruções anteriores…" antes de virarem contexto do LLM.
+- **Detector de Contradição (#24)** — no idle, acha átomos do mesmo tema que se contradizem; *"mestre, alguma contradição?"* reporta.
+- **Governador de VRAM (#28+#29)** — avisa de vazamento e calibra o orçamento de tokens do trabalho de fundo pela VRAM livre.
+
+**🎚 Adaptação & navegação**:
+- **Modo Econômico (#30)** — *"mestre, modo econômico"*: responde do vault sempre que der, evitando a web (opt-in, menos preciso).
+- **Diapasão (#36)** — aprende no idle **como** você prefere ser respondido (curto/detalhado, exemplos) e adapta o estilo, sem imitar seu tom. *"mestre, como você me vê?"*.
+- **Fio da Conversa (#35)** — *"mestre, onde paramos?"* resgata o assunto de uma conversa anterior.
+- **Navegação por Voz (#14)** — *"mestre, nova conversa"* / *"mostra o histórico"* / *"abre a conversa sobre X"*: opera a interface falando.
+
+</details>
+
+<details>
+<summary><b>🌊 Onda 2 — reversibilidade e comandos que se encadeiam</b></summary>
+
+- **Desfazer (#8)** — *"mestre, desfaça"* reverte a última ação (add↔remove de lista, lembrete↔cancelamento).
+- **Corta-e-Corrige (#9)** — *"mestre, corrige para X"* desfaz a última adição e refaz com o valor certo.
+- **Cofre de Confirmação (#25/#15)** — ações destrutivas e não-desfazíveis esperam *"mestre, confirma"* (sem confirmação redundante para o que o undo já cobre).
+- **Encadeamento falado (#12)** — *"mestre, adiciona leite e ovos e me lembra às 8h"* = várias ações numa frase (o "e" de lista não vira corte).
+- **Atalho de intenção frequente (#2)** — repetiu 3× a mesma intenção? O assistente oferece um apelido; *"mestre, atalho X"* grava.
+- **Early-stop da cascata (#3)** — se a RAM já respondeu, o banco vetorial nem é consultado (menos decode na GPU).
+- **Explique-como-para-criança (#45)** — *"me explica como se eu fosse leigo"*: resposta com analogia, sem jargão.
+
+</details>
+
+<details>
+<summary><b>🌊 Onda 1 — a palavra-mestre nasce, e os agentes tipo-Alexa</b></summary>
+
+- **Palavra-mestre** — o plano de comando isolado e determinístico (`mestre.py`): frase que começa por *"mestre, …"* é comando, não pergunta, e **nunca** vira conhecimento.
+- **Agentes tipo-Alexa** — lembretes/alarmes, timers, *"me avise quando X"* (watchers) e flash briefing diário, tudo persistente (sobrevive a restart) com push falado.
+- **Captura Rápida (#20)** — *"mestre, anota que…"* joga na inbox GTD; a atomização fica pro idle.
+- **Cache de Voz (#1)** — memoiza as falas recorrentes (fillers, confirmações) — não re-sintetiza.
+- **Uma Frase Basta (#7)** — pergunta factual curta ganha resposta de 1 frase; "explica/por quê" ganha resposta cheia.
+- **Síntese sob Demanda (#23)** — *"o que eu sei sobre X"* em map-reduce que não estoura o contexto.
+- **Trilha de Auditoria (#27)** — *"o que você fez hoje?"* lê as ações mutantes do dia.
+- **Health-check (#32)** — *"como você está?"* faz o autoteste falável dos serviços.
+- **Modo Confidencial (#5)** — *"mestre, modo confidencial"*: o turno vive só na RAM (sem SQLite, sem ETL, sem virar átomo).
+
+</details>
 
 ---
 
@@ -62,57 +160,182 @@ flowchart LR
 
     subgraph SERVIDOR["FastAPI - tudo in-process"]
         WS["ws.py<br/>LiveSession<br/>VAD + barge-in"]
-        AG["agent.py<br/>pipeline de resposta<br/>cascata + guard"]
+        MST["mestre.py<br/>PLANO DE COMANDO<br/>isolado, regex-first"]
+        AG["agent.py<br/>PLANO DE PERGUNTA<br/>cascata + guard"]
         LLM["llm.py<br/>GPU SERIALIZADA<br/>1 thread gpu-infer"]
-        AUD["audio.py<br/>Whisper CPU<br/>Piper CPU"]
-        RAG["rag.py<br/>Chroma cosseno<br/>+ deep-fetch web"]
+        RAG["rag.py<br/>Chroma cosseno + Malha<br/>+ deep-fetch web"]
+        SCH["scheduler.py<br/>RESPONSABILIDADE<br/>alarmes, watchers, pomodoro"]
         ETL["agent.py<br/>EtlProcessor<br/>roda no idle"]
     end
 
     subgraph DADOS["Fontes de verdade"]
-        VAULT["Vault Obsidian<br/>arquivos .md"]
-        SQL["SQLite<br/>turnos + latencias"]
+        VAULT["Vault Obsidian<br/>arquivos .md + Malha"]
+        SQL["SQLite<br/>turnos + agendamentos<br/>+ estado dos agentes"]
     end
 
     MIC -->|"WS binario"| WS
+    WS -->|"comeca por 'mestre'?"| MST
     WS --> AG
+    MST --> SQL
     AG <--> LLM
     AG <--> RAG
-    AG --> AUD
-    AUD -->|"WS JSON"| SPK
+    AG -->|"WS JSON"| SPK
     RAG <--> VAULT
     AG --> SQL
+    SCH -.->|"le vencidos"| SQL
+    SCH -.->|"PUSH falado 🔔"| SPK
+    SCH -.->|"cede a GPU"| LLM
     AG -.->|"fim da sessao"| ETL
     ETL -->|"atomos novos"| VAULT
     ETL -.->|"cede a GPU"| LLM
 ```
 
-**Como ler este diagrama:** as setas cheias são o caminho crítico (o que acontece enquanto você espera); as pontilhadas são trabalho de background que nunca compete com você pela GPU. Essa separação é a arquitetura inteira em uma imagem.
+**Como ler este diagrama:** as setas cheias são o caminho crítico (o que acontece enquanto você espera); as pontilhadas são trabalho de background que nunca compete com você pela GPU. O `ws.py` faz a bifurcação de mais alto nível do sistema: **começou por "mestre"? é comando** (plano determinístico, `mestre.py`) — **senão, é pergunta** (plano de conhecimento, `agent.py`). Essa separação é a arquitetura inteira em uma imagem.
+
+---
+
+## 🔀 Os dois planos: pergunta e comando
+
+O sistema tem **dois pipelines completamente separados**, e a escolha entre eles é a primeira decisão de cada turno. Entender essa dualidade é entender o projeto.
+
+| | **Plano de PERGUNTA** | **Plano de COMANDO** (palavra-mestre) |
+|---|---|---|
+| **Gatilho** | Qualquer mensagem | Mensagem que **começa** por `"mestre, …"` |
+| **Onde vive** | `agent.py` (`pipeline_resposta`) | `mestre.py` + `agent._fluxo_mestre` |
+| **Como resolve** | LLM sempre (RAG, cascata, web) | **Regex primeiro** (`parse_composto`); LLM só se a regex não casar |
+| **Vira conhecimento?** | **Sim** — alimenta o dump que o ETL atomiza | **Nunca** — a persistência é tabela/lista/alarme |
+| **Se não resolve?** | Cai na web | **Recusa** e **registra** o comando não-reconhecido para revisão |
+| **Exemplos** | "o que é RAG?", "quanto está o bitcoin?" | "mestre, me lembra às 8h", "mestre, desfaça", "mestre, rotina manhã" |
+
+Por que separar tão fisicamente? Porque as duas naturezas têm requisitos opostos. Uma **pergunta** quer recall generoso e tolerância a ambiguidade — o LLM é bem-vindo. Um **comando** quer o oposto: determinismo, custo zero de latência quando possível, e **zero contaminação** da base. Misturar os dois — deixar "me lembra de comprar leite" virar um átomo Zettelkasten — foi um bug real que a palavra-mestre existe para tornar impossível por construção.
+
+---
+
+## 🗝 O plano de comando: a palavra-mestre
+
+`mestre.py` (836 linhas, o 2º maior módulo) é o **fluxo isolado que aciona os agentes**. Ele é quase todo **puro e testável** — funções que recebem `(texto, agora)` e devolvem uma `Decisao`, com o instante de referência **injetado** para o teste ser determinístico.
+
+```mermaid
+flowchart TD
+    IN["mestre, faz X depois marca Y e cancela Z"] --> SEP["separar()<br/>remove a palavra-mestre<br/>(so a 1a conta)"]
+    SEP --> ALIAS{"casa um apelido<br/>salvo? (#2)"}
+    ALIAS -->|sim| EXP["expande o atalho<br/>de volta no comando"]
+    ALIAS -->|nao| ROT["rotina X?<br/>expande o composto salvo (#10)"]
+    EXP --> COMP
+    ROT --> COMP["parse_composto()<br/>dividir_comandos nas fronteiras<br/>de NOVA acao (nao no 'e' de lista)"]
+    COMP --> P1["parse_rapido() por parte<br/>REGEX, sem LLM"]
+    P1 --> OK{"todas as partes<br/>resolveram?"}
+    OK -->|nao| LLM["defere ao ROTEADOR LLM<br/>(nunca faz metade)"]
+    OK -->|sim| GATE{"tem acao<br/>DESTRUTIVA?"}
+    GATE -->|nao| EXEC["executa as acoes<br/>+ guarda o INVERSO de cada uma"]
+    GATE -->|sim| STAGE["executa as seguras JA<br/>+ STAGE a destrutiva<br/>'diga: mestre, confirma'"]
+    LLM --> NADA{"o roteador<br/>achou acao?"}
+    NADA -->|nao| REC["RECUSA + registra<br/>em mestre_nao_reconhecido"]
+    NADA -->|sim| EXEC
+    EXEC --> FREQ["conta a intencao (#2)<br/>3x -> OFERECE um atalho"]
+```
+
+O que cada peça resolve — cada uma é um agente da Onda 2, feito no estilo módulo-isolado:
+
+<details>
+<summary><b>Encadeamento falado (#12) — "faz X e faz Y" é várias ações</b></summary>
+
+`parse_composto` fatia o comando nas fronteiras onde um conector (`" e "`, `"depois"`, `";"`) é seguido do **início de uma nova ação** (`_ACAO_START_RE`). O "e" **interno** de uma lista ("leite, farinha **e** ovos") **não** vira corte — a heurística distingue "e mais um item" de "e mais uma ação". Se **qualquer** parte não resolve, o TODO defere ao LLM: **nunca faz metade** de um composto.
+
+</details>
+
+<details>
+<summary><b>Desfazer (#8) e Corta-e-Corrige (#9) — reversibilidade de primeira classe</b></summary>
+
+Toda mutação (rápida OU via LLM, com OU sem palavra-mestre) guarda seu **inverso** na RAM via `_lembrar_reversao`. "Mestre, desfaça / volta atrás / cancela isso" executa esse inverso: add↔remove de lista, `criar_lembrete`→`cancelar_lembrete` pelo `#id` que a própria ferramenta reportou. Dois detalhes que só aparecem em quem já debugou undo: **(a)** o cálculo inspeciona o *resultado* da ação para não "reverter" o que falhou; **(b)** o undo é **consumo único** (limpa o campo — não se desfaz o desfazer). "Mestre, corrige para X / na verdade era Y, não Z" = **desfaz a última adição + refaz com o valor certo** (o trecho após "não" é o rejeitado, descartado), deixando o novo alvo de undo limpo para correções encadeadas.
+
+</details>
+
+<details>
+<summary><b>Cofre de confirmação (#25 + #15) — o destrutivo espera</b></summary>
+
+Ações **destrutivas e não-desfazíveis** (marcadas `Tool.confirmavel=True` — hoje só `cancelar_lembrete`, que o undo não recria) não rodam de imediato: são **staged** em `mem.confirmacao_pendente` e pedem *"diga 'mestre, confirma'"*. Mas a confirmação **redundante é evitada de propósito**: o que o undo já cobre (add/remove) **não** é gateado — seria burocracia. Só o `confirmavel` de verdade segura. Botão `MENTE_CONFIRMACAO_HABILITADA`.
+
+</details>
+
+<details>
+<summary><b>Atalho de intenção frequente (#2) e Rotinas (#10) — o sistema aprende com você</b></summary>
+
+O `_fluxo_mestre` **conta** cada intenção-mestre resolvida por forma normalizada (`mestre_frequencia`). Quando uma cruza `MENTE_ATALHO_SUGESTAO_MIN` (default 3), **oferece um atalho uma vez**. "Mestre, atalho `<nome>`" grava o último comando resolvido sob o apelido; no topo do fluxo, um comando que casa o apelido é **expandido** de volta. As **rotinas** (#10, Onda 3) são o parente nomeado: "rotina manhã: adiciona café na lista e cria lembrete às 7h" salva um **composto** inteiro sob um nome, e "mestre, rotina manhã" o expande e executa via `parse_composto`. Só **ações** contam como intenção — meta-comandos (desfazer/confirmar/atalho) não.
+
+</details>
+
+<details>
+<summary><b>Gatilhos condicionais (#11) — "quando eu adicionar X na lista, faça Y"</b></summary>
+
+Eventos **internos** do app viram condição: a tabela `gatilhos` guarda "quando eu adicionar leite na lista → cria lembrete de ir ao mercado". A emissão acontece em `_executar_acoes_rapidas` logo após `adicionar_item`; a ação disparada roda **direto** (sem re-emitir → sem loop infinito). É a base de automação do assistente, hoje ancorada no evento `lista_add`.
+
+</details>
+
+O isolamento é rígido em ambos os sentidos: comando que o app não cobre é **recusado** e **gravado** (`mestre_nao_reconhecido`) como melhoria a revisar — em vez de virar uma pergunta acidental. E comando **nunca** alimenta o dump que o idle atomiza.
+
+---
+
+## 🔔 Agentes proativos: a responsabilidade contínua
+
+O ETL idle é **oportunista** (colhe quando dá). O `scheduler.py` (310 linhas) é o oposto: a **responsabilidade contínua** de um assistente tipo-Alexa — o que tem *hora marcada*. É um loop de background (retido em `ctx.track_task`) que lê a tabela **`agendamentos`** — **persistente, sobrevive a restart** — e dispara os vencidos.
+
+```mermaid
+flowchart LR
+    subgraph TAB["tabela agendamentos (SQLite, persistente)"]
+        LEM["lembrete<br/>alarme/timer<br/>unico ou recorrente"]
+        WAT["watcher<br/>me avise quando X<br/>recorrente"]
+        BRI["briefing<br/>flash diario"]
+        POM["pomodoro<br/>alterna foco/pausa"]
+    end
+    LOOP["SchedulerService<br/>loop de background"] --> TAB
+    TAB --> VENC{"venceu?"}
+    VENC -->|watcher/briefing| IDLE["espera interactive_idle<br/>+ preemptible=True<br/>(a conversa passa na frente)"]
+    IDLE --> LLM2["LLM decide:<br/>a condicao ocorreu?<br/>/ monta o briefing"]
+    VENC -->|lembrete/pomodoro| PUSH
+    LLM2 --> PUSH["PUSH FALADO 🔔<br/>ctx.sessoes -> safe_send<br/>{tipo: proativo} + audio"]
+    PUSH --> VIVO{"tem sessao<br/>ouvindo?"}
+    VIVO -->|nao| PEND["pendente_entrega<br/>reentregue na proxima conexao"]
+```
+
+Quatro tipos, um mecanismo:
+
+- **`lembrete`** — alarme ou timer, único ou recorrente. O parser de tempo PT-BR (`agenda.py`, puro/testável, instante injetado) cobre relativo ("daqui a 10 min"), absoluto ("amanhã às 8h", "meio-dia") e recorrente ("todo dia às 7h", "a cada 30 min"). O que não casa devolve `(None, None)` — a ferramenta **pede para reformular** em vez de agendar no horário errado.
+- **`watcher`** — "me avise quando X". A cada checagem, busca na web e **pergunta ao LLM** se a condição ocorreu (`SYS_WATCHER`). Recorrente por natureza.
+- **`briefing`** — flash briefing diário (`SYS_BRIEFING`), que hoje já integra a **agenda** (`calendario.py`: parser mínimo de `.ics`, 100% local, "o que tenho hoje").
+- **`pomodoro`** (#19, Onda 3) — alterna foco/pausa via `payload` do agendamento, reagendando-se.
+
+Duas garantias que definem a qualidade:
+
+**Sem ouvinte, nada se perde.** Se o alarme dispara e nenhuma aba está conectada, o disparo vira `pendente_entrega` e é **reentregue na próxima conexão** (o WS chama `entregar_pendentes` no accept). O usuário fechou o notebook às 7h; ao abrir às 9h, ouve o que perdeu.
+
+**Respeita a GPU serializada.** Watcher e briefing só chamam o LLM **após `interactive_idle.wait()`** e com `preemptible=True` — exatamente como o ETL. Se você está conversando, o briefing das 8h **cede a GPU** e espera sua vez. O assistente nunca disputa consigo mesmo.
 
 ---
 
 ## 🧩 Stack e como cada peça é usada
 
-Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concreta do alvo: **10 GB de VRAM e um orçamento de TTFA**.
+Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concreta do alvo: **10 GB de VRAM e um orçamento de TTFA**. E as três ondas de agentes **não adicionaram nenhuma dependência** — foram construídas inteiramente sobre o que já estava aqui (SQLite, `re`, o SchedulerService, o EmbeddingProvider).
 
 ### Núcleo de IA
 
 | Tecnologia | Papel | Como é usada **neste** projeto |
 |---|---|---|
-| **llama-cpp-python** | LLM local | Compilado com CUDA. Encapsulado em `LlamaManager` com **GPU serializada por um `ThreadPoolExecutor(max_workers=1)`** — dois decodes nunca coexistem, por construção. `flash_attn=True` invertendo o default da lib; `n_batch`/`n_ubatch`/`kv_cache_type` expostos como botões calibráveis. Streaming token-a-token com `stop_event` para barge-in de ~1 token de granularidade. |
-| **Qwen2.5-Coder-7B** `Q4_K_M` | Modelo | GGUF de ~4.7 GB. A quantização não é sobre qualidade — é **orçamento de coabitação**: pesos + KV-cache de 8k + embeddings na GPU têm que caber juntos em 10 GB. |
-| **faster-whisper** (CTranslate2) | STT | Mesmos pesos do Whisper, execução muito mais rápida. Roda na **CPU por padrão** — deliberadamente: sai da GPU para o embedding poder entrar. `MENTE_WHISPER_MODEL=large-v3` sobe a qualidade quando há VRAM. A API é lazy, então a iteração dos segmentos acontece **dentro** do `to_thread`. |
-| **Piper TTS** (ONNX) | Voz PT-BR | `onnxruntime` puro: sem PyTorch, sem CUDA, **zero VRAM**. Chamado **uma vez por frase** (não por resposta) — é o que faz o primeiro áudio sair enquanto o LLM ainda decodifica. |
-| **sentence-transformers** | Embeddings | `paraphrase-multilingual-MiniLM-L12-v2`, **singleton** criado uma vez e injetado em **dois** consumidores: o `VectorStore` (busca no vault) e o `WebSearcher` (ranking do deep-fetch). Um modelo, uma alocação de VRAM, dois usos. |
+| **llama-cpp-python** | LLM local | Compilado com CUDA. Encapsulado em `LlamaManager` com **GPU serializada por um `ThreadPoolExecutor(max_workers=1)`** — dois decodes nunca coexistem, por construção. `flash_attn=True` invertendo o default da lib; `n_batch`/`n_ubatch`/`kv_cache_type` expostos como botões calibráveis. Streaming token-a-token com `stop_event` para barge-in de ~1 token de granularidade, e `preemptible` para o trabalho de fundo ceder a GPU. |
+| **Qwen3-8B** `Q4_K_M` | Modelo | GGUF de ~4.7 GB. A quantização não é sobre qualidade — é **orçamento de coabitação**: pesos + KV-cache de 8k (`q8_0`) + embeddings na GPU têm que caber juntos em 10 GB. **Medido com tudo carregado: 8,9 / 10 GB** — ~1,3 GB de folga, o que fecha a porta para o Whisper na GPU. Escolhido por **A/B com contexto fixo** (`eval/ab_modelos.py`): venceu o `Qwen2.5-7B-Instruct` lendo muito melhor os átomos recuperados. Exige `MENTE_LLM_NO_THINK` + `MENTE_LLM_STRIP_THINK` — ele abre toda resposta com `<think>…</think>`. |
+| **faster-whisper** (CTranslate2) | STT | Mesmos pesos do Whisper, execução muito mais rápida. Roda na **CPU por padrão** — deliberadamente: sai da GPU para o embedding poder entrar. Este projeto adota `MENTE_WHISPER_MODEL=large-v3-turbo` (multilíngue, qualidade ~`large-v3` sobre o `small`); suba para a GPU quando houver VRAM. |
+| **Piper TTS** (ONNX) | Voz PT-BR | `onnxruntime` puro: sem PyTorch, sem CUDA, **zero VRAM**. Chamado **uma vez por frase** — é o que faz o primeiro áudio sair enquanto o LLM ainda decodifica. Um **cache LRU** de frases sintetizadas (#1) memoiza as falas recorrentes (fillers, confirmações). |
+| **sentence-transformers** | Embeddings | `intfloat/multilingual-e5-base` (com prefixos `query:`/`passage:`), **singleton** criado uma vez e injetado em **dois** consumidores: o `VectorStore` (busca no vault) e o `WebSearcher` (ranking do deep-fetch). Um modelo, uma alocação de VRAM, dois usos. |
 
 ### RAG e dados
 
 | Tecnologia | Papel | Como é usada **neste** projeto |
 |---|---|---|
 | **ChromaDB** | Índice vetorial | In-process, persistido em disco. **Métrica de cosseno explícita** (`hnsw:space=cosine`), não o L2 padrão — ver [war stories](#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno). Metadata por chunk (`source`/`section`/`confidence`/`origin`) sustenta o reindex por arquivo, a purga de órfãos e a proveniência no prompt. |
-| **LangChain** (só os splitters) | Chunking | Usado **cirurgicamente**: `MarkdownHeaderTextSplitter` para quebrar por cabeçalho e `RecursiveCharacterTextSplitter` só como capa de tamanho. Nenhuma chain, nenhum agent, nenhum abstração de orquestração — o pipeline é código próprio. |
+| **A Malha** (código próprio) | Grafo do vault | `MalhaIndex`: um índice invertido **conceito→átomos** sobre os `[[conceitos]]` que o LLM escreve na ingestão. Dá vizinhança ponderada por **IDF** (corta hubs genéricos), aterramento léxico que pesa keyword **rara**, hubs-primeiro na síntese e o Descobridor de Conexões. GraphRAG **sem** biblioteca de grafo — ver [A Malha](#-a-malha-um-grafo-sobre-as-suas-notas). |
+| **LangChain** (só os splitters) | Chunking | Usado **cirurgicamente**: `MarkdownHeaderTextSplitter` para quebrar por cabeçalho e `RecursiveCharacterTextSplitter` só como capa de tamanho. Nenhuma chain, nenhum agent, nenhuma abstração de orquestração — o pipeline é código próprio. |
 | **Obsidian / Markdown** | **Fonte de verdade** | O vault é o dado; o vetor é derivado. `mtime` do filesystem é um change-feed grátis para o reindex incremental. |
-| **SQLite** | Fatos episódicos | Turnos de chat com `conversa_id`, log de ETL, e **latências TTFT/TTFA por resposta**. Uma conexão por operação (`timeout=10`) porque conexões `sqlite3` não atravessam threads e as chamadas vêm de `asyncio.to_thread`. Migração idempotente via `PRAGMA table_info` + `ALTER TABLE`. |
+| **SQLite** | Fatos episódicos **e** estado dos agentes | Turnos com `conversa_id`, latências, log de ETL, **e** as tabelas dos agentes: `agendamentos`, `auditoria`, `srs_cards`, `habitos`, `gatilhos`, `rotinas`, `mestre_atalhos`/`_frequencia`/`_nao_reconhecido`. Uma conexão por operação (`timeout=10`) porque conexões `sqlite3` não atravessam threads. Migração idempotente via `PRAGMA table_info` + `ALTER TABLE`. |
 | **ddgs** (DuckDuckGo) | Busca web | Com **fallback de backend** (`auto → html → lite`): backend que cai por rate-limit não derruba a busca. Cache LRU + speculative pre-fetch. |
 | **httpx** + **trafilatura** | Deep-fetch | Abrem o **corpo** das top-N páginas em paralelo e extraem o texto principal (sem menu/rodapé/ads). Existem porque snippet não responde pergunta numérica — ver [war stories](#4-a-web-respondia-e-o-modelo-dizia-que-não-sabia). |
 
@@ -120,75 +343,105 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 
 | Tecnologia | Papel | Como é usada **neste** projeto |
 |---|---|---|
-| **FastAPI** | Servidor | `lifespan` constrói o `AppContext` e injeta tudo. O `main.py` tem 160 linhas e **zero lógica de domínio** — só wiring e rotas. |
-| **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in**: o microfone sobe enquanto o áudio desce. Sem isso, não há interrupção. |
-| **Pydantic Settings** | Configuração | ~60 parâmetros com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema **nunca** exige editar código. |
-| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único, sem framework e sem build. Mini-markdown próprio com `escapeHtml`. A fila de áudio tem 3 linhas — porque o wire é WAV base64. |
-| **pytest** | Testes | **80 testes que rodam sem GPU e sem rede** (~7s), com fakes de LLM/TTS/store. Testabilidade aqui é restrição de design, não add-on. |
+| **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~170 linhas e **zero lógica de domínio** — só wiring e rotas. |
+| **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
+| **Pydantic Settings** | Configuração | **128 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
+| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (491 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
+| **pytest** | Testes | **560 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
 ## 🗂 Papel de cada módulo
 
-**~3.300 linhas de Python** em 12 módulos, mais ~900 de testes e 456 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
+**~9.600 linhas de Python** em 27 módulos (de ~3.300 em 12), mais ~6.800 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
 mente_digital/
-├── main.py         # wiring: lifespan monta o AppContext, expõe rotas + WS
-├── config.py       # Settings (Pydantic) + dicionário fonético do TTS
-├── prompts.py      # todos os prompts de sistema/tarefa + as tags Zettelkasten
-├── state.py        # AppContext (DI) + SessionMemory + LruCache
-├── llm.py          # LlamaManager: GPU serializada, streaming, cancelamento
-├── audio.py        # SttService (Whisper) + TtsService (Piper) + SentenceChunker
-├── rag.py          # EmbeddingProvider + VectorStore (Chroma) + WebSearcher
-├── agent.py        # pipeline de resposta, tools, LatencyTracker, EtlProcessor
-├── tools.py        # function calling aditivo: gate, roteador JSON, registry
-├── textutils.py    # normalização, keywords, aterramento léxico (100% puro)
-├── ws.py           # LiveSession: VAD, barge-in, conversas, fim de sessão
-├── telemetry.py    # logs coloridos thread-safe + Database (SQLite)
-├── templates/      # index.html — a SPA inteira
+├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
+├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
+├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
+├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
+├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
+├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
+├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
+├── agent.py        # 2357 pipeline de resposta, _fluxo_mestre, tools, ETL, síntese, conexões
+├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
+├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
+├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
+├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
+├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
+├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+├── srs.py          # 25   repetição espaçada (Leitner) — puro
+├── habitos.py      # 22   sequência de hábitos (streak) — puro
+├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
+├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
+├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
+├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
+├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
+├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
+├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
+├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
+├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
+├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
+├── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+├── templates/      # index.html — a SPA inteira (491 linhas)
 ├── modelos/        # LLM .gguf + voz Piper + whisper/ (binários fora do git)
-└── tests/          # 80 testes, sem GPU, sem rede
+└── tests/          # 560 testes em 62 arquivos, sem GPU, sem rede
 ```
 
 <details>
 <summary><b>O que cada arquivo faz (clique para expandir)</b></summary>
 
 ### `main.py` — o wiring, e nada mais
-Único arquivo executável. No `lifespan`: cria as pastas, sobe o SQLite, monta o `AppContext` e instancia todos os serviços. O `_boot` trata cada recurso conforme seu custo — **a GPU carrega em background** (`track_task`) para o servidor aceitar conexões enquanto o modelo sobe; Whisper/Piper/embeddings vão para `asyncio.to_thread`. Termina abrindo e sincronizando o `VectorStore`. Zero lógica de domínio, por decisão explícita.
+Único arquivo executável. No `lifespan`: cria as pastas, sobe o SQLite, monta o `AppContext`, instancia todos os serviços **e inicia o `SchedulerService`** como task retida. **A GPU carrega em background** (`track_task`) para o servidor aceitar conexões enquanto o modelo sobe; Whisper/Piper/embeddings vão para `asyncio.to_thread`. Zero lógica de domínio, por decisão explícita.
 
 ### `config.py` — o painel de controle
-Uma classe `Settings` (Pydantic) com todas as constantes do sistema. **Todos os caminhos derivam de `BASE_DIR = Path(__file__).parent`** — nenhum path absoluto de máquina no código, então o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*` no `.env`. Também guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa. `ensure_dirs()` é chamado no startup — **nunca no import**: importar config não pode ter efeito colateral no filesystem.
+Uma classe `Settings` (Pydantic) com **128 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
 
 ### `state.py` — estado compartilhado, sem lógica
-`AppContext` é o container de DI que vive em `app.state.ctx`; os serviços são campos `None` preenchidos no lifespan, porque o contexto precisa existir **antes** dos modelos carregarem (o boot é parcial e assíncrono por design). Contém também `track_task` (referência forte para tasks de background — ver [war stories](#2-as-tasks-que-o-garbage-collector-comia)), o `interactive_idle` (prioridade de GPU), a `SessionMemory` (histórico, memória fresca, fila de ETL — todas `deque` com `maxlen`, sem creep de RAM) e um `LruCache`. Quebra o ciclo de import com `if TYPE_CHECKING:`.
+`AppContext` é o container de DI que vive em `app.state.ctx`. Contém `track_task` (referência forte contra o GC — ver [war stories](#2-as-tasks-que-o-garbage-collector-comia)), o `interactive_idle` (prioridade de GPU), `sessoes` (as conexões vivas, alvo do PUSH proativo) e a `SessionMemory`. Esta última cresceu com os agentes: além de histórico e fila de ETL, guarda o **estado de sessão** dos meta-comandos — `confidencial`, `confirmacao_pendente`, `ultima_reversivel`, `ultima_acao`, `ultimo_comando_mestre`, `revisao` (SRS), `tutor` — tudo `deque`/campo com vida só na RAM.
 
 ### `llm.py` — a única porta para a GPU
-`LlamaManager` encapsula o `llama-cpp-python`. A garantia central: **um `ThreadPoolExecutor(max_workers=1)` chamado `gpu-infer`** — como só existe uma thread, dois `create_chat_completion` nunca se sobrepõem. Isso é serialização **estrutural** (por construção), não cooperativa (por convenção). O cancelamento usa um `threading.Event` por requisição, e o `asyncio.Lock` só é liberado **depois** de `await asyncio.to_thread(future.result)` — ou seja, depois que a thread realmente terminou. `_build_llama_kwargs` centraliza flash attention, KV-cache quantizado e speculative decoding, cada um guardado para degradar ao default em vez de derrubar o load. Import lazy do `llama_cpp` **dentro** das funções — é o que permite `import llm` sem CUDA, e é a pré-condição da suíte rodar sem GPU.
+`LlamaManager` encapsula o `llama-cpp-python`. A garantia central: **um `ThreadPoolExecutor(max_workers=1)` chamado `gpu-infer`** — serialização **estrutural**, não cooperativa. O cancelamento usa um `threading.Event` por requisição, e o `asyncio.Lock` só é liberado **depois** do join da thread — sem overlap de VRAM. O parâmetro `preemptible` marca o trabalho de fundo (ETL, watcher, briefing) que deve ceder à conversa ao vivo. Import lazy do `llama_cpp` **dentro** das funções — pré-condição da suíte rodar sem GPU.
 
 ### `audio.py` — tudo que é som, tudo na CPU
-`SttService` (faster-whisper), `TtsService` (Piper) e o `SentenceChunker`. Roda inteiramente na CPU, sempre atrás de `asyncio.to_thread` — porque a GPU é o recurso serializado e **tudo que pode sair dela deve sair**. O `SentenceChunker` é um conversor de impedância entre dois regimes de latência: o LLM produz token-a-token, o Piper precisa de uma unidade prosodicamente fechada e tem overhead fixo por chamada. Três mecanismos, cada um cobrindo um modo de falha: piso (`min_len`) contra migalhas, fim-de-frase **real** (`Dr.`, `3.5` e `etc.` não cortam) e flush por tamanho **cortando no último espaço dentro da janela** — para que uma frase longa sem pontuação não trave o áudio indefinidamente.
+`SttService` (faster-whisper, hoje o **`large-v3-turbo`**), `TtsService` (Piper, agora com **cache LRU** de frases sintetizadas) e o `SentenceChunker`. Roda inteiramente na CPU, sempre atrás de `asyncio.to_thread`. O `SentenceChunker` é um conversor de impedância: o LLM produz token-a-token, o Piper precisa de uma frase prosodicamente fechada. Três mecanismos: piso (`min_len`) contra migalhas, fim-de-frase **real** (`Dr.`, `3.5`, `etc.` não cortam) e flush por tamanho **no último espaço da janela**.
 
-### `rag.py` — as duas fontes de conhecimento
-`EmbeddingProvider` (singleton), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source`) e `WebSearcher` (DDG com fallback de backend, cache LRU, pre-fetch especulativo, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, atomiza, rankeia por cosseno contra a pergunta e **não indexa nada**). Detalhes tratados aqui: `strip_frontmatter` (metadado YAML envenenaria o embedding), `split_markdown` (chunk = seção, não corte cego), e `resolve_device` (pedir `cuda` sem GPU degrada para `cpu` em vez de crashar).
+### `rag.py` — as fontes de conhecimento (o maior depois do agent)
+`EmbeddingProvider` (singleton — hoje o **e5-base**, com os prefixos `query:`/`passage:` aplicados num **ponto só** (`_com_prefixos`), de onde Chroma, Malha e RAG efêmero herdam), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source` **e near-dup por Jaccard**), o **`MalhaIndex`** (o grafo do vault por conceito compartilhado — ver seção própria) e `WebSearcher` (DDG com fallback, cache, pre-fetch, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, rankeia por cosseno e **não indexa nada**). Detalhes: `strip_frontmatter`, `split_markdown`, `resolve_device`.
 
-### `agent.py` — o cérebro (719 linhas, o maior)
-`QueryOptimizer` (resolve pronomes cruzados via histórico), `Agent.pipeline_resposta` (a fusão em cascata RAM → banco → web com o guard anti-sentinela), `_pipeline_tools` (loop agêntico capado), `LatencyTracker` (TTFT/TTFA com clock injetável) e `EtlProcessor` (atomização no idle, sempre cedendo a GPU). É onde vivem as decisões mais sutis do projeto — e onde os comentários carregam mais cicatriz por linha.
+### `agent.py` — o cérebro (2.357 linhas, o maior)
+`QueryOptimizer` (pronomes cruzados), `Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3), `_fluxo_mestre` (o **plano de comando** — orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor), `_sintese_sob_demanda` (map-reduce do "o que sei sobre X"), `_descobrir_conexoes` (as pontes da Malha), `LatencyTracker` e `EtlProcessor`. É onde vivem as decisões mais sutis — e onde os comentários carregam mais cicatriz por linha.
 
 ### `tools.py` — function calling **aditivo**
-"Aditivo" é a decisão arquitetural: pergunta de conhecimento **não paga nada** pela existência das ferramentas. O gate lexical `talvez_acao` (custo ~zero) filtra: só mensagem de **ação** chega ao roteador LLM. O roteador é por **JSON** (`parse_decisao`), não o tool-calling nativo do llama.cpp — validado 7/7 no Qwen local. `calcular_seguro` compila AST com whitelist de nós (nunca `eval`) e capa o expoente em 1000, porque a calculadora é síncrona e `9**9**9` não seria lentidão, seria **indisponibilidade do servidor**. Seis ferramentas; as terminais saem no 1º passo.
+"Aditivo" é a decisão arquitetural: pergunta de conhecimento **não paga nada** pela existência das ferramentas. O gate lexical `talvez_acao` filtra: só mensagem de **ação** chega ao roteador LLM (por **JSON**, não o tool-calling nativo). `calcular_seguro` compila AST com whitelist (nunca `eval`) e capa o expoente. As ferramentas: as básicas (calcular, hora, notas, buscar_web), os **agentes de agenda/lista** (lembrete, listar/cancelar, avisar_quando, briefing, itens de lista), a **captura rápida** (inbox GTD), o **health-check** (`status_sistema`) e a **auditoria** (`auditoria_hoje`). As de agenda/lista têm `registra_conhecimento=False`: seu turno **não** vira Zettelkasten.
 
-### `textutils.py` — 97 linhas puras que sustentam o anti-alucinação
-Só `re` + `unicodedata`, zero imports do projeto — as heurísticas mais sensíveis vivem onde não precisam de fake nenhum. `normaliza`, `palavras_chave`, `contem_alguma` (aterramento léxico), `limpar_query`, `remover_tag`. A lista `STOP` é **curada adversarialmente**: inclui `'modelo'`, `'dados'`, `'informacao'` — que não são stopwords gramaticais, mas casariam com qualquer chunk do vault e tornariam o aterramento inútil. A stoplist é função do corpus, não da língua. A exceção espelhada: token curto **com dígito** (`3d`, `5g`, `gpt4`) é preservado — são os mais discriminantes.
+### `mestre.py` — o plano de comando (ver [seção própria](#-o-plano-de-comando-a-palavra-mestre))
+941 linhas quase todas puras: `separar`, `parse_rapido`, `parse_composto`/`dividir_comandos`, `comando_desfazer`/`reverter`, `tem_correcao`/`parse_correcao`/`refazer_com`, `comando_confirmar`/`_abortar`, `parse_atalho`, `parse_gatilho`, `comando_conexoes`. O instante de referência é sempre injetado.
+
+### `agenda.py` — o tempo em português, puro
+`parse_quando(texto, agora) -> (primeiro_disparo, recorrencia)` sem dependência nova. Relativo, absoluto e recorrente; o que não casa devolve `(None, None)`. `proximo_disparo` calcula a próxima ocorrência. Como `mestre.py`, o `agora` é injetado — 100% testável.
+
+### `scheduler.py` — a responsabilidade contínua (ver [seção própria](#-agentes-proativos-a-responsabilidade-contínua))
+`SchedulerService`: o loop que despacha `agendamentos` por `tipo` e faz o PUSH falado, respeitando o idle e reentregando o que disparou sem ouvinte.
+
+### `verbosidade.py` — o governador de resposta
+`classificar(pergunta)` puro decide tamanho/latência: factual curta → 1 frase com teto de tokens menor (#7); "explica/por quê" → resposta cheia; **`crianca`** → simplificação com analogia (#45, ortogonal — vence curto/detalhado). `aplicar_tutor` injeta a instrução socrática (#44). Tudo per-pergunta e stateless, reusando a fiação `max_tokens`/`instrucao_extra` que chega ao LLM local **e** web.
+
+### `srs.py` / `habitos.py` / `grafo.py` / `calendario.py` / `egressao.py` / `vram.py` / `antiinjecao.py` / `fio.py` / `disjuntor.py` / `diapasao.py` / `contradicao.py` — os módulos-agente puros
+Minúsculos e testáveis por design: `srs.py` (Leitner, intervalos de repetição espaçada), `habitos.py` (cálculo de streak), `grafo.py` (pontes por **surpresa** = 1 − Jaccard das vizinhanças, domínios disjuntos primeiro), `calendario.py` (parser mínimo de `VEVENT` do `.ics`), `egressao.py` (máscara de PII antes de a query ir ao DDG, #6), `vram.py` (detector de vazamento + orçamento de tokens de fundo pela VRAM livre, #28/#29), `antiinjecao.py` (dropa imperativos de override vindos de página web, #26), `fio.py` (retomar um assunto de conversa anterior, #35), `disjuntor.py` (circuit breaker anti-shadowban do DDG, #31), `diapasao.py` (destila o perfil de **como** o dono prefere ser respondido, #36) e `contradicao.py` (a banda de distância onde mora a contradição, #24). Nenhum toca GPU, rede ou disco — recebem dados e devolvem dados. **São 11 módulos puros: é aqui que a testabilidade sem GPU nasce.**
+
+### `textutils.py` — as heurísticas puras do anti-alucinação
+Só `re` + `unicodedata`, zero imports do projeto. `normaliza`, `palavras_chave`, `contem_alguma` (aterramento léxico), `limpar_query`, `remover_tag`, **`jaccard`** (usado no dedup near-dup e nas pontes). A lista `STOP` é **curada adversarialmente** (inclui `'modelo'`, `'dados'`) — a stoplist é função do corpus, não da língua.
 
 ### `ws.py` — a máquina de estados ao vivo
-`LiveSession`: VAD por RMS no servidor, barge-in em dois níveis (implícito — nova fala já cancela a anterior; explícito — mensagem do cliente), e o controle de conversas (`set_conversa`/`nova_conversa`/`carregar_conversa`). `_finalizar_sessao` dispara o ETL idle uma vez, tanto no `end_session` explícito quanto **no disconnect** — rede de segurança: antes, fechar a aba sem encerrar perdia a atomização da conversa inteira.
+`LiveSession`: VAD por RMS, barge-in em dois níveis, controle de conversas, **`entregar_pendentes`** no accept (reentrega do scheduler) e `_finalizar_sessao` disparando o ETL no `end_session` **e** no disconnect. Ganhou o **wake-word "mestre"** (`_deve_processar` / `_check_sono`): com `MENTE_MESTRE_WAKE`, a sessão começa **dormente** — fala que não começa pela palavra-mestre é ignorada — e volta a dormir após `MENTE_MESTRE_SLEEP_SECONDS` de silêncio. Também **cronometra o STT** e passa o tempo ao pipeline (timing por estágio).
 
 ### `telemetry.py` — observabilidade e persistência
-Logs coloridos thread-safe e um wrapper fino de SQLite. Histórico agrupado **por conversa** (não turnos soltos), log de ETL, e `save_latency` por resposta com médias em `/api/metrics`. Regra do projeto codificada aqui: **nunca `except: pass`** — todo erro passa por `telemetry.error`.
+Logs coloridos thread-safe e o wrapper de SQLite — agora com **todas as tabelas dos agentes** e suas migrações idempotentes. Histórico agrupado **por conversa**, `save_latency` por resposta — agora com **timing por estágio** (`stt_ms`, `decode_tok_s`, `n_tokens`, entrando por migração idempotente) — e a regra do projeto codificada: **nunca `except: pass`**.
 
 ### `prompts.py` — a camada de linguagem
-Todos os prompts num só lugar. O detalhe que importa: `SYS_RESPOSTA` (local) e `SYS_RESPOSTA_WEB` compartilham o **sentinela literal idêntico**, porque o guard depende da string exata — mas têm níveis de ceticismo diferentes, porque o ceticismo é função da fonte. `TAG_ATOMO` (`#zettelkasten_atomico`) marca a natureza; `TAG_NOVO` (`#conhecimento_novo`) marca a maturidade.
+Todos os prompts num só lugar, incluindo os novos `SYS_WATCHER`, `SYS_BRIEFING`, os de síntese map-reduce e a instrução socrática. `SYS_RESPOSTA` e `SYS_RESPOSTA_WEB` compartilham o **sentinela literal idêntico** (o guard depende da string exata) com ceticismos diferentes. `TAG_ATOMO`/`TAG_NOVO`.
 
 </details>
 
@@ -196,83 +449,109 @@ Todos os prompts num só lugar. O detalhe que importa: `SYS_RESPOSTA` (local) e 
 
 ## 🎬 Passo a passo: o que acontece quando você fala
 
-O caminho completo, do ar até o ar. Os passos 3–6 são exclusivos da voz; **texto digitado converge no passo 7** e daí em diante é idêntico.
+O caminho completo, do ar até o ar. A **primeira bifurcação** decide tudo: começou por "mestre"? é comando. Senão, é pergunta.
 
 ```mermaid
 flowchart TD
-    subgraph CAP["1 - CAPTURA - so no modo voz"]
-        direction LR
-        A["Voce fala"] --> B["PCM16 16kHz<br/>binario no WS"] --> C["VAD por RMS<br/>no servidor"] --> E["faster-whisper<br/>em to_thread"]
-    end
+    A["Voce fala"] --> B["PCM16 -> VAD RMS -> faster-whisper"]
+    B --> BIF{"COMECA por<br/>'mestre'?"}
 
-    CAP --> F["QueryOptimizer<br/>resolve pronomes cruzados"]
-    F --> G{"Que tipo de<br/>mensagem e esta?"}
-    G -->|"ACAO - gate lexical"| H["Roteador JSON + tools<br/>loop capado, terminais saem no 1o passo"]
+    BIF -->|"SIM - COMANDO"| MST["_fluxo_mestre<br/>parse_composto REGEX"]
+    MST --> MOK{"regex<br/>resolveu?"}
+    MOK -->|sim| MEX["executa + guarda inverso<br/>(NAO vira conhecimento)"]
+    MOK -->|nao| MLLM["roteador LLM"]
+    MLLM --> MREC{"achou acao?"}
+    MREC -->|nao| REC["RECUSA + registra"]
+    MREC -->|sim| MEX
+
+    BIF -->|"NAO - PERGUNTA"| F["QueryOptimizer<br/>resolve pronomes"]
+    F --> G{"tipo de<br/>mensagem?"}
+    G -->|"ACAO (gate lexical)"| H["roteador JSON + tools"]
     G -->|"TEMPO REAL"| WEB
     G -->|"PERGUNTA"| CASC
 
-    subgraph CASC["2 - FUSAO EM CASCATA - local first"]
-        direction LR
-        J["RAM filtrada<br/>por tema"] --> K["Chroma cosseno<br/>top_k 40"]
-        K --> L{"GATE<br/>aterrado OU<br/>dist menor 0.8"}
-        L -->|sim| M["Passada com GUARD<br/>segura tokens E audio"]
-        L -->|nao| X1["sem contexto"]
+    subgraph CASC["FUSAO EM CASCATA - local first + early-stop"]
+        J["RAM por tema"] --> K["Chroma cosseno top_k 40<br/>+ vizinhos da Malha"]
+        K --> L{"GATE: aterrado (IDF)<br/>OU dist < 0.16"}
+        L -->|sim| M["passada com GUARD<br/>segura tokens E audio"]
     end
 
-    CASC --> O{"Produziu paragrafo real<br/>ou era o sentinela?"}
-    O -->|"paragrafo real"| P["Promove os atomos usados<br/>em background"]
-    O -->|"sentinela - nada foi falado"| WEB
+    CASC --> O{"paragrafo real<br/>ou sentinela?"}
+    O -->|real| P["promove os atomos usados"]
+    O -->|"sentinela (nada falado)"| WEB
 
-    subgraph WEB["3 - ESCALADA WEB - so se o local nao produziu nada"]
-        direction LR
-        Q["FILLER por template<br/>mascara a espera"] --> R["DDG com fallback<br/>auto, html, lite"]
-        R --> S["DEEP-FETCH httpx<br/>+ trafilatura"] --> T["Rankeia por cosseno<br/>RAG EFEMERO"]
-        T --> V["Guard de novo<br/>+ pre-fetch em background"]
+    subgraph WEB["ESCALADA WEB"]
+        Q["FILLER template"] --> R["DDG fallback"] --> S["deep-fetch + trafilatura"] --> T["rankeia (RAG efemero)"]
     end
 
-    P --> W["LlamaManager.stream - thread unica gpu-infer"]
+    P --> W["LlamaManager.stream"]
     WEB --> W
     H --> W
-
-    subgraph SAI["4 - SAIDA - o TTFA nasce aqui"]
-        direction LR
-        X["SentenceChunker<br/>fecha a frase"] --> Y["Piper sintetiza<br/>WAV na CPU"] --> Z["Primeiro audio toca"]
-    end
-
-    W --> SAI
-    SAI --> AA["Persiste turno + latencia, libera a GPU"]
-    AA -.->|"fim de sessao OU aba fechada"| AC["ETL IDLE cede a GPU<br/>1 arquivo .md por atomo<br/>nasce #conhecimento_novo"]
+    W --> X["SentenceChunker -> Piper -> 1o audio (TTFA)"]
+    X --> AA["persiste turno + latencia, libera GPU"]
+    AA -.->|"fim de sessao"| AC["ETL IDLE: 1 .md por atomo, #conhecimento_novo"]
     AC -.->|"sync por mtime"| K
 ```
 
 <details>
-<summary><b>Os 12 momentos que valem detalhe (clique para expandir)</b></summary>
+<summary><b>Os momentos que valem detalhe (clique para expandir)</b></summary>
 
-**1. Boot.** O LLM carrega em **background** — o servidor aceita conexões enquanto isso e avisa o cliente se ainda não estiver pronto. Um warm-up de 1 token garante que a primeira resposta real não pague cold-start.
+**1. A bifurcação mestre.** `mestre.separar` detecta e remove a palavra-mestre (**só a 1ª conta**). Sem ela, o pipeline de conhecimento de hoje não muda. Com ela, o turno é comando — e comando **não** alimenta o dump.
 
-**2. VAD no servidor.** `rms = sqrt(mean(pcm**2))` direto sobre `int16` — sem decoder no caminho crítico. Enquanto está gravando, **todos** os frames entram no buffer (inclusive os abaixo do limiar), para não cortar pausas curtas no meio da frase. O loop lê com `timeout=0.5s`: é esse timeout que garante detectar silêncio mesmo se o browser parar de mandar pacotes.
+**2. Regex antes de LLM no comando.** `parse_composto` resolve os comandos regulares por regex, **sem pagar uma chamada de LLM**. Só o que não casa (lembrete com mensagem livre, watcher) cai no roteador. Se nem o roteador acha ação, o comando é **recusado e registrado**.
 
-**3. Filtro anti-ruído.** Buffer com menos de `vad_min_frames` é descartado — tosse não vira pergunta. Transcrição com menos de 3 chars idem.
+**3. VAD no servidor.** `rms = sqrt(mean(pcm**2))` direto sobre `int16` — sem decoder no caminho crítico. Todos os frames entram no buffer enquanto grava, para não cortar pausas curtas.
 
-**4. QueryOptimizer.** Resolve pronomes cruzados usando os 2 últimos turnos. Atalho barato: `"sim"`, `"continue"`, `"pode falar"` reaproveitam a query anterior sem chamar o LLM. Duas redes de segurança: regex tira pontuação e `limpar_query` capa em ~6 palavras contra o modelo que "ecoa" a frase inteira.
+**4. QueryOptimizer.** Resolve pronomes cruzados com os 2 últimos turnos. `"sim"`/`"continue"` reaproveitam a query anterior sem chamar o LLM.
 
-**5. Pergunta enriquecida só para o gerador.** `_pergunta_com_contexto` prefixa 2 turnos + `[PERGUNTA ATUAL]` **apenas no prompt de resposta** — dump, memória e busca seguem com o texto original. Conserta um bug cirúrgico: a *recuperação* já resolvia o pronome, mas o *gerador* recebia o texto cru e ficava cego a "explique melhor" — respondia sentinela **com os átomos certos na mão**.
+**5. Pergunta enriquecida só para o gerador.** `_pergunta_com_contexto` prefixa 2 turnos **apenas no prompt de resposta** — dump, memória e busca seguem com o texto original. Conserta o bug do gerador cego a "explique melhor".
 
-**6. A cascata é fusão, não escolha binária.** RAM → banco → web. Cada fonte relevante contribui com **um parágrafo em passada própria**, e a web só entra `if not paragrafos` — ou seja, quando **nenhuma** fonte local produziu texto real. A rota final é reportada no log como `ram+banco`, `web`, etc.
+**6. A cascata é fusão com early-stop.** RAM → banco → web. Com `MENTE_EARLY_STOP_CASCATA` (default on), a cascata **para na 1ª fonte que responde com confiança** — se a RAM já respondeu, o banco **nem é consultado** (menos passes de decode na GPU serializada). Desligado, volta à fusão completa (cada fonte um parágrafo).
 
-**7. O gate combina dois sinais ortogonais.** Aterramento **léxico** (o chunk menciona a entidade perguntada) **OU** confiança **semântica** (distância < `rag_score_confident`). A lição: *embedding não tem noção de entidade* — um chunk sobre "ML em geral" fica perto de "TensorRT no YOLO" no espaço vetorial e mesmo assim não contém a resposta. Léxico e denso cobrem as falhas um do outro. É o híbrido sparse+dense clássico, sem BM25, a custo zero.
+**7. O gate combina dois sinais ortogonais — agora com peso.** Aterramento **léxico** (o chunk menciona a entidade) **OU** confiança **semântica** (`rag_score_confident`). O léxico não é mais um OR booleano cru: o **IDF da Malha** pesa keyword rara mais que keyword genérica (`MENTE_ATERRAMENTO_IDF_MIN`). Léxico e denso cobrem as falhas um do outro — híbrido sparse+dense a custo quase zero.
 
-**8. O corte real é orçamento de caracteres**, não contagem de chunks: com chunks de tamanho variável, contar chunks **não protege o `n_ctx`**. `rag_context_char_budget=12000` (~3k tokens dentro de 8192) é quem morde primeiro; `rag_max_chunks=30` é só o limite de contagem.
+**8. O corte real é orçamento de caracteres**, não contagem de chunks. `rag_context_char_budget` morde primeiro; antes dele, o **dedup near-dup por Jaccard** (#G6) tira quase-duplicatas do contexto — velocidade pura.
 
-**9. O guard anti-sentinela** é um matcher de prefixo incremental sobre o stream. Enquanto o buffer normalizado for **prefixo** de `"nao tenho informacoes suficientes"`, tokens **e áudio** ficam retidos. Diverge → despeja o buffer e streama (custo: alguns tokens de TTFA). Confirma → descarta, retorna `None`, **nada foi falado**, escala. É a única forma de "cancelar depois de já ter começado a gerar" sem matar o streaming — a alternativa óbvia (coletar tudo antes de falar) destruiria o TTFA, que é a razão de existir da arquitetura.
+**9. O guard anti-sentinela** é um matcher de prefixo incremental sobre o stream. Enquanto o buffer normalizado for **prefixo** de `"nao tenho informacoes suficientes"`, tokens **e áudio** ficam retidos. Confirma → descarta, `None`, **nada foi falado**, escala. É a única forma de "cancelar depois de já ter começado a gerar" sem matar o streaming.
 
-**10. O filler é UX de tempo, não decoração.** Só existe **na escalada web** — o único caminho com espera real. É **template** (sem chamada extra ao LLM): mascarar latência não pode *custar* latência. E ele **diz o que está fazendo** ("vou buscar X na web"), o que converte espera em progresso percebido. Rotaciona 3 variantes para não virar tique.
+**10. O filler é UX de tempo.** Só na escalada web (o único caminho com espera real), por **template** (mascarar latência não pode *custar* latência), e **diz o que está fazendo**.
 
-**11. Barge-in de ponta a ponta.** Cancelamento da task → `CancelledError` re-propagado explicitamente (se o `except Exception` o engolisse, o decode continuaria) → `stop_event.set()` → o loop quebra no próximo token → **join** via `await asyncio.to_thread(future.result)` → só então o lock é liberado → a nova inferência entra sem overlap de VRAM. Os `safe_send` da stream morta devolvem `False` — falha **esperada**, não erro.
+**11. Barge-in de ponta a ponta.** Cancelamento → `CancelledError` re-propagado → `stop_event.set()` → o loop quebra no próximo token → **join** → só então o lock é liberado → sem overlap de VRAM.
 
-**12. Fim de sessão.** Dispara no `end_session` **e** no disconnect. A task do ETL é retida no `ctx`, **não na sessão** — sobrevive ao WebSocket morto. O `EtlProcessor` espera `interactive_idle` **antes de cada tarefa pesada**: se outra aba perguntar algo, o ETL cede a GPU no meio do trabalho.
+**12. Fim de sessão.** Dispara no `end_session` **e** no disconnect. A task do ETL vive no `ctx`, **não na sessão**. O `EtlProcessor` espera `interactive_idle` **antes de cada tarefa pesada** — e cede a GPU no meio se outra aba perguntar.
 
 </details>
+
+---
+
+## 🕸 A Malha: um grafo sobre as suas notas
+
+A base é Zettelkasten atômica, e na ingestão o LLM escreve `[[conceitos]]` em cada átomo. O `MalhaIndex` transforma isso num **grafo do vault** — um índice invertido **conceito→átomos** — e o usa para melhorar recall **e** velocidade, aplicando técnicas de GraphRAG **sem nenhuma biblioteca de grafo**. É a "trilha Graphify" da Onda 3.
+
+```mermaid
+flowchart LR
+    ING["ETL escreve<br/>[[conceito_A]] [[conceito_B]]<br/>em cada atomo"] --> IDX["MalhaIndex<br/>indice invertido<br/>conceito -> atomos"]
+    IDX --> IDF["IDF por conceito<br/>(hub generico pesa ~0)"]
+    IDF --> USOS
+    subgraph USOS["quatro usos, um indice"]
+        V["vizinhanca (G4)<br/>injeta atomos 1o-grau<br/>[Malha - relacionado]<br/>filtrada por proximidade a PERGUNTA (G5')"]
+        L["aterramento IDF (G3)<br/>keyword rara vale mais<br/>que keyword generica"]
+        H["hubs primeiro (G7)<br/>na Sintese sob Demanda #23"]
+        P["pontes (G8)<br/>Descobridor de Conexoes<br/>surpresa = 1 - Jaccard"]
+    end
+```
+
+O que cada peça faz e por quê:
+
+- **Vizinhança (G4 / core do #34 Cartógrafo).** O `VectorStore.search` já injeta os vizinhos de 1º grau dos átomos recuperados, rotulados `[Malha - relacionado]`, disputando o char budget. Eles **não votam no gate** e **não promovem maturidade** — são contexto extra, não resposta. Isso é **melhor que expandir por cosseno**: zero custo de embedding no caminho quente. O **G5′** conserta o flanco que desligava a expansão: o vizinho só entra se for próximo **da pergunta** (`rankear_por_similaridade`, `MENTE_MALHA_SIM_MIN`), não só do átomo.
+
+- **Aterramento por IDF (G3).** O antigo aterramento léxico era um OR booleano — qualquer keyword em comum bastava. O `MENTE_ATERRAMENTO_IDF_MIN` exige que a keyword casada seja **rara** na base (IDF alto). Foi o próprio autor que marcou esse OR cru como a raiz do bug "RAG→Tarkov" (pergunta geral puxando uma nota-piada pessoal).
+
+- **Hubs primeiro (G7).** Na Síntese sob Demanda ("o que eu sei sobre X"), o map-reduce ordena os átomos do tema pela **centralidade** na Malha — os hubs do assunto entram primeiro no orçamento de contexto (`MENTE_SINTESE_HUBS_PRIMEIRO`).
+
+- **Descobridor de Conexões (G8).** "Mestre, alguma conexão nova?" → `_descobrir_conexoes` fala **pontes**: notas que ligam dois conceitos estabelecidos que quase nunca co-ocorrem. O ranking é por **surpresa** — `1 − Jaccard` das vizinhanças dos dois conceitos, **domínios disjuntos primeiro** (`grafo.py`). O ranking ingênuo por tamanho de tema surfava trivialidades ("python↔vram"); o de surpresa surfa o que interessa ("modelo whisper↔modelo yolo", "custo↔sensor de torque").
+
+**Medição na base real (12.778 átomos):** a atomização serve bem ao grafo (0,6% de átomos sem conceito, mediana de 3 conceitos/átomo, 2.415 conceitos com df≥3). O grafo é **rápido** (pontes 58ms, centralidade <1ms) — **não** é gargalo de resposta. E os thresholds de IDF são **invariantes ao N** (`idf ≥ T ⟺ df/N ≤ e⁻ᵀ`, uma fração constante), documentado em `CALIBRACAO.md`.
 
 ---
 
@@ -284,27 +563,29 @@ A regra que governa tudo: **o vault é a fonte de verdade; o Chroma é um índic
 flowchart TD
     V["Vault Obsidian<br/>glob recursivo **/*.md"] --> DIFF{"mtime maior que o indexado?<br/>ou source novo?"}
     DIFF -->|"nada mudou"| SKIP["VectorDB ja sincronizado<br/>custo zero"]
-    ORF["PURGA DE ORFAOS<br/>source fora do vault atual<br/>ou sumido do disco"] --> DEL
-    DIFF -->|"novo ou modificado"| DEL["DEDUP POR SOURCE<br/>delete where source=path<br/>apaga a versao velha inteira"]
+    ORF["PURGA DE ORFAOS<br/>source fora do vault atual"] --> DEL
+    DIFF -->|"novo ou modificado"| DEL["DEDUP POR SOURCE<br/>delete where source=path"]
     DEL --> FM["strip_frontmatter<br/>YAML nao e conteudo pesquisavel"]
-    FM --> HDR["MarkdownHeaderTextSplitter<br/>quebra em h1/h2/h3<br/>chunk = SECAO coerente<br/>titulo fica DENTRO do texto"]
+    FM --> HDR["MarkdownHeaderTextSplitter<br/>chunk = SECAO coerente"]
     HDR --> CAP["RecursiveCharacterTextSplitter<br/>so como capa: 1000 chars"]
-    CAP --> META["metadados por chunk<br/>source, mtime, section<br/>confidence 0.6 auto vs 1.0 humano<br/>origin Web vs Local"]
-    META --> EMB["EmbeddingProvider SINGLETON<br/>MiniLM multilingue<br/>normalize_embeddings FALSE"]
-    EMB --> CHR["ChromaDB persistido<br/>hnsw:space = COSSENO<br/>lotes de 2000"]
+    CAP --> META["metadados por chunk<br/>source, mtime, section<br/>confidence 0.6 auto vs 1.0 humano"]
+    META --> EMB["EmbeddingProvider SINGLETON<br/>e5-base, normalize FALSE"]
+    EMB --> CHR["ChromaDB<br/>hnsw:space = COSSENO"]
+    CHR --> MLH["MalhaIndex reconstroi<br/>conceito -> atomos"]
 ```
 
-### As sete etapas, e o porquê de cada uma
+### As etapas, e o porquê de cada uma
 
 | # | Etapa | Por que assim |
 |---|---|---|
-| 1 | **Varredura** — `glob` recursivo por `**/*.md` | O filesystem é o índice primário de identidade. `source path` = id do átomo. |
-| 2 | **Diff por `mtime`** | O filesystem já mantém o timestamp: change-feed **de graça**, sem CDC, sem watcher, sem tabela de versões. A heurística antiga (`len(ids) < len(arquivos)`) comparava **chunks com arquivos** — quebrava logo após o primeiro split. |
-| 3 | **Purga de órfãos** | Quando o *caminho* do vault muda, o delete-by-source (match exato de string) não casa e **toda** nota duplica. Aconteceu de verdade: 14.9k chunks para 7.5k reais. |
-| 4 | **Dedup por `source`** | Delete-then-insert por arquivo. Sem isso, editar uma nota **duplicaria** os chunks em vez de atualizá-los. |
-| 5 | **`strip_frontmatter`** | Metadado YAML não é conteúdo pesquisável — e envenenaria o embedding. |
-| 6 | **Split por cabeçalho, depois capa por tamanho** | Chunk = seção semanticamente coerente, não corte cego a cada N chars. `strip_headers=False`: o título fica **dentro** do texto (contexto para o LLM *e* para o TTS) e o caminho de títulos vai para `metadata['section']`. |
-| 7 | **Embedding + Chroma cosseno** | Ver abaixo — é a decisão mais consequente do módulo. |
+| 1 | **Varredura** — `glob **/*.md` | O filesystem é o índice primário de identidade. `source path` = id do átomo. |
+| 2 | **Diff por `mtime`** | Change-feed **de graça**, sem CDC/watcher. A heurística antiga (`len(ids) < len(arquivos)`) comparava chunks com arquivos — quebrava após o 1º split. |
+| 3 | **Purga de órfãos** | Quando o *caminho* do vault muda, o delete-by-source não casa e **toda** nota duplica. Aconteceu: 14.9k chunks para 7.5k reais. |
+| 4 | **Dedup por `source`** | Delete-then-insert por arquivo. Sem isso, editar uma nota **duplicaria** os chunks. |
+| 5 | **`strip_frontmatter`** | Metadado YAML não é pesquisável — e envenenaria o embedding. |
+| 6 | **Split por cabeçalho** | Chunk = seção coerente. `strip_headers=False`: o título fica **dentro** do texto (contexto para o LLM *e* o TTS); o caminho vai para `metadata['section']`. |
+| 7 | **Embedding + Chroma cosseno** | A decisão mais consequente do módulo — ver [war stories](#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno). |
+| 8 | **Reconstrução da Malha** | Os `[[conceitos]]` viram o índice invertido que sustenta a vizinhança, o aterramento IDF e as pontes. |
 
 ### Proveniência: o LLM sabe de onde veio cada pedaço
 
@@ -322,29 +603,25 @@ E isso **aparece literalmente no prompt** (`[Local - Confiança: 0.6] ...`): o m
 
 ### Por que top_k=40 e não 4
 
-Porque **a granularidade do corpus dita a configuração**. A base é Zettelkasten atômica — 1 nota = 1 ideia. Colher 4 chunks de um corpus assim rende contexto pobre demais: cada nota traz um fragmento mínimo, e o assistente "esquece" o que já foi anotado. Daí `rag_top_k=40` / `rag_max_chunks=30` (contra o default típico de 4) e a resposta por **fusão** — o LLM integra dezenas de átomos num parágrafo coerente em vez de listá-los.
+Porque **a granularidade do corpus dita a configuração**. A base é atômica — 1 nota = 1 ideia. Colher 4 chunks rende contexto pobre demais. Daí `rag_top_k=40` / `rag_max_chunks=30` e a resposta por **fusão** — o LLM integra dezenas de átomos num parágrafo coerente. A Malha soma vizinhos a isso, e o dedup near-dup tira as quase-duplicatas antes de gastar o orçamento.
 
-### Coerência entre os dois caminhos
-
-O RAG efêmero da web usa o **mesmo** `EmbeddingProvider` e normaliza os vetores **à mão** (`np.dot(q,v)/(qn*vn)`) exatamente porque `normalize_embeddings=False`. A mesma premissa, dois lugares, zero inconsistência: no caminho local quem faz o cosseno é o Chroma; no efêmero, o numpy.
-
-> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `banco_vetorial_cerebro/`** e reindexar. Passar `collection_metadata` diferente numa coleção existente não faz nada.
+> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `banco_vetorial_cerebro/`** e reindexar.
 
 ---
 
 ## 🔄 O ciclo de vida do conhecimento
 
-Este é o mecanismo mais sofisticado do projeto: **um feedback loop de curadoria com sinal implícito.** A base cresce da sua curiosidade e amadurece pelo seu uso — sem você curar nada à mão.
+Este é o mecanismo mais sofisticado do projeto: **um feedback loop de curadoria com sinal implícito.** A base cresce da sua curiosidade e amadurece pelo seu uso — sem você curar nada à mão. E note: **só o plano de PERGUNTA alimenta esse ciclo** — comandos-mestre ficam de fora por construção.
 
 ```mermaid
 flowchart LR
     CUR["CURIOSIDADE<br/>pergunta, busca web,<br/>conversa, pre-fetch"] --> ETL["ETL IDLE<br/>cede a GPU sempre<br/>destila em atomos"]
-    ETL --> NASCE["ATOMO NASCE<br/>1 arquivo .md<br/>#zettelkasten_atomico<br/>+ #conhecimento_novo<br/>confidence 0.6"]
-    NASCE --> SYNC["vectorstore.sync<br/>entra no vetor por mtime"]
-    SYNC --> USO{"Recuperado numa pergunta,<br/>passou o gate, ENTROU no<br/>contexto e RESPONDEU?"}
+    ETL --> NASCE["ATOMO NASCE<br/>1 arquivo .md<br/>#zettelkasten_atomico<br/>+ #conhecimento_novo<br/>+ [[conceitos]]"]
+    NASCE --> SYNC["vectorstore.sync<br/>+ Malha reconstroi"]
+    SYNC --> USO{"Recuperado, passou o gate,<br/>ENTROU no contexto<br/>e RESPONDEU?"}
     USO -->|"nao"| IMAT["Segue imaturo<br/>voce filtra #conhecimento_novo<br/>no Obsidian e poda"]
     USO -->|"sim"| PROM["_consolidar_fontes<br/>background, idempotente"]
-    PROM --> MADURO["ATOMO PROMOVIDO<br/>perde #conhecimento_novo<br/>virou conhecimento maduro"]
+    PROM --> MADURO["ATOMO PROMOVIDO<br/>perde #conhecimento_novo"]
     IMAT --> SYNC
     MADURO --> SYNC
 ```
@@ -354,8 +631,8 @@ flowchart LR
 | Fonte | Onde | Detalhe |
 |---|---|---|
 | **Pesquisas web da sessão** | `process_queue` | Cada escalada para a web é enfileirada e destilada no idle. |
-| **A "curiosidade" do pre-fetch** | `_prefetch` | O mais sutil: o speculative pre-fetch baixa um contexto **amplo** para antecipar a próxima pergunta. Esse contexto *não precisava ser falado agora* — mas também vira átomo. O sistema colhe o que você **quase** perguntou. |
-| **O histórico da conversa** | `summarize_dump` | A conversa inteira (voz + texto) é atomizada. Se o LLM responde `"NADA"` (small talk), não cria nota. |
+| **A "curiosidade" do pre-fetch** | `_prefetch` | O speculative pre-fetch baixa um contexto **amplo** para antecipar a próxima pergunta — e o que *não precisava ser falado agora* também vira átomo. O sistema colhe o que você **quase** perguntou. |
+| **O histórico da conversa** | `summarize_dump` | A conversa inteira é atomizada. `"NADA"` (small talk) → nenhuma nota. |
 
 ### Promoção: três condições, todas necessárias
 
@@ -367,122 +644,63 @@ if local.relevante:                                  # 1. passou o gate
         self.ctx.track_task(self._consolidar_fontes(local.fontes))   # 3. só as fontes que ENTRARAM
 ```
 
-E as três decisões que sustentam isso são todas não-óbvias:
+**1. O sinal é honesto.** `LocalResult.fontes` reporta só os chunks que **entraram no contexto** — não os que o `similarity_search` recuperou. E recuperar não basta: o átomo tem que ter de fato **respondido** (passada não-sentinela).
 
-**1. O sinal é honesto.** `LocalResult.fontes` reporta apenas os chunks que **entraram no contexto** — não os que o `similarity_search` recuperou. Promover o que foi *recuperado* seria promover ruído; promover o que foi *usado* é o sinal real. E recuperar não basta: o átomo tem que ter de fato **respondido** (passada não-sentinela).
+**2. Um arquivo por átomo** existe porque, com vários `##` num arquivo, promover um átomo **promoveria os vizinhos por acidente**. A resolução do armazenamento foi escolhida em função da resolução do feedback.
 
-**2. A granularidade do storage foi dimensionada pela granularidade do sinal.** **Um arquivo por átomo** existe porque, com vários `##` num arquivo, promover um átomo **promoveria os vizinhos por acidente** — os que calharam de estar no mesmo documento. Isso é raro de ver: a resolução do armazenamento escolhida em função da resolução do feedback.
-
-**3. A escrita é idempotente e barata.** `_consolidar_fontes` só reescreve **se a tag existir** — porque uma escrita inócua bumparia o `mtime`, e `mtime` é o gatilho do índice: cada promoção redundante dispararia uma reindexação inútil. Roda em background para não pesar no TTFA. O arquivo no vault muda na hora (é o que você vê no Obsidian); o Chroma só sabe na próxima `sync`.
-
-### E nada se perde em silêncio
-
-- `summarize_dump` **só limpa o dump se a síntese foi salva**. Falha transitória? A conversa fica para a próxima passada.
-- LLM devolveu texto sem nenhum `##`? `_salvar_atomos` salva o texto inteiro como 1 átomo em vez de descartar o conhecimento calado.
+**3. A escrita é idempotente e barata.** `_consolidar_fontes` só reescreve **se a tag existir** — porque `mtime` é o gatilho do índice, e cada promoção redundante dispararia uma reindexação inútil.
 
 ---
 
 ## 🎛 Por que cada formato
 
-Um resumo antes do detalhe: **três formatos, três naturezas de dado, nenhum forçado no papel do outro.** SQLite guarda fatos episódicos (turnos, latências); Markdown guarda conhecimento semântico curado; Chroma é índice derivado descartável. É esse casamento que faz o sistema parecer projetado em vez de acumulado.
+**Três formatos, três naturezas de dado, nenhum forçado no papel do outro.** SQLite guarda fatos episódicos e estado de agentes; Markdown guarda conhecimento semântico curado; Chroma é índice derivado descartável.
 
 <details>
 <summary><b>GGUF Q4_K_M — uma decisão de orçamento de sistema, não de qualidade</b></summary>
 
-**GGUF** é o formato do llama.cpp: tensores + metadata (tokenizer, chat template, arquitetura) num **arquivo único**, mmap-ável, com **offload por camadas** (`n_gpu_layers`). É o formato que *permite* a divisão GPU/CPU — a alternativa (safetensors + transformers) quer o modelo inteiro em VRAM ou uma camada de `accelerate` por cima.
+**GGUF** é o formato do llama.cpp: tensores + metadata num **arquivo único**, mmap-ável, com **offload por camadas** (`n_gpu_layers`). É o que *permite* a divisão GPU/CPU. **Q4_K_M** é k-quant "medium": mais bits nos tensores sensíveis, 4 no resto. ~4.7 GB para um 7B com perplexidade próxima do fp16.
 
-**Q4_K_M** é k-quant "medium": **mistura de precisão por tensor** — mais bits nos tensores sensíveis (`attention.wv`, `feed_forward.w2`), 4 bits no resto. ~4.7 GB para um 7B (vs. ~15 GB em fp16), com perplexidade próxima do fp16.
-
-**Mas a justificativa real não é sobre o LLM — é sobre coabitação.** A RTX 3080 tem 10 GB e o orçamento precisa acomodar: pesos + KV-cache de `n_ctx=8192` + embeddings na GPU (estão no caminho crítico de *toda* pergunta) + eventualmente Whisper. Q4_K_M é o que **deixa VRAM sobrando para o resto do sistema**. A mesma restrição explica, em cascata:
-
-- `whisper_device="cpu"` — large-v3 comeria ~3 GB; o Whisper sai da GPU **para o embedding poder entrar**;
-- `flash_attn=True` **invertendo o default da lib** — ganho duplo: prefill mais rápido (TTFT com prompt RAG de até 12k chars) **e** menos VRAM de KV;
-- `kv_cache_type="f16"` com `q8_0` como escape hatch documentado ("~metade da VRAM de KV com perda ínfima → libera espaço para embeddings/Whisper"), incluindo o guard que exige `flash_attn=True` para o cache V quantizado, com fallback avisado em vez de erro obscuro em runtime.
+**A justificativa real é coabitação.** A RTX 3080 tem 10 GB para: pesos + KV-cache de `n_ctx=8192` + embeddings na GPU + eventualmente Whisper. A mesma restrição explica, em cascata: `whisper_device="cpu"`, `flash_attn=True` (invertendo o default) e o `kv_cache_type="q8_0"` — que deixou de ser escape hatch e virou o padrão adotado justamente para abrir espaço quando o embedding subiu para o `e5-base`.
 
 </details>
 
 <details>
 <summary><b>ONNX (Piper) — porque a GPU é o recurso escasso</b></summary>
 
-Piper é **VITS exportado para ONNX**, executado no `onnxruntime`: **sem PyTorch, sem CUDA, sem VRAM**. Roda em CPU em tempo real (o 7950X3D tem sobra ociosa).
-
-**A razão arquitetural é a política de GPU:** a GPU é serializada (uma thread). **Tudo que consegue rodar na CPU deve rodar na CPU**, senão entra na fila do executor e come TTFA diretamente. O TTS na GPU competiria com o decode que está *produzindo o texto que ele precisa falar* — o assistente disputando consigo mesmo.
-
-Dois detalhes práticos: **(a)** o Piper é chamado **uma vez por frase**, então o overhead fixo por chamada é multiplicado pelo número de frases — um runtime com JIT/warm-up variável destruiria o TTFA; **(b)** ONNX = grafo estático + pesos, com o **`.onnx.json` ao lado** carregando `phoneme_id_map` e `sample_rate`. Daí a instrução de baixar os dois arquivos, e o `setframerate(voice.config.sample_rate)` — a taxa vem do sidecar, não é hardcoded.
+Piper é **VITS exportado para ONNX**, no `onnxruntime`: **sem PyTorch, sem CUDA, sem VRAM**. **A razão arquitetural é a política de GPU:** tudo que consegue rodar na CPU deve rodar na CPU, senão come TTFA. O TTS na GPU competiria com o decode que está *produzindo o texto que ele precisa falar*. Chamado **uma vez por frase**, com o **cache LRU** memoizando as falas recorrentes (#1). O `.onnx.json` ao lado carrega `phoneme_id_map` e `sample_rate` — daí `setframerate(voice.config.sample_rate)`, não hardcoded.
 
 </details>
 
 <details>
-<summary><b>Markdown / Obsidian — seis justificativas independentes</b></summary>
+<summary><b>Markdown / Obsidian — a fonte de verdade durável</b></summary>
 
-1. **O banco vetorial é derivado; o vault é a fonte.** O Chroma pode ser apagado e reconstruído. Se o dado morasse no Chroma, trocar de embedding seria **perda de dados**. Essa hierarquia é o que dá liberdade de evoluir o RAG.
-2. **`mtime` é um change-feed grátis.** Sem CDC, sem watcher, sem hash, sem tabela de versões — o filesystem já mantém o timestamp.
-3. **Markdown tem estrutura semântica legível por máquina.** Os cabeçalhos permitem chunkar por **seção**. JSON, binário ou texto puro não dariam isso.
-4. **As tags são texto no arquivo** — a promoção é um `re.sub`, e o **Obsidian já sabe filtrar por tag**. A UI de curadoria vem de graça: pesquise `#conhecimento_novo` e veja tudo que a IA colheu e você ainda não usou.
-5. **Human-in-the-loop real.** Você abre o Obsidian e **vê** o átomo, edita, apaga, linka. É *por isso* que `remover_tag` consome o whitespace órfão — **um humano lê esse arquivo**; a promoção não pode sujá-lo.
-6. **Formato aberto e durável.** O conhecimento sobrevive ao projeto. Coerente com "100% local": o dado não fica refém nem de um serviço nem *do próprio código*.
-
-**Bônus:** um arquivo por átomo transforma o filesystem no **índice primário de identidade** (`source path` = id). É o que faz o delete-by-source, a purga de órfãos e a promoção por átomo funcionarem — todos operam sobre a mesma chave.
+1. **O banco vetorial é derivado; o vault é a fonte.** Se o dado morasse no Chroma, trocar de embedding seria **perda de dados**.
+2. **`mtime` é um change-feed grátis.**
+3. **Markdown tem estrutura semântica** — cabeçalhos permitem chunkar por seção, e os `[[links]]` são o grafo da Malha.
+4. **As tags são texto no arquivo** — a promoção é um `re.sub`, e o Obsidian já filtra por tag: a UI de curadoria vem de graça.
+5. **Human-in-the-loop real.** Você abre o Obsidian e **vê** o átomo. É por isso que `remover_tag` consome o whitespace órfão.
+6. **Formato aberto e durável.** O conhecimento sobrevive ao projeto.
 
 </details>
 
 <details>
-<summary><b>SQLite — e por que não Postgres, nem JSON</b></summary>
+<summary><b>SQLite — episódico E estado de agentes, e por que não Postgres</b></summary>
 
-- **Zero servidor, um arquivo, embutido** — coerente com "sem infra". Postgres exigiria um daemon a mais numa app single-user.
-- **O perfil de acesso cabe folgado:** escrita de baixa frequência (1 turno + 1 latência por resposta), leitura pontual. Nunca chega perto do limite de escritor único.
-- **Suporta o que um formato serializado não suporta:** migração idempotente (`PRAGMA table_info` + `ALTER TABLE`) e **SQL real** — o `COALESCE(conversa_id, substr(data_hora,1,10))` que agrupa turnos legados **por dia** (senão cada turno antigo viraria uma "conversa" solta na UI), e as agregações de TTFT/TTFA médios. JSON/pickle não dariam nem migração nem agregação.
-- **Métodos síncronos por decisão** ("chame via `asyncio.to_thread`"): o wrapper fica trivialmente testável e o offload é responsabilidade do chamador.
-
-</details>
-
-<details>
-<summary><b>ChromaDB — escolhido por duas capacidades específicas</b></summary>
-
-- **In-process com persistência em disco** — mesma lógica do SQLite. Qdrant/Weaviate/Milvus seriam um serviço a mais para um corpus de alguns milhares de átomos.
-- **O índice não é o gargalo** — o gargalo é o prefill do LLM com 12k chars. Escolher um vector DB "que escala" aqui seria otimizar o componente errado.
-- **As duas capacidades que ditaram a escolha:** métrica **configurável por collection** (foi o que permitiu a correção do gate) e **metadata arbitrária por chunk** com filtro/delete por `where` (é o que faz o reindex por `source`, a purga de órfãos e a proveniência funcionarem).
-- **`similarity_search_with_score` devolve a distância crua**, não um ranking. O gate precisa do **número** para comparar com `rag_score_confident`. Uma API que só devolvesse ordem tornaria o gate **inconstruível**.
-- **A interface é pequena o bastante para o `FakeStore` imitar em 5 linhas.** Sim, isso conta como critério de escolha de dependência.
+- **Zero servidor, um arquivo, embutido** — coerente com "sem infra".
+- **O perfil de acesso cabe folgado** — nunca chega perto do limite de escritor único, mesmo com os agentes gravando `agendamentos`, `auditoria`, `habitos`, etc.
+- **Suporta migração idempotente** (`PRAGMA table_info` + `ALTER TABLE`) — cada onda de agentes adicionou tabelas **sem migração destrutiva** — e **SQL real** (o `COALESCE` que agrupa turnos legados por dia, as agregações de TTFT/TTFA).
+- **A persistência dos agendamentos é o que faz o scheduler sobreviver a restart** — um alarme criado hoje dispara amanhã mesmo que o servidor tenha reiniciado.
 
 </details>
 
 <details>
-<summary><b>JSON para roteamento de tools — em vez do tool-calling nativo</b></summary>
+<summary><b>ChromaDB, JSON para tools, WebSocket, PCM↑/WAV↓</b></summary>
 
-- **Razão empírica:** o parser de tool-calling do llama.cpp é instável (depende do chat template/grammar de cada modelo); a abordagem prompt+JSON foi **validada 7/7 no Qwen local**. Escolha por medição.
-- **Portabilidade do modelo:** trocar o `.gguf` não quebra o roteador. Num assistente que se define como "100% local", **o modelo é peça substituível** — acoplar o roteamento ao chat template seria acoplar a arquitetura ao artefato mais volátil do sistema.
-- **Controle do parse como superfície de confiança:** `_objetos_json` trata a saída do LLM como **texto não-confiável** — varredura O(n) de objetos com chaves **balanceadas** e **ciente de strings** (permite `{"expressao":"a}b"}`), devolvendo o primeiro objeto com `'tool'` válido. Tolera prosa em volta, chave solta na frase (`{sorriso}`) e dois objetos. No caminho nativo, grammar que falha devolve erro opaco; aqui a falha é **observável e degrada para "responder"**.
-- **O contrato tem um no-op explícito:** `{"tool":"responder","args":{}}`. "Isto é só uma pergunta normal" **tem representação no protocolo** — então não existe caminho de "parse vazio" ambíguo.
-
-</details>
-
-<details>
-<summary><b>WebSocket — em vez de SSE/HTTP streaming</b></summary>
-
-- **Full-duplex é a razão decisiva e insubstituível.** O áudio do microfone **sobe** enquanto tokens e áudio **descem**. SSE é unidirecional. **Sem duplex não existe barge-in** — a interrupção depende de o servidor *receber som durante a fala da IA*.
-- **Frames binários nativos:** o PCM chega como `msg["bytes"]`, sem base64 nem multipart.
-- **A conexão tem estado, e o estado mapeia 1:1 nela:** buffer do VAD, `last_audio_time`, conversa ativa, task do pipeline em voo. Sobre HTTP exigiria session id + estado server-side por request — reinventar o WebSocket, pior.
-- **Canal de controle multiplexado e ordenado:** `set_conversa`/`nova_conversa`/`carregar_conversa`/`end_session` viajam no **mesmo canal** do áudio, com ordem garantida. Se fosse REST, existiria a corrida clássica: "o POST troca a conversa **enquanto** o stream ainda responde à anterior". Aqui é impossível por construção.
-- **O disconnect é um sinal entregue** — é o que dispara a rede de segurança do ETL quando você simplesmente fecha a aba. Um POST não avisa que o usuário foi embora.
-- **O custo foi assumido:** reconexão vira problema seu → backoff exponencial + indicador de conexão no cliente, e `set_conversa` para reassociar o id **sem** mexer no contexto (por isso ele **não** cancela o pipeline: é a mesma conversa; interromper seria destrutivo — já `nova_conversa`/`carregar_conversa` cancelam, porque o contexto mudou).
-
-</details>
-
-<details>
-<summary><b>PCM na subida, WAV base64 na descida — a assimetria é proposital</b></summary>
-
-**Sobe: PCM int16, 16 kHz, mono, cru.**
-- **É o que o VAD precisa.** RMS é média quadrática de **amostras**. Com Opus/MP3/WebM seria preciso **decodificar cada pacote antes de medir energia** — decoder + latência **dentro do caminho crítico da detecção de fala**, que é o caminho do barge-in. Com PCM, custa microssegundos.
-- **É o que o Whisper quer:** `np.ndarray` float32 mono 16 kHz. A conversão é uma divisão por 32768. **Zero resample, zero decoder** entre o mic e o modelo. E 16 kHz é a taxa **nativa** do Whisper — o resample acontece no browser (`new AudioContext({sampleRate:16000})`), otimizado e de graça.
-- **Custo: ~32 KB/s.** Irrelevante em localhost, que é o cenário-alvo declarado. **O trade-off banda × latência foi resolvido a favor da latência porque a banda é grátis.**
-
-**Desce: WAV base64 em `data:audio/wav`.**
-- Montar o header WAV custa **~44 bytes e zero encoding**. Opus/MP3 custariam **uma passada de encoder por frase** — e como o chunker emite frase a frase, esse custo entra **direto no TTFA**.
-- **WAV é o formato que todo browser toca sem codec, sem MSE, sem lib:** `new Audio("data:audio/wav;base64," + fila.shift())`. A fila de áudio tem 3 linhas.
-- **Base64 (+33%) é banda trocada por simplicidade de protocolo:** o áudio viaja no **mesmo canal JSON dos tokens**, então há **um único protocolo de mensagem** — sem multiplexar binário e texto na descida, sem correlacionar dois canais.
-
-**Cada direção otimizou o que importa nela:** subida = latência do VAD/barge-in; descida = simplicidade de reprodução e sincronia com o stream de tokens. Um formato único nos dois sentidos seria pior nos dois.
+- **ChromaDB:** in-process com persistência; métrica **configurável por collection** (permitiu a correção do gate) e **metadata arbitrária** com filtro/delete por `where` (reindex por source, purga de órfãos, proveniência). `similarity_search_with_score` devolve a **distância crua** — sem ela o gate seria inconstruível.
+- **JSON para roteamento de tools:** o parser nativo do llama.cpp é instável; prompt+JSON foi **validado 7/7 no Qwen local**. Trocar o `.gguf` não quebra o roteador. `_objetos_json` trata a saída como texto não-confiável (varredura balanceada e ciente de strings) e degrada para "responder".
+- **WebSocket:** full-duplex é a razão insubstituível — **sem duplex não existe barge-in** (o mic sobe enquanto o áudio desce) **nem PUSH proativo** (o scheduler empurra o alarme pelo mesmo canal). O disconnect é um **sinal entregue** — dispara o ETL quando você fecha a aba.
+- **PCM↑, WAV↓:** subida crua porque **é o que o VAD e o Whisper querem**, sem decoder no caminho crítico do barge-in (~32 KB/s, grátis em localhost). Descida em WAV base64 porque monta o header em **~44 bytes e zero encoding**, toca em qualquer browser sem codec, e viaja no **mesmo canal JSON dos tokens** — um único protocolo.
 
 </details>
 
@@ -490,135 +708,107 @@ Dois detalhes práticos: **(a)** o Piper é chamado **uma vez por frase**, entã
 
 ## 🛠 Skills de engenharia demonstradas
 
-Não são buzzwords — cada item abaixo aponta para código específico e para o bug real que o motivou.
+Cada item aponta para código específico e para o bug real que o motivou.
 
 ### Concorrência sobre recurso escasso e não-preemptível
 
-**A lição central: um `asyncio.Lock` não serializa trabalho que já vazou para uma thread.** O bug do monólito é o caso canônico de *lock protegendo o token errado* — ele protegia a **entrada no gerador async**, não a **posse da VRAM**. No barge-in, cancelar o gerador liberava o lock imediatamente enquanto a daemon thread continuava decodificando: a próxima inferência pegava o lock e começava por cima. **O lock produzia exatamente a race que existia para impedir.**
+**A lição central: um `asyncio.Lock` não serializa trabalho que já vazou para uma thread.** O bug do monólito é o caso canônico de *lock protegendo o token errado* — protegia a entrada no gerador async, não a posse da VRAM. A correção troca serialização *cooperativa* por **estrutural** (`ThreadPoolExecutor(max_workers=1)`). Três detalhes de quem já debugou isso: a ordem do `finally` (`stop_event.set()` → **join** → *só então* solta o lock); granularidade de ~1 token; e manter o `asyncio.Lock` "redundante" porque são **dois invariantes distintos** (uma stream lógica por vez; um decode físico por vez).
 
-A correção troca serialização *cooperativa* (funciona se todo mundo respeitar) por **estrutural** (`ThreadPoolExecutor(max_workers=1)` — o próximo job só começa quando o anterior *retorna*). Nenhuma disciplina de código pode violar. Três detalhes que só aparecem em quem já debugou isso:
+**Prioridade de dois níveis sem scheduler.** `interactive_idle` é um `asyncio.Event` com semântica invertida — **SET = livre**. Os três consumidores de baixa prioridade — ETL, **watcher e briefing do scheduler** — esperam antes de *cada* tarefa pesada; o de alta (`pipeline_resposta`) faz `clear()` ao entrar e `set()` no `finally`. Prioridade + yield cooperativo sem fila de prioridade. Que o mesmo mecanismo governe três produtores de trabalho de fundo diferentes é a prova de que a abstração é genérica.
 
-- **A ordem do `finally` é o fix inteiro:** `stop_event.set()` → **join** → *só então* solta o lock. Cancelamento cooperativo **com join** é obrigatório quando o trabalho não é preemptível — não dá para "matar" um decode CUDA no meio.
-- **Granularidade de ~1 token:** o barge-in custa uma iteração de decode, não `max_tokens`.
-- **Manter o `asyncio.Lock` "redundante"** é a decisão mais sutil: são **dois invariantes distintos** — *uma stream lógica por vez* (contrato de protocolo) e *um decode físico por vez* (posse de recurso). Reconhecer que a redundância aparente são dois contratos, e documentar isso, é o oposto de "limpar código".
+### Determinismo e isolamento como requisito (o plano de comando)
 
-**Prioridade de dois níveis sem scheduler.** `interactive_idle` é um `asyncio.Event` com semântica invertida — **SET = livre**. O consumidor de baixa prioridade (ETL) espera antes de *cada* tarefa pesada; o de alta (`pipeline_resposta`) faz `clear()` ao entrar e `set()` no `finally`. Prioridade + yield cooperativo sem fila de prioridade, sem preempção, sem nice level. A granularidade (antes de *cada* tarefa, não uma vez no início) é o que faz um ETL longo ceder a GPU no meio.
+- **A fronteira comando/pergunta é física.** Uma parede em `ws.py`/`_fluxo_mestre`, não uma dica no prompt. Comando não vira conhecimento **por construção** — `registra_conhecimento=False` e o dump nunca é tocado. Foi um bug real ("me lembra de X" virando átomo) tornado impossível.
+- **Regex antes de LLM é uma decisão de latência E de confiabilidade.** `parse_composto`/`parse_rapido` resolvem o caso comum sem pagar a GPU e sem a variância de um modelo. O LLM é o *fallback*, não o caminho.
+- **Reversibilidade de primeira classe.** Toda mutação guarda seu inverso; o undo inspeciona o *resultado* para não reverter o que falhou, e é consumo único. Correções encadeadas ficam limpas porque o novo alvo de undo é só o redo.
+- **Recusar é uma feature.** Comando não-reconhecido é **registrado** (`mestre_nao_reconhecido`), não empurrado para uma resposta genérica. O isolamento rígido gera o seu próprio backlog de melhorias.
 
 ### Latência percebida ≠ latência real
 
-**Cada decisão é cotada em TTFA** — é uma moeda de decisão consistente, não uma preocupação difusa:
+**Cada decisão é cotada em TTFA:**
 
 | Decisão | Efeito no TTFA |
 |---|---|
 | Gate lexical antes do roteador LLM | Pergunta comum **não paga** a chamada extra |
-| HyDE custa ~300-900ms no caminho crítico | Vira **botão** (`MENTE_RAG_HYDE`), não default |
+| Comando resolvido por regex | "Mestre, …" comum **não paga** LLM nenhum |
+| Early-stop da cascata (#3) | RAM respondeu → banco nem é consultado |
+| Dedup near-dup antes do prompt (#G6) | Menos chars no contexto = decode mais rápido |
 | Filler é template, não LLM | Mascarar latência não pode *custar* latência |
+| Cache de voz (#1) | Fala recorrente não re-sintetiza |
 | Warm-up de 1 token no boot | A 1ª resposta real não paga cold-start |
-| LLM carrega em background | O servidor aceita conexões enquanto o modelo sobe |
-| Promoção e pre-fetch em `track_task` | Saem do caminho crítico |
-| `sync()` do vault em background | O POST de nota retorna sem esperar o reindex |
+| Promoção, pre-fetch e `sync()` em `track_task` | Saem do caminho crítico |
 
 ### Anti-alucinação como controle de fluxo
 
-O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural — logo, exige um demultiplexador. Isso é raro de ver bem feito. Detalhes: o guard compara sobre **texto normalizado** (robusto a acento/caixa que o modelo varie); o `"\n\n"` de separação só é emitido na 1ª emissão **real, dentro do guard** — nem a quebra de linha vaza quando a passada acaba em sentinela.
-
-**Ceticismo calibrado por proveniência.** `SYS_RESPOSTA` (local) é conservador para não alucinar sobre suas notas. Mas o mesmo prompt na web produzia **falso negativo** — rejeitava o preço do bitcoin *que estava cravado no snippet*. Daí `SYS_RESPOSTA_WEB`: **o nível de ceticismo tem que ser função da fonte**, não uma constante do assistente.
-
-**Análise de custo de erro por classe.** A lista de gatilhos time-sensitive é curta por raciocínio explícito de assimetria: falso **negativo** custa ~1s (cai na cascata); falso **positivo** custa uma **resposta pior** (pula o vault numa pergunta que ele responderia). Escolha de operating point pela matriz de custo — não "tuning".
+O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural — logo, exige um demultiplexador. O guard compara sobre **texto normalizado**; o `"\n\n"` só é emitido na 1ª emissão real **dentro do guard**. **Ceticismo calibrado por proveniência:** `SYS_RESPOSTA` (local) é conservador; o mesmo prompt na web dava **falso negativo** (rejeitava o preço cravado no snippet) → `SYS_RESPOSTA_WEB`. E o gate ganhou o **IDF da Malha**: aterrar só por keyword **rara** conserta o "RAG→Tarkov" sem mexer no prompt.
 
 ### Design de sistema
 
-- **Ports & adapters de verdade — e o port tem semântica.** `send(dict) -> bool`: o **valor de retorno importa** (`False` = backpressure/desistência), e o domínio para sem jamais saber o que é um WebSocket. `safe_send` engolir a exceção e devolver `False` é justificado: *falha esperada durante barge-in/disconnect*. **Distinguir erro de condição normal do caminho feliz** é o que evita tanto o log poluído quanto o `except: pass`.
-- **Degradação graciosa é uma matriz, não um try/except.** LLM falha → servidor sobe e avisa; STT/TTS falham → texto funciona; vault vazio → web; deep-fetch falha/off/sem embeddings → snippets; snippets falham → resposta graciosa; backend do DDG cai → próximo; `ddgs` antigo sem o param `backend` → refaz a chamada sem ele. **Cada camada tem um degrau abaixo.**
-- **A regra mais sutil do fallback web:** só propaga erro se **nenhum** backend respondeu — e backend que respondeu **vazio-com-sucesso é "nada encontrado", não falha**. Distinguir *ausência de resultado* de *falha de canal*.
-- **PEP8 violada conscientemente e documentada:** `KMP_DUPLICATE_LIB_OK` e `TOKENIZERS_PARALLELISM` são setados **antes** dos imports de ML, com `# noqa: E402`, porque as libs leem essas variáveis **no import time**. Obedecer a convenção aqui quebraria o programa. Saber *quando* violar e deixar a marca do porquê é melhor que os dois extremos.
-- **Migração de dados sem destruição:** o schema se adapta ao dado do usuário, nunca o contrário.
-- **Injeção de clock:** `LatencyTracker(clock=time.perf_counter)` — teste determinístico de tempo sem monkeypatch global, e monotônico em vez de `time.time()`.
+- **Ports & adapters de verdade — e o port tem semântica.** `send(dict) -> bool`: o retorno importa (`False` = backpressure). O mesmo port serve à resposta **e** ao PUSH proativo do scheduler.
+- **Degradação graciosa é uma matriz.** LLM falha → servidor sobe e avisa; STT/TTS falham → texto funciona; vault vazio → web; deep-fetch falha → snippets; backend do DDG cai → próximo; **sem ouvinte para o alarme → `pendente_entrega`, reentregue depois.** Cada camada tem um degrau abaixo.
+- **Migração de dados sem destruição:** o schema se adapta ao dado do usuário — e cada uma das ~10 tabelas de agentes entrou por migração idempotente, nunca por reset.
+- **Injeção de clock e de "agora".** `LatencyTracker(clock=...)`, `parse_quando(texto, agora)`, `parse_rapido(comando, agora)` — teste determinístico de tempo sem monkeypatch global. É por isso que `agenda.py`, `mestre.py`, `srs.py`, `habitos.py` são 100% puros.
 
 ### Segurança de entrada gerada por LLM
 
-`calcular_seguro` compila **AST com whitelist de nós** — nunca `eval` numa expressão vinda do LLM. Mas o detalhe caro é o **teto de expoente**: como a calculadora roda **síncrona no event loop**, `9**9**9` não é "um cálculo lento", é **indisponibilidade global do servidor**. E o trade-off é medido: não jogar toda conta em `to_thread` (pagaria o hop *sempre*), e sim capar o expoente (1000 cobre qualquer uso real e mantém o cálculo instantâneo).
+`calcular_seguro` compila **AST com whitelist de nós** — nunca `eval`. O detalhe caro é o **teto de expoente**: como a calculadora roda **síncrona no event loop**, `9**9**9` não é "lento", é **indisponibilidade global do servidor**.
 
 ### Testabilidade sem GPU
 
-80 testes, ~7s, sem GPU e sem rede. O ponto de mérito é que isso **só é possível por causa da arquitetura** — dá para apontar onde a testabilidade foi requisito de design: o port `send` no lugar do WS; import lazy do `llama_cpp`; `textutils` **puro** (as heurísticas mais sensíveis vivem onde não precisam de fake nenhum); clock injetado; o RAG efêmero degradando sem embeddings.
+**560 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…).
 
-E a **cobertura foi escolhida por risco, não por percentual**: gate de relevância, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento — exatamente as heurísticas que já quebraram na vida real.
-
-> **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. O efeito prático: nenhuma dessas defesas pode ser removida por engano num refactor futuro — a razão está no arquivo.
+> **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
 ---
 
 ## 📈 Evolução do projeto
 
-Cada marco resolveu um problema **observado**, não um problema hipotético.
+Cada marco resolveu um problema **observado**, não hipotético. Do monólito a um assistente que responde, age e cuida.
 
 ```mermaid
 timeline
-    title Do monolito ao ciclo de conhecimento
-    5919df3 : Modularizacao V2 : 17 arquivos, fronteiras explicitas
-    0d92a6b : Tasks + testes : GC comia trabalho de background : 28 testes
-    d62eddf : Fix do cosseno : o RAG local estava 100% inoperante : TTFT/TTFA instrumentados
-    e0c905a : faster-whisper : CTranslate2 destrava large-v3
-    3ec0c29 : Tools aditivas : agir sem regressao de TTFA
-    c7b77a6 : Paths relativos : roda em qualquer maquina
-    aa1e003 : Tuning llama.cpp : flash attn ON, speculative OFF com numero
-    7f3b144 : RAG Zettelkasten : top_k 6 para 40, fusao em cascata : 14.9k para 7.5k chunks
-    1ee0b26 : Deep-fetch + ciclo : a web respondia, o modelo nao via : 80 testes
+    title Do monolito ao assistente que age
+    section Fundação (V2)
+        5919df3 : Modularizacao V2 : fronteiras explicitas, DI
+        d62eddf : Fix do cosseno : RAG local estava 100% inoperante
+        aa1e003 : Tuning llama.cpp : flash attn ON, speculative OFF com numero
+        7f3b144 : RAG Zettelkasten : top_k 6 para 40, fusao em cascata
+        1ee0b26 : Deep-fetch + ciclo do conhecimento : 80 testes
+    section Onda 1 (Tier S)
+        bc7292f : Palavra-mestre : plano de comando isolado
+        e53044f : Agentes tipo-Alexa : lembretes, watchers, briefing, listas
+        c9ee546 : 7 agentes : captura, cache de voz, verbosidade, sintese, auditoria, health-check, confidencial
+    section Onda 2 (baixo custo)
+        bc548c7 : Desfazer + Corta-e-Corrige : reversibilidade de 1a classe
+        6e7c96f : Early-stop da cascata : menos decode na GPU
+        e6ebb57 : Cofre de confirmacao : o destrutivo espera
+        cf97815 : Encadeamento + Atalhos : composto e aprendizado de intencao
+    section Onda 3 (Malha + produtividade)
+        25429d8 : Trilha Graphify : IDF, dedup, hubs, pontes
+        a87b372 : Cluster produtividade : SRS, .ics, gatilhos, revisao, habitos, tutor, rotinas, pomodoro : 472 testes
+    section Modelos e Voz
+        0d345c4 : Stack medido por A-B : e5-base 2x recall, Whisper turbo, KV q8_0
+        0d345c4 : Modelo-base trocado : Qwen2.5 para Qwen3-8B, sentinela 33 para 8 pct
+        0d345c4 : Voz e observabilidade : wake-word mestre, barge-in do dono, tok-s por resposta : 560 testes
 ```
 
 <details>
-<summary><b>O que cada marco resolveu, em detalhe (clique para expandir)</b></summary>
+<summary><b>O que cada marco resolveu (clique para expandir)</b></summary>
 
-### `5919df3` — Modularização do MVP monolítico (V2)
-**Problema:** o assistente inteiro num arquivo (`mvp_mente.py`), sem separação entre wiring, domínio e transporte. Impossível testar uma peça isolada; impossível mexer no RAG sem tocar no WebSocket.
-**Solução:** 17 arquivos com fronteiras explícitas, DI via `AppContext`, e o contrato que sustenta todo o resto — **nenhum módulo de domínio conhece o WebSocket**.
-**Impacto:** 2.253 linhas. Todos os marcos seguintes alteram **um módulo por vez** sem efeito colateral.
+### Fundação — `5919df3` → `1ee0b26`
+Modularização do MVP monolítico (17 arquivos, DI, nenhum módulo de domínio conhece o WS); fix do cosseno (L2→cosine destravou o RAG local, que estava 100% inoperante); tuning do llama.cpp (**+6-10% tok/s, −22% TTFT no RAG**, speculative desligado *com número*); RAG Zettelkasten (top_k 6→40, fusão em cascata, purga de órfãos: **14.9k→7.5k chunks**); deep-fetch + RAG efêmero + o ciclo `#conhecimento_novo` (**80 testes**). Detalhes técnicos completos em [war stories](#-war-stories-os-bugs-que-moldaram-a-arquitetura).
 
-### `0d92a6b` — Tasks perdidas pelo GC + primeira suíte
-**Problema:** bug real e silencioso. O event loop mantém apenas **referência fraca** às tasks: sem guardar referência forte, o GC podia coletar a task no meio e a corrotina morria **sem exceção e sem log**. Afetava pre-fetch, ETL idle e syncs do VectorDB. Pior: o ETL estava retido na `LiveSession`, então desconectar matava a atomização em curso.
-**Solução:** `AppContext.track_task` (set + done-callback) e o ETL retido no **`ctx`**, sobrevivendo ao WebSocket. Mais 28 testes com fakes de LLM/TTS/store.
-**Impacto:** elimina uma classe de falha **invisível** e cria a rede de segurança que permitiu as refatorações agressivas seguintes.
+### Onda 1 (Tier S) — `bc7292f` → `c9ee546`
+**A palavra-mestre nasce aqui** (`bc7292f`): o plano de comando isolado e determinístico, e a família de agentes tipo-Alexa (lembretes/alarmes, watchers, briefing, listas) sobre o `SchedulerService` persistente. Depois, **7 agentes** num PR: Captura Rápida (inbox GTD), Cache de Voz, Uma Frase Basta (verbosidade), Síntese sob Demanda (map-reduce), Trilha de Auditoria, Health-check falável, Modo Confidencial (turno só na RAM). Padrão que se repete pelas três ondas: **comando-mestre + módulo puro + tabela SQLite quando preciso**.
 
-### `d62eddf` — Fix do cosseno, chunking semântico, embeddings na GPU, TTFA
-**Problema:** quatro, sendo um crítico. O Chroma usava **L2** (default) sobre embeddings **não normalizados** → distâncias ~15 contra thresholds de escala cosseno (0.8/1.5) → **o gate rejeitava tudo e o RAG local estava 100% inoperante**. Além disso: chunking cego por caracteres, embeddings na CPU e **nenhuma medição** de TTFT/TTFA numa arquitetura justificada por latência.
-**Solução:** `hnsw:space=cosine` (bom match ≈ 0.3), `split_markdown` por cabeçalho, `resolve_device` para GPU, e `LatencyTracker` + `save_latency`.
-**Impacto:** destrava o RAG local. Verificado ponta-a-ponta na GPU: `relevante=True, dist=0.26`. Exige recriar o banco vetorial.
+### Onda 2 (baixo custo, alto ganho) — `bc548c7` → `cf97815`
+Reversibilidade de primeira classe: **Desfazer** (`bc548c7`) e **Corta-e-Corrige** reusando a mesma infra de inverso. **Early-stop** da cascata (menos passes de decode). **Explique-como-para-criança** (ELI5, ortogonal à verbosidade). **Cofre de confirmação** (destrutivo espera "confirma", sem confirmação redundante). **Encadeamento falado** ("faz X e faz Y" = várias ações, nunca metade). **Atalho de intenção frequente** (conta, oferece 1x, cria apelido).
 
-### `e0c905a` — faster-whisper (CTranslate2)
-**Problema:** o `openai-whisper` de referência era lento demais no hardware local para permitir subir o modelo — o STT ficava preso em modelos pequenos, limitando a porta de entrada de todo o modo voz.
-**Solução:** mesmos pesos, execução muito mais rápida; `compute_type` automático (float16 na GPU, int8 na CPU).
-**Impacto:** habilita `large-v3` no mesmo hardware. Verificado por round-trip real (Piper → resample → faster-whisper).
+### Onda 3 (Malha + produtividade) — `25429d8` → `51c1274`
+**A Trilha Graphify:** IDF no aterramento, dedup near-dup, hubs-primeiro na síntese, filtro de proximidade da vizinhança, e o Descobridor de Conexões por surpresa (`grafo.py`). **O cluster de produtividade completo:** SRS (Leitner), leitor de `.ics` local, Gatilhos condicionais, Revisão Diária, Diário de Hábitos (streak), Tutor Socrático, Rotinas Compostas, Pomodoro — e o comando **/ajuda** falável. **472 testes.** Medido na base real (12.778 átomos): a atomização serve bem ao grafo, e os thresholds de IDF são invariantes ao N.
 
-### `3ec0c29` — Function calling aditivo + fallback de backend
-**Problema:** o assistente não conseguia **agir**. Mas adotar function calling de forma ingênua custaria uma chamada de roteador em **toda** pergunta, destruindo o TTFA afinado — e o tool-calling nativo do llama.cpp tem parser instável. Em paralelo, a busca web dependia de um único backend: ponto único de falha.
-**Solução:** gate lexical + roteador JSON + AST segura + `buscar_com_fallback`.
-**Impacto:** capacidade de ação **sem regressão de latência** nas perguntas comuns. Verificado no modelo real: *"quanto é 15% de 240"* → `calcular` → "36".
-
-### `c7b77a6` — Paths relativos
-**Problema:** caminhos absolutos hardcoded amarravam o projeto a uma máquina; o Whisper baixava pesos no cache global do HF, fora do projeto.
-**Solução:** tudo ancorado em `BASE_DIR`, `modelos/` versionada só na estrutura, `download_root` local.
-**Impacto:** projeto portátil. O `.env` vira **opcional**.
-
-### `aa1e003` — Tuning llama.cpp
-**Problema:** `flash_attn=False` por default na lib — o projeto pagava latência e VRAM à toa. E o speculative decoding era hipótese não medida.
-**Solução:** flash attention ligado; `n_batch`/`n_ubatch`/`kv_cache_type` expostos como botões; speculative implementado e **desligado com número**.
-**Impacto medido na RTX 3080:** **+6-10% tok/s** e **-22% de TTFT no RAG (563 → 441 ms)**. Decisões negativas documentadas: speculative **93 vs 121 tok/s** e crash de shape em contexto longo — justo no caso de uso principal; ExLlamaV3 validado em env isolado e descartado (**~67 tok/s vs ~120** do llama.cpp tunado no Ampere).
-
-### `7f3b144` — RAG Zettelkasten + fusão em cascata
-**Problema:** sintomas do uso real — *"não reconhece o que já anotei"*, *"se perde ao mudar poucas palavras"*, banco duplicado, sentinela vazando. Causas: base atômica (7k+ notas de 1 ideia) colhendo só 4 chunks; embedding usando a query de 5 palavras (que não casa com a forma das notas); `sync()` sem purga de órfãos (**14.9k chunks para 7.5k reais**); ETL gerando documentões que poluíam a base atômica.
-**Solução:** `top_k` 6→40, `max_chunks` 4→30 + orçamento de chars; embedding da **pergunta inteira** + HyDE opcional; fusão em cascata com atalho time-sensitive; purga de órfãos; guard anti-sentinela **também** no caminho web + `SYS_RESPOSTA_WEB`.
-**Impacto:** alinha o RAG à realidade da base. Banco real: **14.9k → 7.5k chunks**.
-
-### `1ee0b26` — Deep-fetch, RAG efêmero e o ciclo do conhecimento
-**Problema:** o `ddgs.text()` só devolve snippets. Para perguntas numéricas, o dado está **dentro** do artigo — o LLM respondia "não tenho informações" **mesmo com a web respondendo**. E não havia noção de maturidade: tudo que o ETL colhia entrava com o mesmo peso.
-**Solução:** deep-fetch (`httpx` + `trafilatura`) + ranking efêmero com o embedding singleton; ciclo `#conhecimento_novo` com promoção por uso; um arquivo por átomo; `summarize_dump` atomizando.
-**Impacto:** fecha o buraco entre "a web respondeu" e "o LLM viu a resposta". **80 testes.**
-
-### 🚧 Em andamento — Histórico por conversa
-**Problema:** o histórico era uma lista de **turnos soltos**, sem vínculo com a conversa. Não havia como listar conversas nem reabrir uma e continuar de onde parou.
-**Solução:** `conversa_id` com **migração idempotente**; `COALESCE(conversa_id, dia)` para agrupar turnos legados **por dia** em vez de virar uma lista infinita de fragmentos; três mensagens novas no WS; sidebar deslizante.
-**Impacto:** o histórico vira conversas navegáveis e **retomáveis** — reabrir recarrega o contexto no backend, então o modelo continua com a memória certa.
+### Modelos e Voz — `0d345c4`
+**O stack de modelos deixou de ser herdado e passou a ser medido.** Embedding MiniLM→**e5-base** (**~2× no ranqueamento**, A/B em `eval/ab_embeddings.py`), STT→**`large-v3-turbo`**, **KV-cache `q8_0`** — e o modelo-base finalmente **comparado e trocado** (`Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, `eval/ab_modelos.py --no-think`): o Qwen3 lê muito melhor os átomos (sentinela com contexto **33%→8%**) por ~9% menos `tok/s` — num assistente cujo pilar é **anti-alucinação**, ler o contexto vale mais que 9% de decode. Adotá-lo exigiu dois botões e um **filtro de streaming**: ele abre toda resposta com `<think>…</think>` e, sem removê-lo, o TTS **falaria a marcação**. Trocar o embedding não foi só mudar uma string: exigiu prefixos `query:`/`passage:` num **ponto só**, reindex do vault (`scripts/reindexar.py`) e **recalibrar o gate** (0.55→0.16, derivado em `eval/calibrar_gate.py`) — porque a escala de distância é função do modelo. Na voz: **wake-word "mestre"** (o live dorme e só acorda pela palavra — a voz de outros deixa de disparar) e **barge-in gateado** (fundo curto não corta mais). E o instrumento que faltava: **timing por estágio** — `tok/s` e STT por resposta. **560 testes**, e ~21 GB de GGUFs mortos fora do disco.
 
 </details>
 
@@ -630,56 +820,44 @@ timeline
 
 **Sintoma:** o agente respondia *"Não tenho informações suficientes"* em loop, mesmo com a web disponível.
 
-**Causa raiz:** o gate tratava *"tem algum contexto"* como Cache Hit — quando deveria ser *"tem contexto **relevante**"*. Com um vault grande, quase toda pergunta achava algo vagamente parecido (ou herdava uma entrada velha da RAM), então **a web nunca era consultada** e o guard anti-alucinação disparava sobre contexto errado.
+**Causa raiz:** o gate tratava *"tem algum contexto"* como Cache Hit. Com um vault grande, quase toda pergunta achava algo vagamente parecido, então **a web nunca era consultada**.
 
-**A correção, em quatro camadas:**
+**A correção, em camadas:** aterramento **léxico** (o chunk menciona a keyword) **OU** confiança **semântica** (`rag_score_confident`); RAM filtrada por tema (nada de herdar o assunto anterior); extrator enxuto (`limpar_query`); e a rede de segurança que escala **sem "falar" o sentinela**. A Onda 3 endureceu o aterramento com o **IDF da Malha**: casar uma keyword **genérica** não basta mais — foi assim que o caso "o que é RAG?" parou de puxar uma nota-piada pessoal sobre Tarkov.
 
-| Camada | Onde | O que faz |
-|---|---|---|
-| **Aterramento léxico** | `rag.py` | Um chunk só conta se menciona uma keyword da pergunta **OU** é semanticamente muito próximo (`rag_score_confident`) |
-| **RAM filtrada por tema** | `agent.py` | Só injeta memória da sessão cujo tema casa com a pergunta — nada de herdar o assunto anterior. Antes, as 2 últimas entradas entravam **sempre**: uma busca velha sobre "TensorFlow" contaminava toda pergunta seguinte |
-| **Extrator enxuto** | `textutils.limpar_query` | Tira saudação/filler e capa a query: *"Olá gostaria de entender… TensorFlow RT"* vira *"TensorFlow RT"* |
-| **Rede de segurança** | `agent._responder_contexto` | Se o contexto não bastar, escala para a web **sem "falar" o sentinela** — segura o áudio até descartá-lo. TTFA preservado para respostas reais |
-
-**Botão de calibração:** cada pergunta loga `[LOCAL] melhor_dist=... relevante=...`. Rode algumas, veja a distância dos bons matches locais e ajuste `MENTE_RAG_SCORE_CONFIDENT` (default `0.8`) — **menor = mais rígido (mais web), maior = mais confiança no local**. Ligue `MENTE_RAG_DEBUG=true` para ver cada chunk recuperado com distância, fonte e trecho.
+**Botão de calibração:** cada pergunta loga `[LOCAL] melhor_dist=... relevante=...`. Ajuste `MENTE_RAG_SCORE_CONFIDENT` (default `0.8`) — **menor = mais rígido (mais web)**. `MENTE_RAG_DEBUG=true` mostra cada chunk.
 
 ### 2. As tasks que o garbage collector comia
 
-O event loop guarda apenas **weakref** das tasks — footgun documentado do asyncio. Sem referência forte, o GC coletava a task no meio e a corrotina morria **em silêncio**: sem exceção, sem log. Afetava o pre-fetch, o ETL e as syncs.
-
-O insight não está no `track_task` em si — está no **escopo**: o set vive no `AppContext`, **não na `LiveSession`**. Pre-fetch e ETL disparados durante a conversa precisam sobreviver ao fim do WebSocket. *Amarrar a task ao ciclo de vida errado é o mesmo bug com outra roupa.*
+O event loop guarda apenas **weakref** das tasks. Sem referência forte, o GC coletava a task no meio e a corrotina morria **em silêncio**. O insight não está no `track_task` — está no **escopo**: o set vive no `AppContext`, **não na `LiveSession`**. Pre-fetch, ETL **e o SchedulerService** disparados durante a conversa precisam sobreviver ao fim do WebSocket. *Amarrar a task ao ciclo de vida errado é o mesmo bug com outra roupa.*
 
 ### 3. O gate que rejeitava tudo — L2 vs cosseno
 
-O sintoma era "o gate não funciona". A tentação seria mexer nos thresholds. A causa raiz estava **na métrica do índice**:
-
 ```
-encode_kwargs={"normalize_embeddings": False}   →  vetores com norma ~4-5
-    ↓
-L2 (default do Chroma) mede distância ABSOLUTA, sensível à magnitude
-    ↓
-bom match dá distância ~15
-    ↓
-thresholds do gate (0.8 / 1.5) são de escala COSSENO
-    ↓
-score < 1.5 é FALSO para 100% dos chunks → relevante sempre False → tudo vira web
+normalize_embeddings=False  →  vetores com norma ~4-5
+    ↓  L2 (default do Chroma) mede distância ABSOLUTA
+bom match dá distância ~15  →  thresholds do gate (0.8/1.5) são de escala COSSENO
+    ↓  score < 1.5 é FALSO para 100% dos chunks → tudo vira web
 ```
 
-Com `hnsw:space=cosine`, um bom match fica ≈ 0.3 e os números voltam a fazer sentido. **A consequência operacional — trocar a métrica exige recriar o banco, porque o grafo HNSW é construído *com* ela — é o tipo de nota que só existe depois de ter sido mordido.**
+Com `hnsw:space=cosine`, um bom match fica ≈ 0.3. **Trocar a métrica exige recriar o banco, porque o grafo HNSW é construído *com* ela — nota que só existe depois de ter sido mordido.**
 
 ### 4. "A web respondia" e o modelo dizia que não sabia
 
-**Sintoma:** perguntas numéricas (*"quanto o TensorRT acelera o YOLOv8?"*) recebiam o sentinela mesmo com a busca web funcionando.
-
-A tentação óbvia: mexer no prompt, ou trocar o modelo. **A causa raiz era que o contexto genuinamente não continha a resposta** — `ddgs.text()` devolve título + 1-2 frases, e o número está **dentro** do artigo, nunca no snippet. **O LLM estava certo.**
-
-A correção foi na **fonte de dados**, não no prompt: abrir o corpo das páginas (`httpx` async), extrair o texto principal (`trafilatura`), atomizar, rankear contra a pergunta com o mesmo embedding e passar só os melhores — **RAG efêmero, nada indexado**.
+**Sintoma:** perguntas numéricas recebiam o sentinela mesmo com a busca funcionando. A tentação: mexer no prompt. **A causa raiz era que o contexto genuinamente não continha a resposta** — `ddgs.text()` devolve só o snippet, e o número está **dentro** do artigo. **O LLM estava certo.** A correção foi na **fonte de dados**: deep-fetch do corpo + trafilatura + ranking efêmero.
 
 > *Resistir a "consertar no prompt" e consertar nos dados é a lição mais transferível deste repositório.*
 
 ### 5. O gerador cego aos follow-ups
 
-*"Explique melhor"* virava sentinela **com os átomos certos recuperados**. A *recuperação* já resolvia o pronome (via `QueryOptimizer`), mas o **gerador** recebia o texto cru e ficava cego ao antecedente. Diagnosticar que o problema estava no **consumidor** e não no **recuperador** — e injetar contexto em só um dos dois — é precisão de bisturi.
+*"Explique melhor"* virava sentinela **com os átomos certos recuperados**. A *recuperação* já resolvia o pronome; o **gerador** recebia o texto cru. Diagnosticar que o problema estava no **consumidor** e não no **recuperador** — e injetar contexto em só um dos dois — é precisão de bisturi.
+
+### 6. Comando virando conhecimento — e o "e" de lista virando corte
+
+Dois bugs da era dos agentes, o mesmo tema: **respeitar fronteiras**. Primeiro, "mestre, me lembra de comprar leite" **alimentava o dump** e o idle atomizava a lista de compras como se fosse conhecimento — corrigido tornando a fronteira física (`registra_conhecimento=False`, dump intocado). Segundo, o encadeamento falado cortava "leite, farinha **e** ovos" em duas ações porque o "e" casava o separador — corrigido exigindo que o conector seja seguido do **início de uma nova ação** (`_ACAO_START_RE`), não de mais um item. *Saber quando um "e" liga itens e quando liga ações é a diferença entre um parser e um gerador de bugs.*
+
+### 7. O ranking de pontes que só achava o óbvio
+
+O Descobridor de Conexões, na 1ª versão, rankeava pontes por `min(df)/coocorrência` — e surfava par-de-temas-grandes trivial ("python↔vram"). O conserto foi trocar a métrica por **surpresa** = `1 − Jaccard` das vizinhanças de conceito: domínios **disjuntos** primeiro. O top real virou "modelo whisper↔modelo yolo", "custo↔sensor de torque" — conexões que valem uma fala proativa. *Medido na base real de 12.778 átomos, não no papel.*
 
 ---
 
@@ -688,7 +866,7 @@ A correção foi na **fonte de dados**, não no prompt: abrir o corpo das págin
 ### Pré-requisitos
 
 - **Python 3.10.20** — use exatamente essa versão para evitar incompatibilidades de wheels de ML.
-- **GPU NVIDIA + CUDA Toolkit.** O `llama-cpp-python` precisa ser **compilado com suporte CUDA** — não basta o `pip install` padrão. No Windows isso exige também o *Visual Studio Build Tools* com C++. Sem GPU NVIDIA dá para rodar em CPU, porém lento.
+- **GPU NVIDIA + CUDA Toolkit.** O `llama-cpp-python` precisa ser **compilado com suporte CUDA**. No Windows isso exige também o *Visual Studio Build Tools* com C++. Sem GPU dá para rodar em CPU, porém lento.
 
 ### 1. Clonar e criar a venv
 
@@ -705,29 +883,26 @@ pip install -r requirements.txt
 
 ### 2. Baixar os modelos (não vêm no repositório)
 
-A pasta `modelos/` já existe — só os binários não são versionados. Ver [`modelos/README.md`](modelos/README.md):
-
 ```
 modelos/
-├── Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf   # LLM (~4.7 GB)
+├── Qwen3-8B-Q4_K_M.gguf                                # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
 ├── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
 └── whisper/                                            # cache do STT (baixa sozinho)
 ```
 
-- **Voz Piper** (`pt_BR-cadu`, medium): [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em `pt/pt_BR/cadu/medium/`. ⚠️ Baixe o `.onnx` **e** o `.onnx.json` — o sidecar carrega o `phoneme_id_map` e o `sample_rate`.
-- **Whisper** baixa sozinho na 1ª execução para `modelos/whisper/`; os **embeddings** também baixam sozinhos.
-- O **banco vetorial** e a **pasta do vault** são criados automaticamente no startup — **o vault pode começar vazio** (cai no fallback web até você adicionar notas `.md`).
+- **Voz Piper** (`pt_BR-cadu`, medium): [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em `pt/pt_BR/cadu/medium/`. ⚠️ Baixe o `.onnx` **e** o `.onnx.json`.
+- **Whisper** e os **embeddings** baixam sozinhos na 1ª execução.
+- O **banco vetorial** e o **vault** são criados no startup — **o vault pode começar vazio** (cai no fallback web até você adicionar notas).
 
 ### 3. (Opcional) `.env`
 
-Por padrão tudo funciona com caminhos relativos, sem `.env`. Crie um na raiz apenas se os modelos/vault já moram em outro lugar (está no `.gitignore`):
+Por padrão tudo funciona com caminhos relativos. Crie um `.env` só se os modelos/vault moram em outro lugar:
 
 ```ini
 MENTE_CAMINHO_MODELO_LLAMA=D:\outro\caminho\modelo.gguf
 MENTE_CAMINHO_VOZ_PIPER=D:\outro\caminho\voz.onnx
 MENTE_CAMINHO_OBSIDIAN=D:\meu\vault\Cerebro_Digital
-# qualquer outro parâmetro, ex.:
 MENTE_N_CTX=8192
 MENTE_RAG_SCORE_CONFIDENT=0.7
 ```
@@ -738,7 +913,7 @@ MENTE_RAG_SCORE_CONFIDENT=0.7
 python main.py            # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carregar e avisa o cliente se ainda não estiver pronto.
+Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carregar. Diga *"mestre, ajuda"* (ou `/ajuda`) para ouvir os comandos disponíveis.
 
 > 🎤 O microfone exige **contexto seguro**: funciona em `localhost`/`127.0.0.1`; de outra máquina, precisa de HTTPS.
 
@@ -746,7 +921,7 @@ Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carre
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 80 testes, ~7s, sem GPU e sem rede
+pytest                    # 560 testes, sem GPU e sem rede
 ```
 
 > **Ambiente:** o projeto roda na env conda `llama-omni`. O `python` no PATH do Windows costuma ser o atalho falso da Microsoft Store — use o caminho absoluto:
@@ -756,20 +931,29 @@ pytest                    # 80 testes, ~7s, sem GPU e sem rede
 
 ## 🔧 Configuração
 
-Todos os parâmetros vivem em [`config.py`](config.py) e são sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Os mais úteis:
+**128 parâmetros** vivem em [`config.py`](config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `MENTE_RAG_SCORE_CONFIDENT` | `0.8` | **O principal botão.** Distância abaixo da qual um match vale como Cache Hit mesmo sem casar keyword. Menor = mais rígido = mais web |
-| `MENTE_RAG_DEBUG` | `false` | Loga cada chunk recuperado (distância/fonte/trecho) — para **ver** o que a busca pega |
-| `MENTE_RAG_TOP_K` | `40` | Candidatos do vetor. Largo de propósito: base atômica precisa de dezenas de átomos |
-| `MENTE_RAG_CONTEXT_CHAR_BUDGET` | `12000` | O corte que **de fato** morde. Protege o `n_ctx` (~3k tokens dentro de 8192) |
-| `MENTE_RAG_HYDE` | `false` | Gera uma nota atômica hipotética como sonda de embedding. +recall, custa ~300-900ms |
-| `MENTE_WEB_FETCH_ENABLED` | `true` | Deep-fetch. `false` volta ao comportamento de só snippets |
-| `MENTE_N_CTX` | `8192` | Janela do LLM. É o teto que os orçamentos de chars protegem |
-| `MENTE_KV_CACHE_TYPE` | `f16` | `q8_0` corta ~metade da VRAM de KV com perda ínfima. **Exige `flash_attn=True`** |
-| `MENTE_WHISPER_MODEL` | `small` | `large-v3` para máxima qualidade de transcrição |
-| `MENTE_WHISPER_DEVICE` | `cpu` | `cuda` custa ~3 GB de VRAM com large-v3 |
+| `MENTE_RAG_SCORE_CONFIDENT` | `0.8` | **O principal botão.** Distância abaixo da qual um match vale sem casar keyword. Menor = mais rígido = mais web. ⚠️ **A escala depende do embedding:** com o `e5-base` adotado, o valor calibrado é **`0.16`** (o e5 comprime as distâncias numa banda estreita) |
+| `MENTE_RAG_DEBUG` | `false` | Loga cada chunk recuperado (distância/fonte/trecho) |
+| `MENTE_ATERRAMENTO_IDF_MIN` | `1.5` | IDF mínimo da keyword para valer como aterramento léxico (Malha). Conserta o "RAG→Tarkov" |
+| `MENTE_EARLY_STOP_CASCATA` | `true` | A cascata para na 1ª fonte confiante (RAM respondeu → banco nem consulta) |
+| `MENTE_MALHA_EXPANDIR` | — | Liga a injeção de vizinhança da Malha no contexto |
+| `MENTE_MALHA_SIM_MIN` | `0.5` | Proximidade mínima do vizinho **à pergunta** para entrar (G5′) |
+| `MENTE_RAG_DEDUP_NEAR_JACCARD` | `0.9` | Corta quase-duplicatas do contexto por Jaccard de tokens (velocidade) |
+| `MENTE_PALAVRA_MESTRE` | `mestre` | A palavra que aciona o plano de comando |
+| `MENTE_ATALHO_SUGESTAO_MIN` | `3` | Repetições de uma intenção antes de oferecer um atalho |
+| `MENTE_CONFIRMACAO_HABILITADA` | `true` | Gateia ações destrutivas com "mestre, confirma" |
+| `MENTE_CONEXAO_LIMITE` | `3` | Quantas pontes o Descobridor de Conexões fala por vez |
+| `MENTE_SRS_INTERVALOS_DIAS` | — | Os intervalos de repetição espaçada (Leitner) |
+| `MENTE_WEB_FETCH_ENABLED` | `true` | Deep-fetch. `false` = kill switch de rede (só snippets) |
+| `MENTE_KV_CACHE_TYPE` | `f16` | `q8_0` corta ~metade da VRAM de KV (**adotado** aqui). **Exige `flash_attn=True`** |
+| `MENTE_WHISPER_MODEL` | `small` | **Adotado:** `large-v3-turbo` (qualidade ~`large-v3`). Use `MENTE_WHISPER_DEVICE=cuda` se sobrar VRAM |
+| `MENTE_EMBEDDING_MODEL` | MiniLM | **Adotado:** `intfloat/multilingual-e5-base` (~2× no ranqueamento). ⚠️ Trocar **exige reindexar** o vault e recalibrar o gate |
+| `MENTE_EMBEDDING_QUERY_PREFIX` / `_PASSAGE_PREFIX` | vazios | `"query: "` / `"passage: "` para a família e5 — sem eles o e5 perde boa parte da qualidade |
+| `MENTE_MESTRE_WAKE` | `false` | Wake-word: o live começa **dormente** e só a palavra-mestre acorda (+ `MENTE_MESTRE_SLEEP_SECONDS`, 15 s) |
+| `MENTE_LLM_NO_THINK` / `MENTE_LLM_STRIP_THINK` | `false` | **Obrigatórios com Qwen3:** desligam o raciocínio e removem o bloco `<think>…</think>` do stream. Sem o strip, o TTS **fala a marcação**. No-op em modelos sem `<think>` |
 | `MENTE_SPECULATIVE_ENABLED` | `false` | **Desligado com número** — ver [evolução](#-evolução-do-projeto) |
 
 ---
@@ -781,165 +965,117 @@ Todos os parâmetros vivem em [`config.py`](config.py) e são sobrescrevíveis p
 | Rota | Método | O que faz |
 |---|---|---|
 | `/` | GET | A SPA inteira (Jinja2) |
-| `/api/conversas` | GET | Histórico agrupado **em conversas** — id, título (1ª pergunta), fim, nº de turnos |
+| `/api/conversas` | GET | Histórico agrupado **em conversas** |
 | `/api/conversa/{cid}` | GET | Todos os turnos de uma conversa, para reabrir |
-| `/api/historico` | GET | Os 200 turnos mais recentes (flat) |
-| `/api/metrics` | GET | ETL por status, **médias de TTFT/TTFA**, e prontidão de cada serviço (`llm_pronto`, `stt_pronto`, …) |
-| `/api/nota/texto` | POST | Grava uma nota rápida no vault e reindexa em background |
+| `/api/metrics` | GET | ETL por status, **médias de TTFT/TTFA, `tok/s` do decode e tempo de STT**, e prontidão de cada serviço |
+| `/api/nota/texto` | POST | Grava uma nota rápida e reindexa em background |
 | `/ws/chat_live` | WS | O chat ao vivo |
 
 ### WebSocket `/ws/chat_live`
 
-**Cliente → servidor**
+**Cliente → servidor:** áudio binário (PCM16 LE mono 16 kHz), `texto`, `barge_in`, `end_session`, `set_conversa` (não cancela o pipeline), `nova_conversa`/`carregar_conversa` (cancelam).
 
-| Mensagem | Formato | Efeito |
-|---|---|---|
-| *(áudio)* | **binário** — PCM16 LE mono 16 kHz, blocos de 1024 | VAD por RMS no servidor |
-| `texto` | `{tipo, payload}` | Mesmo caminho da voz, a partir da transcrição |
-| `barge_in` | `{tipo}` | Cancela o pipeline em andamento |
-| `end_session` | `{tipo}` | Dispara o ETL idle (idempotente; rearma a cada nova interação) |
-| `set_conversa` | `{tipo, id}` | Reassocia o id na reconexão — **não** cancela o pipeline (é a mesma conversa) |
-| `nova_conversa` | `{tipo, id}` | Id novo + contexto limpo (cancela o pipeline) |
-| `carregar_conversa` | `{tipo, id}` | Recarrega os turnos do SQLite na RAM para continuar (cancela o pipeline) |
-
-**Servidor → cliente** — apenas quatro tipos: `status` (aviso), `transcricao` (eco), `token` (streaming) e `audio` (WAV base64, um por frase).
+**Servidor → cliente:** `status`, `transcricao`, `token`, `audio` (WAV base64, um por frase) e **`proativo`** — a mensagem que o `SchedulerService` empurra quando um alarme/watcher/briefing dispara (o front abre uma bolha própria com 🔔). É a única mensagem que o servidor manda **sem** você ter falado.
 
 ---
 
 ## 💡 Casos de uso
 
-Seis exemplos, cada um exercitando um **caminho diferente** do pipeline.
+Cada exemplo exercita um **caminho diferente** do pipeline.
 
-### 1. Cache Hit local puro — o caminho feliz e o mais rápido
+### 1. Cache Hit local puro — o caminho feliz
 > *"O que eu anotei sobre flash attention?"* — com o átomo no vault.
 
-Extração de termos → embedding da **pergunta natural inteira** → Chroma cosseno, top_k 40 → o gate encontra **aterramento léxico** → o corte real vem do orçamento de 12k chars → o guard vê o 1º token **divergir** do sentinela e libera o buffer → chunker fecha a frase → Piper → **TTFA**.
-
-**Sem filler** (não há espera a mascarar), **sem web**, **sem ETL**. Depois, em background: os átomos que entraram no contexto perdem `#conhecimento_novo`.
+Extração → embedding da pergunta inteira → Chroma cosseno top_k 40 + vizinhos da Malha → o gate encontra **aterramento léxico** (keyword rara, IDF alto) → dedup near-dup → orçamento de 12k chars → o guard vê o 1º token **divergir** do sentinela → chunker → Piper → **TTFA**. Depois, em background: os átomos usados perdem `#conhecimento_novo`.
 
 ### 2. Escalada silenciosa para a web — o *showcase*
 > *"Quanto o TensorRT acelera o YOLOv8?"* — o vault fala de TensorRT, mas genericamente.
 
-O gate **passa** por aterramento léxico → Cache Hit **aparente** → o LLM, fiel ao prompt conservador, começa a emitir *"Não tenho informa…"* → **o guard segura tudo: nada foi falado** → confirma o sentinela → descarta e **escala** → filler por template ("procurando TensorRT YOLOv8 na web") → `auto → html → lite` → **deep-fetch** abre o corpo das páginas → trafilatura extrai → rankeia contra a pergunta crua → `SYS_RESPOSTA_WEB` (ceticismo calibrado para a fonte) → **o mesmo guard de novo** → resposta com o número → enfileira no ETL.
+O gate **passa** por aterramento → o LLM começa a emitir *"Não tenho informa…"* → **o guard segura tudo: nada foi falado** → confirma → **escala** → filler por template → `auto→html→lite` → deep-fetch abre o corpo → trafilatura → rankeia contra a pergunta → `SYS_RESPOSTA_WEB` → o mesmo guard de novo → resposta com o número → enfileira no ETL. Amarra o sistema inteiro.
 
-Este caso amarra o sistema inteiro. É também a demonstração viva do diagnóstico: *o modelo dizia "não sei" porque o snippet genuinamente não tinha o número — o bug estava nos dados, não no prompt.*
+### 3. Comando falado composto — o plano determinístico
+> *"Mestre, adiciona leite e ovos na lista e me lembra às 8h de ligar pro médico."*
 
-### 3. Barge-in — o caminho de concorrência
-> A IA está falando um parágrafo longo e você corta: *"não, sobre o outro"*.
+`separar` tira "mestre" → `parse_composto` fatia em **duas ações** (o "e" de "leite e ovos" **não** corta; o "e me lembra" corta) → `parse_rapido` resolve a lista por regex (sem LLM) e o lembrete cai no roteador (tem mensagem livre) → executa ambas, guarda os inversos → **nada disso vira conhecimento**. Se você errar: *"mestre, desfaça"* remove o último. *"Mestre, corrige para pão"* troca o item.
 
-O microfone **nunca parou de subir** (full-duplex) → RMS direto sobre `int16`, sem decoder no caminho crítico → cancelamento → `CancelledError` re-propagado explicitamente → `stop_event` → o decode quebra no próximo token → **join** → só então o lock é liberado → a nova inferência entra **sem overlap de VRAM**.
+### 4. Barge-in — o caminho de concorrência
+> A IA fala um parágrafo longo e você corta: *"não, sobre o outro"*.
 
-*Ilustra por que WebSocket, por que PCM cru, por que executor single-thread com join, e o `send -> bool` como sinal de backpressure.*
+O microfone **nunca parou de subir** → RMS sobre `int16` → cancelamento → `CancelledError` re-propagado → `stop_event` → o decode quebra no próximo token → **join** → só então o lock é liberado → a nova inferência entra **sem overlap de VRAM**.
 
-### 4. Ação — function calling aditivo
-> *"Calcula 1520 * 0.87 e salva isso como nota."*
+### 5. Alarme proativo — o scheduler falando sozinho
+> Ontem: *"mestre, todo dia às 7h me lembra de tomar o remédio."* Hoje, 7h.
 
-Gate lexical dispara → roteador JSON (60 tokens) → parse defensivo acha o objeto mesmo com prosa em volta → AST com whitelist → `terminal=True` → **sai no 1º passo** → fala.
-
-**O contraponto é o que define a arquitetura:** *"explique o que é Zettelkasten"* **não** aciona o gate e vai direto ao pipeline afinado — **o TTFA de uma pergunta comum nunca paga a chamada do roteador**. É por isso que se chama *aditivo*.
-
-### 5. Tempo real — o caminho que **pula** o RAG de propósito
-> *"Quanto está o bitcoin agora?"*
-
-Gatilho time-sensitive → **pula RAM e banco**, vai direto à web. O vault é inútil e desatualizado aqui; rodar a cascata local seria pagar uma passada morta antes de fazer o certo. Foi este caso que originou o `SYS_RESPOSTA_WEB`: com o system prompt local, o modelo **via o preço cravado no snippet** e ainda assim respondia o sentinela — o anti-alucinação, calibrado para as notas, sabotava a web.
+O `SchedulerService` lê o `agendamento` vencido → PUSH `{tipo: proativo}` + áudio para as sessões vivas → o front abre a bolha 🔔. **Você fechou o notebook às 6h?** O disparo vira `pendente_entrega` e chega **na próxima conexão**. É o único caminho em que o servidor fala primeiro.
 
 ### 6. Fim de sessão — o loop se fechando
-> Você conversa 20 minutos sobre quantização e **fecha a aba sem clicar em encerrar**.
+> Você conversa 20 minutos sobre quantização e **fecha a aba sem encerrar**.
 
-`WebSocketDisconnect` → rede de segurança dispara o ETL → a task vive no `ctx`, **sobrevive ao WebSocket morto** → o ETL espera o idle **antes de cada tarefa** (se outra aba perguntar, ele cede a GPU no meio) → a conversa é destilada em blocos `##` → **1 arquivo por ideia** → cada um nasce `#conhecimento_novo` → o dump **só é limpo se algo foi salvo**.
-
-**Amanhã, a pergunta do caso 1 recupera esse átomo, ele entra no contexto, e a promoção remove a tag.** Curiosidade → colheita → uso → maturidade. O ciclo fecha.
+`WebSocketDisconnect` → o ETL dispara → a task vive no `ctx` → espera o idle antes de cada tarefa → a conversa vira blocos `##` → **1 arquivo por ideia** com `[[conceitos]]` → cada um nasce `#conhecimento_novo`. **Amanhã, a pergunta do caso 1 recupera esse átomo, ele entra no contexto, e a promoção remove a tag.** Curiosidade → colheita → uso → maturidade. O ciclo fecha.
 
 ---
 
 ## 🔭 Além do assistente pessoal
 
-Especulação fundamentada: onde esta arquitetura se aplicaria, e **por quê tecnicamente** — ancorado no que o código já permite.
+Onde esta arquitetura se aplicaria, e **por quê tecnicamente** — ancorado no que o código já permite.
 
 <details>
 <summary><b>1. Conformidade / jurídico / clínico on-premise</b></summary>
 
-O único contexto em que "100% local" deixa de ser preferência e vira **requisito regulatório** (LGPD/HIPAA, segredo de justiça, dado de paciente). O que já existe e normalmente é o mais caro de construir:
+O único contexto em que "100% local" vira **requisito regulatório**. Já existe: a **única** saída de rede é o `WebSearcher`, com kill switch (`MENTE_WEB_FETCH_ENABLED=false`); **proveniência** (`origin`/`confidence` + `LocalResult.fontes`) vira citação obrigatória; o **gate + sentinela** é a exigência "não afirme nada fora do documento" como **controle de fluxo**; e a **trilha de auditoria já está pronta** (SQLite com turnos, latências, e a tabela `auditoria` das ações mutantes). *Adaptação:* trocar vault, prompts e a lista `STOP` (específica do domínio).
 
-- a **única** saída de rede é o `WebSearcher`, com kill switch real (`MENTE_WEB_FETCH_ENABLED=false`) — todo o resto é in-process;
-- **proveniência já existe** (`origin`/`confidence` + `LocalResult.fontes`) — vira citação obrigatória por parágrafo com uma linha;
-- o **gate de aterramento + sentinela** é literalmente a exigência "não afirme nada que não esteja no documento", implementada como **controle de fluxo** e não como pedido no prompt — que é o que auditor não aceita;
-- **trilha de auditoria pronta:** SQLite com `conversa_id`, turnos, latências, log de ETL.
-
-*Adaptação real:* trocar o vault, os prompts e a lista `STOP` (que é específica do domínio).
 </details>
 
 <details>
 <summary><b>2. Assistente hands-free de campo (manutenção, enfermagem, oficina)</b></summary>
 
-Voz não é conveniência — é **a única interface viável** com as mãos ocupadas ou enluvadas.
+Voz é **a única interface viável** com as mãos ocupadas. **Barge-in é o requisito nº1** e já está no nível difícil; **TTFA como métrica de produto**; **offline é o caso normal** (degrada em vez de quebrar); o vault vira o corpus de manuais e o ciclo `#conhecimento_novo` **captura o que o técnico descobre em campo**. E os **lembretes/checklists por voz** (palavra-mestre + scheduler) são exatamente o que um técnico de campo precisa sem tirar a luva.
 
-- **barge-in é o requisito nº1** de hands-free, e já está resolvido no nível difícil (full-duplex + VAD no servidor + cancelamento com join);
-- **TTFA como métrica de produto** é o que separa um assistente de campo utilizável de um brinquedo;
-- **offline é o caso normal** (subsolo, galpão, área rural) — o sistema roda sem internet, degradando em vez de quebrar;
-- o vault vira o corpus de manuais e o ciclo `#conhecimento_novo` **captura o que o técnico descobre em campo** — o conhecimento tácito que hoje se perde.
 </details>
 
 <details>
 <summary><b>3. Runbook / on-call assistant — encaixe quase suspeito de bom</b></summary>
 
-- **o corpus já É Markdown versionável** — mora no git ao lado do código, revisado por PR;
-- **o reindex por `mtime` casa exatamente com um `git pull`** — o change-feed já existe;
-- **o chunking por cabeçalho casa com a estrutura de um runbook** (`## Sintoma` / `## Diagnóstico` / `## Correção`) — cada seção vira um chunk recuperável isolado, que é precisamente o que se quer às 3h da manhã;
-- o **`ToolRegistry`** é o ponto de extensão para ferramentas de leitura (`kubectl get`, query de log, status de deploy), e `terminal` + `max_tool_steps` já dão o **cap de latência** que impede um loop agêntico de derreter durante um incidente;
-- e o ciclo de vida vira **exatamente a semântica que um runbook precisa**: procedimento novo nasce "não validado" e é promovido quando alguém **realmente o usou** num incidente. Curadoria por evidência de uso — o problema não resolvido de todo wiki de engenharia.
+O corpus **já É Markdown versionável** (mora no git, revisado por PR); o reindex por `mtime` casa com um `git pull`; o chunking por cabeçalho casa com `## Sintoma`/`## Diagnóstico`/`## Correção`; o `ToolRegistry` + `terminal` + `max_tool_steps` dão o cap de latência que impede um loop agêntico de derreter num incidente; e o ciclo de vida vira a semântica certa: procedimento novo nasce "não validado" e é promovido quando alguém **realmente o usou**. Some a isso o **scheduler** (escalonamento por horário, watchers de métrica) e os **gatilhos condicionais** — automação de incidente sem sair do local.
+
 </details>
 
 <details>
-<summary><b>4. Tutor / ferramenta de estudo — o Zettelkasten canônico, invertido</b></summary>
+<summary><b>4. Tutor / ferramenta de estudo — e agora com o loop de estudo pronto</b></summary>
 
-Um Anki que se escreve sozinho a partir da sua curiosidade:
-- a base já é **atômica** (1 nota = 1 ideia = 1 card);
-- o ETL já **destila a conversa em átomos** — estudar conversando gera o material;
-- o pre-fetch já enfileira a **curiosidade** — o sistema colhe o que você *quase* perguntou;
-- e `#conhecimento_novo` **já é um sinal de spaced repetition implícito**: marca o que foi colhido e **nunca reusado**. Um scheduler de revisão apenas *leria* essa tag. A infraestrutura de decisão já está lá; falta o gatilho.
+A Onda 3 fechou este caso de uso quase inteiro. A base já é **atômica** (1 nota = 1 card); o ETL **destila a conversa em átomos** (estudar conversando gera material); o pre-fetch enfileira a **curiosidade**. E os agentes que faltavam **já existem**: **SRS** (repetição espaçada Leitner), **Tutor Socrático** (modo que responde com perguntas), **Síntese sob Demanda** ("o que eu sei sobre X" em map-reduce) e o **Descobridor de Conexões** (pontes entre temas). Um Anki que se escreve, se agenda e se questiona sozinho.
+
 </details>
 
 <details>
 <summary><b>5. Suporte / atendimento com base própria + fallback em docs públicas</b></summary>
 
-A cascata RAM → banco → web é literalmente o fluxo mental de um atendente: *o que eu já sei desta conversa* → *o que a base diz* → *o que está na documentação pública*. E as peças que normalmente faltam já existem:
-- **ceticismo por proveniência** — a base interna é autoridade; a web, pista a verificar;
-- o **filler** é o "só um instante" **com o motivo** — a diferença entre espera e abandono;
-- o **deep-fetch + RAG efêmero** permite responder sobre a doc de um fornecedor **sem indexar a internet** e sem poluir a base própria com conteúdo de consulta pontual.
+A cascata RAM → banco → web é o fluxo mental de um atendente. **Ceticismo por proveniência** (base interna é autoridade; web é pista a verificar); o **filler** é o "só um instante" **com o motivo**; o **deep-fetch + RAG efêmero** responde sobre a doc de um fornecedor **sem indexar a internet**. E as **rotinas compostas** viram macros de atendimento ("rotina abertura de chamado").
+
 </details>
 
 <details>
 <summary><b>6. Kiosk, embarcado e acessibilidade</b></summary>
 
-- **sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro** — num dispositivo assistivo, dependência de rede é falha de segurança, não de UX;
-- **a matriz de degradação graciosa é o requisito central de embarcado:** o dispositivo tem que subir e fazer *alguma coisa* mesmo com um modelo faltando;
-- **`maxlen` nas deques + LRU limitado** é o que permite rodar por dias sem creep de RAM — a diferença entre uma demo e um aparelho;
-- e **toda a config é `.env`**: o *mesmo* código atende hardwares diferentes (`MENTE_KV_CACHE_TYPE=q8_0` num card menor, `MENTE_N_CTX` menor num SBC). O `BASE_DIR` relativo fecha o argumento de "empacota e vai".
+**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (128 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
+
 </details>
 
 <details>
 <summary><b>7. Qualquer sistema single-GPU multi-workload — a lição mais transferível</b></summary>
 
-**E não tem nada a ver com LLM.** O `LlamaManager` é, na essência, um **scheduler de recurso não-preemptível com cancelamento e prioridade de dois níveis**: executor single-thread (serialização estrutural) + `stop_event` (cancelamento fino) + join antes do release (sem overlap) + `interactive_idle` (yield para a alta prioridade).
+**E não tem nada a ver com LLM.** O `LlamaManager` é um **scheduler de recurso não-preemptível com cancelamento e prioridade de dois níveis**. A prova de que a abstração é genérica: hoje **três** produtores de trabalho de fundo — ETL, watcher e briefing do scheduler — cedem a GPU pelo **mesmo** `interactive_idle`. Aplica-se igual a pipeline de visão, transcrição em lote concorrendo com resumo interativo, geração de imagem com fila e cancelamento.
 
-Aplica-se igual a: pipeline de visão (câmera + detecção + OCR na mesma GPU); transcrição em lote concorrendo com resumo interativo; geração de imagem com fila e cancelamento pelo usuário.
-
-*Prova interna:* se Whisper e embedding fossem para a GPU sob carga, entrariam no **mesmo executor** — o padrão já é genérico, só não foi extraído.
 </details>
 
 <details>
 <summary><b>8. Agente de coleta / data steward</b></summary>
 
-O `EtlProcessor` **já é um worker de background completo**, e a UI está acoplada quase por acidente:
-- **já é desacoplado da sessão** — sobrevive ao WebSocket morto e roda quando ninguém está olhando;
-- **já cede a GPU** antes de *cada* tarefa;
-- o **pipeline de ingestão já existe**: httpx + trafilatura → ranking por relevância → síntese → normalização de saída → 1 arquivo por ideia com tag de maturidade.
+O `EtlProcessor` **já é um worker de background completo** e o `SchedulerService` **já é o cron** — os dois desacoplados da sessão, sobrevivendo ao WebSocket morto, cedendo a GPU antes de cada tarefa. O pipeline de ingestão já existe (httpx + trafilatura → ranking → síntese → 1 arquivo por ideia). Trocar o gatilho de "fim de sessão" por RSS/webhook é ~uma linha; agendar a coleta é criar um `agendamento`. Um monitor de fontes com curadoria por uso, **disfarçado de assistente de voz**.
 
-Trocar o gatilho de "fim de sessão" por cron/RSS/webhook é ~uma linha. É um agente de monitoramento de fontes com curadoria por uso, **disfarçado de assistente de voz**.
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto do sistema só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. Se o `agent.py` precisasse de mais, o fake seria maior. **A suíte de testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 560 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 
@@ -947,19 +1083,21 @@ Trocar o gatilho de "fim de sessão" por cron/RSS/webhook é ~uma linha. É um a
 
 ### STT parcial (transcrição em tempo real) — adiado **de propósito**
 
-Transcrição parcial estável exige um ASR de streaming (ex.: `faster-whisper` com janelas deslizantes) e mexeria no contrato do VAD atual — risco desproporcional para uma rodada que priorizou estabilidade. O ponto de entrada natural é `SttService`; dá para evoluir sem tocar no resto do pipeline.
+Exige um ASR de streaming e mexeria no contrato do VAD atual — risco desproporcional. O ponto de entrada natural é `SttService`.
 
 ### Speculative decoding — implementado e **desligado com número**
 
-`93 vs 121 tok/s` em prompt curto (overhead de lookup sem aceitação) e **crash de shape em contexto longo** — justo no caso de uso principal (RAG). Fica como flag experimental, religável após subir o `llama-cpp-python` para uma versão que corrija o bug de shape no draft. *Ligar porque "é otimização" é cargo cult.*
+`93 vs 121 tok/s` em prompt curto e **crash de shape em contexto longo** — justo no caso de uso principal (RAG). Flag experimental, religável após subir o `llama-cpp-python`. *Ligar porque "é otimização" é cargo cult.*
 
 ### O que ainda incomoda, honestamente
 
 | Ponto | Situação |
 |---|---|
-| **Números de TTFT/TTFA publicados** | O instrumento existe (`metricas_latencia` + `/api/metrics`) mas o README ainda não publica médias por rota. É a lacuna mais visível num projeto cuja tese é latência percebida |
-| **Escolha do modelo** | `Qwen2.5-Coder-7B-Instruct-Uncensored` é herdado do MVP e nunca foi comparado com um `Qwen2.5-7B-Instruct` base num benchmark de PT-BR. É o único ponto que parece herdado em vez de decidido |
-| **CI** | 80 testes que rodam sem GPU nem rede — literalmente o cenário de GitHub Actions gratuito. Um badge verde converteria "é testável" em fato verificável |
+| **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
+| **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
+| **CI** | 560 testes que rodam sem GPU nem rede — literalmente o cenário de GitHub Actions gratuito. Um badge verde converteria "é testável" em fato verificável |
+| **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `CALIBRACAO.md` |
+| **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `TESTE_MANUAL.md` |
 | **Licença** | Ainda não definida |
 
 ---
@@ -967,5 +1105,7 @@ Transcrição parcial estável exige um ASR de streaming (ex.: `faster-whisper` 
 <div align="center">
 
 **Mente Digital** — porque o seu segundo cérebro não deveria morar no servidor de outra pessoa.
+
+*Ele responde. Ele age. Ele lembra. E nada disso sai da sua máquina.*
 
 </div>

@@ -129,3 +129,27 @@ def test_construir_e_idempotente():
     ix.construir(["texto A"], [{"source": "a.md", "conceitos": "|Stratum|"}])
     assert ix.n_atomos == 1          # não acumula com a construção anterior
     assert ix.n_conceitos == 1
+
+
+# --- centralidade (G7: hubs primeiro na síntese) ----------------------------
+def test_centralidade_premia_conceito_raro_compartilhado_no_conjunto():
+    # a/b compartilham 'Stratum' (raro, idf>0); 'IA' é hub (idf 0, não pontua).
+    # No conjunto inteiro, a e b são centrais (um puxa o outro pelo raro); c/d não.
+    cent = _indice().centralidade(["a.md", "b.md", "c.md", "d.md"])
+    assert cent["a.md"] == math.log(4 / 2)   # Stratum * 1 vizinho no conjunto (b)
+    assert cent["b.md"] == math.log(4 / 2)
+    assert cent["c.md"] == 0.0               # só 'IA' (hub, idf 0)
+    assert cent["d.md"] == 0.0
+    assert cent["a.md"] > cent["c.md"]
+
+
+def test_centralidade_zero_sem_vizinho_no_conjunto():
+    # sem o par que compartilha o conceito raro, o átomo não é central AQUI
+    cent = _indice().centralidade(["a.md", "c.md"])   # b.md fora do conjunto
+    assert cent["a.md"] == 0.0               # 'Stratum' não reaparece no conjunto
+    assert cent["c.md"] == 0.0
+
+
+def test_centralidade_ignora_source_fora_da_malha():
+    cent = _indice().centralidade(["a.md", "desconhecido.md"])
+    assert "desconhecido.md" not in cent     # só átomos conhecidos entram

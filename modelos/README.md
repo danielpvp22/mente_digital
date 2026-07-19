@@ -6,7 +6,7 @@ clone.
 
 ```
 modelos/
-├── Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf   # LLM (~4.7 GB)
+├── Qwen3-8B-Q4_K_M.gguf                                # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
 ├── pt_BR-cadu-medium.onnx.json                         # config da voz (junto do .onnx)
 └── whisper/                                            # cache do STT (baixa sozinho)
@@ -14,7 +14,8 @@ modelos/
 
 ## O que baixar
 
-- **LLM** — `Qwen2.5-Coder-7B-Instruct-Uncensored.Q4_K_M.gguf`.
+- **LLM** — `Qwen2.5-7B-Instruct-Q4_K_M.gguf` (Instruct oficial da Alibaba; trocado do
+  antigo `Qwen2.5-Coder-7B-Instruct-Uncensored` após A/B — ver `eval/ab_modelos.py`).
 - **Voz Piper** — `pt_BR-cadu` (medium), do repositório oficial
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em
   `pt/pt_BR/cadu/medium/`. Baixe o `.onnx` **e** o `.onnx.json`.

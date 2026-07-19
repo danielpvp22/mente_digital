@@ -194,7 +194,7 @@ async def preparar(n_fusao: int, n_sintese: int) -> None:
 # ==========================================================================
 # FASE 2 — roda UM modelo sobre os casos congelados
 # ==========================================================================
-async def rodar(tag: str, modelo: Optional[str]) -> None:
+async def rodar(tag: str, modelo: Optional[str], no_think: bool = False) -> None:
     if not os.path.exists(CASOS):
         print(f"ERRO: {CASOS} não existe. Rode --preparar primeiro.")
         return
@@ -216,6 +216,10 @@ async def rodar(tag: str, modelo: Optional[str]) -> None:
         print("ERRO: o modelo não carregou (VRAM? o servidor está rodando?).")
         return
 
+    # Qwen3 pensa por padrão (<think>...); "/no_think" desliga (justo vs Qwen2.5 e
+    # coerente com o uso de baixa latência). No-op para modelos que ignoram a diretiva.
+    sp = (lambda s: "/no_think\n" + s) if no_think else (lambda s: s)
+
     out = {
         "tag": tag,
         "modelo": os.path.basename(modelo_usado),
@@ -224,6 +228,7 @@ async def rodar(tag: str, modelo: Optional[str]) -> None:
         "flash_attn": settings.flash_attn,
         "kv_cache_type": settings.kv_cache_type,
         "n_ctx": settings.n_ctx,
+        "no_think": no_think,
     }
 
     # --- 1. FUSÃO ---------------------------------------------------------
@@ -233,7 +238,7 @@ async def rodar(tag: str, modelo: Optional[str]) -> None:
         texto, m = await _gerar(
             llama,
             prompts.prompt_resposta_atomos(c["contexto"], c["pergunta"]),
-            prompts.SYS_FUSAO,
+            sp(prompts.SYS_FUSAO),
             settings.max_tokens_resposta,
         )
         # Mesma detecção do guard de produção (agent._responder_contexto).
@@ -251,7 +256,7 @@ async def rodar(tag: str, modelo: Optional[str]) -> None:
         texto, m = await _gerar(
             llama,
             prompts.prompt_sintese_conversa(dump),
-            prompts.SYS_SINTESE_CONVERSA,
+            sp(prompts.SYS_SINTESE_CONVERSA),
             settings.max_tokens_resumo,
         )
         blocos = dividir_atomos(texto)
@@ -273,7 +278,7 @@ async def rodar(tag: str, modelo: Optional[str]) -> None:
     rot = []
     for c in casos["roteador"]:
         texto, m = await _gerar(
-            llama, prompts.prompt_router(menu, c["texto"]), prompts.SYS_ROUTER,
+            llama, prompts.prompt_router(menu, c["texto"]), sp(prompts.SYS_ROUTER),
             settings.max_tokens_router, temperature=0.0,
         )
         d = tools.parse_decisao(texto)
@@ -374,12 +379,14 @@ def main() -> None:
     p.add_argument("--modelo", default=None, help="caminho do .gguf (default: o do settings)")
     p.add_argument("--n-fusao", type=int, default=12)
     p.add_argument("--n-sintese", type=int, default=3)
+    p.add_argument("--no-think", action="store_true",
+                   help="prefixa /no_think nos system prompts (Qwen3: desliga o raciocínio)")
     a = p.parse_args()
 
     if a.preparar:
         asyncio.run(preparar(a.n_fusao, a.n_sintese))
     elif a.rodar:
-        asyncio.run(rodar(a.tag, a.modelo))
+        asyncio.run(rodar(a.tag, a.modelo, a.no_think))
     elif a.comparar:
         comparar(*a.comparar)
     else:

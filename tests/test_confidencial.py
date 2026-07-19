@@ -25,7 +25,7 @@ class FakeWeb:
 
 
 class FakeVSVazio:
-    async def search(self, termos, texto_busca=None):
+    async def search(self, termos, texto_busca=None, economico=False):
         return LocalResult(NENHUM, None, False)
 
     async def sync(self):
