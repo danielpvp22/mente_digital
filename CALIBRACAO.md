@@ -38,6 +38,14 @@ Corta o "OR sem peso" onde uma palavra comum casava a nota errada. Maior = mais 
 (mais web). **Régua:** no `[LOCAL_DBG]`, se `aterrados=0` em perguntas que o vault deveria
 responder, seu mínimo está alto demais → baixe. `0` desliga (volta ao OR simples).
 
+> **Os thresholds de IDF são INVARIANTES ao tamanho da base.** `idf >= T` equivale a
+> `df/N <= e^-T` — uma FRAÇÃO constante, independente de N. Não é preciso recalibrar
+> quando o vault cresce. Medido na base real (N=12.778): `ATERRAMENTO_IDF_MIN=1.5` corta
+> palavra em > **22,3%** dos átomos; `malha_idf_min=4.0` trata como raro só conceito em
+> <= **1,83%** (df<=234) — corta os hubs (yolo df474/idf3.29, python 294/3.77, vram
+> 274/3.84) e deixa passar temas específicos (tensorrt 166/4.34, docker 103/4.82). Calibre
+> pela FRAÇÃO/pelo que cai de cada lado, nunca pelo tamanho da base.
+
 ### `MENTE_DEFINICIONAL_MIN_ATOMOS` (default `3`) — Part A + lever B
 Numa pergunta definicional ("o que é X", "quem foi Y", "me explica Z"), o vault só é aceito
 se cobrir o tema com **força**: `>=` N átomos **distintos** (`local.fontes`). Abaixo disso,
