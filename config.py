@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
-    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+    caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
     # Cache onde o faster-whisper baixa os pesos do Whisper na 1ª execução.
     caminho_cache_whisper: str = str(DIR_WHISPER)
@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     # espaço para embeddings/Whisper. EXIGE flash_attn=True (o cache V quantizado
     # só funciona com flash attention no llama.cpp). Ver _build_llama_kwargs.
     kv_cache_type: str = "f16"
+    # --- Qwen3: raciocínio e a tag <think> --------------------------------------
+    # O Qwen3 ABRE toda resposta com um bloco <think>…</think>. "/no_think" no system
+    # prompt desliga o raciocínio (o bloco sai VAZIO), mas a TAG continua saindo — e sem
+    # removê-la ela vaza para o SentenceChunker e o TTS "fala" a marcação. Os dois botões
+    # andam juntos e são NO-OP em modelos que não usam <think> (Qwen2.5, Llama…), por isso
+    # são flags e não default. Ligue os dois ao apontar o LLM para um Qwen3.
+    # LIGADOS por default porque o modelo default É um Qwen3. Ao apontar o LLM para um
+    # modelo SEM <think> (Qwen2.5, Llama…), desligue os dois — o strip vira no-op sozinho,
+    # mas o "/no_think" viraria texto solto no system prompt.
+    llm_no_think: bool = True       # prefixa "/no_think" no system prompt
+    llm_strip_think: bool = True    # remove o bloco <think>…</think> do início do stream
 
     # --- Speculative decoding (§5) — prompt-lookup ------------------------------
     # DESLIGADO por default após benchmark no RTX 3080 (2026-07): o

@@ -28,7 +28,8 @@ def _isola_do_env(monkeypatch):
     query:/passage:) quebrava o gate (distâncias de escala antiga) e a malha. Aqui os
     campos .env-sensíveis voltam ao default por teste; quem precisa de outro valor
     sobrescreve depois (o monkeypatch do próprio teste roda DEPOIS deste, então vence)."""
-    for campo in ("rag_score_confident", "embedding_query_prefix", "embedding_passage_prefix"):
+    for campo in ("rag_score_confident", "embedding_query_prefix", "embedding_passage_prefix",
+                  "llm_no_think", "llm_strip_think"):
         monkeypatch.setattr(_settings, campo, getattr(_DEFAULTS_LIMPOS, campo), raising=False)
     yield
 

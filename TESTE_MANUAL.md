@@ -1,6 +1,6 @@
 # Manual de teste — implementações da sessão 2026-07-19
 
-Tudo aqui é o que a suíte `pytest` (552 verdes) **não** cobre: precisa de GPU, microfone,
+Tudo aqui é o que a suíte `pytest` (560 verdes) **não** cobre: precisa de GPU, microfone,
 rede e do vault real. Faça na ordem. Cada bloco tem **passo → resultado esperado**.
 
 **Pré-requisitos:**
@@ -16,8 +16,8 @@ Rodei tudo que **não** precisa de microfone nem julgamento humano — não prec
 
 | Bloco | O que testei | Resultado |
 |---|---|---|
-| **0.1–0.5 Boot** | subi o servidor com o stack novo | ✅ sobe **sem erro**; logs `KV-cache q8_0` · `Qwen 7B pronto` · `Whisper 'large-v3-turbo' (cpu/int8)` · `e5 cuda prefixos q='query: ' p='passage: '` · malha 14.619 conceitos |
-| **0.6 VRAM** | `nvidia-smi` com o stack todo carregado | ✅ **8062 / 10240 MiB** (~2 GB livres) — cabe, exatamente como previsto |
+| **0.1–0.5 Boot** | subi o servidor com o stack novo | ✅ sobe **sem erro**; logs `KV-cache q8_0` · `<modelo> pronto na GPU` · `Whisper 'large-v3-turbo' (cpu/int8)` · `e5 cuda prefixos q='query: ' p='passage: '` · malha 14.619 conceitos. ⚠️ Este boot foi com o Qwen2.5; **depois trocamos para o Qwen3-8B** — ele foi validado carregando pelo mesmo `LlamaManager` (4,2 s) e **sem vazar a tag `<think>`**, mas o boot completo do servidor com ele é o seu passo 0 |
+| **0.6 VRAM** | `nvidia-smi` com o stack todo carregado | ✅ **8901 / 10240 MiB** com o **Qwen3-8B** (~1,3 GB livres). Com o Qwen2.5 eram 8062. Cabe — mas não sobra para pôr o Whisper na GPU |
 | **1 Whisper turbo** | download + load + round-trip TTS→STT | ✅ baixa+carrega em 77s, transcreve certo. **STT ~0,8× tempo real na CPU** (4,1s p/ 5,1s) — se incomodar, `MENTE_WHISPER_DEVICE=cuda` |
 | **2 e5 recuperação** | 12 perguntas reais + 4 controle pela busca | ✅ **12/12 reais respondem LOCAL** (dist 0.06–0.17); controle 0.13–0.21 |
 | **2 resposta LOCAL** | dirigi "tensor rt + yolo" via WebSocket | ✅ respondeu **do vault** (`rota=banco`), texto substantivo |
@@ -54,7 +54,7 @@ Rodei tudo que **não** precisa de microfone nem julgamento humano — não prec
 | 0.2 — Veja o log do embedding. | `[EMBED] Embeddings multilingues carregados (singleton, cuda, prefixos q='query: ' p='passage: ').` |
 | 0.3 — Veja o log do Whisper. | `[WHISPER] faster-whisper 'large-v3-turbo' carregado (cpu/int8).` |
 | 0.4 — Veja o log do KV-cache. | `[VRAM] KV-cache quantizado em q8_0.` |
-| 0.5 — Veja o log do LLM. | `[VRAM] Qwen 7B pronto na GPU.` |
+| 0.5 — Veja o log do LLM. | `[VRAM] Qwen3-8B-Q4_K_M.gguf pronto na GPU.` (o log mostra o **arquivo real**, não um rótulo fixo) |
 | 0.6 — Com uma conversa ativa, rode `nvidia-smi` noutro terminal. | Uso total **~8,5 GB / 10 GB** (cabe, ~1,4 GB de folga). Se passar de ~9,8 GB, veja "Se estourar" no fim. |
 
 ---

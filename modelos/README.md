@@ -6,7 +6,7 @@ clone.
 
 ```
 modelos/
-├── Qwen2.5-7B-Instruct-Q4_K_M.gguf                     # LLM (~4.4 GB)
+├── Qwen3-8B-Q4_K_M.gguf                                # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
 ├── pt_BR-cadu-medium.onnx.json                         # config da voz (junto do .onnx)
 └── whisper/                                            # cache do STT (baixa sozinho)
