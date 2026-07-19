@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
     # (e acelera a reindexação). Force com MENTE_EMBEDDING_DEVICE=cpu se precisar.
     embedding_device: str = "auto"
+    # PREFIXOS DE INSTRUÇÃO (família e5): modelos como intfloat/multilingual-e5-* foram
+    # treinados com "query: " nas perguntas e "passage: " nos documentos — sem isso
+    # perdem boa parte da qualidade. VAZIOS por padrão (o MiniLM atual não usa prefixo);
+    # ao trocar para um e5, ligue no .env: MENTE_EMBEDDING_QUERY_PREFIX="query: " e
+    # MENTE_EMBEDDING_PASSAGE_PREFIX="passage: ". Aplicados no EmbeddingProvider (rag.py),
+    # cobrindo TODO caminho (Chroma index/busca, malha, RAG efêmero web) de uma vez.
+    # ATENÇÃO: trocar o modelo/prefixo EXIGE reindexar o vault (apagar banco_vetorial_*)
+    # E recalibrar os thresholds do gate — a escala de distância muda com o modelo.
+    embedding_query_prefix: str = ""
+    embedding_passage_prefix: str = ""
 
     # --- RAG / Busca -----------------------------------------------------------
     # Nº de candidatos recuperados do vetor. A base é ZETTELKASTEN ATÔMICA — cada
@@ -364,6 +374,14 @@ class Settings(BaseSettings):
     # Sem ela, o pipeline de hoje não muda. Configurável por MENTE_PALAVRA_MESTRE.
     palavra_mestre: str = "mestre"
     palavra_mestre_habilitada: bool = True
+    # F3 — WAKE-WORD "mestre" (modo tipo Alexa): quando LIGADO, a sessão live começa
+    # DORMENTE e só processa fala DEPOIS de a palavra-mestre acordá-la; após
+    # `mestre_sleep_seconds` de silêncio, dorme de novo (só "mestre" reacorda). Assim a
+    # voz de outra pessoa por perto NÃO dispara nada. DESLIGADO (default) = sempre ativa,
+    # como hoje. Gate no servidor: só vale com o live conectado (mic já streamando).
+    # Ligue com MENTE_MESTRE_WAKE=true.
+    mestre_wake: bool = False
+    mestre_sleep_seconds: float = 15.0
 
     # --- Agentes / Scheduler (lembretes, alarmes, watchers, briefing) -----------
     # O SchedulerService é um loop de background que lê a tabela `agendamentos` e

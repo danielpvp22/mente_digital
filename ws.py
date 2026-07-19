@@ -38,6 +38,10 @@ class LiveSession:
         self.is_recording = False
         self.last_audio_time = time.time()
         self.last_activity = time.time()   # qualquer interação: rearma o timer de idle
+        # F3 — wake-word "mestre" (tipo Alexa): com `mestre_wake` ligado, a sessão começa
+        # DORMENTE e só processa fala normal após a palavra-mestre ACORDAR; volta a dormir
+        # após `mestre_sleep_seconds` de silêncio. Desligado = sempre ativa (hoje).
+        self.dormente = settings.mestre_wake
         self.pipeline_task: Optional[asyncio.Task] = None
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
         # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
@@ -58,10 +62,10 @@ class LiveSession:
         if self.pipeline_task and not self.pipeline_task.done():
             self.pipeline_task.cancel()
 
-    def _start_pipeline(self, texto: str) -> None:
+    def _start_pipeline(self, texto: str, stt_ms: Optional[int] = None) -> None:
         self._cancel_pipeline()
         self.pipeline_task = asyncio.create_task(
-            self.ctx.agent.pipeline_resposta(texto, self.safe_send, self.memory)
+            self.ctx.agent.pipeline_resposta(texto, self.safe_send, self.memory, stt_ms=stt_ms)
         )
 
     async def _dump_pergunta(self, texto: str) -> None:
@@ -106,6 +110,7 @@ class LiveSession:
                 except asyncio.TimeoutError:
                     await self._check_silence()
                     self._check_inatividade()
+                    self._check_sono()
                     continue
 
                 if msg.get("type") == "websocket.disconnect":
@@ -118,6 +123,7 @@ class LiveSession:
 
                 await self._check_silence()
                 self._check_inatividade()
+                self._check_sono()
         except WebSocketDisconnect:
             telemetry.track("WS", "Cliente desconectou.")
         except Exception as exc:
@@ -166,6 +172,44 @@ class LiveSession:
         telemetry.track("SERVER", "Inatividade detectada — entrando em idle.")
         self._finalizar_sessao()
 
+    async def _deve_processar(self, texto: str) -> bool:
+        """F3 (wake-word): decide se esta fala/texto deve ser PROCESSADA, atualizando o
+        estado dormente/ativo. Sem `mestre_wake`, SEMPRE processa (comportamento atual).
+        Com ele: DORMENTE só acorda/processa se a fala for a palavra-mestre — senão ignora
+        (é assim que a voz de outra pessoa por perto não dispara nada); ATIVO processa e
+        rearma o timer de sono. A palavra "mestre" SOZINHA acorda e só confirma ('Ouvindo…'),
+        sem virar um comando vazio que o fluxo-mestre recusaria."""
+        if not settings.mestre_wake:
+            return True
+        comando = (mestre.separar(texto, settings.palavra_mestre)
+                   if settings.palavra_mestre_habilitada else None)
+        if self.dormente:
+            if comando is None:
+                return False                       # dormindo e não chamaram "mestre"
+            self.dormente = False
+            await self.safe_send({"tipo": "navegar", "acao": "ativar_live"})
+            telemetry.track("WS", "Palavra-mestre acordou o live.")
+        self.last_activity = time.time()
+        if comando == "":                          # só "mestre": acorda e espera o comando
+            await self.safe_send({"tipo": "status", "texto": "Ouvindo…"})
+            return False
+        return True
+
+    def _check_sono(self) -> None:
+        """F3: ATIVO e parado há `mestre_sleep_seconds` -> volta a DORMIR (só a palavra-
+        mestre reacorda). Diferente do idle de 90s (`_check_inatividade`), que consolida
+        conhecimento e libera a GPU — dormir só PARA de responder a fala comum, mantendo a
+        conexão viva. Não dorme com uma resposta em voo (o usuário está esperando)."""
+        if not settings.mestre_wake or self.dormente:
+            return
+        if self.pipeline_task and not self.pipeline_task.done():
+            return
+        if time.time() - self.last_activity < settings.mestre_sleep_seconds:
+            return
+        self.dormente = True
+        telemetry.track("WS", "Live dormiu (silêncio) — diga 'mestre' para acordar.")
+        self.ctx.track_task(self.safe_send({"tipo": "navegar", "acao": "dormir_live"}))
+
     # -- áudio (VAD servidor) ---------------------------------------------------
     def _on_audio(self, raw: bytes) -> None:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
@@ -186,13 +230,17 @@ class LiveSession:
         if len(buffer) < settings.vad_min_frames:
             return
         final_audio = np.concatenate(buffer)
+        _t_stt = time.perf_counter()
         texto = await self.ctx.stt.transcribe(final_audio)
+        stt_ms = round((time.perf_counter() - _t_stt) * 1000)
         if len(texto) < 3:
             return
+        if not await self._deve_processar(texto):
+            return   # F3: dormente e não foi "mestre" -> ignora (voz de fundo/de outros)
         self._marcar_ativa()
         await self.safe_send({"tipo": "transcricao", "texto": texto})
         await self._dump_pergunta(texto)
-        self._start_pipeline(texto)
+        self._start_pipeline(texto, stt_ms=stt_ms)
 
     # -- texto / controle -------------------------------------------------------
     async def _on_text(self, raw: str) -> None:
@@ -243,6 +291,8 @@ class LiveSession:
             texto = (payload.get("payload") or "").strip()
             if not texto:
                 return
+            if not await self._deve_processar(texto):
+                return   # F3: dormente e não foi "mestre"
             self._marcar_ativa()
             await self.safe_send({"tipo": "transcricao", "texto": texto})
             await self._dump_pergunta(texto)

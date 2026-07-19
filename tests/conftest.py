@@ -9,6 +9,29 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
+import pytest
+
+from config import Settings
+from config import settings as _settings
+
+# Defaults LIMPOS do código (ignora o .env) — a suíte de lógica assume estes valores.
+_DEFAULTS_LIMPOS = Settings(_env_file=None)
+
+
+@pytest.fixture(autouse=True)
+def _isola_do_env(monkeypatch):
+    """Isola a suíte do .env de PRODUÇÃO.
+
+    Os testes de gate/malha assumem os DEFAULTS do código (ver
+    test_defaults_de_calibracao_intactos), mas o `settings` global lê o `.env` no
+    import — então um .env real com e5 (rag_score_confident=0.16, prefixos
+    query:/passage:) quebrava o gate (distâncias de escala antiga) e a malha. Aqui os
+    campos .env-sensíveis voltam ao default por teste; quem precisa de outro valor
+    sobrescreve depois (o monkeypatch do próprio teste roda DEPOIS deste, então vence)."""
+    for campo in ("rag_score_confident", "embedding_query_prefix", "embedding_passage_prefix"):
+        monkeypatch.setattr(_settings, campo, getattr(_DEFAULTS_LIMPOS, campo), raising=False)
+    yield
+
 
 # ==========================================================================
 # LLM falso — emite uma sequência de tokens pré-definida

@@ -54,10 +54,12 @@ SENTINELA_INSUF = "nao tenho informacoes suficientes"
 
 
 class LatencyTracker:
-    """Mede o pilar de latência: TTFT (1º token) e TTFA (1º áudio) por resposta.
+    """Mede a latência por resposta, QUEBRADA POR ESTÁGIO (F4).
 
-    Marca o primeiro instante em que cada tipo de mensagem sai pelo `send`. O clock
-    é injetável para permitir teste determinístico (sem depender do relógio real).
+    Marca o 1º instante de cada tipo de msg que sai pelo `send` E conta os tokens para
+    derivar o tok/s do DECODE (descontando o prefill, que já está no TTFT). O clock é
+    injetável para teste determinístico. `stt_ms` é preenchido de FORA (a transcrição
+    roda no ws.py, antes do pipeline) — por isso não é medido aqui.
     """
 
     def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
@@ -65,16 +67,32 @@ class LatencyTracker:
         self.t0 = clock()
         self.ttft: float | None = None
         self.ttfa: float | None = None
+        self.n_tokens = 0
+        self._t_ultimo_token: float | None = None
+        self.stt_ms: int | None = None   # transcrição (voz), setado pelo ws.py
 
     def note(self, msg: dict) -> None:
         tipo = msg.get("tipo")
-        if tipo == "token" and self.ttft is None:
-            self.ttft = self._clock() - self.t0
+        if tipo == "token":
+            agora = self._clock()
+            if self.ttft is None:
+                self.ttft = agora - self.t0
+            self.n_tokens += 1
+            self._t_ultimo_token = agora
         elif tipo == "audio" and self.ttfa is None:
             self.ttfa = self._clock() - self.t0
 
     def total(self) -> float:
         return self._clock() - self.t0
+
+    def decode_tok_s(self) -> float | None:
+        """tok/s do DECODE: (n-1) / (último token − 1º token). Desconta o prefill —
+        senão um prompt RAG longo faria o modelo 'parecer lento'. None com < 2 tokens
+        (sem janela de decode medível). Espelha eval/ab_modelos._gerar."""
+        if self.n_tokens < 2 or self._t_ultimo_token is None or self.ttft is None:
+            return None
+        dur = self._t_ultimo_token - (self.t0 + self.ttft)
+        return round((self.n_tokens - 1) / dur, 1) if dur > 0 else None
 
     @staticmethod
     def _ms(seg: float | None) -> int | None:
@@ -561,10 +579,12 @@ class Agent:
         return "\n".join(partes)
 
     async def pipeline_resposta(
-        self, texto_usuario: str, send: Sender, mem: SessionMemory
+        self, texto_usuario: str, send: Sender, mem: SessionMemory,
+        stt_ms: Optional[int] = None,
     ) -> None:
-        # Instrumenta o TTFT/TTFA sem tocar no resto: cada msg passa pelo tracker.
+        # Instrumenta o timing por estágio: cada msg passa pelo tracker (F4).
         tracker = LatencyTracker()
+        tracker.stt_ms = stt_ms   # transcrição (voz) medida no ws.py, antes daqui
 
         async def send_medido(msg: dict) -> bool:
             tracker.note(msg)
@@ -789,8 +809,15 @@ class Agent:
             LatencyTracker._ms(tracker.ttfa),
             LatencyTracker._ms(tracker.total()),
         )
-        telemetry.track("LATENCIA", f"rota={rota} TTFT={ttft}ms TTFA={ttfa}ms total={total}ms")
-        await asyncio.to_thread(db.save_latency, rota, ttft, ttfa, total)
+        toks = tracker.decode_tok_s()
+        telemetry.track(
+            "LATENCIA",
+            f"rota={rota} stt={tracker.stt_ms}ms TTFT={ttft}ms tok/s={toks} "
+            f"TTFA={ttfa}ms total={total}ms n_tok={tracker.n_tokens}",
+        )
+        await asyncio.to_thread(
+            db.save_latency, rota, ttft, ttfa, total, tracker.stt_ms, toks, tracker.n_tokens
+        )
 
     async def _rotear(self, texto_usuario: str, observacoes: str = ""):
         """Pergunta ao LLM qual ferramenta usar; devolve uma `tools.Decisao` ou None."""

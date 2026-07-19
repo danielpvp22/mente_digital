@@ -12,7 +12,7 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-cosine-FF6B6B)
 ![faster-whisper](https://img.shields.io/badge/faster--whisper-CTranslate2-5A67D8)
 ![Piper](https://img.shields.io/badge/Piper_TTS-ONNX-8E44AD)
-![Testes](https://img.shields.io/badge/testes-472_passed-success)
+![Testes](https://img.shields.io/badge/testes-552_passed-success)
 ![Deps novas](https://img.shields.io/badge/deps_novas_nas_3_ondas-zero-blue)
 ![Nuvem](https://img.shields.io/badge/nuvem-zero-critical)
 
@@ -63,7 +63,25 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é uma feature real, com o comando de voz (`mestre, …`) ou o botão `.env` quando existe. As seções técnicas mais abaixo aprofundam o *como* e o *porquê*; aqui é o *o quê*.
 
 <details open>
-<summary><b>🌊 Onda 3 — a base que pensa sobre si, se protege e se adapta (mais recente)</b></summary>
+<summary><b>🔧 Modelos &amp; Voz — recuperação 2×, wake-word "mestre" e a análise de tempo (mais recente)</b></summary>
+
+**🧠 Stack de modelos afinado com medição** — cada troca foi um **A/B**, não um chute (harnesses novos em `eval/`):
+- **Embedding `multilingual-e5-base`** — trocado do MiniLM (2021) após A/B no vault real (`eval/ab_embeddings.py`): **~2× no ranqueamento** (known-item MRR@10 0.20→0.375, Recall@1 0.145→0.288). Exige prefixos `query:`/`passage:` (`MENTE_EMBEDDING_QUERY_PREFIX`/`_PASSAGE_PREFIX`, aplicados no `EmbeddingProvider`), **reindex** do vault (`scripts/reindexar.py`) e **recalibrar o gate** (`MENTE_RAG_SCORE_CONFIDENT` 0.55→**0.16**, derivado por `eval/calibrar_gate.py`).
+- **STT `large-v3-turbo`** — do `small`; multilíngue, qualidade ~`large-v3` a velocidade ~`medium` (`MENTE_WHISPER_MODEL`).
+- **KV-cache `q8_0`** — ~metade da VRAM de KV a custo ínfimo (`MENTE_KV_CACHE_TYPE`, exige `flash_attn`); abre espaço para o embedding maior. Stack completo medido em **8,1 / 10 GB**.
+- **A/B do modelo-base** — Qwen3-8B medido contra o Qwen2.5-7B (`eval/ab_modelos.py --no-think`): ganha em qualidade (sentinela com contexto 33%→8%, atomização melhor) por ~9% menos `tok/s`. **Mantido o Qwen2.5** (GGUF guardado para decidir depois).
+- **Higiene** — ~21 GB de GGUFs não usados removidos de `modelos/`.
+
+**🎙 Voz mais esperta** — dois botões que mudam o comportamento ao vivo:
+- **Wake-word "mestre" (#F3)** — modo tipo Alexa: o live começa **dormente** e só a palavra-mestre acorda; após 15 s de silêncio dorme de novo. A voz de outra pessoa por perto **não dispara nada**. Opt-in por `MENTE_MESTRE_WAKE` (+ `MENTE_MESTRE_SLEEP_SECONDS`).
+- **Barge-in só do dono (#F5)** — interromper o narrador passou a exigir voz **alta e sustentada** (limiar + debounce no cliente), então ruído/voz de fundo curta não corta mais a resposta. (Tier 1; reconhecer *a sua* voz por speaker-ID é o Tier 2, adiado.)
+
+**⏱ Observabilidade — Timing por estágio (#F4)** — cada resposta agora loga e agrega em `/api/metrics` o **decode `tok/s`** + o tempo de **STT** (além de TTFT/TTFA/total/nº de tokens): dá para ver **onde** o tempo vai. Medido ao vivo: `tok/s≈85`, TTFT≈1,1 s numa resposta do vault.
+
+</details>
+
+<details>
+<summary><b>🌊 Onda 3 — a base que pensa sobre si, se protege e se adapta</b></summary>
 
 **🕸 A Malha (GraphRAG sobre o seu vault)** — um grafo de conceitos construído dos `[[links]]` que o ETL escreve em cada átomo, sem nenhuma lib de grafo:
 - **Aterramento por IDF** — o gate de relevância passou a pesar keyword **rara** mais que genérica; consertou perguntas gerais puxando notas pessoais.
@@ -303,9 +321,9 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 |---|---|---|
 | **llama-cpp-python** | LLM local | Compilado com CUDA. Encapsulado em `LlamaManager` com **GPU serializada por um `ThreadPoolExecutor(max_workers=1)`** — dois decodes nunca coexistem, por construção. `flash_attn=True` invertendo o default da lib; `n_batch`/`n_ubatch`/`kv_cache_type` expostos como botões calibráveis. Streaming token-a-token com `stop_event` para barge-in de ~1 token de granularidade, e `preemptible` para o trabalho de fundo ceder a GPU. |
 | **Qwen2.5-Coder-7B** `Q4_K_M` | Modelo | GGUF de ~4.7 GB. A quantização não é sobre qualidade — é **orçamento de coabitação**: pesos + KV-cache de 8k + embeddings na GPU têm que caber juntos em 10 GB. |
-| **faster-whisper** (CTranslate2) | STT | Mesmos pesos do Whisper, execução muito mais rápida. Roda na **CPU por padrão** — deliberadamente: sai da GPU para o embedding poder entrar. `MENTE_WHISPER_MODEL=large-v3` sobe a qualidade quando há VRAM. |
+| **faster-whisper** (CTranslate2) | STT | Mesmos pesos do Whisper, execução muito mais rápida. Roda na **CPU por padrão** — deliberadamente: sai da GPU para o embedding poder entrar. Este projeto adota `MENTE_WHISPER_MODEL=large-v3-turbo` (multilíngue, qualidade ~`large-v3` sobre o `small`); suba para a GPU quando houver VRAM. |
 | **Piper TTS** (ONNX) | Voz PT-BR | `onnxruntime` puro: sem PyTorch, sem CUDA, **zero VRAM**. Chamado **uma vez por frase** — é o que faz o primeiro áudio sair enquanto o LLM ainda decodifica. Um **cache LRU** de frases sintetizadas (#1) memoiza as falas recorrentes (fillers, confirmações). |
-| **sentence-transformers** | Embeddings | `paraphrase-multilingual-MiniLM-L12-v2`, **singleton** criado uma vez e injetado em **dois** consumidores: o `VectorStore` (busca no vault) e o `WebSearcher` (ranking do deep-fetch). Um modelo, uma alocação de VRAM, dois usos. |
+| **sentence-transformers** | Embeddings | `intfloat/multilingual-e5-base` (com prefixos `query:`/`passage:`), **singleton** criado uma vez e injetado em **dois** consumidores: o `VectorStore` (busca no vault) e o `WebSearcher` (ranking do deep-fetch). Um modelo, uma alocação de VRAM, dois usos. |
 
 ### RAG e dados
 
@@ -445,7 +463,7 @@ flowchart TD
 
     subgraph CASC["FUSAO EM CASCATA - local first + early-stop"]
         J["RAM por tema"] --> K["Chroma cosseno top_k 40<br/>+ vizinhos da Malha"]
-        K --> L{"GATE: aterrado (IDF)<br/>OU dist < 0.8"}
+        K --> L{"GATE: aterrado (IDF)<br/>OU dist < 0.16"}
         L -->|sim| M["passada com GUARD<br/>segura tokens E audio"]
     end
 
@@ -542,7 +560,7 @@ flowchart TD
     FM --> HDR["MarkdownHeaderTextSplitter<br/>chunk = SECAO coerente"]
     HDR --> CAP["RecursiveCharacterTextSplitter<br/>so como capa: 1000 chars"]
     CAP --> META["metadados por chunk<br/>source, mtime, section<br/>confidence 0.6 auto vs 1.0 humano"]
-    META --> EMB["EmbeddingProvider SINGLETON<br/>MiniLM, normalize FALSE"]
+    META --> EMB["EmbeddingProvider SINGLETON<br/>e5-base, normalize FALSE"]
     EMB --> CHR["ChromaDB<br/>hnsw:space = COSSENO"]
     CHR --> MLH["MalhaIndex reconstroi<br/>conceito -> atomos"]
 ```

@@ -101,6 +101,14 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     rota TEXT, ttft_ms INTEGER, ttfa_ms INTEGER, total_ms INTEGER)"""
             )
+            # F4 — timing por estágio: colunas extras (migração idempotente p/ bancos
+            # antigos, como o conversa_id acima). stt_ms=transcrição, decode_tok_s=tok/s
+            # do decode, n_tokens=tokens gerados na resposta.
+            lat_cols = [r[1] for r in c.execute("PRAGMA table_info(metricas_latencia)").fetchall()]
+            for _col, _tipo in (("stt_ms", "INTEGER"), ("decode_tok_s", "REAL"),
+                                ("n_tokens", "INTEGER")):
+                if _col not in lat_cols:
+                    c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
             # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
             # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
             # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
@@ -433,13 +441,18 @@ class Database:
         ttft_ms: Optional[int],
         ttfa_ms: Optional[int],
         total_ms: Optional[int],
+        stt_ms: Optional[int] = None,
+        decode_tok_s: Optional[float] = None,
+        n_tokens: Optional[int] = None,
     ) -> None:
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO metricas_latencia (data_hora, rota, ttft_ms, ttfa_ms, total_ms) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms),
+                    "INSERT INTO metricas_latencia "
+                    "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, n_tokens) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms,
+                     stt_ms, decode_tok_s, n_tokens),
                 )
                 conn.commit()
         except Exception as exc:
@@ -860,14 +873,16 @@ class Database:
                     ).fetchall()
                 ]
                 lat = conn.execute(
-                    "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms) "
-                    "FROM metricas_latencia"
+                    "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms), "
+                    "AVG(stt_ms), AVG(decode_tok_s) FROM metricas_latencia"
                 ).fetchone()
                 latencia = {
                     "amostras": lat[0] or 0,
                     "ttft_ms_medio": round(lat[1]) if lat[1] is not None else None,
                     "ttfa_ms_medio": round(lat[2]) if lat[2] is not None else None,
                     "total_ms_medio": round(lat[3]) if lat[3] is not None else None,
+                    "stt_ms_medio": round(lat[4]) if lat[4] is not None else None,
+                    "decode_tok_s_medio": round(lat[5], 1) if lat[5] is not None else None,
                 }
             return {
                 "total_conversas": total_chat,
