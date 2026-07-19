@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
+import calendario
 import mestre
 import prompts
 import srs
@@ -1078,6 +1079,19 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:srs_reprompt"
 
+    async def _agenda_hoje(self, send: Sender, mem: SessionMemory) -> tuple:
+        """#40: lê os .ics locais e fala os compromissos de HOJE. Só leitura, 100% local."""
+        from datetime import date
+
+        eventos = await asyncio.to_thread(calendario.ler_pasta, str(settings.dir_agenda), date.today())
+        if not eventos:
+            fala = "Você não tem compromissos na agenda para hoje."
+        else:
+            partes = [f"{dt.strftime('%H:%M')} {titulo}" for dt, titulo in eventos]
+            fala = "Hoje você tem: " + "; ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:agenda"
+
     def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
         """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
         `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
@@ -1176,6 +1190,9 @@ class Agent:
             texto_final, rota = await self._srs_marcar(send, mem)
         elif mestre.comando_srs_iniciar(comando):
             texto_final, rota = await self._srs_iniciar(send, mem)
+        elif mestre.comando_agenda(comando):
+            # #40: "o que tenho hoje" — leitura da agenda .ics local.
+            texto_final, rota = await self._agenda_hoje(send, mem)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.

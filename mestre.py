@@ -204,6 +204,19 @@ def comando_srs_sub(comando: str) -> bool:
     )
 
 
+# LEITOR DE AGENDA (#40): "o que tenho hoje" / "minha agenda". Só LEITURA (não muta nada).
+_GATILHO_AGENDA = (
+    "o que tenho hoje", "o que tenho pra hoje", "o que tenho para hoje", "minha agenda",
+    "meus compromissos", "compromissos de hoje", "agenda de hoje", "agenda hoje",
+    "tenho algum compromisso", "reunioes de hoje", "o que tem na agenda", "meus horarios de hoje",
+)
+
+
+def comando_agenda(comando: str) -> bool:
+    """True se o usuário pergunta os compromissos de hoje (#40, leitor .ics local). Puro."""
+    return _casa(comando, _GATILHO_AGENDA)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
 import agenda
+import calendario
 import prompts
 import textutils
 from config import settings
@@ -217,6 +218,19 @@ class SchedulerService:
                     contexto = dados[:1500]
             except Exception as exc:
                 telemetry.warn("SCHEDULER", f"Briefing sem web ({exc}).")
+        # AGENDA LOCAL (#40): compromissos de HOJE entram no briefing. Computado ANTES do
+        # LLM para ser falado mesmo se a inferência for adiada (usuário voltou / preempção).
+        try:
+            eventos = await asyncio.to_thread(
+                calendario.ler_pasta, str(settings.dir_agenda), agora.date()
+            )
+        except Exception:
+            eventos = []
+        agenda_txt = ""
+        if eventos:
+            partes = "; ".join(f"{dt.strftime('%H:%M')} {t}" for dt, t in eventos)
+            agenda_txt = f"Na sua agenda hoje: {partes}. "
+
         data_hoje = agora.strftime("%d/%m/%Y")
         await self.ctx.interactive_idle.wait()
         try:
@@ -228,8 +242,8 @@ class SchedulerService:
             )
         except Exception as exc:
             telemetry.track("SCHEDULER", f"Briefing adiado ({type(exc).__name__}).")
-            return None
-        return fala.strip() or None
+            return agenda_txt.strip() or None
+        return (agenda_txt + fala).strip() or None
 
     # -- push falado para as sessões vivas --------------------------------------
     def _ha_sessoes(self) -> bool:

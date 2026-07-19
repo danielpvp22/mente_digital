@@ -317,6 +317,10 @@ class Settings(BaseSettings):
     briefing_hora_padrao: str = "07:00"
     # Pasta das listas do "Agente de Listas" (compras/tarefas), dentro do vault.
     subpasta_listas: str = "Listas"
+    # LEITOR DE AGENDA .ics (#40): 100% LOCAL. Aponte para uma pasta (dentro do vault por
+    # default) com .ics exportados do seu calendário (Google/Outlook). O app lê os
+    # compromissos de HOJE para "mestre, o que tenho hoje" e para o briefing. Nada vai à nuvem.
+    subpasta_agenda: str = "Agenda"
     # COFRE DE CONFIRMAÇÃO (#25): ações destrutivas E não-desfazíveis (hoje só
     # cancelar_lembrete — o undo #8 não recria um lembrete) exigem um "mestre, confirma"
     # antes de rodar. As ações que o undo cobre (add/remove) NÃO são gateadas — confirmar
@@ -364,6 +368,10 @@ class Settings(BaseSettings):
         return Path(self.caminho_obsidian) / self.subpasta_listas
 
     @property
+    def dir_agenda(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_agenda
+
+    @property
     def arquivo_inbox(self) -> Path:
         # Captura Rápida (GTD): tudo que o usuário "anota rápido" cai aqui, cru, com
         # carimbo de tempo. Fica no vault (indexado, pesquisável); o ritual de revisão
@@ -376,6 +384,7 @@ class Settings(BaseSettings):
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
         os.makedirs(self.dir_listas, exist_ok=True)
+        os.makedirs(self.dir_agenda, exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)
