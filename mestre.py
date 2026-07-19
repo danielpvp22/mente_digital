@@ -293,6 +293,49 @@ def comando_revisao_diaria(comando: str) -> bool:
     return _casa(comando, _GATILHO_REVISAO_DIA)
 
 
+# DIÁRIO DE HÁBITOS (#37): marcar que cumpriu um hábito hoje. Formas CLARAS (verbo de
+# conclusão ou "habito") para não capturar "marca reunião" à toa; exclui lista/lembrete.
+def _limpa_habito(s: str) -> Optional[str]:
+    nome = textutils.normaliza(s)
+    while True:
+        novo = re.sub(r"^(?:o|a|meu|minha|de)\s+", "", nome).strip()
+        if novo == nome:
+            break
+        nome = novo
+    nome = re.sub(r"\s+hoje$", "", nome).strip()
+    return nome or None
+
+
+def parse_habito_marcar(comando: str) -> Optional[str]:
+    """Nome do hábito cumprido, ou None. 'fiz X' / 'completei X' / 'marca que <X>' /
+    '...habito [de] X'. Exclui comandos de lista/lembrete. Puro/testável."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    if "lista" in n or "lembret" in n:
+        return None
+    m = re.search(r"(?i)h[aá]bito(?:\s+de)?\s+(.+)", comando)
+    if m and any(v in n for v in ("marc", "registr", "fiz", "meu", "cumpri")):
+        return _limpa_habito(m.group(1))
+    m = re.match(r"(?i)\s*(?:fiz|completei|conclui|terminei|pratiquei|cumpri)\s+(.+)", comando)
+    if m:
+        return _limpa_habito(m.group(1))
+    m = re.match(r"(?i)\s*marca\w*\s+que\s+(?:eu\s+)?(.+)", comando)
+    if m:
+        return _limpa_habito(m.group(1))
+    return None
+
+
+_GATILHO_HABITOS_LISTAR = (
+    "meus habitos", "quais habitos", "como estao meus habitos", "como vao meus habitos",
+    "minhas sequencias", "meus streaks", "resumo dos habitos", "status dos habitos",
+)
+
+
+def comando_habitos_listar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_HABITOS_LISTAR)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

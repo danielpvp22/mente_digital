@@ -175,6 +175,13 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, evento TEXT, filtro TEXT,
                     acao TEXT, descricao TEXT, criado_em TEXT)"""
             )
+            # HÁBITOS (#37): uma linha por (hábito, DIA cumprido). UNIQUE evita contar duas
+            # vezes o mesmo dia; a sequência (streak) é derivada das datas. Fluxo independente.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS habitos
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, data TEXT,
+                    criado_em TEXT, UNIQUE(nome, data))"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -297,6 +304,41 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao remover gatilho", exc)
             return False
+
+    # -- Hábitos (#37) ---------------------------------------------------------
+    def habito_marcar(self, nome: str, data_iso: str) -> None:
+        """Registra o hábito num DIA. UNIQUE(nome, data) -> marcar duas vezes o mesmo dia
+        é inócuo (INSERT OR IGNORE)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO habitos (nome, data, criado_em) VALUES (?, ?, ?)",
+                    (nome, data_iso, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar hábito", exc)
+
+    def habito_datas(self, nome: str) -> list:
+        """Todas as datas (ISO) em que o hábito foi cumprido."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT data FROM habitos WHERE nome = ? ORDER BY data", (nome,)
+                ).fetchall()
+            return [r[0] for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler hábito", exc)
+            return []
+
+    def habitos_nomes(self) -> list:
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT DISTINCT nome FROM habitos ORDER BY nome").fetchall()
+            return [r[0] for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar hábitos", exc)
+            return []
 
     def save_latency(
         self,

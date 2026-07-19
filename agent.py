@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import calendario
+import habitos
 import mestre
 import prompts
 import srs
@@ -1138,6 +1139,37 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:revisao_diaria"
 
+    # -- Diário de hábitos (#37): fluxo independente ---------------------------
+    async def _habito_marcar(self, nome: str, send: Sender, mem: SessionMemory) -> tuple:
+        """Marca o hábito HOJE e fala a sequência (streak) atual."""
+        from datetime import date
+
+        hoje = date.today()
+        await asyncio.to_thread(db.habito_marcar, nome, hoje.isoformat())
+        datas_iso = await asyncio.to_thread(db.habito_datas, nome)
+        datas = {datetime.fromisoformat(d).date() for d in datas_iso}
+        seq = habitos.streak(datas, hoje)
+        fala = f"Marquei '{nome}'. {seq} dia(s) seguido(s)!" if seq > 1 else f"Marquei '{nome}'. Começou a sequência!"
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:habito_marca"
+
+    async def _habitos_listar(self, send: Sender, mem: SessionMemory) -> tuple:
+        from datetime import date
+
+        hoje = date.today()
+        nomes = await asyncio.to_thread(db.habitos_nomes)
+        if not nomes:
+            fala = "Você ainda não registrou nenhum hábito."
+        else:
+            partes = []
+            for nome in nomes:
+                datas_iso = await asyncio.to_thread(db.habito_datas, nome)
+                datas = {datetime.fromisoformat(d).date() for d in datas_iso}
+                partes.append(f"{nome}: {habitos.streak(datas, hoje)} dia(s)")
+            fala = "Seus hábitos: " + "; ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:habitos_listar"
+
     # -- Gatilhos condicionais internos (#11) ----------------------------------
     async def _criar_gatilho(self, evento: str, filtro: str, acao_txt: str, send: Sender, mem: SessionMemory) -> tuple:
         """Cria a regra "quando <evento/filtro>, <ação>". A ação é parseada agora (rápido
@@ -1253,6 +1285,8 @@ class Agent:
         # condição casa um evento CONHECIDO; senão None e segue o fluxo normal (o watcher
         # "me avise quando ..." e o roteador continuam intactos).
         gatilho_spec = mestre.parse_gatilho(comando, datetime.now())
+        # HÁBITOS (#37): nome do hábito a marcar ("fiz X" / "marca que ..."), ou None.
+        habito_nome = mestre.parse_habito_marcar(comando)
 
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
@@ -1317,6 +1351,11 @@ class Agent:
             texto_final, rota = await self._gatilho_remover(gid, send)
         elif mestre.comando_gatilhos_listar(comando):
             texto_final, rota = await self._gatilhos_listar(send)
+        elif mestre.comando_habitos_listar(comando):
+            texto_final, rota = await self._habitos_listar(send, mem)
+        elif habito_nome is not None:
+            # #37: marca um hábito cumprido hoje.
+            texto_final, rota = await self._habito_marcar(habito_nome, send, mem)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
