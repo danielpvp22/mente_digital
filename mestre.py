@@ -121,6 +121,24 @@ def comando_desfazer(comando: str) -> bool:
     return any(g in n for g in _GATILHO_DESFAZER)
 
 
+# DESCOBRIDOR DE CONEXÕES (#22/G8): frases que pedem as PONTES do vault ("o que liga meus
+# temas?"). É meta-comando de INSIGHT, não uma ação de agente — tratado no fluxo-mestre
+# (lê a malha em ctx), como o desfazer lê o estado da sessão.
+_GATILHO_CONEXAO = (
+    "alguma conexao nova", "conexoes novas", "conexao nova", "alguma conexao",
+    "que conexoes", "quais conexoes", "conexoes entre", "descobriu conexao",
+    "achou conexao", "liga meus temas", "conectando", "pontes",
+)
+
+
+def comando_conexoes(comando: str) -> bool:
+    """True se a mensagem pede as PONTES do vault (G8, descobridor de conexões). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONEXAO)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

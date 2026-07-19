@@ -327,6 +327,15 @@ class Settings(BaseSettings):
     # normalizada) precisa se repetir para o app OFERECER um atalho nomeado. A oferta
     # acontece UMA vez por intenção. 0/negativo desliga a sugestão (só conta).
     atalho_sugestao_min: int = 3
+    # DESCOBRIDOR DE CONEXÕES (G8, Onda 3): "mestre, alguma conexão nova?" acha PONTES no
+    # vault — notas que ligam dois conceitos ESTABELECIDOS (cada um em >= conexao_df_min
+    # átomos) que quase nunca co-ocorrem (<= conexao_coocorrencia_max átomos juntos). É o
+    # "descobridor de conexões" (#22) por DEMANDA, sem push. Roda sobre a malha de conceitos.
+    # Menor df_min = temas menos consolidados entram; maior coocorrencia_max = pontes menos
+    # "surpreendentes" (temas que já se cruzam mais). limite = quantas pontes a fala traz.
+    conexao_df_min: int = 3
+    conexao_coocorrencia_max: int = 1
+    conexao_limite: int = 3
 
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50

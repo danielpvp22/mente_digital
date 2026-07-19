@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import grafo
 import textutils
 from config import settings
 from state import LruCache
@@ -310,6 +311,14 @@ class MalhaIndex:
         if df <= 0 or self.n_atomos <= 0:
             return 0.0
         return math.log(self.n_atomos / df)
+
+    def pontes(self, df_min: int, coocorrencia_max: int, limite: int) -> list:
+        """Descobridor de Conexões (G8): delega ao `grafo.descobrir_pontes` os mapas da
+        malha (conceito->átomos, átomo->conceitos). Mantém a lógica de grafo pura e fora
+        da camada de dados. Vazio se a malha não foi construída."""
+        return grafo.descobrir_pontes(
+            self._por_conceito, self._conceitos_de, df_min, coocorrencia_max, limite
+        )
 
     def centralidade(self, sources: List[str]) -> dict:
         """Score de centralidade de cada `source` DENTRO do conjunto dado (G7).

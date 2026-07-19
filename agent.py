@@ -979,6 +979,32 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala
 
+    async def _descobrir_conexoes(self, send: Sender) -> tuple:
+        """G8 (descobridor de conexões): acha PONTES no vault — notas que ligam dois temas
+        ESTABELECIDOS que quase nunca co-ocorrem — e as fala. Sob demanda, sem push. O grafo
+        roda em thread (só CPU/RAM) para não travar o loop. Malha vazia -> nada a conectar."""
+        malha = self.ctx.vectorstore.malha
+        pontes = await asyncio.to_thread(
+            malha.pontes,
+            settings.conexao_df_min,
+            settings.conexao_coocorrencia_max,
+            settings.conexao_limite,
+        )
+        if not pontes:
+            fala = "Não achei conexões novas no seu vault por enquanto."
+        else:
+            def _titulo(src: str) -> str:
+                base = src.replace("\\", "/").rsplit("/", 1)[-1]
+                return base[:-3] if base.endswith(".md") else base
+
+            partes = [
+                f"sua nota '{_titulo(p.source)}' liga {p.conceito_a} e {p.conceito_b}"
+                for p in pontes
+            ]
+            fala = "Achei algumas conexões: " + "; ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:conexoes"
+
     def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
         """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
         `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
@@ -1057,6 +1083,10 @@ class Agent:
         # Vem antes do parse_rapido: "desfaça" não é uma ação nova a rotear.
         elif mestre.comando_desfazer(comando):
             texto_final, rota = await self._desfazer(send, mem, auditar=not mem.confidencial)
+        elif mestre.comando_conexoes(comando):
+            # DESCOBRIDOR DE CONEXÕES (G8): "mestre, alguma conexão nova?" — insight sob
+            # demanda, não ação. Lê a malha em ctx (como o desfazer lê o estado da sessão).
+            texto_final, rota = await self._descobrir_conexoes(send)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.
