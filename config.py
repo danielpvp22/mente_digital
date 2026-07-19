@@ -309,6 +309,10 @@ class Settings(BaseSettings):
     # tom, não muda o conteúdo. "mestre, como você me vê?" reporta. Desligue com false.
     diapasao_habilitado: bool = True
     max_tokens_perfil: int = 80              # o perfil é 1-2 frases
+    # --- Fio da Conversa (#35) -------------------------------------------------
+    # "mestre, onde paramos?" resgata o assunto de uma conversa anterior. Só conta
+    # como fio uma conversa com >= fio_min_turnos trocas (assunto real, não um 'oi').
+    fio_min_turnos: int = 2
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

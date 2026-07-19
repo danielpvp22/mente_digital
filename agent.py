@@ -29,6 +29,7 @@ from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 import calendario
 import contradicao
 import diapasao
+import fio
 import habitos
 import mestre
 import prompts
@@ -1048,6 +1049,31 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:contradicoes"
 
+    async def _retomar_fio(self, send: Sender, mem: SessionMemory) -> tuple:
+        """#35: resgata o assunto de uma conversa ANTERIOR (a mais recente que não é a
+        atual e teve substância) e oferece continuar. Depende do #34 (Malha): se o tema
+        casa um conceito estabelecido do vault, enriquece a deixa com o que já se sabe."""
+        conversas = await asyncio.to_thread(db.get_conversations, 10)
+        escolhido = fio.escolher_fio(conversas, mem.conversa_id, settings.fio_min_turnos)
+        if escolhido is None:
+            fala = "Não achei uma conversa anterior pra retomar — acho que estamos começando agora."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:fio_vazio"
+        titulo = escolhido["titulo"].strip().rstrip("?.!")
+        # Toque da Malha (#34): um conceito relacionado ao tema, se o vault o conhece.
+        relacionado = ""
+        try:
+            malha = self.ctx.vectorstore.malha
+            chaves = textutils.palavras_chave(titulo)
+            concs = [k for k in chaves if malha.idf_palavra(k) >= settings.aterramento_idf_min]
+            if concs:
+                relacionado = f" A gente pode puxar pelo lado de {concs[0]}, que você já tem anotado."
+        except Exception:
+            relacionado = ""
+        fala = f"Da última vez a gente estava falando sobre '{titulo}'. Quer continuar daí?{relacionado}"
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:fio"
+
     async def _reportar_perfil(self, send: Sender) -> tuple:
         """#36: fala o perfil de conversa aprendido (só lê o cache em ctx)."""
         perfil = self.ctx.perfil_conversa
@@ -1492,6 +1518,10 @@ class Agent:
             # DIAPASÃO (#36): "mestre, como você me vê?" — diz o perfil de estilo
             # aprendido no idle. Só lê o cache em ctx; insight sob demanda.
             texto_final, rota = await self._reportar_perfil(send)
+        elif mestre.comando_retomar_fio(comando):
+            # FIO DA CONVERSA (#35): "mestre, onde paramos?" — resgata o assunto de
+            # uma conversa anterior. Momento oportuno = o usuário pediu.
+            texto_final, rota = await self._retomar_fio(send, mem)
         elif mestre.comando_revisao_diaria(comando):
             # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
             # "revisão" e cairia na revisão de cards.

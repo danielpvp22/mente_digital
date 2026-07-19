@@ -171,6 +171,22 @@ def comando_perfil(comando: str) -> bool:
     return any(g in n for g in _GATILHO_PERFIL)
 
 
+# FIO DA CONVERSA (#35): pede para RETOMAR um assunto de uma conversa anterior.
+_GATILHO_FIO = (
+    "onde paramos", "onde a gente parou", "retoma o fio", "retomar o fio",
+    "continua de onde paramos", "o que a gente estava falando", "o que estavamos falando",
+    "sobre o que a gente conversou", "retoma a conversa", "de volta ao assunto",
+)
+
+
+def comando_retomar_fio(comando: str) -> bool:
+    """True se a mensagem pede para retomar o fio de uma conversa anterior (#35). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_FIO)
+
+
 # SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
 # cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
 # de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma
