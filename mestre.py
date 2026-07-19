@@ -279,6 +279,20 @@ def comando_gatilho_remover(comando: str) -> Optional[int]:
     return int(m.group()) if m else None
 
 
+# REVISÃO DIÁRIA (#21): fechamento do dia (o que fiz + inbox + agenda/lembretes de amanhã).
+# Gatilhos DISTINTOS do SRS ("revisão"/"revisar") de propósito — e por isso este é checado
+# ANTES do SRS no fluxo, senão "revisão do dia" cairia na revisão de cards.
+_GATILHO_REVISAO_DIA = (
+    "resumo do dia", "revisao do dia", "fechamento do dia", "fechar o dia", "fecha o dia",
+    "como foi meu dia", "resumo de hoje", "balanco do dia", "revisao diaria", "meu dia",
+)
+
+
+def comando_revisao_diaria(comando: str) -> bool:
+    """True se o usuário pede o fechamento do dia (#21). Puro."""
+    return _casa(comando, _GATILHO_REVISAO_DIA)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

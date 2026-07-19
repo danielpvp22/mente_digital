@@ -1098,6 +1098,46 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:agenda"
 
+    # -- Revisão diária (#21): fechamento do dia --------------------------------
+    @staticmethod
+    def _contar_inbox() -> int:
+        """Itens pendentes na Inbox de captura (linhas com conteúdo, ignora cabeçalhos)."""
+        caminho = str(settings.arquivo_inbox)
+        if not os.path.exists(caminho):
+            return 0
+        try:
+            with open(caminho, "r", encoding="utf-8") as f:
+                return sum(1 for l in f if l.strip() and not l.lstrip().startswith("#"))
+        except Exception:
+            return 0
+
+    async def _revisao_diaria(self, send: Sender, mem: SessionMemory) -> tuple:
+        """#21: fala um fechamento do dia — o que você fez (auditoria), a inbox a
+        processar e o que vem amanhã (agenda .ics + lembretes). Só leitura/agregação."""
+        from datetime import date
+
+        hoje = date.today()
+        amanha = hoje + timedelta(days=1)
+        inicio_dia = datetime(hoje.year, hoje.month, hoje.day).isoformat()
+        acoes = await asyncio.to_thread(db.get_auditoria, inicio_dia, 50)
+        inbox_n = await asyncio.to_thread(self._contar_inbox)
+        eventos = await asyncio.to_thread(calendario.ler_pasta, str(settings.dir_agenda), amanha)
+        lembretes = await asyncio.to_thread(db.listar_agendamentos, ("lembrete",))
+        amanha_iso = amanha.isoformat()
+        lembretes_amanha = [l for l in lembretes if (l.get("proximo_disparo") or "").startswith(amanha_iso)]
+
+        partes = [f"hoje você fez {len(acoes)} ação(ões) registrada(s)" if acoes
+                  else "hoje você não registrou ações"]
+        if inbox_n:
+            partes.append(f"tem {inbox_n} item(ns) na inbox pra processar")
+        if eventos:
+            partes.append("amanhã na agenda: " + "; ".join(f"{dt.strftime('%H:%M')} {t}" for dt, t in eventos))
+        if lembretes_amanha:
+            partes.append("lembretes de amanhã: " + "; ".join(l["mensagem"] for l in lembretes_amanha))
+        fala = "Fechamento do dia. " + ". ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:revisao_diaria"
+
     # -- Gatilhos condicionais internos (#11) ----------------------------------
     async def _criar_gatilho(self, evento: str, filtro: str, acao_txt: str, send: Sender, mem: SessionMemory) -> tuple:
         """Cria a regra "quando <evento/filtro>, <ação>". A ação é parseada agora (rápido
@@ -1257,6 +1297,10 @@ class Agent:
             # DESCOBRIDOR DE CONEXÕES (G8): "mestre, alguma conexão nova?" — insight sob
             # demanda, não ação. Lê a malha em ctx (como o desfazer lê o estado da sessão).
             texto_final, rota = await self._descobrir_conexoes(send)
+        elif mestre.comando_revisao_diaria(comando):
+            # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
+            # "revisão" e cairia na revisão de cards.
+            texto_final, rota = await self._revisao_diaria(send, mem)
         elif mestre.comando_srs_marcar(comando):
             # SRS (#43): "revisa isso" — ANTES do iniciar, pois a frase contém "revisa".
             texto_final, rota = await self._srs_marcar(send, mem)
