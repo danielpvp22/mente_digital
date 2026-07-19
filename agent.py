@@ -22,11 +22,12 @@ import asyncio
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import mestre
 import prompts
+import srs
 import textutils
 import tools
 import verbosidade
@@ -1005,6 +1006,78 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:conexoes"
 
+    # -- SRS (#43): repetição espaçada, manual + sob demanda --------------------
+    async def _srs_marcar(self, send: Sender, mem: SessionMemory) -> tuple:
+        """"mestre, revisa isso": cria um card da ÚLTIMA troca (pergunta->resposta). O card
+        nasce VENCIDO (revisável já), então "mestre, revisão" o pega; o acerto o empurra."""
+        if not mem.chat_history:
+            fala = "Não há nada recente pra marcar pra revisão."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:srs_marca_vazia"
+        pergunta, resposta = mem.chat_history[-1]
+        await asyncio.to_thread(db.srs_criar_card, pergunta, resposta, datetime.now().isoformat())
+        fala = "Guardei pra revisão. Diga 'mestre, revisão' quando quiser revisar."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:srs_marca"
+
+    async def _srs_iniciar(self, send: Sender, mem: SessionMemory) -> tuple:
+        """"mestre, revisão": puxa os cards vencidos e abre a sessão de revisão na RAM."""
+        cards = await asyncio.to_thread(
+            db.srs_vencidos, datetime.now().isoformat(), settings.srs_max_por_sessao
+        )
+        if not cards:
+            fala = "Você não tem nada pra revisar agora. Bom trabalho!"
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:srs_vazio"
+        mem.revisao = {"pendentes": cards, "atual": None, "revelado": False}
+        fala = self._srs_proximo_card(mem, abertura=f"Você tem {len(cards)} pra revisar. ")
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:srs_inicio"
+
+    def _srs_proximo_card(self, mem: SessionMemory, abertura: str = "") -> str:
+        """Avança para o próximo card da fila (ou encerra). Puro em relação à fala."""
+        rev = mem.revisao
+        if not rev["pendentes"]:
+            mem.revisao = None
+            return abertura + "Revisão concluída. Até a próxima!"
+        rev["atual"] = rev["pendentes"].pop(0)
+        rev["revelado"] = False
+        return abertura + (
+            f"Lembra disto? {rev['atual']['frente']}. "
+            "Diga 'mestre, mostra' pra ver a resposta, ou 'acertei' / 'errei'."
+        )
+
+    async def _srs_responder(self, comando: str, send: Sender, mem: SessionMemory) -> tuple:
+        """Conduz uma revisão EM ANDAMENTO: mostra a resposta, ou registra acerto/erro
+        (reagenda pela Leitner) e vai ao próximo card. Só chamado com mem.revisao ativa."""
+        rev = mem.revisao
+        if mestre.comando_srs_parar(comando):
+            mem.revisao = None
+            fala = "Ok, parei a revisão. Voltamos quando quiser."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:srs_parar"
+        if mestre.comando_srs_mostrar(comando) and not rev["revelado"]:
+            rev["revelado"] = True
+            fala = f"{rev['atual']['verso']} — acertou? Diga 'acertei' ou 'errei'."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:srs_mostra"
+        if mestre.comando_srs_acertei(comando) or mestre.comando_srs_errei(comando):
+            acertou = mestre.comando_srs_acertei(comando)
+            novo_estagio, dias = srs.proximo(
+                rev["atual"].get("estagio", 0), acertou, settings.srs_intervalos_dias
+            )
+            proxima = (datetime.now() + timedelta(days=dias)).isoformat()
+            await asyncio.to_thread(db.srs_reagendar, rev["atual"]["id"], novo_estagio, proxima)
+            fala = self._srs_proximo_card(
+                mem, abertura=("Boa! " if acertou else "Sem problema, ela volta em breve. ")
+            )
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:srs_resposta"
+        # sub-comando não acionável agora (ex.: "mostra" com a resposta já revelada)
+        fala = "Diga 'acertei' ou 'errei' pra esta, ou 'mestre, mostra' pra ver a resposta."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:srs_reprompt"
+
     def _acao_confirmavel(self, acoes: List["tools.Decisao"]) -> Optional["tools.Decisao"]:
         """A 1ª ação DESTRUTIVA que exige confirmação (#25), ou None. Respeita o botão
         `confirmacao_habilitada` — desligado, nada é gateado (executa direto)."""
@@ -1049,6 +1122,12 @@ class Agent:
         if pend is not None and not abortando and not confirmando:
             mem.confirmacao_pendente = None   # comando novo supera a pendência
 
+        # SRS (#43): um comando NÃO-relacionado durante uma revisão em andamento a abandona
+        # (não prende o usuário) — mesmo espírito da pendência de confirmação acima. Os
+        # sub-comandos (mostra/acertei/errei/parar) seguem para o handler de revisão abaixo.
+        if mem.revisao is not None and not mestre.comando_srs_sub(comando):
+            mem.revisao = None
+
         # MODO CONFIDENCIAL (#5): meta-comando que mexe no estado da SESSÃO (por isso é
         # tratado aqui, não numa ferramenta). Liga/desliga e NÃO registra o próprio turno.
         modo = mestre.modo_confidencial(comando)
@@ -1063,8 +1142,13 @@ class Agent:
             await self._emitir_falado(send, fala)
             return
 
+        # REVISÃO EM ANDAMENTO (#43): se há uma revisão ativa, o comando aqui é um
+        # sub-comando dela (mostra/acertei/errei/parar) — os não-relacionados já a
+        # abandonaram acima. Tem prioridade sobre o resto.
+        if mem.revisao is not None:
+            texto_final, rota = await self._srs_responder(comando, send, mem)
         # CONFIRMAÇÃO PENDENTE (#25) tem prioridade sobre um comando novo.
-        if confirmando:
+        elif confirmando:
             dec = mem.confirmacao_pendente
             mem.confirmacao_pendente = None
             texto_final = await self._executar_acoes_rapidas(
@@ -1087,6 +1171,11 @@ class Agent:
             # DESCOBRIDOR DE CONEXÕES (G8): "mestre, alguma conexão nova?" — insight sob
             # demanda, não ação. Lê a malha em ctx (como o desfazer lê o estado da sessão).
             texto_final, rota = await self._descobrir_conexoes(send)
+        elif mestre.comando_srs_marcar(comando):
+            # SRS (#43): "revisa isso" — ANTES do iniciar, pois a frase contém "revisa".
+            texto_final, rota = await self._srs_marcar(send, mem)
+        elif mestre.comando_srs_iniciar(comando):
+            texto_final, rota = await self._srs_iniciar(send, mem)
         elif mestre.tem_correcao(comando):
             # CORTA-E-CORRIGE (#9): "corrige para X" — antes do parse_rapido, pois um
             # "corrige ... na lista" tem gatilho de lista mas é correção, não add.

@@ -55,6 +55,11 @@ class SessionMemory:
         # ATALHO DE INTENÇÃO FREQUENTE (#2): o texto do último comando-mestre RESOLVIDO —
         # é o que "mestre, atalho X" grava sob o apelido X. None = nada a encurtar ainda.
         self.ultimo_comando_mestre: Optional[str] = None
+        # SRS (#43): sessão de revisão EM ANDAMENTO. dict {"pendentes": [cards], "atual":
+        # card, "revelado": bool} ou None. Vive só na RAM (os cards persistem no SQLite; o
+        # que é volátil é a fila da revisão atual). Como o cofre de confirmação, um comando
+        # não-relacionado a abandona.
+        self.revisao: Optional[dict] = None
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -81,6 +86,7 @@ class SessionMemory:
         self.ultima_acao = None
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
+        self.revisao = None             # revisão em andamento não atravessa conversas
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -94,6 +100,7 @@ class SessionMemory:
         self.ultima_acao = None
         self.confirmacao_pendente = None
         self.ultimo_comando_mestre = None
+        self.revisao = None
 
 
 class LruCache:

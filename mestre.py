@@ -139,6 +139,71 @@ def comando_conexoes(comando: str) -> bool:
     return any(g in n for g in _GATILHO_CONEXAO)
 
 
+# SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
+# cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
+# de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma
+# revisão em andamento — fora dela, "acertei" é palavra comum e não deve ativar nada.
+_GATILHO_SRS_MARCAR = (
+    "revisa isso", "revise isso", "revisar isso", "marca pra revisar", "marca para revisar",
+    "guarda pra revisao", "guarda para revisao", "adiciona a revisao", "coloca na revisao",
+    "quero revisar isso", "guarda isso pra revisar",
+)
+_GATILHO_SRS_INICIAR = (
+    "revisao", "revisar", "hora de revisar", "me faz revisar", "vamos revisar",
+    "quero revisar", "bora revisar", "comecar a revisao", "iniciar revisao",
+)
+_GATILHO_SRS_MOSTRAR = (
+    "mostra", "mostrar", "revela", "revelar", "qual a resposta", "qual e a resposta",
+    "nao sei", "nao lembro", "me mostra", "abre",
+)
+_GATILHO_SRS_ACERTEI = ("acertei", "sabia", "lembrava", "acertou", "certo", "lembrei", "acerto")
+_GATILHO_SRS_ERREI = ("errei", "nao sabia", "nao lembrava", "esqueci", "errou", "errado", "nao lembrei")
+_GATILHO_SRS_PARAR = (
+    "para a revisao", "parar a revisao", "parar revisao", "chega de revisao",
+    "encerra a revisao", "encerrar revisao", "sair da revisao", "chega por hoje",
+)
+
+
+def _casa(comando: str, gatilhos) -> bool:
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in gatilhos)
+
+
+def comando_srs_marcar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_MARCAR)
+
+
+def comando_srs_iniciar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_INICIAR)
+
+
+def comando_srs_mostrar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_MOSTRAR)
+
+
+def comando_srs_acertei(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_ACERTEI)
+
+
+def comando_srs_errei(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_ERREI)
+
+
+def comando_srs_parar(comando: str) -> bool:
+    return _casa(comando, _GATILHO_SRS_PARAR)
+
+
+def comando_srs_sub(comando: str) -> bool:
+    """É um sub-comando de uma revisão EM ANDAMENTO (mostra/acertei/errei/parar)? Só deve
+    ser consultado quando há revisão ativa — fora dela, essas palavras são comuns."""
+    return (
+        comando_srs_mostrar(comando) or comando_srs_acertei(comando)
+        or comando_srs_errei(comando) or comando_srs_parar(comando)
+    )
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

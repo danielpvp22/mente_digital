@@ -157,6 +157,14 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS mestre_atalhos
                    (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
             )
+            # SRS (#43): cards de repetição espaçada. `frente`/`verso` da carta (a última
+            # troca marcada), `proxima_revisao` (ISO) e `estagio` (caixa de Leitner). A
+            # revisão é sob demanda, mas o CRONOGRAMA é persistente (sobrevive a restart).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS srs_cards
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, frente TEXT, verso TEXT,
+                    proxima_revisao TEXT, estagio INTEGER DEFAULT 0, criado_em TEXT)"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -182,6 +190,57 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar histórico", exc)
+
+    # -- SRS (#43): repetição espaçada -----------------------------------------
+    def srs_criar_card(self, frente: str, verso: str, proxima_revisao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO srs_cards (frente, verso, proxima_revisao, estagio, criado_em) "
+                    "VALUES (?, ?, ?, 0, ?)",
+                    (frente, verso, proxima_revisao, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao criar card SRS", exc)
+
+    def srs_vencidos(self, agora_iso: str, limite: int) -> list:
+        """Cards com revisão vencida (proxima_revisao <= agora), do mais atrasado ao menos."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, frente, verso, proxima_revisao, estagio FROM srs_cards "
+                    "WHERE proxima_revisao <= ? ORDER BY proxima_revisao LIMIT ?",
+                    (agora_iso, limite),
+                ).fetchall()
+            return [
+                {"id": r[0], "frente": r[1], "verso": r[2], "proxima_revisao": r[3], "estagio": r[4]}
+                for r in rows
+            ]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao buscar cards SRS vencidos", exc)
+            return []
+
+    def srs_contar_vencidos(self, agora_iso: str) -> int:
+        try:
+            with self._conn() as conn:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM srs_cards WHERE proxima_revisao <= ?", (agora_iso,)
+                ).fetchone()[0]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao contar cards SRS", exc)
+            return 0
+
+    def srs_reagendar(self, card_id: int, estagio: int, proxima_revisao: str) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE srs_cards SET estagio = ?, proxima_revisao = ? WHERE id = ?",
+                    (estagio, proxima_revisao, card_id),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao reagendar card SRS", exc)
 
     def save_latency(
         self,

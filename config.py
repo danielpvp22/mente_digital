@@ -337,6 +337,13 @@ class Settings(BaseSettings):
     conexao_coocorrencia_max: int = 1
     conexao_limite: int = 3
 
+    # --- SRS: repetição espaçada (#43) -----------------------------------------
+    # "mestre, revisa isso" cria um card da última troca; "mestre, revisão" puxa os cards
+    # vencidos (SOB DEMANDA, sem push). Leitner: acerto avança a caixa (intervalo maior),
+    # erro volta à primeira. Intervalos em DIAS por caixa (0 a N). Persistente no SQLite.
+    srs_intervalos_dias: list[int] = [1, 3, 7, 16, 35]
+    srs_max_por_sessao: int = 10   # teto de cards por sessão de revisão (não cansar)
+
     # --- Limites de memória (evitam crescimento sem fim na RAM) -----------------
     max_chat_history: int = 50
     max_session_knowledge: int = 12
