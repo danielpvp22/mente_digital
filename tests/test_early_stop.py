@@ -23,7 +23,7 @@ class SpyVS:
         self.search_calls = 0
         self.relevante = relevante
 
-    async def search(self, termos, texto_busca=None):
+    async def search(self, termos, texto_busca=None, economico=False):
         self.search_calls += 1
         # Um contexto qualquer (não-sentinela); `relevante` controla se entra na fusão.
         return LocalResult("átomo do banco sobre o tema", 0.3, self.relevante, [])

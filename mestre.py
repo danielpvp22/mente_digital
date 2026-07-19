@@ -355,6 +355,25 @@ def comando_tutor(comando: str) -> Optional[bool]:
     return None
 
 
+def comando_economico(comando: str) -> Optional[bool]:
+    """Liga/desliga o Modo Econômico (#30): True/False/None. Puro/testável. Como o
+    confidencial/tutor, mexe no estado da SESSÃO — tratado no fluxo-mestre, não numa
+    ferramenta. Desligar é checado ANTES de ligar (ambos contêm 'modo economico')."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    off = ("modo economico off", "sai do modo economico", "sair do economico",
+           "desliga o economico", "desligar economico", "fim do modo economico",
+           "modo normal de busca", "volta a usar a web", "pode usar a web")
+    on = ("modo economico", "modo economia", "economiza web", "economizar web",
+          "nao use a web", "sem web", "so local", "responde do que voce ja sabe")
+    if any(g in n for g in off):
+        return False
+    if any(g in n for g in on):
+        return True
+    return None
+
+
 # ROTINAS COMPOSTAS (#10): macro NOMEADA de comandos. Criar tem ':'/'=' separando nome e
 # corpo; rodar é só "rotina <nome>" (expande para o corpo e o parse_composto executa).
 def parse_rotina_criar(comando: str) -> Optional[tuple]:

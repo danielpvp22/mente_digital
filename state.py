@@ -40,6 +40,12 @@ class SessionMemory:
         # SQLite, sem fila de ETL) — vive só na RAM desta sessão e morre com ela. O
         # follow-up ainda funciona (chat_history/conhecimento_sessao seguem em memória).
         self.confidencial: bool = False
+        # MODO ECONÔMICO (#30): quando ligado, a busca local IGNORA o gate de
+        # relevância e aceita QUALQUER átomo válido como contexto — responde do
+        # vault em vez de escalar pra web (economiza chamada web + latência). É o
+        # trade-off OPT-IN inverso do gate: menos precisão (reabre o risco do
+        # "Cache Hit falso") por menos web. Meta-comando de sessão, como o confidencial.
+        self.economico: bool = False
         # DESFAZER (#8): as ações que REVERTEM a última mutação da sessão (lista de
         # `tools.Decisao`), guardadas na RAM. "mestre, desfaça" as executa e limpa este
         # campo (consumo único — não se desfaz o desfazer). None = nada a desfazer.
@@ -85,6 +91,7 @@ class SessionMemory:
         self.chat_history.clear()
         self.conhecimento_sessao.clear()
         self.confidencial = False   # chat novo volta ao modo normal (público)
+        self.economico = False      # chat novo volta ao modo normal (com gate)
         self.ultima_reversivel = None   # não se desfaz ação de outra conversa
         self.ultima_acao = None
         self.confirmacao_pendente = None
@@ -106,6 +113,7 @@ class SessionMemory:
         self.ultimo_comando_mestre = None
         self.revisao = None
         self.tutor = False
+        self.economico = False
 
 
 class LruCache:

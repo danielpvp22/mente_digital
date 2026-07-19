@@ -273,6 +273,10 @@ class Settings(BaseSettings):
     web_disjuntor_limite_falhas: int = 3     # falhas seguidas p/ abrir
     web_disjuntor_cooldown_seg: float = 900  # ~15 min de descanso do DDG
     web_pendentes_max: int = 20              # teto da fila offline (em RAM)
+    # --- Modo Econômico (#30): botão-mestre da feature --------------------------
+    # Se false, o meta-comando "modo econômico" fica inerte (o gate nunca é
+    # bypassado). Default on = feature disponível, mas SEMPRE opt-in por sessão.
+    modo_economico_habilitada: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

@@ -703,7 +703,9 @@ class Agent:
                     # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base)
                     # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
                     texto_busca = await self._texto_busca(texto_usuario, termos)
-                    local = await self.ctx.vectorstore.search(termos, texto_busca=texto_busca)
+                    local = await self.ctx.vectorstore.search(
+                        termos, texto_busca=texto_busca, economico=mem.economico
+                    )
                     telemetry.track(
                         "LOCAL",
                         f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
@@ -1394,6 +1396,20 @@ class Agent:
                 "dar a resposta pronta. Quando quiser parar, diga 'mestre, sai do tutor'."
                 if tutor else
                 "Modo tutor desligado. Volto a responder direto."
+            )
+            await self._emitir_falado(send, fala)
+            return
+
+        # MODO ECONÔMICO (#30): meta-comando de SESSÃO (como confidencial/tutor). Liga/
+        # desliga o bypass do gate de relevância (responde local em vez de escalar web).
+        economico = mestre.comando_economico(comando)
+        if economico is not None:
+            mem.economico = economico and settings.modo_economico_habilitada
+            fala = (
+                "Modo econômico ligado. Vou responder do que já tenho no vault sempre que "
+                "der, evitando a web — mais rápido, porém menos preciso em temas que não domino."
+                if mem.economico else
+                "Modo econômico desligado. Volto a escalar pra web quando o local não bastar."
             )
             await self._emitir_falado(send, fala)
             return

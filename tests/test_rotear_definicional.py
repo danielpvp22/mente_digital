@@ -24,7 +24,7 @@ class SpyVS:
         self.search_calls = 0
         self._fontes = list(fontes)
 
-    async def search(self, termos, texto_busca=None):
+    async def search(self, termos, texto_busca=None, economico=False):
         self.search_calls += 1
         # relevante=True; `fontes` = átomos distintos que entraram (força do vault).
         return LocalResult("átomo do banco sobre o tema", 0.3, True, list(self._fontes))

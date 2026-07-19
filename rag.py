@@ -655,9 +655,16 @@ class VectorStore:
             itens.sort(key=lambda it: -cent.get(it[1], 0.0))
         return [c for c, _ in itens]
 
-    async def search(self, termos: str, texto_busca: Optional[str] = None) -> LocalResult:
+    async def search(
+        self, termos: str, texto_busca: Optional[str] = None, economico: bool = False
+    ) -> LocalResult:
         """
         Busca híbrida local COM aterramento léxico.
+
+        `economico=True` (Modo Econômico #30) BYPASSA o gate: aceita qualquer átomo
+        VÁLIDO (< rag_score_max) como contexto, mesmo sem aterramento nem confiança —
+        reabre o "Cache Hit falso" DE PROPÓSITO (opt-in), para responder local em vez
+        de escalar pra web. Trade-off do usuário: menos web, menos precisão.
 
         Um chunk só conta como contexto relevante se (a) menciona alguma keyword da
         pergunta OU (b) é semanticamente muito próximo (distância < rag_score_confident).
@@ -724,7 +731,12 @@ class VectorStore:
             checa_near = 0.0 < limiar_dedup < 1.0
             tokens_vistos: List[set] = []
             candidatos: List[Tuple[float, object]] = []
-            for s, d in aterrados + confiaveis:
+            # Modo Econômico (#30): ignora aterramento/confiança e considera TODOS os
+            # válidos — assim uma pergunta sem match forte ainda responde do vault.
+            fonte_candidatos = validos if economico else (aterrados + confiaveis)
+            if economico and validos:
+                telemetry.track("LOCAL", "Modo econômico: gate bypassado, ingerindo todos os válidos.")
+            for s, d in fonte_candidatos:
                 if d.page_content in vistos:
                     continue
                 if checa_near:
