@@ -310,6 +310,24 @@ def prompt_watcher(condicao: str, dados_web: str) -> str:
     )
 
 
+# --- Detector de Contradição (#24): dois átomos do mesmo tema se contradizem? -------
+SYS_CONTRADICAO = (
+    "Você compara DUAS notas de conhecimento sobre um tema parecido e diz se elas se "
+    "CONTRADIZEM (afirmam fatos incompatíveis — números, datas ou conclusões opostas). "
+    "Diferença de foco, detalhe ou complemento NÃO é contradição. Responda começando "
+    "com SIM ou NAO (exatamente, sem acento). Se SIM, complete com UMA frase curta "
+    "dizendo qual é o conflito. Na dúvida, responda NAO."
+)
+
+
+def prompt_contradicao(nota_a: str, nota_b: str) -> str:
+    return (
+        f"NOTA A:\n{nota_a}\n\n"
+        f"NOTA B:\n{nota_b}\n\n"
+        "As duas se contradizem? Comece com SIM ou NAO."
+    )
+
+
 # --- Briefing diário (o "flash briefing"): fala curta com os temas do usuário --------
 SYS_BRIEFING = (
     "Você prepara um briefing falado, curto e caloroso, em português. Máximo 4 frases. "

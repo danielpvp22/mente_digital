@@ -139,6 +139,23 @@ def comando_conexoes(comando: str) -> bool:
     return any(g in n for g in _GATILHO_CONEXAO)
 
 
+# DETECTOR DE CONTRADIÇÃO (#24): pede o RELATÓRIO das contradições que o idle achou.
+# Insight sob demanda (lê a tabela), como o descobridor de conexões.
+_GATILHO_CONTRADICAO = (
+    "alguma contradicao", "contradicoes", "contradicao", "tem contradicao",
+    "notas que se contradizem", "algo se contradiz", "conflito nas notas",
+    "notas conflitantes", "achou contradicao",
+)
+
+
+def comando_contradicoes(comando: str) -> bool:
+    """True se a mensagem pede o relatório de contradições do vault (#24). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_CONTRADICAO)
+
+
 # SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
 # cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
 # de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma

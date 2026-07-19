@@ -188,6 +188,15 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS rotinas
                    (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
             )
+            # DETECTOR DE CONTRADIÇÃO (#24): pares de átomos que o idle marcou como
+            # afirmando fatos incompatíveis. UNIQUE(fonte_a, fonte_b) evita re-gravar o
+            # mesmo par a cada varredura. `resolvido` fica para futura curadoria.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS contradicoes
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, fonte_a TEXT, fonte_b TEXT,
+                    resumo TEXT, data TEXT, resolvido INTEGER DEFAULT 0,
+                    UNIQUE(fonte_a, fonte_b))"""
+            )
             conn.commit()
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
@@ -712,6 +721,39 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao listar atalhos", exc)
             return {}
+
+    def registrar_contradicao(self, fonte_a: str, fonte_b: str, resumo: str) -> bool:
+        """Grava um par contraditório (#24). O par é ordenado para (A,B) e (B,A) não
+        virarem dois registros; UNIQUE ignora repetição. Devolve True se gravou novo."""
+        a, b = sorted([str(fonte_a or ""), str(fonte_b or "")])
+        if not a or not b or a == b:
+            return False
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO contradicoes (fonte_a, fonte_b, resumo, data)
+                       VALUES (?, ?, ?, ?)""",
+                    (a, b, resumo, datetime.now().isoformat()),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao registrar contradição", exc)
+            return False
+
+    def contradicoes_abertas(self, limite: int = 5) -> list[dict]:
+        """Contradições ainda não resolvidas, mais recentes primeiro (#24)."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT fonte_a, fonte_b, resumo FROM contradicoes "
+                    "WHERE resolvido = 0 ORDER BY id DESC LIMIT ?",
+                    (limite,),
+                ).fetchall()
+            return [{"a": a, "b": b, "resumo": r} for a, b, r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler contradições", exc)
+            return []
 
     def get_history(self, limit: int = 200) -> list[dict]:
         try:

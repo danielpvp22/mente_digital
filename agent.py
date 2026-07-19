@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import calendario
+import contradicao
 import habitos
 import mestre
 import prompts
@@ -1017,6 +1018,25 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:conexoes"
 
+    async def _reportar_contradicoes(self, send: Sender) -> tuple:
+        """#24: fala as contradições que o idle já achou entre notas do vault. Sob
+        demanda, sem push, sem LLM aqui (só lê a tabela — a detecção rodou no idle)."""
+        achadas = await asyncio.to_thread(db.contradicoes_abertas, settings.conexao_limite)
+        if not achadas:
+            fala = "Não encontrei contradições entre as suas notas por enquanto."
+        else:
+            def _titulo(src: str) -> str:
+                base = str(src or "").replace("\\", "/").rsplit("/", 1)[-1]
+                return base[:-3] if base.endswith(".md") else base
+
+            partes = [
+                f"entre '{_titulo(c['a'])}' e '{_titulo(c['b'])}': {c['resumo']}"
+                for c in achadas
+            ]
+            fala = "Achei possíveis contradições — " + "; ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:contradicoes"
+
     # -- SRS (#43): repetição espaçada, manual + sob demanda --------------------
     async def _srs_marcar(self, send: Sender, mem: SessionMemory) -> tuple:
         """"mestre, revisa isso": cria um card da ÚLTIMA troca (pergunta->resposta). O card
@@ -1443,6 +1463,10 @@ class Agent:
             # DESCOBRIDOR DE CONEXÕES (G8): "mestre, alguma conexão nova?" — insight sob
             # demanda, não ação. Lê a malha em ctx (como o desfazer lê o estado da sessão).
             texto_final, rota = await self._descobrir_conexoes(send)
+        elif mestre.comando_contradicoes(comando):
+            # DETECTOR DE CONTRADIÇÃO (#24): "mestre, alguma contradição?" — só lê a
+            # tabela; a detecção rodou no idle. Insight sob demanda, não ação.
+            texto_final, rota = await self._reportar_contradicoes(send)
         elif mestre.comando_revisao_diaria(comando):
             # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
             # "revisão" e cairia na revisão de cards.
@@ -1893,6 +1917,7 @@ class EtlProcessor:
         agora = datetime.now()
         salvos = 0
         duplicados = 0
+        salvos_info: List[Tuple[str, str]] = []  # (caminho, corpo sem frontmatter) p/ #24
         for i, bloco in enumerate(blocos):
             bloco = normalizar_atomo(bloco, prefixo, agora)
             if not bloco.strip():
@@ -1914,11 +1939,74 @@ class EtlProcessor:
                 await asyncio.to_thread(_save)
                 await asyncio.to_thread(db.log_etl, tipo_log, nome, "CONCLUIDO")
                 salvos += 1
+                salvos_info.append((caminho, strip_frontmatter(bloco)))
             except OSError as exc:
                 telemetry.error(tipo_log, f"Falha ao salvar átomo {nome}", exc)
         if duplicados:
             telemetry.track(tipo_log, f"Dedup: {duplicados} átomo(s) já no banco, ignorados.")
+        # #24: no idle, varre os átomos novos por CONTRADIÇÃO com a base existente.
+        await self._varredura_contradicoes(salvos_info)
         return salvos
+
+    async def _varredura_contradicoes(self, salvos_info: List[Tuple[str, str]]) -> None:
+        """Para cada átomo recém-salvo, acha o vizinho semântico "relacionado mas
+        distinto" (a banda onde mora a contradição) e pergunta ao LLM se se
+        contradizem. Capado por ciclo, preemptível (a conversa passa na frente) e
+        fail-open (sem loja/embeddings, não faz nada). Os pares achados vão para a
+        tabela `contradicoes` e são reportados sob demanda ('mestre, alguma
+        contradição?'). Detecção, não ação: nunca apaga nem edita nota."""
+        if not settings.contradicao_detectar or not salvos_info:
+            return
+        store = self.ctx.vectorstore
+        if store is None or getattr(store, "_store", None) is None:
+            return
+        checados = 0
+        for caminho, corpo in salvos_info:
+            if checados >= settings.contradicao_max_por_ciclo:
+                break
+            if not corpo.strip():
+                continue
+            viz = await self._vizinho_relacionado(corpo)
+            if viz is None:
+                continue
+            doc, _dist = viz
+            await self._esperar_idle()
+            try:
+                veredito = await self.ctx.llama.collect(
+                    prompts.prompt_contradicao(corpo, doc.page_content),
+                    max_tokens=settings.max_tokens_contradicao,
+                    system_prompt=prompts.SYS_CONTRADICAO,
+                    preemptible=True,   # background: a pergunta do usuário passa na frente
+                )
+            except InferenciaPreemptada:
+                telemetry.track("IDLE", "Varredura de contradição cedeu a GPU.")
+                return
+            checados += 1
+            motivo = contradicao.parse_veredito(veredito)
+            if motivo:
+                fonte_b = str(doc.metadata.get("source", "")) if doc.metadata else ""
+                gravou = await asyncio.to_thread(
+                    db.registrar_contradicao, caminho, fonte_b, motivo
+                )
+                if gravou:
+                    telemetry.warn("CONTRADICAO", f"Possível contradição: {motivo[:80]}")
+
+    async def _vizinho_relacionado(self, corpo: str):
+        """Vizinho na banda [dedup_dist_max, contradicao_dist_max): próximo o bastante
+        para ser o MESMO tema, longe o bastante para não ser duplicata. Devolve
+        (doc, dist) ou None. Barato: 1 embedding + 1 vizinho. Fail-open."""
+        store = self.ctx.vectorstore
+        try:
+            res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
+        except Exception as exc:
+            telemetry.warn("CONTRADICAO", f"Falha ao buscar vizinho (ignorando): {exc}")
+            return None
+        if not res:
+            return None
+        doc, dist = res[0]
+        if settings.dedup_dist_max <= dist < settings.contradicao_dist_max:
+            return doc, dist
+        return None
 
     async def _ja_no_banco(self, corpo: str) -> bool:
         """True se um átomo quase idêntico já está indexado (distância < dedup_dist_max).

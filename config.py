@@ -282,6 +282,15 @@ class Settings(BaseSettings):
     # imperativos de override ("ignore as instruções anteriores") são DROPADOS antes
     # de entrar no contexto; os limpos seguem. Desligue com MENTE_ANTIINJECAO_WEB=false.
     antiinjecao_web: bool = True
+    # --- Detector de Contradição (#24, no idle) --------------------------------
+    # Após atomizar no idle, cada átomo novo é comparado com seu VIZINHO semântico
+    # "relacionado mas distinto" (dist na banda [dedup_dist_max, contradicao_dist_max))
+    # — é aí que mora a contradição. Um veredito LLM (preemptível) por par, capado por
+    # ciclo. "mestre, alguma contradição?" reporta as achadas. Desligue com false.
+    contradicao_detectar: bool = True
+    contradicao_dist_max: float = 0.6        # teto da banda de "mesmo tema" (cosseno)
+    contradicao_max_por_ciclo: int = 3       # tetos de chamadas LLM por atomização
+    max_tokens_contradicao: int = 60         # veredito é curto (SIM/NAO + motivo)
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
