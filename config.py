@@ -313,6 +313,10 @@ class Settings(BaseSettings):
     # "mestre, onde paramos?" resgata o assunto de uma conversa anterior. Só conta
     # como fio uma conversa com >= fio_min_turnos trocas (assunto real, não um 'oi').
     fio_min_turnos: int = 2
+    # --- Navegação por Voz (#14) -----------------------------------------------
+    # "mestre, nova conversa" / "mostra o histórico" / "abre a conversa sobre X"
+    # operam a UI: o backend manda {tipo:"navegar"} e o front executa. Desligue com false.
+    navegacao_voz_habilitada: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

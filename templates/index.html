@@ -386,6 +386,14 @@
                     appendMsg("🔔 " + data.texto, 'ia');
                     currentIaBubble = null;
                 }
+                else if (data.tipo === "navegar") {
+                    // Navegação por voz (#14): o servidor manda operar a UI. Reusa as
+                    // MESMAS funções dos botões — nada de lógica de navegação duplicada.
+                    if (data.acao === "nova_conversa") novoChat();
+                    else if (data.acao === "abrir_historico") abrirSidebar();
+                    else if (data.acao === "fechar_historico") fecharSidebar();
+                    else if (data.acao === "carregar_conversa" && data.id) carregarConversa(data.id);
+                }
                 else if (data.tipo === "status") { toast(data.texto); }
                 else if (data.tipo === "erro") { toast("Erro: " + data.texto); }
             };

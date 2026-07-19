@@ -1049,6 +1049,31 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:contradicoes"
 
+    async def _navegar(self, nav: dict, send: Sender, mem: SessionMemory) -> tuple:
+        """#14: executa uma ação de navegação da UI. Manda {tipo:"navegar"} para o
+        front (que faz a mudança de tela) e uma confirmação falada curta. Para
+        'carregar_conversa', resolve o TEMA falado num id de conversa antes."""
+        acao = nav["acao"]
+        if acao == "carregar_conversa":
+            conversas = await asyncio.to_thread(db.get_conversations, 30)
+            alvo = fio.casar_conversa(conversas, nav.get("tema", ""))
+            if alvo is None:
+                fala = f"Não achei uma conversa sobre '{nav.get('tema', '')}'."
+                await self._emitir_falado(send, fala)
+                return fala, "mestre:nav_nao_achou"
+            await send({"tipo": "navegar", "acao": "carregar_conversa", "id": alvo["id"]})
+            fala = f"Abrindo a conversa sobre '{alvo['titulo'].strip().rstrip('?.!')}'."
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:nav_carregar"
+        await send({"tipo": "navegar", "acao": acao})
+        fala = {
+            "nova_conversa": "Pronto, comecei uma conversa nova.",
+            "abrir_historico": "Abri o seu histórico de conversas.",
+            "fechar_historico": "Fechei o histórico.",
+        }.get(acao, "Feito.")
+        await self._emitir_falado(send, fala)
+        return fala, f"mestre:nav_{acao}"
+
     async def _retomar_fio(self, send: Sender, mem: SessionMemory) -> tuple:
         """#35: resgata o assunto de uma conversa ANTERIOR (a mais recente que não é a
         atual e teve substância) e oferece continuar. Depende do #34 (Malha): se o tema
@@ -1522,6 +1547,10 @@ class Agent:
             # FIO DA CONVERSA (#35): "mestre, onde paramos?" — resgata o assunto de
             # uma conversa anterior. Momento oportuno = o usuário pediu.
             texto_final, rota = await self._retomar_fio(send, mem)
+        elif settings.navegacao_voz_habilitada and (nav := mestre.parse_navegacao(comando)):
+            # NAVEGAÇÃO POR VOZ (#14): opera a UI (nova conversa, histórico, abrir uma
+            # conversa por tema). O backend manda {tipo:"navegar"}; o front executa.
+            texto_final, rota = await self._navegar(nav, send, mem)
         elif mestre.comando_revisao_diaria(comando):
             # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
             # "revisão" e cairia na revisão de cards.

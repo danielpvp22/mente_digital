@@ -187,6 +187,42 @@ def comando_retomar_fio(comando: str) -> bool:
     return any(g in n for g in _GATILHO_FIO)
 
 
+# NAVEGAÇÃO POR VOZ (#14): comandos que operam a INTERFACE (não o conhecimento).
+# O parser é puro; a AÇÃO reconhecida vira uma mensagem {tipo:"navegar"} que o front
+# executa. "abrir a conversa sobre X" carrega um tema (o backend resolve o id).
+_NAV_NOVA = ("nova conversa", "novo chat", "comeca uma conversa", "comecar uma conversa",
+             "conversa nova", "limpa a conversa", "recomecar")
+_NAV_ABRIR_HIST = ("mostra o historico", "abre o historico", "abrir historico",
+                   "minhas conversas", "lista de conversas", "abre o menu", "mostra as conversas")
+_NAV_FECHAR_HIST = ("fecha o historico", "fechar historico", "fecha o menu", "esconde o historico")
+# "abrir a conversa sobre <tema>" / "carrega a conversa de <tema>"
+_NAV_CARREGAR_RE = re.compile(
+    r"(?:abr(?:e|ir)|carreg(?:a|ar)|volta(?:r)? (?:pra|para)|reabr(?:e|ir))\s+"
+    r"(?:a\s+|o\s+)?(?:conversa|chat)\s+(?:sobre\s+|de\s+|do\s+|da\s+)?(.+)"
+)
+
+
+def parse_navegacao(comando: str) -> Optional[dict]:
+    """Mapeia um comando de VOZ para uma ação de navegação da UI (#14). Puro.
+
+    Devolve {'acao': ...} — 'nova_conversa' | 'abrir_historico' | 'fechar_historico'
+    | {'acao':'carregar_conversa','tema': <texto>} — ou None se não é navegação.
+    O 'carregar' é checado por REGEX antes das listas (tem argumento)."""
+    if not comando:
+        return None
+    n = textutils.normaliza(comando)
+    m = _NAV_CARREGAR_RE.search(n)
+    if m and m.group(1).strip():
+        return {"acao": "carregar_conversa", "tema": m.group(1).strip()}
+    if any(g in n for g in _NAV_FECHAR_HIST):
+        return {"acao": "fechar_historico"}
+    if any(g in n for g in _NAV_ABRIR_HIST):
+        return {"acao": "abrir_historico"}
+    if any(g in n for g in _NAV_NOVA):
+        return {"acao": "nova_conversa"}
+    return None
+
+
 # SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
 # cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
 # de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma

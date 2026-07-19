@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+import textutils
+
 
 def escolher_fio(
     conversas: List[dict], cid_atual: Optional[str], min_turnos: int
@@ -27,3 +29,19 @@ def escolher_fio(
             continue                              # curto demais para ser um fio
         return conv
     return None
+
+
+def casar_conversa(conversas: List[dict], tema: str) -> Optional[dict]:
+    """Navegação por voz (#14): acha a conversa cujo TÍTULO melhor casa o `tema` falado
+    (maior sobreposição de keywords; empate -> a mais recente, pois `conversas` já vem
+    ordenada). None se nenhuma casa. Puro."""
+    chaves = set(textutils.palavras_chave(tema or ""))
+    if not chaves:
+        return None
+    melhor, melhor_score = None, 0
+    for conv in conversas:
+        titulo_chaves = set(textutils.palavras_chave(str(conv.get("titulo", ""))))
+        score = len(chaves & titulo_chaves)
+        if score > melhor_score:               # '>' estrito: mantém a 1ª (mais recente)
+            melhor, melhor_score = conv, score
+    return melhor
