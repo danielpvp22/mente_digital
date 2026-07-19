@@ -17,6 +17,7 @@ import glob
 import math
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -433,6 +434,7 @@ class VectorStore:
         self._store = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
         self.malha = MalhaIndex()
+        self._recuperado_ja = False  # #33: recupera índice no máximo 1x por processo
 
     @property
     def ready(self) -> bool:
@@ -442,30 +444,58 @@ class VectorStore:
         """Síncrono — chamar via asyncio.to_thread no startup."""
         self._embeddings.load()
 
+    def _construir_store(self):
+        """Constrói o cliente Chroma (síncrono — chamar via to_thread). Isolado do
+        open() para o caminho de auto-recuperação poder reabrir sem duplicar código."""
+        from langchain_chroma import Chroma
+
+        return Chroma(
+            embedding_function=self._embeddings.instance,
+            persist_directory=settings.diretorio_banco_vetorial,
+            # Distância de COSSENO (não o L2 padrão). Os embeddings não são
+            # normalizados (norma ~4-5), então o L2 dá distâncias ~15 e os
+            # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
+            # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
+            # Com cosseno, um bom match fica ~0.3 e o gate funciona.
+            collection_metadata={"hnsw:space": "cosine"},
+        )
+
+    async def _abrir_e_provar(self):
+        """Abre o Chroma E o PROVA com uma leitura mínima. A prova é o que
+        distingue 'abriu' de 'abriu íntegro': um HNSW/sqlite corrompido às vezes
+        constrói o objeto e só estoura na 1ª leitura. Levanta se algo falhar."""
+        store = await asyncio.to_thread(self._construir_store)
+        await asyncio.to_thread(lambda: store.get(limit=1))  # probe
+        return store
+
     async def open(self) -> None:
         if self._embeddings.instance is None:
             telemetry.warn("DB", "VectorStore sem embeddings — indexação desativada.")
             return
-        try:
-            from langchain_chroma import Chroma
-
-            async with self._write_lock:
-                self._store = await asyncio.to_thread(
-                    lambda: Chroma(
-                        embedding_function=self._embeddings.instance,
-                        persist_directory=settings.diretorio_banco_vetorial,
-                        # Distância de COSSENO (não o L2 padrão). Os embeddings não são
-                        # normalizados (norma ~4-5), então o L2 dá distâncias ~15 e os
-                        # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
-                        # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
-                        # Com cosseno, um bom match fica ~0.3 e o gate funciona.
-                        collection_metadata={"hnsw:space": "cosine"},
-                    )
+        async with self._write_lock:
+            try:
+                self._store = await self._abrir_e_provar()
+                telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
+            except Exception as exc:
+                # #33: índice corrompido. Como o vault é a fonte de verdade, move o
+                # banco corrompido para o lado e reabre vazio — o sync() seguinte
+                # reconstrói do vault (sem tocar mtime dos .md). Uma vez por processo.
+                if not (settings.indice_auto_recuperar and not self._recuperado_ja):
+                    telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
+                    return
+                self._recuperado_ja = True
+                telemetry.error("DB", "ChromaDB corrompido — recuperando do vault", exc)
+                await asyncio.to_thread(
+                    mover_indice_corrompido, settings.diretorio_banco_vetorial
                 )
-            telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
+                try:
+                    self._store = await self._abrir_e_provar()
+                    telemetry.track("DB", "Índice recuperado: banco vazio reaberto, sync reconstrói do vault.")
+                except Exception as exc2:
+                    telemetry.error("DB", "Recuperação do índice falhou", exc2)
+                    return
+        if self._store is not None:
             await self._reconstruir_malha()
-        except Exception as exc:
-            telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
 
     async def _reconstruir_malha(self) -> None:
         """Recarrega o índice de conceitos do que está no Chroma.
@@ -820,6 +850,32 @@ def buscar_com_fallback(fetch_backend, backends: List[str]) -> list:
     if not algum_ok and ultimo_erro is not None:
         raise ultimo_erro
     return []
+
+
+def mover_indice_corrompido(diretorio: str) -> Optional[str]:
+    """Move um índice Chroma corrompido para `<dir>.corrompido` (best-effort). Puro
+    o bastante para teste: só toca o filesystem do próprio banco vetorial, nunca o
+    vault. Devolve o destino, ou None se não havia dir (ou o move falhou — ex.: lock
+    de sqlite no Windows, caso comum em corrupção pós-abertura).
+
+    Guardamos a cópia corrompida (em vez de apagar) para inspeção; só mantemos a
+    MAIS RECENTE (a anterior é descartada) para não vazar disco a cada recuperação.
+    """
+    if not os.path.isdir(diretorio):
+        return None
+    destino = diretorio.rstrip("/\\") + ".corrompido"
+    try:
+        if os.path.exists(destino):
+            shutil.rmtree(destino, ignore_errors=True)
+        os.rename(diretorio, destino)
+        return destino
+    except OSError as exc:
+        # No Windows, um sqlite ainda aberto trava o rename. Não conseguimos mover;
+        # o chamador degrada graciosamente (deixa claro o que fazer na mão).
+        telemetry.warn(
+            "DB", f"Não consegui mover o índice corrompido ({exc}). Apague '{diretorio}' na mão."
+        )
+        return None
 
 
 def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:

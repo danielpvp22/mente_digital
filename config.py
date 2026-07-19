@@ -258,6 +258,13 @@ class Settings(BaseSettings):
     # semântico ([email], [cpf], ...). Conservador de propósito p/ não estragar
     # busca legítima; toda máscara é logada. Desligue com MENTE_EGRESSAO_GUARDA=false.
     egressao_guarda: bool = True
+    # --- Auto-recuperação de Índice (#33) --------------------------------------
+    # Se o ChromaDB abrir corrompido (HNSW truncado, sqlite quebrado), o RAG local
+    # morria em silêncio até um restart + apagar o banco na mão. Como o vault é a
+    # FONTE DE VERDADE, a recuperação move o índice corrompido para o lado e
+    # reconstrói do vault — SEM tocar o mtime dos .md (nada de reindex-ruim em
+    # massa na origem). Best-effort, uma vez por processo. Desligue com false.
+    indice_auto_recuperar: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
