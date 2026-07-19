@@ -252,6 +252,12 @@ class Settings(BaseSettings):
     web_rank_top_k: int = 12            # nº de trechos rankeados que entram no contexto
     # Orçamento de chars do contexto web montado (protege o n_ctx, como o do RAG local).
     web_context_char_budget: int = 6000
+    # --- Guarda de Egressão (#6): anti-PII na query web ------------------------
+    # A ÚNICA saída de rede é o WebSearcher. Antes de a query ir ao DDG, mascara
+    # PII do dono (e-mail, CPF/CNPJ, cartão via Luhn, telefone) por um token
+    # semântico ([email], [cpf], ...). Conservador de propósito p/ não estragar
+    # busca legítima; toda máscara é logada. Desligue com MENTE_EGRESSAO_GUARDA=false.
+    egressao_guarda: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

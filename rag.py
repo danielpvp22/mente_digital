@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import egressao
 import grafo
 import textutils
 from config import settings
@@ -868,6 +869,13 @@ class WebSearcher:
         self._embeddings = embeddings  # p/ o ranking do RAG efêmero (opcional)
 
     async def _ddg(self, termo: str, max_results: int) -> list:
+        # Guarda de Egressão (#6): este é o ÚNICO ponto onde texto do usuário sai
+        # para a rede. Mascara PII antes de o termo virar uma query no DDG.
+        if settings.egressao_guarda:
+            termo, pii = egressao.mascarar_pii(termo)
+            if pii:
+                telemetry.warn("EGRESSAO", f"PII mascarada na query web: {', '.join(pii)}")
+
         def _fetch() -> list:
             from ddgs import DDGS
 
