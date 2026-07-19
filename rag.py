@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import antiinjecao
 import disjuntor as _disjuntor
 import egressao
 import grafo
@@ -1040,6 +1041,16 @@ class WebSearcher:
             )
         if not chunks:
             return None
+
+        # #26: conteúdo web é NÃO-confiável — dropa os trechos com injeção de prompt
+        # ANTES de eles virarem contexto do LLM. Se sobrou algo limpo, refaz com ele;
+        # se a página inteira era payload, cai para os snippets (return None).
+        if settings.antiinjecao_web:
+            chunks, removidos = antiinjecao.filtrar_chunks(chunks)
+            if removidos:
+                telemetry.warn("ANTIINJECAO", f"{removidos} trecho(s) web suspeito(s) de injeção — dropados.")
+            if not chunks:
+                return None
 
         try:
             vecs = await asyncio.to_thread(emb.embed_documents, chunks)

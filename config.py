@@ -277,6 +277,11 @@ class Settings(BaseSettings):
     # Se false, o meta-comando "modo econômico" fica inerte (o gate nunca é
     # bypassado). Default on = feature disponível, mas SEMPRE opt-in por sessão.
     modo_economico_habilitada: bool = True
+    # --- Anti-injeção no conteúdo web (#26) ------------------------------------
+    # O deep-fetch passa corpo de página (dado NÃO-confiável) ao LLM. Trechos com
+    # imperativos de override ("ignore as instruções anteriores") são DROPADOS antes
+    # de entrar no contexto; os limpos seguem. Desligue com MENTE_ANTIINJECAO_WEB=false.
+    antiinjecao_web: bool = True
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)
