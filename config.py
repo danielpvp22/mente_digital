@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo map-reduce SEPARADO —
     # recupera muitos átomos e os resume em LOTES que cabem no n_ctx, depois combina.
     sintese_top_k: int = 60             # átomos recuperados (largo — é uma varredura do tema)
+    # HUBS PRIMEIRO na síntese (G7, Onda 3): o map-reduce fatia os átomos em lotes; se o
+    # tema é grande, os últimos lotes podem nem influenciar tanto o reduce. Reordenar os
+    # átomos por CENTRALIDADE na malha (o "backbone" do tema — átomos cujos conceitos raros
+    # reaparecem nos vizinhos do próprio conjunto) faz o núcleo do tema entrar nos PRIMEIROS
+    # lotes. Sem malha construída, mantém a ordem vetorial. Desligue com off.
+    sintese_hubs_primeiro: bool = True
     sintese_lote_chars: int = 6000      # orçamento de chars por lote (map) — protege o n_ctx
     max_tokens_sintese_tema: int = 400  # teto de cada resumo parcial (map)
 

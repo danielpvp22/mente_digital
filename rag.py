@@ -311,6 +311,29 @@ class MalhaIndex:
             return 0.0
         return math.log(self.n_atomos / df)
 
+    def centralidade(self, sources: List[str]) -> dict:
+        """Score de centralidade de cada `source` DENTRO do conjunto dado (G7).
+
+        Para cada átomo, soma sobre seus conceitos `idf(conceito) * (nº de OUTROS átomos
+        DO CONJUNTO que compartilham esse conceito)`. É a "hub-ness" do átomo em relação ao
+        próprio tema recuperado: um átomo cujos conceitos RAROS reaparecem nos vizinhos do
+        conjunto é o backbone do tema. Conceito-hub (idf baixo) quase não pontua — a mesma
+        régua da `vizinhos`. Source fora da malha (sem conceitos) recebe 0.0."""
+        conjunto = [s for s in sources if s in self._conceitos_de]
+        no_conjunto = set(conjunto)
+        scores: dict = {}
+        for s in conjunto:
+            total = 0.0
+            for c in self._conceitos_de.get(s, ()):  # já normalizados
+                peso = self.idf(c)
+                if peso <= 0:
+                    continue
+                portadores = self._por_conceito.get(c, ())
+                n_outros = sum(1 for o in portadores if o != s and o in no_conjunto)
+                total += peso * n_outros
+            scores[s] = total
+        return scores
+
     def vizinhos(
         self, sementes: List[str], limite: int, idf_min: float
     ) -> List[Tuple[float, "_DocVizinho"]]:
@@ -576,13 +599,19 @@ class VectorStore:
             telemetry.error("LOCAL", "Falha na busca para síntese", exc)
             return []
         vistos: set[str] = set()
-        out: List[str] = []
+        itens: List[Tuple[str, str]] = []   # (conteúdo, source)
         for doc, _score in res:
             c = strip_frontmatter(doc.page_content).strip()
             if c and c not in vistos:
                 vistos.add(c)
-                out.append(c)
-        return out
+                itens.append((c, str(doc.metadata.get("source") or "")))
+        # HUBS PRIMEIRO (G7): reordena por centralidade na malha para o backbone do tema
+        # cair nos primeiros lotes do map-reduce. Ordenação ESTÁVEL: empate preserva a
+        # relevância vetorial. Sem malha construída (n_atomos==0, testes), mantém a ordem.
+        if settings.sintese_hubs_primeiro and self.malha.n_atomos > 0:
+            cent = self.malha.centralidade([s for _, s in itens])
+            itens.sort(key=lambda it: -cent.get(it[1], 0.0))
+        return [c for c, _ in itens]
 
     async def search(self, termos: str, texto_busca: Optional[str] = None) -> LocalResult:
         """
