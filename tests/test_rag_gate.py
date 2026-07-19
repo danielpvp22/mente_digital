@@ -123,6 +123,37 @@ async def test_idf_desligado_por_zero(monkeypatch):
     assert res.relevante is True
 
 
+# --- Dedup near-duplicate do contexto (G6) -----------------------------------
+# Dois átomos com o MESMO conjunto de tokens (paráfrase/reordenação) contam como um —
+# o segundo não gasta orçamento de contexto. Distintos entram os dois. Usa confiança
+# semântica (score < 0.8) para os candidatos, então o teste não depende do aterramento.
+async def test_dedup_near_remove_parafrase(monkeypatch):
+    monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.9)
+    d1 = FakeDoc("o gato preto subiu no telhado alto", {"confidence": 1.0})
+    d2 = FakeDoc("no telhado alto subiu o gato preto", {"confidence": 1.0})  # mesmos tokens
+    vs = _store_com([(d1, 0.30), (d2, 0.31)])
+    res = await vs.search("tema")
+    assert res.texto.count("[Local") == 1       # só um dos dois entrou
+
+
+async def test_dedup_near_mantem_distintos(monkeypatch):
+    monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.9)
+    d1 = FakeDoc("o gato preto dorme durante o dia", {"confidence": 1.0})
+    d2 = FakeDoc("o cachorro branco corre pela manha", {"confidence": 1.0})
+    vs = _store_com([(d1, 0.30), (d2, 0.40)])
+    res = await vs.search("tema")
+    assert res.texto.count("[Local") == 2       # átomos distintos: os dois entram
+
+
+async def test_dedup_near_desligado_mantem_ambos(monkeypatch):
+    monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.0)   # desligado
+    d1 = FakeDoc("o gato preto subiu no telhado alto", {"confidence": 1.0})
+    d2 = FakeDoc("no telhado alto subiu o gato preto", {"confidence": 1.0})
+    vs = _store_com([(d1, 0.30), (d2, 0.31)])
+    res = await vs.search("tema")
+    assert res.texto.count("[Local") == 2       # sem near-dedup, ambos entram
+
+
 def test_defaults_de_calibracao_intactos():
     # Trava os DEFAULTS DO CÓDIGO, não o valor efetivo: se mudarem sem querer, o gate
     # inteiro se desloca. Ignora o .env de propósito — o usuário PODE sobrescrever no
@@ -134,3 +165,4 @@ def test_defaults_de_calibracao_intactos():
     assert padrao.rag_score_max == 1.5
     assert padrao.aterramento_idf_min == 1.5        # G3
     assert padrao.rotear_definicional_web is True   # Part A
+    assert padrao.rag_dedup_near_jaccard == 0.9     # G6

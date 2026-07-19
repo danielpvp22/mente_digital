@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # PESSOAL ("meu projeto", "o que eu anotei") é excluída e segue local (ver
     # tools.pergunta_definicional). Desligue com MENTE_ROTEAR_DEFINICIONAL_WEB=false.
     rotear_definicional_web: bool = True
+    # DEDUP NEAR-DUPLICATE DO CONTEXTO (G6, Onda 3): a busca dedupa átomos por texto
+    # EXATO, mas o ETL pode ter atomizado o MESMO fato de fontes diferentes (web +
+    # conversa) com palavras quase iguais — os dois entram no contexto e gastam prefill
+    # (TTFT maior). Aqui, ao montar os candidatos, um átomo cujo conjunto de tokens é
+    # >= este limiar de Jaccard vs. um já escolhido é descartado (velocidade pura, sem
+    # embedding). Conservador de propósito (0.9 ≈ quase idêntico) para não podar átomo
+    # legitimamente distinto. 0 ou 1.0 desliga o near-dup (mantém só o dedup exato).
+    rag_dedup_near_jaccard: float = 0.9
     # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
     # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
     rag_debug: bool = False

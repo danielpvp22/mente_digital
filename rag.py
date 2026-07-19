@@ -644,10 +644,23 @@ class VectorStore:
             # o orçamento de caracteres (protege o n_ctx), não só a contagem.
             confiaveis = [(s, d) for s, d in validos if s < settings.rag_score_confident]
             vistos: set[str] = set()
+            # DEDUP NEAR-DUPLICATE (G6): além do texto EXATO (`vistos`), descarta o átomo
+            # cujo conjunto de tokens é quase igual ao de um já escolhido (Jaccard >=
+            # limiar) — o ETL às vezes atomiza o mesmo fato de web+conversa com palavras
+            # levemente diferentes, e os dois no contexto só custam prefill. Sem embedding
+            # (velocidade pura). Desligado com limiar<=0 ou >=1.
+            limiar_dedup = settings.rag_dedup_near_jaccard
+            checa_near = 0.0 < limiar_dedup < 1.0
+            tokens_vistos: List[set] = []
             candidatos: List[Tuple[float, object]] = []
             for s, d in aterrados + confiaveis:
                 if d.page_content in vistos:
                     continue
+                if checa_near:
+                    toks = set(textutils.tokens(d.page_content))
+                    if any(textutils.jaccard(toks, t) >= limiar_dedup for t in tokens_vistos):
+                        continue                # near-duplicate de um átomo já escolhido
+                    tokens_vistos.append(toks)
                 vistos.add(d.page_content)
                 candidatos.append((s, d))
             candidatos.sort(key=lambda x: x[0])
