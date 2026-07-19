@@ -165,4 +165,5 @@ def test_defaults_de_calibracao_intactos():
     assert padrao.rag_score_max == 1.5
     assert padrao.aterramento_idf_min == 1.5        # G3
     assert padrao.rotear_definicional_web is True   # Part A
+    assert padrao.definicional_min_atomos == 3      # lever B
     assert padrao.rag_dedup_near_jaccard == 0.9     # G6

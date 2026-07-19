@@ -1,11 +1,11 @@
 """
-Roteamento de pergunta DEFINICIONAL para a web (Part A, Onda 3): "o que é X" / "quem
-foi Y" / "me explica Z" pulam a cascata local e vão DIRETO pra web — como o
-talvez_tempo_real. Conserta o sintoma "pergunta geral puxa nota pessoal" (o Tarkov).
-Pergunta PESSOAL (meu/eu/nosso) é excluída e segue o pipeline local.
+Roteamento de pergunta DEFINICIONAL (Part A + lever B, Onda 3): "o que é X" / "quem foi
+Y" / "me explica Z". Em vez de mandar TODA definição pra web (Part A puro), o app consulta
+o vault e só escala pra web se ele for FRACO — menos de `definicional_min_atomos` átomos
+distintos casando o tema (o Tarkov era 1 nota-piada). Vault bem coberto responde LOCAL.
+Pergunta PESSOAL (meu/eu/nosso) é excluída e segue local sempre.
 
-Prova o WIRING no _pipeline (não só a função pura tools.pergunta_definicional): conta
-as buscas no Banco vs na web. Sem GPU/rede: tudo fake, como test_early_stop.
+Prova o WIRING no _pipeline contando as buscas Banco vs web. Sem GPU/rede: tudo fake.
 """
 from collections import deque
 
@@ -18,14 +18,16 @@ from conftest import FakeLlama, FakeTts, make_send
 
 
 class SpyVS:
-    """Vectorstore falso que CONTA as buscas — para provar se o Banco foi (ou não) consultado."""
+    """Vectorstore falso que CONTA as buscas e reporta um nº de `fontes` controlável."""
 
-    def __init__(self):
+    def __init__(self, fontes):
         self.search_calls = 0
+        self._fontes = list(fontes)
 
     async def search(self, termos, texto_busca=None):
         self.search_calls += 1
-        return LocalResult("átomo do banco sobre o tema", 0.3, True, [])
+        # relevante=True; `fontes` = átomos distintos que entraram (força do vault).
+        return LocalResult("átomo do banco sobre o tema", 0.3, True, list(self._fontes))
 
     async def sync(self):
         pass
@@ -64,42 +66,71 @@ def _agent(monkeypatch, tmp_path, vs):
     agent = Agent(ctx)
     agent.optimizer = FakeOptimizer("rag conceito")
     mem = SessionMemory(settings)
-    mem.conhecimento_sessao = deque()   # sem RAM: isola a decisão local-vs-web
+    mem.conhecimento_sessao = deque()   # sem RAM: isola a decisão Banco-vs-web
     return agent, mem
 
 
-async def test_definicional_vai_direto_pra_web(monkeypatch, tmp_path):
+async def test_definicional_vault_fraco_vai_pra_web(monkeypatch, tmp_path):
+    # 1 átomo < min 3 (o caso Tarkov): o Banco é consultado mas DESCARTADO -> web.
     monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    vs = SpyVS()
+    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    vs = SpyVS(fontes=["so_uma_nota.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
 
     await agent.pipeline_resposta("o que é RAG?", send, mem)
 
-    assert vs.search_calls == 0            # Banco NÃO foi consultado (pulou o local)
-    assert agent.ctx.web.searches == 1     # foi direto pra web
+    assert vs.search_calls == 1            # B RODA o local (não pula cego como o A puro)
+    assert agent.ctx.web.searches == 1     # vault fraco -> escalou pra web
 
 
-async def test_definicional_desligado_cai_na_cascata(monkeypatch, tmp_path):
-    # Botão off: volta ao comportamento antigo (cascata local normal).
+async def test_definicional_vault_forte_usa_local(monkeypatch, tmp_path):
+    # 4 átomos >= min 3: tema bem coberto -> responde LOCAL, sem pagar web.
+    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    vs = SpyVS(fontes=["a.md", "b.md", "c.md", "d.md"])
+    agent, mem = _agent(monkeypatch, tmp_path, vs)
+    send, _ = make_send()
+
+    await agent.pipeline_resposta("o que é RAG?", send, mem)
+
+    assert vs.search_calls == 1
+    assert agent.ctx.web.searches == 0     # vault forte: local basta
+
+
+async def test_min_atomos_e_o_botao_de_ajuste(monkeypatch, tmp_path):
+    # O mesmo vault de 2 átomos: com min=2 passa (local), com min=3 falha (web).
+    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
+    for minimo, web_esperado in ((2, 0), (3, 1)):
+        monkeypatch.setattr("agent.settings.definicional_min_atomos", minimo)
+        vs = SpyVS(fontes=["a.md", "b.md"])
+        agent, mem = _agent(monkeypatch, tmp_path, vs)
+        send, _ = make_send()
+        await agent.pipeline_resposta("o que é RAG?", send, mem)
+        assert agent.ctx.web.searches == web_esperado, minimo
+
+
+async def test_definicional_desligado_confia_no_local(monkeypatch, tmp_path):
+    # Botão off: cascata normal, confia no local mesmo com 1 átomo.
     monkeypatch.setattr("agent.settings.rotear_definicional_web", False)
-    vs = SpyVS()
+    vs = SpyVS(fontes=["so_uma.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
 
     await agent.pipeline_resposta("o que é RAG?", send, mem)
 
-    assert vs.search_calls == 1            # sem o roteamento, o Banco roda
+    assert agent.ctx.web.searches == 0     # off: local confiado, sem web
 
 
-async def test_pergunta_pessoal_nao_vai_pra_web(monkeypatch, tmp_path):
-    # "reservando local pra pessoais": marcador de posse mantém na cascata local.
+async def test_pergunta_pessoal_usa_local_mesmo_fraco(monkeypatch, tmp_path):
+    # "reservando local pra pessoais": pergunta pessoal não é definicional -> local,
+    # mesmo com 1 átomo (o gate de força só vale para definição geral).
     monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    vs = SpyVS()
+    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    vs = SpyVS(fontes=["so_uma.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
 
     await agent.pipeline_resposta("o que é o meu projeto?", send, mem)
 
-    assert vs.search_calls == 1            # pessoal -> Banco local, não pula pra web
-    assert agent.ctx.web.searches == 0
+    assert agent.ctx.web.searches == 0     # pessoal -> local, sem web

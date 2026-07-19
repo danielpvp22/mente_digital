@@ -147,6 +147,20 @@ class Settings(BaseSettings):
     # PESSOAL ("meu projeto", "o que eu anotei") é excluída e segue local (ver
     # tools.pergunta_definicional). Desligue com MENTE_ROTEAR_DEFINICIONAL_WEB=false.
     rotear_definicional_web: bool = True
+    # LEVER B — força mínima do vault para confiar no local numa pergunta DEFINICIONAL.
+    # Em vez de mandar TODA definição pra web (Part A puro), o app consulta o vault e só
+    # escala pra web se ele for FRACO: menos de N átomos DISTINTOS casando o tema. A base
+    # é Zettelkasten atômica (1 ideia/nota), então um tema que você REALMENTE estudou vira
+    # MUITOS átomos (você estimou 10~30), enquanto uma menção-piada/incidental vira 1~2 —
+    # o Tarkov ("o que é RAG" → 1 nota-piada) cai abaixo do mínimo e vai pra web, mas um
+    # tema bem coberto responde LOCAL (e sem pagar web). Como calibrar (só este número):
+    #   1  = confia em QUALQUER match (B desligado na prática — o Tarkov volta a passar);
+    #   2  = exige 2+ átomos (filtra menção única, tolerante);
+    #   3  = exige 3+ (default: "tema desenvolvido", separa estudo de menção solta);
+    #   5  = exige 5+ (rígido, vai mais pra web);
+    #   alto (ex.: 999) = quase toda definição vai pra web (≈ Part A puro).
+    # Só age quando rotear_definicional_web=True E a pergunta é definicional (não pessoal).
+    definicional_min_atomos: int = 3
     # DEDUP NEAR-DUPLICATE DO CONTEXTO (G6, Onda 3): a busca dedupa átomos por texto
     # EXATO, mas o ETL pode ter atomizado o MESMO fato de fontes diferentes (web +
     # conversa) com palavras quase iguais — os dois entram no contexto e gastam prefill
