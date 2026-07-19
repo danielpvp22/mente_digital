@@ -39,6 +39,7 @@ se perde em silêncio).
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import AsyncIterator, Optional, Set
@@ -63,6 +64,74 @@ class _WorkerError:
 
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
+
+
+_ABRE_THINK = "<think>"
+_FECHA_THINK = "</think>"
+
+
+class _FiltroThink:
+    """Remove o bloco `<think>…</think>` do INÍCIO do stream (Qwen3). Puro/testável.
+
+    O Qwen3 abre toda resposta com esse bloco — VAZIO quando o prompt traz "/no_think",
+    mas ainda presente. Sem remover, a tag vaza para o `SentenceChunker` e o TTS acaba
+    **falando a marcação**. É o mesmo padrão do guard anti-sentinela: segura enquanto o
+    buffer ainda PODE ser o começo de `<think>`, e decide assim que souber.
+
+    Só age no PREFIXO: depois que o bloco fecha (ou que o 1º texto prova que não há
+    bloco), vira passthrough e não custa mais nada por token.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._estado = "indeciso"          # indeciso -> dentro -> limpando -> passthrough
+
+    def push(self, token: str) -> str:
+        """Recebe um token e devolve o que pode ser emitido AGORA (pode ser '')."""
+        if self._estado == "passthrough":
+            return token
+        if self._estado == "limpando":
+            # O bloco fechou colado no fim do buffer: pula o espaço que vier DEPOIS,
+            # senão a resposta começaria com as quebras de linha do <think>.
+            limpo = token.lstrip()
+            if not limpo:
+                return ""
+            self._estado = "passthrough"
+            return limpo
+        self._buf += token
+        if self._estado == "indeciso":
+            visto = self._buf.lstrip()
+            if not visto:
+                return ""                   # só espaço em branco até aqui
+            if _ABRE_THINK.startswith(visto) and len(visto) < len(_ABRE_THINK):
+                return ""                   # ainda pode virar "<think>": segura
+            if visto.startswith(_ABRE_THINK):
+                self._estado = "dentro"
+            else:
+                self._estado = "passthrough"        # não é bloco: solta tudo
+                out, self._buf = self._buf, ""
+                return out
+        if self._estado == "dentro":
+            fim = self._buf.find(_FECHA_THINK)
+            if fim == -1:
+                return ""                   # ainda dentro do bloco
+            resto = self._buf[fim + len(_FECHA_THINK):].lstrip()
+            self._buf = ""
+            if resto:
+                self._estado = "passthrough"
+                return resto
+            self._estado = "limpando"       # fechou colado: limpa o espaço seguinte
+            return ""
+        return ""
+
+    def flush(self) -> str:
+        """Fim do stream. Se ficou INDECISO (resposta curtíssima que era prefixo de
+        '<think>'), devolve o retido — nunca engolir texto do usuário."""
+        if self._estado == "indeciso":
+            out, self._buf = self._buf, ""
+            self._estado = "passthrough"
+            return out
+        return ""
 
 
 class LlamaManager:
@@ -157,7 +226,11 @@ class LlamaManager:
         async with self._load_lock:
             if self._model is not None:
                 return
-            telemetry.track("VRAM", "Ancorando Qwen 7B na GPU...")
+            # Loga o ARQUIVO, não um nome fixo: o modelo é trocável por .env e um rótulo
+            # cravado ("Qwen 7B") vira mentira no dia da troca — e some a resposta de
+            # "qual modelo está rodando?", que é a 1ª pergunta em qualquer diagnóstico.
+            nome = os.path.basename(settings.caminho_modelo_llama)
+            telemetry.track("VRAM", f"Ancorando {nome} na GPU...")
             try:
                 from llama_cpp import Llama
 
@@ -168,7 +241,7 @@ class LlamaManager:
                     lambda: Llama(**kwargs),
                 )
                 self._ready = True
-                telemetry.track("VRAM", "Qwen 7B pronto na GPU.")
+                telemetry.track("VRAM", f"{nome} pronto na GPU.")
                 if warmup:
                     await self._warmup()
             except Exception as exc:
@@ -214,7 +287,7 @@ class LlamaManager:
                     import gc
 
                     gc.collect()
-                    telemetry.track("VRAM", "Qwen 7B descarregado — VRAM liberada para o idle.")
+                    telemetry.track("VRAM", "LLM descarregado — VRAM liberada para o idle.")
                 except Exception as exc:
                     telemetry.error("VRAM", "Falha ao descarregar o LLM", exc)
 
@@ -257,6 +330,10 @@ class LlamaManager:
             return
 
         temp = settings.temperatura_resposta if temperature is None else temperature
+        # Qwen3 raciocina por padrão: "/no_think" desliga (o bloco <think> ainda SAI, só
+        # que vazio — quem o remove é o _FiltroThink abaixo). No-op em modelos que ignoram
+        # a diretiva (Qwen2.5, Llama…), por isso é um botão e não um default.
+        sys_prompt = f"/no_think\n{system_prompt}" if settings.llm_no_think else system_prompt
 
         async with self._inference_lock:
             loop = asyncio.get_running_loop()
@@ -267,7 +344,7 @@ class LlamaManager:
                 try:
                     for chunk in self._model.create_chat_completion(
                         messages=[
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": sys_prompt},
                             {"role": "user", "content": prompt},
                         ],
                         max_tokens=max_tokens,
@@ -290,6 +367,7 @@ class LlamaManager:
                 self._preemptiveis.add(stop_event)
 
             future: Future = self._gpu_executor.submit(_worker)
+            filtro = _FiltroThink() if settings.llm_strip_think else None
             try:
                 while True:
                     item = await queue.get()
@@ -298,7 +376,15 @@ class LlamaManager:
                     if isinstance(item, _WorkerError):
                         telemetry.error("LLM", "Erro no worker de inferência", item.exc)
                         break
+                    if filtro is not None:
+                        item = filtro.push(item)
+                        if not item:
+                            continue     # ainda decidindo/dentro do bloco <think>
                     yield item
+                if filtro is not None:
+                    resto = filtro.flush()   # acabou indeciso: não engolir o texto
+                    if resto:
+                        yield resto
                 # Aqui o stop_event só está setado se `preempt()` o setou (o finally
                 # abaixo ainda não rodou) -> o decode foi cortado, não terminou.
                 if preemptible and stop_event.is_set():
