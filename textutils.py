@@ -73,6 +73,19 @@ def tem_sobreposicao(a: set[str], b: set[str]) -> bool:
     return bool(a & b)
 
 
+def jaccard(a: set[str], b: set[str]) -> float:
+    """Similaridade de Jaccard entre dois conjuntos de tokens: |∩| / |∪|.
+
+    Usado no dedup near-duplicate do contexto (G6): dois átomos com quase os mesmos
+    tokens são a MESMA ideia — manter os dois só gasta orçamento de contexto (mais
+    prefill = TTFT maior). Insensível à ordem das palavras (é conjunto), então uma
+    paráfrase reordenada ainda casa. Conjunto vazio devolve 0.0 (não é duplicata)."""
+    if not a or not b:
+        return 0.0
+    uniao = len(a | b)
+    return len(a & b) / uniao if uniao else 0.0
+
+
 def contem_alguma(texto: str, chaves: set[str]) -> bool:
     """O texto menciona ao menos uma das keywords? (aterramento léxico)"""
     if not chaves:

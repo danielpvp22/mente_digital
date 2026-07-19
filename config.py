@@ -129,6 +129,46 @@ class Settings(BaseSettings):
     # o bastante para valer como Cache Hit MESMO sem casar palavra-chave. Ajuste
     # olhando o log "[LOCAL] melhor_dist=..." com os seus próprios dados.
     rag_score_confident: float = 0.8
+    # ATERRAMENTO PONDERADO POR IDF (G3, Onda 2/Graphify): o aterramento léxico é um OR
+    # booleano — bastava a nota conter UMA keyword da pergunta. Uma keyword comum (que
+    # escapou do STOP, ex.: "base", "sistema") aterrava a nota ERRADA (a mesma falha que a
+    # Malha evita de propósito, ver rag.MalhaIndex). Agora só uma keyword RARA
+    # (idf_palavra >= este mínimo) conta como evidência; se TODAS forem hub, não há
+    # aterramento léxico (a nota ainda pode entrar por confiança semântica). O IDF é sobre
+    # o CORPUS de átomos (log(N/df)), construído junto com a Malha. Calibre como o
+    # rag_score_confident: 0 desliga; MAIOR = mais rígido (mais web); menor = mais frouxo.
+    # Default afinado para o vault real (~3k átomos); revise em vault pequeno (idf é menor).
+    aterramento_idf_min: float = 1.5
+    # ROTEAR DEFINICIONAL PARA A WEB (Part A, Onda 3): perguntas de conhecimento GERAL
+    # ("o que é X", "quem foi Y", "me explica Z") vão DIRETO pra web, pulando o local —
+    # como o talvez_tempo_real já faz. Conserta o sintoma "pergunta geral puxa nota
+    # pessoal" (o Tarkov: "o que é RAG" devolvia a nota-piada do usuário). O IDF (acima)
+    # NÃO resolve esse caso (keyword rara genuína), então a correção é de ROTA. Pergunta
+    # PESSOAL ("meu projeto", "o que eu anotei") é excluída e segue local (ver
+    # tools.pergunta_definicional). Desligue com MENTE_ROTEAR_DEFINICIONAL_WEB=false.
+    rotear_definicional_web: bool = True
+    # LEVER B — força mínima do vault para confiar no local numa pergunta DEFINICIONAL.
+    # Em vez de mandar TODA definição pra web (Part A puro), o app consulta o vault e só
+    # escala pra web se ele for FRACO: menos de N átomos DISTINTOS casando o tema. A base
+    # é Zettelkasten atômica (1 ideia/nota), então um tema que você REALMENTE estudou vira
+    # MUITOS átomos (você estimou 10~30), enquanto uma menção-piada/incidental vira 1~2 —
+    # o Tarkov ("o que é RAG" → 1 nota-piada) cai abaixo do mínimo e vai pra web, mas um
+    # tema bem coberto responde LOCAL (e sem pagar web). Como calibrar (só este número):
+    #   1  = confia em QUALQUER match (B desligado na prática — o Tarkov volta a passar);
+    #   2  = exige 2+ átomos (filtra menção única, tolerante);
+    #   3  = exige 3+ (default: "tema desenvolvido", separa estudo de menção solta);
+    #   5  = exige 5+ (rígido, vai mais pra web);
+    #   alto (ex.: 999) = quase toda definição vai pra web (≈ Part A puro).
+    # Só age quando rotear_definicional_web=True E a pergunta é definicional (não pessoal).
+    definicional_min_atomos: int = 3
+    # DEDUP NEAR-DUPLICATE DO CONTEXTO (G6, Onda 3): a busca dedupa átomos por texto
+    # EXATO, mas o ETL pode ter atomizado o MESMO fato de fontes diferentes (web +
+    # conversa) com palavras quase iguais — os dois entram no contexto e gastam prefill
+    # (TTFT maior). Aqui, ao montar os candidatos, um átomo cujo conjunto de tokens é
+    # >= este limiar de Jaccard vs. um já escolhido é descartado (velocidade pura, sem
+    # embedding). Conservador de propósito (0.9 ≈ quase idêntico) para não podar átomo
+    # legitimamente distinto. 0 ou 1.0 desliga o near-dup (mantém só o dedup exato).
+    rag_dedup_near_jaccard: float = 0.9
     # Diagnóstico: MENTE_RAG_DEBUG=true loga cada chunk recuperado (dist/fonte/trecho)
     # para você VER o que a busca pega. Off por padrão (senão polui o log de prod).
     rag_debug: bool = False
