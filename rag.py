@@ -706,13 +706,35 @@ class VectorStore:
                     src = str(d.metadata.get("source") or "")
                     if src and src not in sementes:
                         sementes.append(src)
+                brutos: List[object] = []
                 for _score, dv in self.malha.vizinhos(
                     sementes, settings.malha_max_vizinhos, settings.malha_idf_min
                 ):
                     if dv.page_content in vistos:
                         continue
                     vistos.add(dv.page_content)
-                    vizinhos.append((None, dv))
+                    brutos.append(dv)
+                # G5′: FILTRO DE PROXIMIDADE À PERGUNTA. A malha traz o vizinho pelo conceito
+                # raro COMPARTILHADO, mas medido: vem "do assunto certo, da pergunta errada".
+                # Rankeia os vizinhos pela similaridade de cosseno com a PERGUNTA (embedding já
+                # carregado) e corta os abaixo de malha_sim_min — exige conceito raro E
+                # proximidade. Fail-open: sem embeddings (testes), botão 0, ou erro, mantém
+                # todos (comportamento anterior). Já sai ordenado por proximidade (melhor 1º).
+                emb = self._embeddings.instance if self._embeddings else None
+                if emb is not None and brutos and settings.malha_sim_min > 0:
+                    try:
+                        qv = await asyncio.to_thread(emb.embed_query, consulta)
+                        textos = [d.page_content for d in brutos]
+                        vv = await asyncio.to_thread(emb.embed_documents, textos)
+                        por_texto = {d.page_content: d for d in brutos}
+                        rankeados = rankear_por_similaridade(qv, list(zip(textos, vv)))
+                        brutos = [
+                            por_texto[t] for sim, t in rankeados
+                            if sim >= settings.malha_sim_min
+                        ]
+                    except Exception as exc:
+                        telemetry.error("MALHA", "Falha no filtro de proximidade do vizinho", exc)
+                vizinhos = [(None, dv) for dv in brutos]
 
             # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).

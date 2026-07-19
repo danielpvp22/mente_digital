@@ -216,6 +216,15 @@ class Settings(BaseSettings):
     # Compartilhar um conceito raro é evidência de vizinhança; compartilhar [[IA]] não é.
     # Subir = expansão mais conservadora (só conceito muito específico conecta).
     malha_idf_min: float = 4.0
+    # G5′ (Onda 3): FILTRO DE PROXIMIDADE do vizinho da malha à PERGUNTA. A medição que
+    # desligou a expansão mostrou o vizinho vindo "do assunto certo, da pergunta errada"
+    # (fine-tuning de YOLO numa pergunta sobre TensorRT). Agora, além do conceito raro
+    # (malha_idf_min), o vizinho só entra se a similaridade de cosseno do seu texto com a
+    # PERGUNTA for >= este mínimo (usa o embedding já carregado, rankear_por_similaridade).
+    # Assim a expansão exige conceito raro E proximidade — o conserto que torna
+    # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
+    # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
+    malha_sim_min: float = 0.5
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000
