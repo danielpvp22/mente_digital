@@ -424,6 +424,22 @@ def comando_pomodoro_iniciar(comando: str) -> bool:
     return _casa(comando, _GATILHO_POMODORO_INICIAR)
 
 
+# AJUDA (/help falável): "mestre, ajuda" / "mestre /ajuda" / "o que você pode fazer".
+# Descoberta de comandos — checada TARDE no fluxo (depois dos comandos específicos), pois
+# "ajuda" é gatilho largo; um "me ajuda a somar" cai aqui, e tudo bem (lista as capacidades).
+_GATILHO_AJUDA = (
+    "ajuda", "/ajuda", "me ajuda", "o que voce pode fazer", "o que voce faz",
+    "o que voce sabe fazer", "o que voce consegue fazer", "quais comandos",
+    "seus comandos", "lista de comandos", "o que posso pedir", "help", "socorro",
+    "o que da pra fazer",
+)
+
+
+def comando_ajuda(comando: str) -> bool:
+    """True se o usuário pede a lista de capacidades (/help falável). Puro."""
+    return _casa(comando, _GATILHO_AJUDA)
+
+
 def reverter(executadas: List[tuple]) -> Optional[List[tools.Decisao]]:
     """Dadas as ações que rodaram — pares (Decisao, resultado_str) —, devolve as ações
     que as DESFAZEM, em ordem INVERSA à execução, ou None se nada é reversível.

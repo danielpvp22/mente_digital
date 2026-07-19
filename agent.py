@@ -1100,6 +1100,28 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala, "mestre:agenda"
 
+    # -- Ajuda (/help falável): lista de capacidades ---------------------------
+    async def _ajuda(self, send: Sender) -> tuple:
+        """Fala um resumo das capacidades — o /help do assistente."""
+        fala = (
+            "Posso te ajudar de várias formas, sempre começando com 'mestre'. "
+            "Conhecimento: eu respondo perguntas com as suas notas e a web, e faço a síntese "
+            "de 'o que eu sei sobre um tema'. "
+            "Listas e lembretes: 'adiciona pão na lista', 'me lembra de algo às 8 horas', "
+            "'me avise quando tal coisa acontecer'. "
+            "Agenda: 'o que tenho hoje' lê o seu calendário local. "
+            "Estudo: 'revisa isso' e depois 'revisão' pra repetição espaçada; 'modo tutor' "
+            "pra eu te ensinar fazendo perguntas. "
+            "Produtividade: 'inicia um pomodoro', 'fiz treino' pra marcar hábitos, "
+            "'resumo do dia' pro fechamento, e 'rotina manhã: comando e comando' pra criar macros. "
+            "Automação: 'quando eu adicionar algo na lista, faça tal ação'. "
+            "Conexões: 'alguma conexão nova' acha pontes entre os seus temas. "
+            "E ainda: 'desfaça', 'corrige para', 'modo confidencial' e 'atalho' pra encurtar comandos. "
+            "É só pedir."
+        )
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:ajuda"
+
     # -- Revisão diária (#21): fechamento do dia --------------------------------
     @staticmethod
     def _contar_inbox() -> int:
@@ -1466,6 +1488,10 @@ class Agent:
                     acoes, send, auditar=not mem.confidencial, mem=mem
                 )
                 rota = "mestre:rapido"
+        elif mestre.comando_ajuda(comando):
+            # /help falável: descoberta de comandos. TARDE no fluxo (depois do parse_composto)
+            # pra os comandos estruturados ganharem de um "me ajuda a adicionar na lista".
+            texto_final, rota = await self._ajuda(send)
         else:
             decisao = await self._rotear(comando)
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
