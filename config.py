@@ -291,6 +291,18 @@ class Settings(BaseSettings):
     contradicao_dist_max: float = 0.6        # teto da banda de "mesmo tema" (cosseno)
     contradicao_max_por_ciclo: int = 3       # tetos de chamadas LLM por atomização
     max_tokens_contradicao: int = 60         # veredito é curto (SIM/NAO + motivo)
+    # --- Governador de VRAM (#28) + orçamento de tokens de fundo (#29) ----------
+    # #28: o scheduler amostra o uso de VRAM a cada tick e AVISA se detectar
+    # crescimento sustentado (vazamento). Só observa. #29: calibra quantos tokens
+    # o trabalho de FUNDO (ETL, contradição) pode gerar pela fração de VRAM livre —
+    # pouca folga -> gera menos, para não competir com a inferência interativa.
+    vram_monitor_habilitado: bool = True
+    vram_leak_amostras: int = 12             # janela do detector de vazamento
+    vram_leak_slack_bytes: int = 400_000_000  # ~400 MB de crescimento p/ alertar
+    vram_orcamento_base_tokens: int = 512    # teto de tokens de fundo com VRAM folgada
+    vram_orcamento_min_tokens: int = 128     # piso de tokens de fundo com VRAM apertada
+    vram_frac_min: float = 0.08              # abaixo disso, aperto (usa o piso)
+    vram_frac_ok: float = 0.35               # acima disso, folga (usa a base)
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

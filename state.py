@@ -170,6 +170,11 @@ class AppContext:
     etl: "EtlProcessor" = None            # type: ignore[assignment]
     scheduler: "SchedulerService" = None  # type: ignore[assignment]
 
+    # #29: orçamento de tokens de fundo, recalibrado pelo scheduler a cada tick a
+    # partir da VRAM livre. None = sem leitura (sem CUDA) -> o fundo usa o max_tokens
+    # configurado normalmente.
+    orcamento_fundo: Optional[int] = None
+
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão
 

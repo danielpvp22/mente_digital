@@ -31,6 +31,7 @@ import agenda
 import calendario
 import prompts
 import textutils
+import vram
 from config import settings
 from rag import NENHUM
 from telemetry import db, telemetry
@@ -43,6 +44,10 @@ class SchedulerService:
     def __init__(self, ctx: "AppContext") -> None:
         self.ctx = ctx
         self._parado = asyncio.Event()
+        # #28: detector de vazamento de VRAM, alimentado a cada tick.
+        self._monitor_vram = vram.MonitorVram(
+            settings.vram_leak_amostras, settings.vram_leak_slack_bytes
+        )
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -66,6 +71,7 @@ class SchedulerService:
 
     async def tick(self, agora: Optional[datetime] = None) -> None:
         agora = agora or datetime.now()
+        await self._probe_vram()  # #28/#29: amostra a VRAM 1x por tick
         vencidos = await asyncio.to_thread(db.get_agendamentos_vencidos, agora.isoformat())
         for ag in vencidos:
             await self._disparar(ag, agora)
@@ -73,6 +79,28 @@ class SchedulerService:
         if self._ha_sessoes():
             for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
                 await self._entregar_pendente(ag, agora)
+
+    async def _probe_vram(self) -> None:
+        """#28: alimenta o detector de vazamento e avisa se disparar. #29: recalibra
+        o orçamento de tokens de fundo pela VRAM livre. No-op sem CUDA ou desligado."""
+        if not settings.vram_monitor_habilitado:
+            return
+        uso = await asyncio.to_thread(vram.ler_uso)
+        if uso is None:
+            return
+        if self._monitor_vram.registrar(uso["usado"]):
+            telemetry.warn(
+                "VRAM",
+                f"Possível vazamento: uso subiu de forma sustentada "
+                f"(agora {uso['usado'] / 1e9:.2f} GB de {uso['total'] / 1e9:.2f} GB).",
+            )
+        self.ctx.orcamento_fundo = vram.orcamento_tokens(
+            uso["livre_frac"],
+            settings.vram_orcamento_base_tokens,
+            settings.vram_orcamento_min_tokens,
+            settings.vram_frac_min,
+            settings.vram_frac_ok,
+        )
 
     # -- despacho por tipo ------------------------------------------------------
     async def _disparar(self, ag: dict, agora: datetime) -> None:

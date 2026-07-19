@@ -1899,6 +1899,12 @@ class EtlProcessor:
         """Cede a vez para a inferência interativa antes de cada tarefa pesada."""
         await self.ctx.interactive_idle.wait()
 
+    def _max_fundo(self, base: int) -> int:
+        """#29: aplica o orçamento de tokens de fundo (calibrado pela VRAM livre pelo
+        scheduler). Sem leitura de VRAM (orcamento_fundo None), usa o `base` de sempre."""
+        cap = getattr(self.ctx, "orcamento_fundo", None)
+        return min(base, cap) if cap else base
+
     async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str) -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
@@ -2044,7 +2050,7 @@ class EtlProcessor:
             try:
                 conteudo = await self.ctx.llama.collect(
                     prompts.prompt_sintese(tema, dados),
-                    max_tokens=settings.max_tokens_sintese,
+                    max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
                     system_prompt=prompts.SYS_SINTESE,
                     preemptible=True,   # background: a pergunta do usuário passa na frente
                 )
@@ -2088,7 +2094,7 @@ class EtlProcessor:
         try:
             atomos = await self.ctx.llama.collect(
                 prompts.prompt_sintese_conversa(conteudo),
-                max_tokens=settings.max_tokens_resumo,
+                max_tokens=self._max_fundo(settings.max_tokens_resumo),  # #29
                 system_prompt=prompts.SYS_SINTESE_CONVERSA,
                 preemptible=True,   # background: a pergunta do usuário passa na frente
             )
