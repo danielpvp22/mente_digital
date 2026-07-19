@@ -156,6 +156,21 @@ def comando_contradicoes(comando: str) -> bool:
     return any(g in n for g in _GATILHO_CONTRADICAO)
 
 
+# DIAPASÃO (#36): pede para o assistente DIZER o perfil de conversa que aprendeu.
+_GATILHO_PERFIL = (
+    "como voce me ve", "como voce me enxerga", "qual meu perfil", "meu perfil de conversa",
+    "como eu gosto de conversar", "o que voce aprendeu sobre como", "como voce acha que eu",
+)
+
+
+def comando_perfil(comando: str) -> bool:
+    """True se a mensagem pede o perfil de conversa aprendido (#36). Puro."""
+    if not comando:
+        return False
+    n = textutils.normaliza(comando)
+    return any(g in n for g in _GATILHO_PERFIL)
+
+
 # SRS (#43): repetição espaçada, tudo meta-comando (mexe no estado da sessão / banco de
 # cards). MARCAR ("revisa isso") vem ANTES de INICIAR ("revisão") no fluxo, porque a frase
 # de marcar CONTÉM "revisa". Os SUB-comandos (mostra/acertei/errei/parar) só valem com uma

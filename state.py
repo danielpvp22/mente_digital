@@ -174,6 +174,9 @@ class AppContext:
     # partir da VRAM livre. None = sem leitura (sem CUDA) -> o fundo usa o max_tokens
     # configurado normalmente.
     orcamento_fundo: Optional[int] = None
+    # #36 Diapasão: perfil de COMO o usuário prefere ser respondido. Carregado no
+    # boot, refinado pelo idle, lido no hot-path (injetado na instrução de resposta).
+    perfil_conversa: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.interactive_idle.set()  # livre por padrão

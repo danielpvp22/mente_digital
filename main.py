@@ -66,6 +66,8 @@ async def lifespan(app: FastAPI):
     ctx.agent = Agent(ctx)
     ctx.etl = EtlProcessor(ctx)
     ctx.scheduler = SchedulerService(ctx)
+    # #36 Diapasão: carrega o perfil de conversa persistido (o idle o refina depois).
+    ctx.perfil_conversa = db.ler_perfil()
     app.state.ctx = ctx
 
     await _boot(ctx)

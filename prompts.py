@@ -310,6 +310,27 @@ def prompt_watcher(condicao: str, dados_web: str) -> str:
     )
 
 
+# --- Diapasão (#36): perfil de COMO o dono prefere conversar ------------------------
+SYS_DIAPASAO = (
+    "Você observa uma conversa e descreve, em 1-2 frases, COMO este usuário prefere "
+    "ser RESPONDIDO — não o tom dele, mas o que serve a ele: tamanho (curto/detalhado), "
+    "se gosta de exemplos/analogias, formal/informal, nível técnico, se quer o ponto "
+    "direto. Diretriz de ESTILO, nunca conteúdo. Se não há preferência clara, responda "
+    "apenas NADA (sem acento)."
+)
+
+
+def prompt_perfil_conversa(historico: str, perfil_atual: str = "") -> str:
+    base = (
+        "Perfil atual do usuário (refine-o se a conversa mostrar algo novo; mantenha se "
+        f"nada mudou): {perfil_atual}\n\n" if perfil_atual else ""
+    )
+    return (
+        f"{base}CONVERSA:\n{historico}\n\n"
+        "Descreva em 1-2 frases como responder melhor a este usuário, ou NADA."
+    )
+
+
 # --- Detector de Contradição (#24): dois átomos do mesmo tema se contradizem? -------
 SYS_CONTRADICAO = (
     "Você compara DUAS notas de conhecimento sobre um tema parecido e diz se elas se "

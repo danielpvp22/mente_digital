@@ -197,7 +197,39 @@ class Database:
                     resumo TEXT, data TEXT, resolvido INTEGER DEFAULT 0,
                     UNIQUE(fonte_a, fonte_b))"""
             )
+            # DIAPASÃO (#36): perfil de COMO o usuário prefere ser respondido. Uma linha
+            # (chave fixa 'conversa'); o idle refina, o hot-path lê. Diretriz de estilo.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS perfil_conversa
+                   (chave TEXT PRIMARY KEY, valor TEXT, atualizado_em TEXT)"""
+            )
             conn.commit()
+
+    def salvar_perfil(self, valor: str, chave: str = "conversa") -> None:
+        """Grava/atualiza o perfil de conversa (#36)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO perfil_conversa (chave, valor, atualizado_em) VALUES (?, ?, ?)
+                       ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor,
+                       atualizado_em = excluded.atualizado_em""",
+                    (chave, valor, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar perfil de conversa", exc)
+
+    def ler_perfil(self, chave: str = "conversa") -> Optional[str]:
+        """O perfil de conversa guardado, ou None (#36)."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT valor FROM perfil_conversa WHERE chave = ?", (chave,)
+                ).fetchone()
+            return row[0] if row else None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler perfil de conversa", exc)
+            return None
 
     def log_etl(self, tipo_acao: str, arquivo: str, status: str) -> None:
         try:

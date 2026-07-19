@@ -303,6 +303,12 @@ class Settings(BaseSettings):
     vram_orcamento_min_tokens: int = 128     # piso de tokens de fundo com VRAM apertada
     vram_frac_min: float = 0.08              # abaixo disso, aperto (usa o piso)
     vram_frac_ok: float = 0.35               # acima disso, folga (usa a base)
+    # --- Diapasão (#36): perfil de COMO o dono prefere conversar ---------------
+    # No idle, destila da conversa uma diretriz de ESTILO (curto/detalhado, exemplos,
+    # tom técnico) e a injeta na instrução de resposta — adapta o COMO, não imita o
+    # tom, não muda o conteúdo. "mestre, como você me vê?" reporta. Desligue com false.
+    diapasao_habilitado: bool = True
+    max_tokens_perfil: int = 80              # o perfil é 1-2 frases
 
     # --- Ferramentas (function calling aditivo) --------------------------------
     max_tokens_router: int = 60      # decisão do roteador é curta (JSON de 1 linha)

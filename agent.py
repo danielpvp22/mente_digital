@@ -28,6 +28,7 @@ from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
 import calendario
 import contradicao
+import diapasao
 import habitos
 import mestre
 import prompts
@@ -656,7 +657,7 @@ class Agent:
                     system=prompts.SYS_FUSAO,
                     prefixo="\n\n" if paragrafos else "",
                     max_tokens=nivel.max_tokens,
-                    instrucao_extra=nivel.instrucao,
+                    instrucao_extra=self._instrucao_com_perfil(nivel.instrucao),
                 )
                 if p:
                     paragrafos.append(p)
@@ -992,6 +993,16 @@ class Agent:
         await self._emitir_falado(send, fala)
         return fala
 
+    def _instrucao_com_perfil(self, base: str) -> str:
+        """#36 Diapasão: anexa a diretriz de estilo do usuário (COMO ele prefere ser
+        respondido) à instrução de resposta. No-op se desligado ou sem perfil."""
+        if not settings.diapasao_habilitado:
+            return base
+        extra = diapasao.instrucao_do_perfil(self.ctx.perfil_conversa)
+        if not extra:
+            return base
+        return f"{base}\n{extra}" if base else extra
+
     async def _descobrir_conexoes(self, send: Sender) -> tuple:
         """G8 (descobridor de conexões): acha PONTES no vault — notas que ligam dois temas
         ESTABELECIDOS que quase nunca co-ocorrem — e as fala. Sob demanda, sem push. O grafo
@@ -1036,6 +1047,16 @@ class Agent:
             fala = "Achei possíveis contradições — " + "; ".join(partes) + "."
         await self._emitir_falado(send, fala)
         return fala, "mestre:contradicoes"
+
+    async def _reportar_perfil(self, send: Sender) -> tuple:
+        """#36: fala o perfil de conversa aprendido (só lê o cache em ctx)."""
+        perfil = self.ctx.perfil_conversa
+        if not perfil:
+            fala = "Ainda estou te conhecendo — não formei um perfil de como você gosta de conversar."
+        else:
+            fala = f"Pelo que percebi de como você gosta de conversar: {perfil}"
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:perfil"
 
     # -- SRS (#43): repetição espaçada, manual + sob demanda --------------------
     async def _srs_marcar(self, send: Sender, mem: SessionMemory) -> tuple:
@@ -1467,6 +1488,10 @@ class Agent:
             # DETECTOR DE CONTRADIÇÃO (#24): "mestre, alguma contradição?" — só lê a
             # tabela; a detecção rodou no idle. Insight sob demanda, não ação.
             texto_final, rota = await self._reportar_contradicoes(send)
+        elif mestre.comando_perfil(comando):
+            # DIAPASÃO (#36): "mestre, como você me vê?" — diz o perfil de estilo
+            # aprendido no idle. Só lê o cache em ctx; insight sob demanda.
+            texto_final, rota = await self._reportar_perfil(send)
         elif mestre.comando_revisao_diaria(comando):
             # #21: "resumo/fechamento do dia" — ANTES do SRS, pois "revisão do dia" conteria
             # "revisão" e cairia na revisão de cards.
@@ -1760,7 +1785,7 @@ class Agent:
             dados_web, texto_usuario, send,
             prompt_fn=prompts.prompt_resposta_web, system=prompts.SYS_RESPOSTA_WEB,
             max_tokens=nivel.max_tokens if nivel else None,
-            instrucao_extra=nivel.instrucao if nivel else "",
+            instrucao_extra=self._instrucao_com_perfil(nivel.instrucao if nivel else ""),
         )
         if resposta is not None:
             return resposta
@@ -2128,6 +2153,36 @@ class EtlProcessor:
             await self.ctx.vectorstore.sync()
         else:
             telemetry.warn("IDLE", "Nenhum átomo salvo da conversa — dump preservado p/ retry.")
+
+        # #36 Diapasão: refina o perfil de estilo do usuário DEPOIS da atomização —
+        # assim a atomização mantém a 1ª claim na GPU (preempção cede a ela primeiro)
+        # e o perfil é o extra oportunista. Preemptível e best-effort.
+        await self._atualizar_perfil(conteudo)
+
+    async def _atualizar_perfil(self, conteudo: str) -> None:
+        """#36: destila da conversa uma diretriz de COMO responder ao usuário e a
+        persiste (+ atualiza o cache em ctx, lido no hot-path). Preemptível; 'NADA'
+        do LLM mantém o perfil atual. Best-effort — nunca derruba a atomização."""
+        if not settings.diapasao_habilitado:
+            return
+        await self._esperar_idle()
+        try:
+            resp = await self.ctx.llama.collect(
+                prompts.prompt_perfil_conversa(conteudo, self.ctx.perfil_conversa or ""),
+                max_tokens=self._max_fundo(settings.max_tokens_perfil),  # #29
+                system_prompt=prompts.SYS_DIAPASAO,
+                preemptible=True,
+            )
+        except InferenciaPreemptada:
+            return
+        except Exception as exc:
+            telemetry.warn("DIAPASAO", f"Falha ao refinar perfil (ignorando): {exc}")
+            return
+        novo = diapasao.parse_perfil(resp)
+        if novo and novo != self.ctx.perfil_conversa:
+            self.ctx.perfil_conversa = novo
+            await asyncio.to_thread(db.salvar_perfil, novo)
+            telemetry.track("DIAPASAO", f"Perfil de conversa atualizado: {novo[:60]}")
 
     async def pesquisa_proativa(self) -> None:
         """No idle, busca na web as maiores LACUNAS (perguntas que a RAM E o banco não
