@@ -395,6 +395,23 @@ class LocalResult:
 # ==========================================================================
 # Embeddings (carregado uma vez)
 # ==========================================================================
+def _com_prefixos(inner, q_prefix: str, p_prefix: str):
+    """Envelopa um Embeddings para prefixar query/passagem (família e5). TODO caminho
+    de produção (Chroma index/busca, malha G5', RAG efêmero web) passa por embed_query/
+    embed_documents — então prefixar aqui, num ponto só, cobre tudo. Só é usado quando
+    há prefixo configurado (o chamador nem envelopa se ambos forem vazios)."""
+    from langchain_core.embeddings import Embeddings
+
+    class _Prefixado(Embeddings):
+        def embed_documents(self, texts):
+            return inner.embed_documents([p_prefix + t for t in texts])
+
+        def embed_query(self, text):
+            return inner.embed_query(q_prefix + text)
+
+    return _Prefixado()
+
+
 class EmbeddingProvider:
     def __init__(self) -> None:
         self._embeddings = None
@@ -414,12 +431,17 @@ class EmbeddingProvider:
                 cuda_ok = False
             device = resolve_device(settings.embedding_device, cuda_ok)
 
-            self._embeddings = HuggingFaceEmbeddings(
+            hf = HuggingFaceEmbeddings(
                 model_name=settings.embedding_model,
                 model_kwargs={"device": device},
                 encode_kwargs={"normalize_embeddings": False},
             )
-            telemetry.track("EMBED", f"Embeddings multilingues carregados (singleton, {device}).")
+            # Prefixos e5 (query:/passage:) se configurados — no-op para o MiniLM atual.
+            qp = settings.embedding_query_prefix
+            pp = settings.embedding_passage_prefix
+            self._embeddings = _com_prefixos(hf, qp, pp) if (qp or pp) else hf
+            extra = f", prefixos q='{qp}' p='{pp}'" if (qp or pp) else ""
+            telemetry.track("EMBED", f"Embeddings multilingues carregados (singleton, {device}{extra}).")
         except Exception as exc:
             telemetry.error("EMBED", "Falha ao carregar embeddings", exc)
 
