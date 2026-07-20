@@ -1,0 +1,22 @@
+# Dependencias minimas para rodar a suite de testes numa maquina limpa (CI).
+# (Comentarios sem acento de proposito: o pip decodifica requirements com a
+#  codepage local do Windows — cp1252 — e certos acentos derrubam o parse.)
+#
+# De proposito NAO instala o requirements.txt completo: llama-cpp-python compila
+# por varios minutos, e torch/chromadb/faster-whisper pesam centenas de MB — nada
+# disso e necessario, porque os imports pesados sao tardios e a suite usa fakes
+# (FakeLlama, FakeTts, store em memoria). Isso mantem o CI em ~1 minuto por push.
+#
+#   pip install -r requirements-ci.txt
+#   pytest -q
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+pydantic>=2.6
+pydantic-settings>=2.2
+numpy>=1.26
+httpx>=0.27
+langchain-text-splitters>=0.2
+pytest>=8.0
+pytest-asyncio>=0.23
+hypothesis>=6.100
