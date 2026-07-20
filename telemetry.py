@@ -16,7 +16,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import textutils
 from config import settings
@@ -66,6 +66,55 @@ class TelemetryStream:
 
 
 telemetry = TelemetryStream()
+
+
+class LatencyTracker:
+    """Mede a latência por resposta, QUEBRADA POR ESTÁGIO (F4).
+
+    Marca o 1º instante de cada tipo de msg que sai pelo `send` E conta os tokens para
+    derivar o tok/s do DECODE (descontando o prefill, que já está no TTFT). O clock é
+    injetável para teste determinístico. `stt_ms` é preenchido de FORA (a transcrição
+    roda no ws.py, antes do pipeline) — por isso não é medido aqui.
+
+    Morava no agent.py; veio para cá na modularização porque é instrumentação,
+    não orquestração — a companhia natural é o save_latency do Database abaixo.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
+        self._clock = clock
+        self.t0 = clock()
+        self.ttft: float | None = None
+        self.ttfa: float | None = None
+        self.n_tokens = 0
+        self._t_ultimo_token: float | None = None
+        self.stt_ms: int | None = None   # transcrição (voz), setado pelo ws.py
+
+    def note(self, msg: dict) -> None:
+        tipo = msg.get("tipo")
+        if tipo == "token":
+            agora = self._clock()
+            if self.ttft is None:
+                self.ttft = agora - self.t0
+            self.n_tokens += 1
+            self._t_ultimo_token = agora
+        elif tipo == "audio" and self.ttfa is None:
+            self.ttfa = self._clock() - self.t0
+
+    def total(self) -> float:
+        return self._clock() - self.t0
+
+    def decode_tok_s(self) -> float | None:
+        """tok/s do DECODE: (n-1) / (último token − 1º token). Desconta o prefill —
+        senão um prompt RAG longo faria o modelo 'parecer lento'. None com < 2 tokens
+        (sem janela de decode medível). Espelha eval/ab_modelos._gerar."""
+        if self.n_tokens < 2 or self._t_ultimo_token is None or self.ttft is None:
+            return None
+        dur = self._t_ultimo_token - (self.t0 + self.ttft)
+        return round((self.n_tokens - 1) / dur, 1) if dur > 0 else None
+
+    @staticmethod
+    def _ms(seg: float | None) -> int | None:
+        return round(seg * 1000) if seg is not None else None
 
 
 class Database:
