@@ -48,6 +48,11 @@ class SchedulerService:
         self._monitor_vram = vram.MonitorVram(
             settings.vram_leak_amostras, settings.vram_leak_slack_bytes
         )
+        # ACK de aplicação (painel 2026-07): pushes ENVIADOS aguardando a confirmação
+        # do cliente — ack_id -> (agendamento, enviado_em). Só RAM: num restart, o
+        # status durável já é pendente_entrega (pessimista), então nada se perde —
+        # no pior caso o usuário ouve o aviso duas vezes, nunca zero.
+        self._aguardando_ack: dict[str, tuple[dict, datetime]] = {}
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -118,20 +123,55 @@ class SchedulerService:
             await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
 
     async def _disparar_lembrete(self, ag: dict, agora: datetime) -> None:
-        entregue = await self._notificar_falado(ag["mensagem"])
+        entregue = await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"]))
+        # ACK de aplicação (painel 2026-07): safe_send True NÃO prova entrega — num
+        # TCP meio-aberto o send_json bufferiza no SO e "dá certo" (o ws-ping do
+        # uvicorn só derruba o zumbi ~20-40s depois; o disparo cairia nessa janela).
+        # PESSIMISTA por default: o status durável vira pendente_entrega JÁ, e só o
+        # ack do cliente (confirmar_entrega) conclui/reprograma. Sem ack no timeout,
+        # a reentrega existente cobre — o lembrete pode duplicar, nunca sumir.
+        await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
         if entregue:
-            await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
-            await self._reprogramar_ou_concluir(ag, agora)
+            self._aguardando_ack[str(ag["id"])] = (ag, agora)
         else:
-            # Ninguém ouvindo: segura para a próxima conexão (não perde o lembrete).
-            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
             telemetry.track("SCHEDULER", f"Lembrete {ag['id']} sem ouvinte — pendente de entrega.")
 
     async def _entregar_pendente(self, ag: dict, agora: datetime) -> None:
-        if not await self._notificar_falado(ag["mensagem"]):
+        if self._espera_ack(str(ag["id"]), agora):
+            return  # enviado há pouco, aguardando o ack — não duplica a fala por tick
+        if not await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"])):
             return  # ainda sem ouvinte real; tenta no próximo tick
-        await self._reprogramar_ou_concluir(ag, agora)
-        telemetry.track("SCHEDULER", f"Agendamento {ag['id']} entregue (estava pendente).")
+        self._aguardando_ack[str(ag["id"])] = (ag, agora)
+        telemetry.track("SCHEDULER", f"Agendamento {ag['id']} reenviado — aguardando ack.")
+
+    def _espera_ack(self, ack_id: str, agora: datetime) -> bool:
+        """True se este push foi enviado há pouco e ainda esperamos a confirmação.
+        Expirado -> sai da espera (o status pendente_entrega faz a reentrega normal)."""
+        item = self._aguardando_ack.get(ack_id)
+        if item is None:
+            return False
+        _ag, enviado = item
+        if (agora - enviado).total_seconds() > settings.proativo_ack_timeout_seconds:
+            self._aguardando_ack.pop(ack_id, None)
+            return False
+        return True
+
+    async def confirmar_entrega(self, ack_id: str) -> None:
+        """ACK do cliente: AGORA o push foi exibido de verdade — conclui/reprograma.
+        Chamado pelo ws ao receber {"tipo":"ack_proativo","id":...}. Ack atrasado ou
+        duplicado é no-op (o estado durável já decidiu)."""
+        item = self._aguardando_ack.pop(str(ack_id), None)
+        if item is None:
+            return
+        ag, _enviado = item
+        agora = datetime.now()
+        if ag["tipo"] == "watcher":
+            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
+            await asyncio.to_thread(db.registrar_auditoria, "watcher_satisfeito", ag["mensagem"])
+        else:
+            await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
+            await self._reprogramar_ou_concluir(ag, agora)
+        telemetry.track("SCHEDULER", f"Ack recebido — agendamento {ag['id']} confirmado.")
 
     async def _reprogramar_ou_concluir(self, ag: dict, agora: datetime) -> None:
         """Recorrente -> agenda a próxima ocorrência (à frente de agora, sem drift).
@@ -228,12 +268,12 @@ class SchedulerService:
         if textutils.normaliza(veredito).lstrip().startswith("sim"):
             frase = veredito.strip()
             msg = f"Aviso sobre '{condicao}': {frase}" if frase else f"A condição que você pediu se cumpriu: {condicao}"
-            entregue = await self._notificar_falado(msg)
-            novo_status = "concluido" if entregue else "pendente_entrega"
-            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status=novo_status)
+            # Mesmo desenho pessimista do lembrete: pendente até o ACK do cliente.
+            entregue = await self._notificar_falado(msg, ack_id=str(ag["id"]))
+            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
             if entregue:
-                await asyncio.to_thread(db.registrar_auditoria, "watcher_satisfeito", msg)
-            telemetry.track("SCHEDULER", f"Watcher {ag['id']} satisfeito -> {novo_status}.")
+                self._aguardando_ack[str(ag["id"])] = (ag, agora)
+            telemetry.track("SCHEDULER", f"Watcher {ag['id']} satisfeito -> aguardando ack.")
         else:
             await self._reprogramar_watcher(ag, agora)
 
@@ -300,9 +340,10 @@ class SchedulerService:
     def _ha_sessoes(self) -> bool:
         return bool(self.ctx.sessoes)
 
-    async def _notificar_falado(self, texto: str) -> bool:
+    async def _notificar_falado(self, texto: str, ack_id: Optional[str] = None) -> bool:
         """Envia texto (bolha 'proativo') + áudio TTS a TODA sessão viva. Devolve True
-        se ao menos uma recebeu. Sintetiza o áudio uma vez só e reusa em todas."""
+        se ao menos uma recebeu (= aceitou no socket; a ENTREGA de verdade só o ack
+        do cliente prova — ver confirmar_entrega). Sintetiza o áudio uma vez só."""
         texto = (texto or "").strip()
         if not texto:
             return False
@@ -315,9 +356,12 @@ class SchedulerService:
                 audio = await self.ctx.tts.synth_base64(texto)
             except Exception as exc:
                 telemetry.warn("SCHEDULER", f"TTS do aviso falhou (segue só texto): {exc}")
+        payload = {"tipo": "proativo", "texto": texto}
+        if ack_id is not None:
+            payload["ack_id"] = ack_id   # o front devolve {"tipo":"ack_proativo","id":ack_id}
         entregue = False
         for s in sessoes:
-            ok = await s.safe_send({"tipo": "proativo", "texto": texto})
+            ok = await s.safe_send(payload)
             if ok and audio:
                 await s.safe_send({"tipo": "audio", "base64": audio})
             entregue = entregue or ok

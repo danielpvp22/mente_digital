@@ -14,7 +14,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import acesso  # noqa: E402
 from agent import Agent, EtlProcessor  # noqa: E402
 from audio import SttService, TtsService  # noqa: E402
 from config import settings  # noqa: E402
@@ -80,6 +81,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         ctx.scheduler.parar()
+        # Drena as tasks de fundo ANTES do shutdown da GPU (painel 2026-07): o ETL
+        # precisa do modelo para terminar, e llama.shutdown() derrubaria o executor
+        # com um decode em voo. parar() veio antes para o run_forever poder sair.
+        await ctx.drenar_tasks(timeout=10.0)
         ctx.llama.shutdown()
         gc.collect()
         telemetry.track("SERVER", "Encerrado.")
@@ -94,35 +99,47 @@ def get_ctx(request: Request = None, websocket: WebSocket = None) -> AppContext:
     return target.app.state.ctx
 
 
+async def exigir_acesso(request: Request) -> None:
+    """Gate das rotas /api (painel #7): token via header/query OU loopback.
+    A regra em si é pura e vive em acesso.py; aqui só se extrai host/token."""
+    token = request.headers.get("x-mente-token") or request.query_params.get("token")
+    host = request.client.host if request.client else None
+    if not acesso.cliente_autorizado(host, token, settings.access_token):
+        raise HTTPException(status_code=401, detail="não autorizado")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
 
 
-@app.get("/api/historico")
+@app.get("/api/historico", dependencies=[Depends(exigir_acesso)])
 async def obter_historico(request: Request):
     # Agora vem do SQLite (persistente entre reinícios), não só da RAM.
     historico = await asyncio.to_thread(db.get_history, 200)
     return JSONResponse(content=historico)
 
 
-@app.get("/api/conversas")
+@app.get("/api/conversas", dependencies=[Depends(exigir_acesso)])
 async def listar_conversas(request: Request):
     """Histórico agrupado em CONVERSAS (não turnos soltos) — o que o sidebar lista."""
     conversas = await asyncio.to_thread(db.get_conversations, 100)
     return JSONResponse(content=conversas)
 
 
-@app.get("/api/conversa/{cid}")
+@app.get("/api/conversa/{cid}", dependencies=[Depends(exigir_acesso)])
 async def obter_conversa(cid: str, request: Request):
     """Todos os turnos de uma conversa, para reabrir e continuar o chat."""
     turnos = await asyncio.to_thread(db.get_conversation, cid, 1000)
     return JSONResponse(content=turnos)
 
 
-@app.get("/api/metrics")
+@app.get("/api/metrics", dependencies=[Depends(exigir_acesso)])
 async def obter_metricas(request: Request):
     metricas = await asyncio.to_thread(db.metrics)
+    # Ciclo do conhecimento (painel): snapshot da base + eventos DEDUP/PROMOCAO/PURGA.
+    # Já nasce atrás do gate de acesso (#7) — a rota inteira exige token/loopback.
+    metricas["base"] = await asyncio.to_thread(db.metricas_base)
     ctx = get_ctx(request)
     # A memória é por conexão, então aqui AGREGAMOS as sessões vivas em vez de ler
     # um estado global (que não existe mais — ver AppContext).
@@ -140,7 +157,7 @@ async def obter_metricas(request: Request):
     return JSONResponse(content=metricas)
 
 
-@app.post("/api/nota/texto")
+@app.post("/api/nota/texto", dependencies=[Depends(exigir_acesso)])
 async def receber_nota_texto(request: Request):
     ctx = get_ctx(request)
     data = await request.json()
@@ -166,10 +183,38 @@ async def receber_nota_texto(request: Request):
 @app.websocket("/ws/chat_live")
 async def websocket_endpoint(websocket: WebSocket):
     ctx = get_ctx(websocket=websocket)
+    # Gate ANTES do accept (painel #7): 1008 = policy violation. O browser não manda
+    # header custom no handshake de WS, então o token vem por query (?token=...) —
+    # tradeoff documentado; a URL do WS não é logada pelo uvicorn com log_level=error.
+    token = websocket.query_params.get("token")
+    host = websocket.client.host if websocket.client else None
+    if not acesso.cliente_autorizado(host, token, settings.access_token):
+        await websocket.close(code=1008)
+        return
+    if not acesso.origin_confere(websocket.headers.get("origin"), websocket.headers.get("host", "")):
+        await websocket.close(code=1008)
+        return
     await LiveSession(ctx, websocket).run()
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host=settings.host, port=settings.port, log_level="error", reload=False)
+    # TLS opcional (painel 2026-07): só passa os kwargs de SSL quando os DOIS
+    # caminhos existem — senão o uvicorn sobe em HTTP como sempre. Isso destrava a
+    # voz no celular (getUserMedia exige secure context fora de localhost).
+    ssl_kwargs = {}
+    if settings.ssl_cert and settings.ssl_key:
+        if os.path.exists(settings.ssl_cert) and os.path.exists(settings.ssl_key):
+            ssl_kwargs = {"ssl_certfile": settings.ssl_cert, "ssl_keyfile": settings.ssl_key}
+            telemetry.track("SERVER", "TLS ligado (HTTPS/WSS).")
+        else:
+            telemetry.error(
+                "SERVER",
+                f"MENTE_SSL_CERT/KEY apontam para arquivo inexistente "
+                f"({settings.ssl_cert!r}, {settings.ssl_key!r}) — subindo em HTTP.",
+            )
+    uvicorn.run(
+        "main:app", host=settings.host, port=settings.port,
+        log_level="error", reload=False, **ssl_kwargs,
+    )

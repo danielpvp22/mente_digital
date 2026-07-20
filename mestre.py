@@ -139,6 +139,24 @@ def comando_conexoes(comando: str) -> bool:
     return any(g in n for g in _GATILHO_CONEXAO)
 
 
+# "FONTE?" (painel 2026-07): frases EXATAS (não substring — "qual a fonte de energia
+# do ESP32?" é pergunta de conhecimento, não auditoria). Comparação sobre o texto
+# normalizado e sem pontuação final.
+_FONTE_FRASES = {
+    "fonte", "fontes", "a fonte", "qual a fonte", "qual e a fonte", "quais as fontes",
+    "quais sao as fontes", "de onde tirou", "de onde tirou isso", "de onde voce tirou isso",
+    "de onde veio isso", "de onde veio essa resposta", "qual foi a fonte", "cita a fonte",
+    "me da a fonte",
+}
+
+
+def comando_fonte(comando: str) -> bool:
+    """True se pede a PROVENIÊNCIA da última resposta ("mestre, fonte?"). Puro."""
+    if not comando:
+        return False
+    return textutils.normaliza(comando).strip(" ?!.,") in _FONTE_FRASES
+
+
 # DETECTOR DE CONTRADIÇÃO (#24): pede o RELATÓRIO das contradições que o idle achou.
 # Insight sob demanda (lê a tabela), como o descobridor de conexões.
 _GATILHO_CONTRADICAO = (

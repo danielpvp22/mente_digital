@@ -505,6 +505,18 @@ class QueryOptimizer:
                 turnos.append(f"U: {q}\nIA: {resumo}")
             contexto = "\n".join(turnos)
 
+        # GATE LÉXICO (painel 2026-07, fase a): pergunta AUTO-CONTIDA não paga o LLM.
+        # A busca vetorial embedda a pergunta CRUA (texto_busca — ver _texto_busca);
+        # `termos` só alimenta o aterramento léxico, o _ram_relevante e a query web —
+        # e para esses limpar_query (que JÁ era o fallback abaixo) basta. Remove uma
+        # decodificação inteira (~0,3-0,9s) do TTFT de quase toda pergunta. Quem
+        # referencia o turno anterior segue no LLM (resolver pronome exige contexto).
+        # Botão MENTE_OPTIMIZER_GATE; deriva monitorável pelo [LOCAL] relevante=.
+        if settings.optimizer_gate and contexto == "NENHUM":
+            termos = textutils.limpar_query(pergunta) or limpa
+            telemetry.track("EXTRATOR", f"Gate léxico (sem LLM): [{termos}]")
+            return termos
+
         bruto = await self._llama.collect(
             prompts.prompt_extrator(contexto, pergunta),
             max_tokens=settings.max_tokens_query,
@@ -597,10 +609,15 @@ class Agent:
         # "GPU livre", pega o lock e começa OUTRA síntese — e a pergunta espera de novo.
         async with self.ctx.interativo():
             self.ctx.llama.preempt()
-            await self._pipeline(texto_usuario, send_medido, tracker, mem)
+            # Origem de voz: `stt_ms` só é preenchido quando o turno veio de TRANSCRIÇÃO
+            # (ws._check_silence). Turno de voz será OUVIDO -> estilo falado (aplicar_fala).
+            await self._pipeline(
+                texto_usuario, send_medido, tracker, mem, origem_voz=stt_ms is not None
+            )
 
     async def _pipeline(
-        self, texto_usuario: str, send_medido: Sender, tracker: LatencyTracker, mem: SessionMemory
+        self, texto_usuario: str, send_medido: Sender, tracker: LatencyTracker, mem: SessionMemory,
+        origem_voz: bool = False,
     ) -> None:
         rota = "web"
         try:
@@ -648,6 +665,10 @@ class Agent:
                         await self._registrar_latencia(tracker, f"tool:{decisao.tool}")
                     return
 
+            # "FONTE?" (painel): zera a proveniência JÁ — se o turno for cancelado no
+            # meio (barge-in), "fonte?" nunca responde sobre a resposta errada.
+            mem.ultimas_fontes = []
+
             termos = await self.optimizer.optimize(texto_usuario, mem.chat_history)
             # Pergunta enriquecida com o histórico p/ o GERADOR da resposta (não a
             # recuperação, que já resolve o pronome via QueryOptimizer). Sem isso, um
@@ -666,6 +687,9 @@ class Agent:
             # Verbosidade (#7): a pergunta define o tamanho da resposta (e a latência).
             nivel = verbosidade.classificar(texto_usuario)
             nivel = verbosidade.aplicar_tutor(nivel, mem.tutor)   # #44: modo tutor sobrepõe
+            # Estilo falado: por último, porque COMPÕE com qualquer nível (inclusive o
+            # tutor) em vez de substituir — muda o registro do texto, não o tamanho.
+            nivel = verbosidade.aplicar_fala(nivel, origem_voz)
             if nivel.nome != "normal":
                 telemetry.track("VERBOSIDADE", f"nível={nivel.nome} max_tokens={nivel.max_tokens}")
 
@@ -714,7 +738,10 @@ class Agent:
                 # ESTÁGIO 1 — RAM (memória fresca da sessão): a mais fresca, já por tema.
                 if ram:
                     telemetry.track("AGENT", f"Fusão: passada RAM ({len(ram)} tópico(s)).")
+                    antes_ram = len(paragrafos)
                     await passada(self._montar_contexto(NENHUM_LOCAL, ram), "ram")
+                    if len(paragrafos) > antes_ram:
+                        mem.ultimas_fontes.append("memoria")   # proveniência ("fonte?")
 
                 # EARLY-STOP (#3): se uma fonte já respondeu com confiança (passada
                 # não-sentinela), PARA a cascata — não roda o Banco (nem a busca vetorial,
@@ -757,6 +784,9 @@ class Agent:
                         # Em background: não pesa no TTFA da resposta atual.
                         if len(paragrafos) > antes and local.fontes:
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
+                        if len(paragrafos) > antes:
+                            # Proveniência ("fonte?"): os MESMOS chunks da promoção.
+                            mem.ultimas_fontes.extend(f"nota:{f}" for f in local.fontes)
 
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
                 if not paragrafos:
@@ -886,6 +916,43 @@ class Agent:
         """Emite um texto pronto: token (para a tela) + áudio (TTS). Sem LLM."""
         await send({"tipo": "token", "texto": texto})
         await self._falar_texto(send, texto)
+
+    async def _falar_fontes(self, send: Sender, mem: SessionMemory) -> tuple:
+        """"Fonte?" (painel 2026-07): FALA a proveniência da última resposta de
+        conhecimento. Por template — os títulos vêm do stem do arquivo (legível no
+        Zettelkasten, que nomeia por ideia) e a web vira DOMÍNIO (URL é inaudível).
+        Top-3 por categoria para a fala não virar ladainha."""
+        fontes = list(mem.ultimas_fontes or [])
+        if not fontes:
+            fala = (
+                "Não tenho registro de fonte para a última resposta — ou ainda não "
+                "respondi nada nesta conversa, ou a resposta veio do meu conhecimento base."
+            )
+            await self._emitir_falado(send, fala)
+            return fala, "mestre:fonte"
+
+        def _titulo(caminho: str) -> str:
+            nome = caminho.replace("\\", "/").rsplit("/", 1)[-1]
+            if nome.lower().endswith(".md"):
+                nome = nome[:-3]
+            return nome.replace("_", " ").strip()
+
+        notas = [_titulo(f[len("nota:"):]) for f in fontes if f.startswith("nota:")]
+        webs = list(dict.fromkeys(f[len("web:"):] for f in fontes
+                                  if f.startswith("web:") and f != "web:"))
+        partes = []
+        if "memoria" in fontes:
+            partes.append("da memória fresca desta conversa")
+        if notas:
+            extra = f", e mais {len(notas) - 3} nota(s)" if len(notas) > 3 else ""
+            partes.append("das suas notas: " + "; ".join(notas[:3]) + extra)
+        if webs:
+            partes.append("da web: " + ", ".join(webs[:3]))
+        elif any(f == "web:" for f in fontes):
+            partes.append("da web")
+        fala = "A última resposta veio " + " e ".join(partes) + "."
+        await self._emitir_falado(send, fala)
+        return fala, "mestre:fonte"
 
     async def _executar_acoes_rapidas(
         self, acoes: List["tools.Decisao"], send: Sender, auditar: bool = True,
@@ -1562,6 +1629,10 @@ class Agent:
             # DESCOBRIDOR DE CONEXÕES (G8): "mestre, alguma conexão nova?" — insight sob
             # demanda, não ação. Lê a malha em ctx (como o desfazer lê o estado da sessão).
             texto_final, rota = await self._descobrir_conexoes(send)
+        elif mestre.comando_fonte(comando):
+            # "FONTE?" (painel 2026-07): proveniência da última resposta, por TEMPLATE —
+            # auditoria não paga decode na GPU serializada (nada de LLM aqui).
+            texto_final, rota = await self._falar_fontes(send, mem)
         elif mestre.comando_contradicoes(comando):
             # DETECTOR DE CONTRADIÇÃO (#24): "mestre, alguma contradição?" — só lê a
             # tabela; a detecção rodou no idle. Insight sob demanda, não ação.
@@ -1876,6 +1947,13 @@ class Agent:
             instrucao_extra=self._instrucao_com_perfil(nivel.instrucao if nivel else ""),
         )
         if resposta is not None:
+            # Proveniência ("fonte?"): domínios que o deep-fetch desta busca abriu;
+            # cache/snippets vêm sem domínio -> "web:" genérico (nunca domínio velho).
+            dominios = list(getattr(self.ctx.web, "ultimos_dominios", []) or [])
+            if dominios:
+                mem.ultimas_fontes.extend(f"web:{d}" for d in dominios)
+            else:
+                mem.ultimas_fontes.append("web:")
             return resposta
         fala = "Procurei, mas não achei uma resposta clara sobre isso nas suas notas nem na web."
         await send({"tipo": "token", "texto": fala})
@@ -1915,6 +1993,8 @@ class Agent:
 
                 if await asyncio.to_thread(_promover):
                     promovidos += 1
+                    # Métricas do ciclo (painel): a promoção também é evento persistido.
+                    await asyncio.to_thread(db.log_etl, "PROMOCAO", src, "tag_removida")
             except OSError as exc:
                 telemetry.warn("PROMOCAO", f"Não consegui consolidar {src}: {exc}")
         if promovidos:
@@ -2046,6 +2126,9 @@ class EtlProcessor:
             # a mesma ideia e o rag_top_k recupera clones. Fail-open sem embeddings.
             if await self._ja_no_banco(strip_frontmatter(bloco)):
                 duplicados += 1
+                # Métricas do ciclo (painel): o descarte vira EVENTO persistido —
+                # "quanto o dedup segura por dia" deixa de ser log transitório.
+                await asyncio.to_thread(db.log_etl, "DEDUP", _slug_titulo(bloco), "descartado")
                 continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
             caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
@@ -2348,6 +2431,7 @@ class EtlProcessor:
         await self.process_queue(itens)
         await self.summarize_dump()
         await self.pesquisa_proativa()
+        await self._snapshot_base()
 
         if not settings.idle_descarregar_modelo:
             return
@@ -2355,3 +2439,34 @@ class EtlProcessor:
             telemetry.track("ETL_POST_CHAT", "Interação retomada no idle — modelo mantido.")
             return
         await self.ctx.llama.unload()
+
+    async def _snapshot_base(self) -> None:
+        """Métricas do ciclo (painel 2026-07): retrato DIÁRIO da base — total de
+        chunks, composição por origem (Local/Conversa/Web) e quantos ainda carregam
+        a tag #conhecimento_novo (nunca usados numa resposta). 1x/dia, fora do
+        hot-path (idle), e com try PRÓPRIO: falha de observabilidade nunca aborta a
+        atomização. O scan completo custa poucos MB no tamanho atual (~13k chunks);
+        se a base multiplicar, trocar por count() + amostragem."""
+        try:
+            store = getattr(self.ctx.vectorstore, "_store", None)
+            if store is None:
+                return
+            if await asyncio.to_thread(db.snapshot_base_hoje):
+                return
+            dump = await asyncio.to_thread(
+                lambda: store.get(include=["documents", "metadatas"])
+            )
+            metas = dump.get("metadatas") or []
+            docs = dump.get("documents") or []
+            por_origem: dict = {}
+            for md in metas:
+                o = (md or {}).get("origin", "?")
+                por_origem[o] = por_origem.get(o, 0) + 1
+            novos = sum(1 for d in docs if d and prompts.TAG_NOVO in d)
+            await asyncio.to_thread(db.salvar_snapshot_base, len(docs), por_origem, novos)
+            telemetry.track(
+                "BASE",
+                f"Snapshot diário: {len(docs)} chunks, {novos} ainda #novo, origem={por_origem}.",
+            )
+        except Exception as exc:
+            telemetry.error("BASE", "Falha no snapshot da base (observabilidade)", exc)

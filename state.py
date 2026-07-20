@@ -69,6 +69,12 @@ class SessionMemory:
         # TUTOR SOCRÁTICO (#44): modo de sessão. Quando True, as respostas de conhecimento
         # viram perguntas guiadas (via verbosidade.aplicar_tutor) em vez de resposta pronta.
         self.tutor: bool = False
+        # "FONTE?" (painel 2026-07): proveniência da ÚLTIMA resposta de conhecimento —
+        # itens "nota:<caminho>", "web:<domínio>" ("web:" = web sem domínio rastreado)
+        # e "memoria". Zerada no INÍCIO de cada turno de conhecimento (barge-in no meio
+        # nunca deixa fonte da resposta errada) e nas trocas de conversa. Só RAM — o
+        # que de graça respeita o modo confidencial.
+        self.ultimas_fontes: list = []
 
     def registrar_turno(self, pergunta: str, resposta: str) -> None:
         self.chat_history.append((pergunta, resposta))
@@ -98,6 +104,7 @@ class SessionMemory:
         self.ultimo_comando_mestre = None
         self.revisao = None             # revisão em andamento não atravessa conversas
         self.tutor = False              # modo tutor não atravessa conversas
+        self.ultimas_fontes = []        # fonte da resposta de OUTRA conversa não vale aqui
 
     def carregar_conversa(self, conversa_id: str, turnos: list[Tuple[str, str]]) -> None:
         """Reabre uma conversa existente: define o id e recarrega o histórico recente
@@ -114,6 +121,7 @@ class SessionMemory:
         self.revisao = None
         self.tutor = False
         self.economico = False
+        self.ultimas_fontes = []
 
 
 class LruCache:
@@ -217,5 +225,35 @@ class AppContext:
         """
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        task.add_done_callback(self._task_done)
         return task
+
+    def _task_done(self, task: "asyncio.Task") -> None:
+        """Remove do set E torna a exceção VISÍVEL (painel 2026-07): sem isto, uma
+        falha em trabalho de fundo (ETL, sync do índice, entrega de lembrete, reload
+        do LLM) morria como aviso de GC do asyncio — violando o "erros nunca são
+        engolidos" do projeto. CancelledError é fluxo normal (barge-in/shutdown),
+        não erro. Import local: state é importado por todo mundo e o telemetry não
+        pode virar dependência de topo aqui só por causa do callback."""
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            from telemetry import telemetry
+
+            telemetry.error("TASK", f"Task de fundo falhou: {task.get_coro()!r}", exc)
+
+    async def drenar_tasks(self, timeout: float = 10.0) -> None:
+        """Espera as tasks de fundo terminarem (até `timeout`) e cancela as
+        retardatárias — chamado no shutdown ANTES de derrubar a GPU, para um ETL
+        quase pronto CONCLUIR a atomização em vez de ser rasgado com escrita em voo
+        (por isso espera-PRIMEIRO-cancela-depois, não o contrário)."""
+        pendentes = {t for t in self._bg_tasks if not t.done()}
+        if not pendentes:
+            return
+        _prontas, restantes = await asyncio.wait(pendentes, timeout=timeout)
+        for t in restantes:
+            t.cancel()
+        if restantes:
+            await asyncio.gather(*restantes, return_exceptions=True)
