@@ -70,6 +70,29 @@ def aplicar_tutor(nivel: Nivel, ativo: bool) -> Nivel:
     return Nivel("tutor", settings.max_tokens_resposta, _TUTOR_INSTRUCAO)
 
 
+# ESTILO FALADO (live): o turno chegou por VOZ, então a resposta será OUVIDA, não lida.
+# O Piper transforma pontuação em prosódia (pergunta/exclamação = entonação, reticências
+# = pausa) — mas só se o texto nascer com ela. Listas e markdown viram ruído falado
+# ("asterisco, um, ponto..."), então são banidos na FONTE, não só no strip do TTS.
+_FALA_INSTRUCAO = (
+    "IMPORTANTE: sua resposta será FALADA em voz alta por um sintetizador, não lida. "
+    "Escreva como quem CONVERSA: frases curtas e ritmadas, tom natural e caloroso. "
+    "Use pontuação expressiva — perguntas, exclamações e reticências viram entonação "
+    "e pausas na voz. NUNCA use listas, tópicos, markdown, títulos ou emojis. "
+    "Prefira números pequenos por extenso (três, e não 3)."
+)
+
+
+def aplicar_fala(nivel: Nivel, origem_voz: bool) -> Nivel:
+    """Turno que chegou por voz -> anexa o estilo falado ao nível. COMPÕE com
+    curto/criança/tutor (brevidade e simplicidade continuam valendo), não substitui:
+    o que muda é o REGISTRO do texto, não o tamanho. Puro/testável."""
+    if not origem_voz:
+        return nivel
+    instrucao = f"{nivel.instrucao}\n{_FALA_INSTRUCAO}" if nivel.instrucao else _FALA_INSTRUCAO
+    return Nivel(nivel.nome, nivel.max_tokens, instrucao)
+
+
 def classificar(pergunta: str) -> Nivel:
     """Decide a verbosidade da resposta a partir da pergunta. Puro/testável."""
     n = textutils.normaliza(pergunta)

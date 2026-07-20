@@ -126,6 +126,8 @@ class SttService:
                 device=device,
                 compute_type=compute,
                 download_root=settings.caminho_cache_whisper,
+                # 16 núcleos no host; o default do CT2 (~4) deixava GEMM int8 na mesa.
+                cpu_threads=settings.whisper_cpu_threads,
             )
             telemetry.track(
                 "WHISPER",
@@ -145,7 +147,16 @@ class SttService:
         try:
             def _run() -> str:
                 # transcribe() é lazy: a geração só roda ao iterar os segmentos.
-                segmentos, _info = self._model.transcribe(audio_numpy, language="pt")
+                # beam configurável (greedy por default — ver config); condition_on_
+                # previous_text=False porque cada fala aqui é um enunciado isolado —
+                # e é o condicionamento que causa os loops de alucinação do Whisper
+                # em fala curta/ruidosa.
+                segmentos, _info = self._model.transcribe(
+                    audio_numpy,
+                    language="pt",
+                    beam_size=settings.whisper_beam_size,
+                    condition_on_previous_text=False,
+                )
                 return "".join(seg.text for seg in segmentos).strip()
 
             return await asyncio.to_thread(_run)
@@ -160,9 +171,24 @@ class SttService:
 class TtsService:
     _STRIP_MD = re.compile(r"[\[\]*#_`]")
     _ALLOWED = re.compile(r"[^\w\s.,!?çÇáéíóúÁÉÍÓÚâêîôûÂÊÎÔÛãõÃÕàÀ-]")
+    # Pontuação que o Piper converte em PAUSA/entonação mas que o _ALLOWED descartaria:
+    # troca por equivalente permitido em vez de sumir (reticências = pausa longa; ponto-
+    # e-vírgula, dois-pontos e travessão = respiro de vírgula). Descartar deixava a
+    # fala monótona e emendada — a pontuação É o canal de prosódia do Piper.
+    _PAUSAS = (("…", "..."), ("—", ","), ("–", ","), (";", ","), (":", ","))
+    # Dígitos exigem leitura própria ANTES da troca genérica acima: "14:30" com vírgula
+    # viraria decimal falado ("quatorze vírgula trinta") e, com o strip antigo, virava
+    # milhar ("1430"). "14 e 30" é a leitura natural de horário em PT-BR — e atinge as
+    # falas mais frequentes do assistente (hora_atual, confirmações de agenda). Mesmo
+    # racional para intervalo com traço: "10–15" lê "10 a 15".
+    _HORA = re.compile(r"(\d):(\d)")
+    _INTERVALO = re.compile(r"(\d)\s*[–—]\s*(\d)")
 
     def __init__(self) -> None:
         self._voice = None
+        # Prosódia (naturalidade): montado UMA vez no load() a partir dos knobs
+        # MENTE_TTS_*; None = síntese com os defaults treinados da voz (histórico).
+        self._syn_config = None
         # CACHE DE VOZ (#1): a síntese Piper é determinística para o mesmo texto, então
         # frases RECORRENTES (fillers, confirmações, status, "Pronto.") não precisam ser
         # re-sintetizadas — TTFA≈0 na segunda vez em diante. LRU limitado por
@@ -177,6 +203,24 @@ class TtsService:
             from piper.voice import PiperVoice
 
             self._voice = PiperVoice.load(settings.caminho_voz_piper)
+            # Só monta o SynthesisConfig se algum knob foi setado: com todos None, a
+            # síntese segue idêntica ao histórico (e os fakes dos testes, que não
+            # conhecem o kwarg syn_config, continuam válidos).
+            if any(v is not None for v in (
+                settings.tts_noise_scale, settings.tts_noise_w_scale, settings.tts_length_scale,
+            )):
+                from piper.config import SynthesisConfig
+
+                self._syn_config = SynthesisConfig(
+                    noise_scale=settings.tts_noise_scale,
+                    noise_w_scale=settings.tts_noise_w_scale,
+                    length_scale=settings.tts_length_scale,
+                )
+                telemetry.track(
+                    "PIPER",
+                    f"Prosódia: noise={settings.tts_noise_scale} "
+                    f"noise_w={settings.tts_noise_w_scale} length={settings.tts_length_scale}",
+                )
             telemetry.track("PIPER", "Voz Cadu carregada (CPU).")
         except Exception as exc:
             telemetry.error("PIPER", "Falha ao carregar Piper", exc)
@@ -187,9 +231,14 @@ class TtsService:
 
     def _normalizar(self, texto: str) -> str:
         texto = self._STRIP_MD.sub("", texto)
+        texto = self._HORA.sub(r"\1 e \2", texto)
+        texto = self._INTERVALO.sub(r"\1 a \2", texto)
+        for de, para in self._PAUSAS:
+            texto = texto.replace(de, para)
         for ing, pt in DICIONARIO_FONETICO.items():
             texto = re.sub(rf"\b{re.escape(ing)}\b", pt, texto, flags=re.IGNORECASE)
-        return self._ALLOWED.sub("", texto).strip()
+        texto = self._ALLOWED.sub("", texto)
+        return re.sub(r"\s{2,}", " ", texto).strip()
 
     async def synth_base64(self, texto: str) -> Optional[str]:
         """Sintetiza uma frase em WAV base64. None se vazio ou indisponível.
@@ -214,7 +263,14 @@ class TtsService:
                     w.setnchannels(1)
                     w.setsampwidth(2)
                     w.setframerate(self._voice.config.sample_rate)
-                    for chunk in self._voice.synthesize(texto_voz):
+                    # syn_config só quando configurado — o caminho None preserva a
+                    # assinatura antiga (fakes de teste sem o kwarg).
+                    chunks = (
+                        self._voice.synthesize(texto_voz, syn_config=self._syn_config)
+                        if self._syn_config is not None
+                        else self._voice.synthesize(texto_voz)
+                    )
+                    for chunk in chunks:
                         w.writeframes(chunk.audio_int16_bytes)
                 return buf.getvalue()
 

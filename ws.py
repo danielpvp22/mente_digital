@@ -215,6 +215,14 @@ class LiveSession:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(pcm ** 2))) if pcm.size else 0.0
         if rms > settings.vad_rms_threshold:
+            # Religa o LLM no PRIMEIRO frame de fala (painel 2026-07): o reload de
+            # 1-2s pós-idle corre em paralelo com a fala + 1,2s de VAD + STT, em vez
+            # de ser pago serialmente no TTFT da primeira resposta. Só na TRANSIÇÃO
+            # silêncio→fala (não por frame: `ready` fica False durante todo o load e
+            # cada frame criaria mais uma task na fila do _load_lock) e só ACORDADO
+            # (dormente = voz de fundo não deve reancorar a VRAM que o idle liberou).
+            if not self.is_recording and not self.dormente and not self.ctx.llama.ready:
+                self.ctx.track_task(self.ctx.llama.ensure_loaded())
             self.is_recording = True
             self.last_audio_time = time.time()
         if self.is_recording:
@@ -256,6 +264,14 @@ class LiveSession:
             self.audio_buffer = []
             self._cancel_pipeline()
 
+        elif tipo == "ack_proativo":
+            # ACK de aplicação (painel 2026-07): o front CONFIRMOU que exibiu o push.
+            # Só agora o scheduler conclui/reprograma — send "ok" em TCP meio-aberto
+            # não prova nada. Não é atividade do usuário: não chama _marcar_ativa.
+            ack_id = payload.get("id")
+            if ack_id is not None and self.ctx.scheduler is not None:
+                await self.ctx.scheduler.confirmar_entrega(str(ack_id))
+
         elif tipo == "end_session":
             self._finalizar_sessao()
 
@@ -294,6 +310,14 @@ class LiveSession:
             if not await self._deve_processar(texto):
                 return   # F3: dormente e não foi "mestre"
             self._marcar_ativa()
+            # Digitou = uso: religa o modelo JÁ (mesmo racional do nova_conversa),
+            # em paralelo com o dump — em vez de dentro do stream(), serial.
+            if not self.ctx.llama.ready:
+                self.ctx.track_task(self.ctx.llama.ensure_loaded())
             await self.safe_send({"tipo": "transcricao", "texto": texto})
             await self._dump_pergunta(texto)
+            # Turno DIGITADO fica sem o estilo falado DE PROPÓSITO (sem stt_ms ->
+            # origem_voz=False no pipeline): quem digitou está LENDO a resposta na
+            # tela — listas/markdown ajudam ali; o áudio que o live toca é bônus.
+            # Só a fala transcrita (_check_silence) ativa o registro de conversa.
             self._start_pipeline(texto)

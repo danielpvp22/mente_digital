@@ -38,6 +38,10 @@ scripts/import.log
 # `resposta_e2e.py`, entao versiona-se a ferramenta, nao o dado do usuario.
 eval/saidas/
 
+# Amostras de calibração da prosódia do TTS: binários WAV, regeneráveis com
+# eval/amostras_tts.py — versiona-se a ferramenta, não o áudio.
+eval/amostras_tts_out/
+
 # Backup do limpar_vault.py — FORA do vault (senao o sync recursivo o re-indexa)
 _lixo_purgado/
 

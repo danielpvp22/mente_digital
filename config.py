@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     temperatura_resposta: float = 0.2
     max_tokens_resposta: int = 800
     max_tokens_query: int = 15
+    # Gate léxico do extrator (painel 2026-07, fase a): pergunta AUTO-CONTIDA (sem
+    # referência ao turno anterior) não paga a chamada LLM do QueryOptimizer — usa
+    # limpar_query direto (que já era o fallback). Remove ~0,3-0,9s do TTFT da
+    # maioria das perguntas. Desligue se o aterramento léxico degradar (acompanhe
+    # o [LOCAL] relevante= nos logs).
+    optimizer_gate: bool = True
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
     # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
@@ -120,6 +126,14 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"     # "auto"/"cuda"/"cpu" — cuda: large-v3 usa ~3GB VRAM
     # "auto" = float16 na GPU, int8 na CPU (int8 é rápido e preciso o bastante).
     whisper_compute_type: str = "auto"
+    # STT no caminho crítico (painel 2026-07): o CTranslate2 fica em ~4 threads por
+    # default num Ryzen de 16 núcleos, e beam 5 é luxo para comando de voz curto —
+    # greedy (beam 1) corta ~1,5-2x o decode com WER praticamente igual em fala
+    # curta. Juntos tipicamente cortam o stt_ms pela metade. Se a transcrição de
+    # fala longa/ruidosa degradar, volte MENTE_WHISPER_BEAM_SIZE=5 no .env (valide
+    # comparando o stt_ms e as transcrições no log antes/depois).
+    whisper_cpu_threads: int = 8
+    whisper_beam_size: int = 1
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
@@ -354,6 +368,15 @@ class Settings(BaseSettings):
     # Cache de voz (#1): nº de frases sintetizadas mantidas em RAM (LRU). Frase
     # recorrente (filler, confirmação, status) volta na hora, sem re-sintetizar.
     tts_cache_size: int = 256
+    # Prosódia do Piper (naturalidade da fala): repassados ao SynthesisConfig da
+    # síntese. None = default treinado da própria voz (comportamento histórico).
+    # noise_scale = variação de entonação (mais alto = menos monótono; alto demais =
+    # artefatos); noise_w_scale = variação de duração dos fonemas (ritmo);
+    # length_scale = velocidade (>1.0 mais lento). Calibre de ouvido comparando os
+    # WAVs de eval/amostras_tts.py.
+    tts_noise_scale: float | None = None
+    tts_noise_w_scale: float | None = None
+    tts_length_scale: float | None = None
 
     # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
     # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar
@@ -401,6 +424,11 @@ class Settings(BaseSettings):
     # Granularidade do loop: de quanto em quanto tempo checa a tabela. 20s dá precisão
     # de sub-minuto para lembretes sem custar quase nada (uma consulta SQLite indexada).
     scheduler_tick_seconds: float = 20.0
+    # ACK de aplicação do push proativo (painel 2026-07): o disparo só é CONCLUÍDO
+    # quando o cliente confirma que exibiu ({"tipo":"ack_proativo"}); sem ack neste
+    # prazo, volta à reentrega normal (pendente_entrega). O send "com sucesso" num
+    # TCP meio-aberto bufferiza e mente — por isso a confirmação é do CLIENTE.
+    proativo_ack_timeout_seconds: float = 30.0
     # Watcher "me avise quando": intervalo padrão entre checagens da condição na web.
     # Cada checagem gasta 1 busca web + 1 inferência (preemptível, cede à conversa).
     watcher_intervalo_seconds: int = 1800     # 30 min
@@ -458,6 +486,19 @@ class Settings(BaseSettings):
     # --- Servidor --------------------------------------------------------------
     host: str = "0.0.0.0"
     port: int = 8000
+    # TLS opcional (painel 2026-07): com AMBOS os caminhos, o servidor sobe em HTTPS/
+    # WSS. Destrava a VOZ no celular pela LAN — getUserMedia (microfone) exige
+    # "secure context" fora de localhost, então sem HTTPS a voz remota nem liga — e
+    # cifra transcrições/trechos do vault em trânsito. Gere o par com
+    # scripts/gerar_cert.py (mkcert = CA local, sem aviso no browser). Vazio = HTTP
+    # (comportamento atual). O front já deriva ws/wss de location.protocol sozinho.
+    ssl_cert: str = ""
+    ssl_key: str = ""
+    # Acesso (painel 2026-07, #7): VAZIO = só loopback usa as rotas /api e o WS (a
+    # LAN não alcança nada — nem leitura do vault, nem o POST que vira átomo).
+    # Defina um segredo (ex.: 48 hex aleatórios) para liberar outros aparelhos;
+    # no aparelho, abra a página uma vez com ?token=SEGREDO (o front guarda).
+    access_token: str = ""
 
     # --- Derivados -------------------------------------------------------------
     @property

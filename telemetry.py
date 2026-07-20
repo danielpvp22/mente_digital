@@ -8,13 +8,15 @@ Telemetria + persistência.
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import sqlite3
 import sys
 import threading
 import time
 import traceback
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Iterator, Optional
 
 import textutils
 from config import settings
@@ -72,10 +74,37 @@ class Database:
     def __init__(self, path: str) -> None:
         self.path = path
 
-    def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=10)
+    @contextlib.contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Uma conexão POR OPERAÇÃO, agora com vida determinística (painel 2026-07).
+
+        O `with sqlite3.connect(...)` clássico faz commit/rollback mas NÃO fecha —
+        o close ficava por conta do refcount do CPython. O `with conn:` interno
+        preserva EXATAMENTE a semântica transacional que os 44 call sites assumem
+        (`with self._conn() as conn:` continua idêntico para quem chama); o finally
+        fecha de fato. O `timeout=10` do connect JÁ é o busy_timeout do SQLite.
+        `synchronous=NORMAL` é por-conexão (não persiste no arquivo), por isso vive
+        aqui: é o par canônico do WAL — fsync no checkpoint, seguro em disco local.
+        """
+        conn = sqlite3.connect(self.path, timeout=10)
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def init(self) -> None:
+        # WAL uma vez (fica gravado NO ARQUIVO): leitor nunca mais bloqueia em
+        # escrita — save_chat/save_latency do turno vs tick do scheduler vs ETL.
+        # Fora do bloco transacional: mudar journal_mode dentro de transação falha.
+        # Backup do .db passa a exigir os sidecars -wal/-shm juntos (ou um
+        # `PRAGMA wal_checkpoint(TRUNCATE)` antes de copiar).
+        raw = sqlite3.connect(self.path, timeout=10)
+        try:
+            raw.execute("PRAGMA journal_mode=WAL")
+        finally:
+            raw.close()
         with self._conn() as conn:
             c = conn.cursor()
             c.execute(
@@ -109,6 +138,14 @@ class Database:
                                 ("n_tokens", "INTEGER")):
                 if _col not in lat_cols:
                     c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
+            # Métricas do ciclo do conhecimento (painel 2026-07): retrato DIÁRIO da
+            # base auto-colhida — total de chunks, composição por origem e quantos
+            # ainda carregam #conhecimento_novo. Gravado no idle (1x/dia).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS base_snapshot
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
+                    total INTEGER, por_origem TEXT, novos INTEGER)"""
+            )
             # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
             # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
             # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
@@ -250,6 +287,62 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar log de ETL", exc)
+
+    # -- métricas do ciclo do conhecimento (painel 2026-07) ---------------------
+    def salvar_snapshot_base(self, total: int, por_origem: dict, novos: int) -> None:
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO base_snapshot (data_hora, total, por_origem, novos) "
+                    "VALUES (?, ?, ?, ?)",
+                    (datetime.now().isoformat(), total,
+                     json.dumps(por_origem, ensure_ascii=False), novos),
+                )
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar snapshot da base", exc)
+
+    def snapshot_base_hoje(self) -> bool:
+        """True se já há snapshot de HOJE (throttle de 1x/dia — o scan da coleção
+        inteira é barato no idle, mas não precisa rodar a cada ciclo)."""
+        try:
+            with self._conn() as conn:
+                hoje = datetime.now().date().isoformat()
+                row = conn.execute(
+                    "SELECT 1 FROM base_snapshot WHERE data_hora >= ? LIMIT 1", (hoje,)
+                ).fetchone()
+                return row is not None
+        except Exception:
+            return False
+
+    def metricas_base(self) -> dict:
+        """Bloco 'base' do /api/metrics: último snapshot + eventos do ciclo
+        (DEDUP/PROMOCAO/PURGA_ORFAOS) dos últimos 7 dias. Exposto ATRÁS do gate de
+        acesso (#7) — a composição da base revela o que o dono estuda e quando."""
+        out: dict = {"snapshot": None, "ciclo_7d": {}}
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT data_hora, total, por_origem, novos FROM base_snapshot "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    try:
+                        origem = json.loads(row[2] or "{}")
+                    except ValueError:
+                        origem = {}
+                    out["snapshot"] = {
+                        "data": row[0], "total": row[1], "por_origem": origem, "novos": row[3],
+                    }
+                desde = (datetime.now() - timedelta(days=7)).isoformat()
+                out["ciclo_7d"] = dict(conn.execute(
+                    "SELECT tipo_acao, COUNT(*) FROM log_etl "
+                    "WHERE data_hora >= ? AND tipo_acao IN ('DEDUP','PROMOCAO','PURGA_ORFAOS') "
+                    "GROUP BY tipo_acao",
+                    (desde,),
+                ).fetchall())
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro nas métricas da base", exc)
+        return out
 
     def save_chat(self, pergunta: str, resposta: str, conversa_id: Optional[str] = None) -> None:
         try:

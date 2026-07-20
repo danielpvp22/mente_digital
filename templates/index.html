@@ -210,7 +210,7 @@
         async function renderConversas() {
             const cont = document.getElementById('history-container');
             try {
-                const res = await fetch('/api/conversas'); const data = await res.json();
+                const res = await fetch('/api/conversas', { headers: apiHeaders() }); const data = await res.json();
                 cont.innerHTML = '';
                 if (!data.length) { cont.innerHTML = '<div class="history-empty">Nenhuma conversa ainda.<br>Comece a escrever ou falar.</div>'; return; }
                 data.forEach(conv => {
@@ -246,7 +246,7 @@
         async function carregarConversa(id) {
             fecharSidebar();
             try {
-                const res = await fetch('/api/conversa/' + encodeURIComponent(id));
+                const res = await fetch('/api/conversa/' + encodeURIComponent(id), { headers: apiHeaders() });
                 const turnos = await res.json();
                 limparChatView();
                 turnos.forEach(t => { appendMsg(t.q, 'user'); if (t.a) appendMsg(t.a, 'ia'); });
@@ -282,7 +282,7 @@
             if (!txt) { toast("Escreva a nota no campo primeiro."); return; }
             inputTexto.value = ''; document.getElementById('btn-send-text').style.display = 'none';
             try {
-                await fetch('/api/nota/texto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texto: txt }) });
+                await fetch('/api/nota/texto', { method: 'POST', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ texto: txt }) });
                 appendMsg("📝 Anotação manual salva no Obsidian.", 'ia');
             } catch (err) { toast("Falha ao salvar a nota."); }
         }
@@ -354,9 +354,21 @@
             currentAudio.play().catch(err => { console.error("Erro ao tocar áudio", err); currentAudio = null; tocarProximoAudio(); });
         }
 
+        // Acesso (#7): com MENTE_ACCESS_TOKEN no servidor, abra a página UMA vez com
+        // ?token=SEGREDO — fica no localStorage e vai junto no WS e nas rotas /api.
+        const _tokenUrl = new URLSearchParams(location.search).get('token');
+        if (_tokenUrl) localStorage.setItem('mente_token', _tokenUrl);
+        const TOKEN_ACESSO = localStorage.getItem('mente_token') || '';
+        function apiHeaders(extra) {
+            const h = Object.assign({}, extra || {});
+            if (TOKEN_ACESSO) h['X-Mente-Token'] = TOKEN_ACESSO;
+            return h;
+        }
+
         function conectarWS() {
             const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-            ws = new WebSocket(`${proto}://${window.location.host}/ws/chat_live`);
+            const qs = TOKEN_ACESSO ? `?token=${encodeURIComponent(TOKEN_ACESSO)}` : '';
+            ws = new WebSocket(`${proto}://${window.location.host}/ws/chat_live${qs}`);
             ws.onopen = () => {
                 reconnectDelay = 1000;
                 document.getElementById('conn-dot').classList.add('online');
@@ -386,6 +398,9 @@
                     currentIaBubble = null;
                     appendMsg("🔔 " + data.texto, 'ia');
                     currentIaBubble = null;
+                    // ACK de aplicação: confirma ao servidor que o aviso FOI exibido —
+                    // só isso conclui o lembrete (send em TCP meio-aberto mente).
+                    if (data.ack_id) wsEnviar({ tipo: "ack_proativo", id: data.ack_id });
                 }
                 else if (data.tipo === "navegar") {
                     // Navegação por voz (#14): o servidor manda operar a UI. Reusa as

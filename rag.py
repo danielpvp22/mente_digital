@@ -30,7 +30,7 @@ import grafo
 import textutils
 from config import settings
 from state import LruCache
-from telemetry import telemetry
+from telemetry import db, telemetry
 
 NENHUM = "NENHUM DADO"
 
@@ -453,6 +453,12 @@ class EmbeddingProvider:
 # ==========================================================================
 # VectorStore (ChromaDB)
 # ==========================================================================
+class _FingerprintMudou(RuntimeError):
+    """Índice construído com OUTRO embedding/prefixos que os da config atual —
+    seguir usando degradaria a recuperação em silêncio (mesma dimensão não estoura
+    erro nenhum no Chroma). Levantada no open() para reusar o caminho do #33."""
+
+
 class VectorStore:
     def __init__(self, embeddings: EmbeddingProvider) -> None:
         self._embeddings = embeddings
@@ -482,7 +488,16 @@ class VectorStore:
             # thresholds do gate (rag_score_confident=0.8, rag_score_max=1.5),
             # que são de escala cosseno, rejeitariam TUDO -> local nunca casa.
             # Com cosseno, um bom match fica ~0.3 e o gate funciona.
-            collection_metadata={"hnsw:space": "cosine"},
+            # Fingerprint (painel 2026-07): carimba COM O QUÊ o índice foi
+            # construído. Só é aplicado na CRIAÇÃO da coleção — abrir uma coleção
+            # existente preserva o carimbo antigo, que é exatamente o que o
+            # _fingerprint_ok compara no open().
+            collection_metadata={
+                "hnsw:space": "cosine",
+                "emb_model": settings.embedding_model,
+                "emb_query_prefix": settings.embedding_query_prefix,
+                "emb_passage_prefix": settings.embedding_passage_prefix,
+            },
         )
 
     async def _abrir_e_provar(self):
@@ -493,23 +508,74 @@ class VectorStore:
         await asyncio.to_thread(lambda: store.get(limit=1))  # probe
         return store
 
+    def _fingerprint_ok(self, store) -> bool:
+        """Fingerprint do índice (painel 2026-07): True se a coleção foi construída
+        com o MESMO embedding E prefixos da config atual.
+
+        Trocar MENTE_EMBEDDING_MODEL para outro de MESMA dimensão (768→768) não
+        estoura erro NENHUM no Chroma — a recuperação só degrada, silenciosamente.
+        Este é o único detector desse caso; dimensão diferente ao menos quebra alto.
+        A leitura usa a API semi-privada `_collection`, então é cercada: se a lib
+        mudar num upgrade, o open() NUNCA cai por causa do carimbo — loga e segue.
+        """
+        try:
+            meta = dict(getattr(store, "_collection").metadata or {})
+        except Exception as exc:
+            telemetry.warn("DB", f"Fingerprint ilegível (lib mudou?): {exc} — seguindo sem checar.")
+            return True
+        atual = {
+            "emb_model": settings.embedding_model,
+            "emb_query_prefix": settings.embedding_query_prefix,
+            "emb_passage_prefix": settings.embedding_passage_prefix,
+        }
+        if "emb_model" not in meta:
+            # Coleção legada (pré-fingerprint): carimba a config ATUAL — correto
+            # porque o índice vigente foi construído com ela (o reindex do e5-base
+            # acabou de acontecer). ATENÇÃO: modify() SUBSTITUI o dict inteiro,
+            # então grava a UNIÃO para não perder o hnsw:space=cosine.
+            try:
+                store._collection.modify(metadata={**meta, **atual})
+                telemetry.track("DB", "Fingerprint: coleção legada carimbada com a config atual.")
+            except Exception as exc:
+                telemetry.warn("DB", f"Não consegui carimbar a coleção legada: {exc}")
+            return True
+        return all(meta.get(k) == v for k, v in atual.items())
+
     async def open(self) -> None:
         if self._embeddings.instance is None:
             telemetry.warn("DB", "VectorStore sem embeddings — indexação desativada.")
             return
         async with self._write_lock:
             try:
-                self._store = await self._abrir_e_provar()
+                store = await self._abrir_e_provar()
+                # Fingerprint ANTES de aceitar o índice (painel 2026-07): embedding
+                # ou prefixos mudaram sem reindex = toda busca degrada em silêncio.
+                # Mismatch reusa o MESMO caminho do #33 logo abaixo.
+                if not await asyncio.to_thread(self._fingerprint_ok, store):
+                    raise _FingerprintMudou(
+                        f"índice não foi construído com '{settings.embedding_model}'"
+                        " (+prefixos atuais) — reindex necessário"
+                    )
+                self._store = store
                 telemetry.track("DB", "ChromaDB aberto (distância: cosseno).")
             except Exception as exc:
-                # #33: índice corrompido. Como o vault é a fonte de verdade, move o
-                # banco corrompido para o lado e reabre vazio — o sync() seguinte
-                # reconstrói do vault (sem tocar mtime dos .md). Uma vez por processo.
+                # #33: índice corrompido (ou fingerprint divergente). Como o vault é
+                # a fonte de verdade, move o banco para o lado e reabre vazio — o
+                # sync() seguinte reconstrói do vault (sem tocar mtime dos .md).
+                # Uma vez por processo.
                 if not (settings.indice_auto_recuperar and not self._recuperado_ja):
                     telemetry.error("DB", "Falha ao abrir ChromaDB", exc)
                     return
                 self._recuperado_ja = True
-                telemetry.error("DB", "ChromaDB corrompido — recuperando do vault", exc)
+                if isinstance(exc, _FingerprintMudou):
+                    telemetry.error(
+                        "DB",
+                        "EMBEDDING MUDOU — reconstruindo o índice do vault. O boot vai "
+                        "demorar alguns minutos re-embedando tudo; NÃO é travamento.",
+                        exc,
+                    )
+                else:
+                    telemetry.error("DB", "ChromaDB corrompido — recuperando do vault", exc)
                 await asyncio.to_thread(
                     mover_indice_corrompido, settings.diretorio_banco_vetorial
                 )
@@ -591,6 +657,10 @@ class VectorStore:
                 if orfaos:
                     telemetry.track(
                         "DB", f"Purga: {len(orfaos)} fontes órfãs removidas (vault movido/nota apagada)."
+                    )
+                    # Métricas do ciclo (painel): purga persistida como evento.
+                    await asyncio.to_thread(
+                        db.log_etl, "PURGA_ORFAOS", f"{len(orfaos)} fonte(s)", "removidas"
                     )
 
                 arquivos = glob.glob(
@@ -968,6 +1038,10 @@ class WebSearcher:
             maxlen=settings.web_pendentes_max
         )
         self._retry_task = None  # ref forte: sem ela o GC come o drain (war story #2)
+        # "FONTE?" (painel 2026-07): domínios das páginas que a ÚLTIMA busca abriu no
+        # deep-fetch. Lido pelo Agent logo após o search() (single-user, GPU
+        # serializada — a janela de corrida é desprezível e o dado é só informativo).
+        self.ultimos_dominios: List[str] = []
 
     async def _ddg(self, termo: str, max_results: int) -> list:
         # Guarda de Egressão (#6): este é o ÚNICO ponto onde texto do usuário sai
@@ -1051,6 +1125,14 @@ class WebSearcher:
         ) as client:
             paginas = await asyncio.gather(*(self._baixar_pagina(client, u) for u in urls))
 
+        # Proveniência ("fonte?"): domínios das páginas que BAIXARAM — são as que
+        # podem ter contribuído com trechos. Falado como domínio (URL é inaudível).
+        from urllib.parse import urlparse
+
+        self.ultimos_dominios = [
+            urlparse(u).netloc for u, t in zip(urls, paginas) if t and urlparse(u).netloc
+        ]
+
         textos = [t for t in paginas if t]
         if not textos:
             return None
@@ -1100,6 +1182,9 @@ class WebSearcher:
     async def search(self, termo: str, consulta: Optional[str] = None) -> str:
         """Busca web com cache. `consulta` (pergunta natural) guia o ranking do
         deep-fetch; sem ela, usa o próprio `termo`."""
+        # Proveniência: zera SEMPRE — resultado de cache/snippet não herda os
+        # domínios da busca anterior (melhor "web" genérico que domínio errado).
+        self.ultimos_dominios = []
         if len(termo.strip()) < 2:
             return NENHUM
         cached = self._cache.get(termo)
