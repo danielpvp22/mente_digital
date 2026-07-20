@@ -1,0 +1,50 @@
+# Compose do stack ATUAL (llama.cpp + Whisper + Piper + Chroma), pela
+# reprodutibilidade. O experimento TensorRT-LLM é outra história e NÃO mora aqui.
+#
+#   docker compose up --build     # 1º build compila o llama-cpp-python (~10 min)
+#
+# GPU: no Windows, o Docker Desktop (backend WSL2) já expõe a NVIDIA; em Linux,
+# instale o NVIDIA Container Toolkit. Modelos/vault/bancos ficam no HOST (bind
+# mounts abaixo) — a imagem carrega só código e dependências.
+services:
+  mente:
+    build:
+      context: .
+      args:
+        CUDA_ARCH: "86" # Ampere/RTX 3080 — troque para a sua GPU (89 = Ada)
+    image: mente-digital:local
+    ports:
+      - "8000:8000"
+    # O .env do projeto (MENTE_*) entra como variáveis de ambiente do container —
+    # ele NÃO é copiado para a imagem (.dockerignore), para segredo não vazar em layer.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # O SQLite de telemetria vai para um diretório montado, para sobreviver ao
+      # ciclo de vida do container sem bind-mount de arquivo único (que o Docker
+      # criaria como DIRETÓRIO se não existisse, quebrando o SQLite).
+      MENTE_DB_TELEMETRIA: /app/dados/telemetria_etl.db
+    volumes:
+      - ./modelos:/app/modelos                              # LLM .gguf + voz Piper + cache Whisper
+      - ./Cerebro_Digital:/app/Cerebro_Digital              # o vault (fonte de verdade)
+      - ./banco_vetorial_cerebro:/app/banco_vetorial_cerebro # índice derivado (Chroma)
+      - ./dados:/app/dados                                  # telemetria/histórico (SQLite)
+      - hf-cache:/root/.cache/huggingface                   # e5-base baixa 1x, não por rebuild
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # "/" serve a página sem gate; o gate do acesso.py protege /api e o WS.
+      # Dentro do container o curl é loopback, então passa mesmo sem token.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      interval: 30s
+      start_period: 180s # o LLM demora a carregar; não derrube antes disso
+      retries: 3
+
+volumes:
+  hf-cache:

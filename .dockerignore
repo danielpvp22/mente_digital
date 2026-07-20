@@ -1,0 +1,15 @@
+# O que NUNCA entra na imagem: segredos, dados do dono e artefatos derivados.
+# Modelos/vault/bancos entram por bind mount em runtime (docker-compose.yml).
+.env
+.git
+.github
+.claude
+.venv
+__pycache__/
+*.pyc
+modelos/
+Cerebro_Digital/
+banco_vetorial_cerebro/
+dados/
+*.db
+graphify-out/
