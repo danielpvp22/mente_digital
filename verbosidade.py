@@ -93,6 +93,26 @@ def aplicar_fala(nivel: Nivel, origem_voz: bool) -> Nivel:
     return Nivel(nivel.nome, nivel.max_tokens, instrucao)
 
 
+# RESPOSTA LARGA (teste real 2026-07-21): perguntas CURTAS em palavras mas LARGAS
+# em resposta caíam no teto de 90 tokens e saíam cortadas no meio da frase (medido:
+# "o que eu anotei sobre pneus balão?", "quanto o TensorRT acelera uma rede YOLO?",
+# "o que é o framework Astro?"). Recuperar notas, definir um conceito e quantificar
+# um EFEITO não são fato-único — ganham espaço normal. "quanto é/custa/vale" (um
+# número seco) continua curto: é o ganho de latência do #7.
+_LARGA_PREFIXOS = ("o que e ", "o que sao ", "o que eu ", "o que voce ")
+_QUANTO_SECO = (
+    "quanto e ", "quanto eh ", "quanto custa", "quanto vale", "quanto fica",
+    "quanto tem ", "quantos sao ", "quanto sao ", "quantas sao ",
+)
+
+
+def _resposta_larga(n: str) -> bool:
+    """Pergunta curta cuja RESPOSTA não cabe em 1 frase (opera no texto normalizado)."""
+    if any(n.startswith(p) for p in _LARGA_PREFIXOS):
+        return True
+    return n.startswith("quanto") and not any(n.startswith(q) for q in _QUANTO_SECO)
+
+
 def classificar(pergunta: str) -> Nivel:
     """Decide a verbosidade da resposta a partir da pergunta. Puro/testável."""
     n = textutils.normaliza(pergunta)
@@ -106,6 +126,8 @@ def classificar(pergunta: str) -> Nivel:
             "frases curtas. Não use listas nem fórmulas.",
         )
     if any(p in n for p in _EXPLICA):
+        return Nivel("detalhado", settings.max_tokens_resposta, "")
+    if _resposta_larga(n):
         return Nivel("detalhado", settings.max_tokens_resposta, "")
     # Pergunta curta e direta = resposta curta e direta (o ganho de latência do #7).
     if len(textutils.tokens(pergunta)) <= settings.verbosidade_curto_max_palavras:

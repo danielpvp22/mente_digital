@@ -39,6 +39,46 @@ def referencia_contexto(pergunta: str) -> bool:
     return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
 
 
+# AFIRMAÇÃO vs pergunta/pedido (conserto do caso "Falcão", teste real 2026-07-21):
+# "O codinome do meu drone é Falcão." foi tratado como PERGUNTA, escalou pra web,
+# achou o drone homônimo da Avibras e o fato ALHEIO contaminou a RAM e virou átomo
+# permanente. Frase declarativa sem âncora local é REGISTRO, não lacuna a pesquisar.
+# Heurística léxica pura: sem '?', e sem começar com interrogativo/verbo de pedido.
+_ABERTURAS_NAO_DECLARATIVAS = (
+    # interrogativos (pergunta sem '?': "qual o codinome...", "voce sabe onde...")
+    "o que", "que ", "qual", "quais", "quem", "quando", "onde", "aonde", "como",
+    "por que", "porque", "pra que", "para que", "quanto", "quanta", "quantos",
+    "quantas", "cade", "sera que", "existe", "existem", "tem como", "da pra",
+    "pode", "podem", "devo", "voce", "vc ", "sabe ", "sabes ",
+    # pedidos/comandos (imperativo: o usuário QUER uma ação, não está afirmando).
+    # "me " cobre a família inteira ("me fala/fale/diga/mostra/lembra/avisa...") —
+    # a 1ª versão listava conjugações e "me FALE sobre..." escapou (pego pelo teste
+    # do filler). Perde-se o raro "me formei ontem" declarativo, que então cai no
+    # caminho antigo (web) — o erro conservador.
+    "me ", "explica", "explique", "detalha",
+    "detalhe", "mostra", "mostre", "lista", "liste", "fala", "fale", "diz",
+    "diga", "resume", "resuma", "compara", "compare", "pesquisa", "pesquise",
+    "busca", "busque", "procura", "procure", "calcula", "calcule", "salva",
+    "salve", "anota", "anote", "cria", "crie", "adiciona", "adicione", "remove",
+    "remova", "cancela", "cancele", "lembra", "lembre", "agenda", "agende",
+    "abre", "abra", "toca", "toque", "manda", "mande", "envia", "envie",
+    "define", "defina", "verifica", "verifique",
+)
+
+
+def e_declarativa(texto: str) -> bool:
+    """A mensagem AFIRMA um fato (não pergunta nem pede ação)? Puro/testável."""
+    if "?" in texto:
+        return False
+    n = textutils.normaliza(texto).strip()
+    if not n:
+        return False
+    return not any(
+        n == a.strip() or n.startswith(a if a.endswith(" ") else a + " ")
+        for a in _ABERTURAS_NAO_DECLARATIVAS
+    )
+
+
 def lacuna_pesquisavel(termos: str) -> bool:
     """A lacuna vale uma pesquisa proativa (autônoma, escreve no vault)? Puro/testável.
 

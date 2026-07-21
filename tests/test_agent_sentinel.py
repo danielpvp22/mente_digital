@@ -57,3 +57,56 @@ async def test_prefixo_do_sentinela_que_diverge_libera_o_buffer():
     assert resultado == "Não tenho dúvida de que Python é ótimo."
     # o buffer retido ("Não tenho dúvida ") é liberado, não perdido
     assert textos_de_tokens(enviados).startswith("Não tenho dúvida")
+
+
+# -- FUZZY (teste real 2026-07-21): o 2507 parafraseia o sentinela --------------
+from prompts import abre_como_sentinela, parece_sentinela  # noqa: E402
+
+
+def test_parece_sentinela_pega_parafrases():
+    for t in [
+        "nao tenho informacoes suficientes",
+        "nao ha atomos que confirmem isso",
+        "nao encontrei dados suficientes sobre o tema",
+        "nao tenho essa informacao registrada",
+        "tensorrt acelera yolo, mas nao ha atomos que confirmem",
+    ]:
+        assert parece_sentinela(t), t
+
+
+def test_parece_sentinela_ignora_resposta_real():
+    for t in [
+        "nao tenho duvida de que python e otimo",
+        "o ceu e azul pela dispersao rayleigh",
+        "nao ha problema em usar fp16",
+        "nao. o correto e usar cosseno",
+    ]:
+        assert not parece_sentinela(t), t
+
+
+def test_abertura_inocente_nao_e_retida():
+    assert not abre_como_sentinela("python e uma linguagem")
+
+
+async def test_parafrase_do_sentinela_escala_sem_falar():
+    tokens = ["Não ", "há ", "átomos ", "que ", "confirmem ", "isso."]
+    agent = _agent_com_tokens(tokens)
+    send, enviados = make_send()
+
+    resultado = await agent._responder_contexto("ctx", "pergunta", send)
+
+    assert resultado is None                    # variante do sentinela -> escala
+    assert textos_de_tokens(enviados) == ""
+    assert agent.ctx.tts.chamadas == []
+
+
+async def test_nao_seco_e_resposta_real_nao_engolida():
+    # "Não." abre igual ao sentinela e o stream acaba — é resposta legítima, libera.
+    tokens = ["Não."]
+    agent = _agent_com_tokens(tokens)
+    send, enviados = make_send()
+
+    resultado = await agent._responder_contexto("ctx", "pergunta", send)
+
+    assert resultado == "Não."
+    assert textos_de_tokens(enviados) == "Não."

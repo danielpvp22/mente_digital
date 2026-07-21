@@ -72,3 +72,29 @@ def test_pergunta_normal_nao_e_crianca():
     # Não confundir uma pergunta comum com o pedido de ELI5.
     assert classificar("qual a capital da França?").nome != "crianca"
     assert classificar("me explica como funciona o RAG").nome == "detalhado"
+
+
+# -- consertos do corte no teto (teste real 2026-07-21) -------------------------
+def test_recuperacao_de_notas_nao_e_curto():
+    for p in ["O que eu anotei sobre pneus balão?", "o que eu tenho sobre drones"]:
+        assert classificar(p).nome == "detalhado", p
+
+
+def test_definicional_nao_e_curto():
+    for p in ["O que é o framework Astro?", "o que são embeddings"]:
+        assert classificar(p).nome == "detalhado", p
+
+
+def test_quanto_de_efeito_nao_e_curto():
+    assert classificar("Quanto o TensorRT acelera uma rede YOLO?").nome == "detalhado"
+
+
+def test_quanto_seco_continua_curto():
+    for p in ["quanto é 3 vezes 7", "quanto custa o kg do filé", "quanto é 15% de 240"]:
+        assert classificar(p).nome == "curto", p
+
+
+def test_factuais_seguem_curto():
+    # Regressão do ganho do #7: o conserto não pode matar a resposta de 1 frase.
+    for p in ["que horas são?", "qual a capital da França?", "Céu Azul fica em que estado?"]:
+        assert classificar(p).nome == "curto", p
