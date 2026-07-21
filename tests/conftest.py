@@ -7,18 +7,28 @@ store (resultados fixos), então cada teste exercita só a decisão do código.
 """
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import sys
 import tempfile
 
-# ISOLAMENTO DO SQLITE REAL (consultoria TTFT #5): o `telemetry.db` global nasce no
-# IMPORT apontando para MENTE_DB_TELEMETRIA — redirecionar AQUI, antes de qualquer
-# import do projeto, é o único jeito de a suíte não gravar lacunas/latência/log_etl
-# no telemetria_etl.db de produção (medido: 3 lacunas-fixture no topo da fila da
-# pesquisa proativa). setdefault: um runner que já isolou (ex.: CI) não é sobreposto.
-os.environ.setdefault(
-    "MENTE_DB_TELEMETRIA",
-    os.path.join(tempfile.mkdtemp(prefix="mente_pytest_"), "telemetria_teste.db"),
-)
+# ISOLAMENTO DO SQLITE REAL (consultoria TTFT #5, endurecido com o resgate do
+# worktree awesome-swirles): o `telemetry.db` global nasce no IMPORT apontando para
+# MENTE_DB_TELEMETRIA — redirecionar AQUI, antes de qualquer import do projeto, é o
+# único jeito de a suíte não gravar lacunas/latência/log_etl no telemetria_etl.db de
+# produção (medido: 3 lacunas-fixture no topo da fila da pesquisa proativa).
+# Atribuição DURA, não setdefault: uma MENTE_DB_TELEMETRIA herdada do shell
+# apontaria a suíte de volta ao banco real — o redirect tem que vencer sempre.
+if "config" in sys.modules:
+    raise RuntimeError(
+        "conftest: 'config' foi importado antes do redirect de MENTE_DB_TELEMETRIA — "
+        "o db global nasceria no telemetria_etl.db real. Mantenha este bloco acima "
+        "de qualquer import do projeto."
+    )
+_TMP_DB_DIR = tempfile.mkdtemp(prefix="mente_pytest_")
+os.environ["MENTE_DB_TELEMETRIA"] = os.path.join(_TMP_DB_DIR, "telemetria_teste.db")
+atexit.register(shutil.rmtree, _TMP_DB_DIR, ignore_errors=True)  # não vazar tmp por run
 
 from typing import List, Optional, Tuple
 
