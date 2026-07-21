@@ -149,6 +149,10 @@ SYS_SINTESE = (
 # ver Agent._consolidar_fontes. O #zettelkasten_atomico permanece; só a maturidade muda.
 TAG_ATOMO = "#zettelkasten_atomico"
 TAG_NOVO = "#conhecimento_novo"
+# Sentinela anti-alucinação (normalizado) — REGRA 1 do system prompt de resposta.
+# Vive aqui (camada de linguagem) porque agent.py E respostas.py o consomem; o texto
+# TEM que casar com o que o system prompt manda o modelo dizer.
+SENTINELA_INSUF = "nao tenho informacoes suficientes"
 
 
 def prompt_sintese(tema: str, dados: str) -> str:

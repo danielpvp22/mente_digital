@@ -375,7 +375,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 
 ## 🗂 Papel de cada módulo
 
-**~9.600 linhas de Python** em 27 módulos (de ~3.300 em 12), mais ~6.800 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
+**~10.500 linhas de Python** em 33 módulos (de ~3.300 em 12), mais ~7.500 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
 mente_digital/
@@ -386,7 +386,12 @@ mente_digital/
 ├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
 ├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
 ├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
-├── agent.py        # 2357 pipeline de resposta, _fluxo_mestre, tools, ETL, síntese, conexões
+├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
+├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
+├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
+├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
+├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
+├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
 ├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
 ├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
 ├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
@@ -404,6 +409,7 @@ mente_digital/
 ├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
 ├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
 ├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
+├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
 ├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
 ├── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
 ├── templates/      # index.html — a SPA inteira (491 linhas)
@@ -429,11 +435,17 @@ Uma classe `Settings` (Pydantic) com **128 campos**. **Todos os caminhos derivam
 ### `audio.py` — tudo que é som, tudo na CPU
 `SttService` (faster-whisper, hoje o **`large-v3-turbo`**), `TtsService` (Piper, agora com **cache LRU** de frases sintetizadas) e o `SentenceChunker`. Roda inteiramente na CPU, sempre atrás de `asyncio.to_thread`. O `SentenceChunker` é um conversor de impedância: o LLM produz token-a-token, o Piper precisa de uma frase prosodicamente fechada. Três mecanismos: piso (`min_len`) contra migalhas, fim-de-frase **real** (`Dr.`, `3.5`, `etc.` não cortam) e flush por tamanho **no último espaço da janela**.
 
-### `rag.py` — as fontes de conhecimento (o maior depois do agent)
+### `rag.py` — as fontes de conhecimento (hoje o maior arquivo do repo)
 `EmbeddingProvider` (singleton — hoje o **e5-base**, com os prefixos `query:`/`passage:` aplicados num **ponto só** (`_com_prefixos`), de onde Chroma, Malha e RAG efêmero herdam), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source` **e near-dup por Jaccard**), o **`MalhaIndex`** (o grafo do vault por conceito compartilhado — ver seção própria) e `WebSearcher` (DDG com fallback, cache, pre-fetch, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, rankeia por cosseno e **não indexa nada**). Detalhes: `strip_frontmatter`, `split_markdown`, `resolve_device`.
 
-### `agent.py` — o cérebro (2.357 linhas, o maior)
-`QueryOptimizer` (pronomes cruzados), `Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3), `_fluxo_mestre` (o **plano de comando** — orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor), `_sintese_sob_demanda` (map-reduce do "o que sei sobre X"), `_descobrir_conexoes` (as pontes da Malha), `LatencyTracker` e `EtlProcessor`. É onde vivem as decisões mais sutis — e onde os comentários carregam mais cicatriz por linha.
+### `agent.py` — o núcleo do cérebro (506 linhas; era um deus-módulo de 2.472)
+`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 624 testes verdes em cada passo.
+
+### `comandos_mestre.py` / `respostas.py` — as duas metades do Agent
+`comandos_mestre.py` (847): o **plano de comando** — `_fluxo_mestre` orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor. `respostas.py` (353): os **geradores falados** — `_responder_contexto` (segura o áudio até provar que não é o sentinela), `_responder_web` (filler + escalada), `_responder_stream` (token→frase→TTS), `_sintese_sob_demanda` (map-reduce) e `_consolidar_fontes` (a promoção do `#conhecimento_novo`).
+
+### `otimizador.py` / `atomos.py` / `etl.py` — interpretação, estrutura e idle
+`otimizador.py` (174): `QueryOptimizer` + as heurísticas puras da pergunta (referência ao turno anterior, tema de síntese, frase citada, lacuna pesquisável). `atomos.py` (276): a atomização **pura** — o LLM entrega a ideia, o Python impõe a estrutura (tags, `##`, frontmatter, wikilinks). `etl.py` (435): o `EtlProcessor` do idle — fila web, atomização da conversa, pesquisa proativa e snapshot da base, sempre cedendo a GPU.
 
 ### `tools.py` — function calling **aditivo**
 "Aditivo" é a decisão arquitetural: pergunta de conhecimento **não paga nada** pela existência das ferramentas. O gate lexical `talvez_acao` filtra: só mensagem de **ação** chega ao roteador LLM (por **JSON**, não o tool-calling nativo). `calcular_seguro` compila AST com whitelist (nunca `eval`) e capa o expoente. As ferramentas: as básicas (calcular, hora, notas, buscar_web), os **agentes de agenda/lista** (lembrete, listar/cancelar, avisar_quando, briefing, itens de lista), a **captura rápida** (inbox GTD), o **health-check** (`status_sistema`) e a **auditoria** (`auditoria_hoje`). As de agenda/lista têm `registra_conhecimento=False`: seu turno **não** vira Zettelkasten.

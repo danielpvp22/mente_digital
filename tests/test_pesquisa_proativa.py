@@ -70,7 +70,7 @@ def _etl(tmp_path, monkeypatch, *, cobre, dados="corpo web real com fatos"):
     from telemetry import db as db_global
     d = _db(tmp_path)
     # aponta o db global (que o EtlProcessor usa) para o de teste
-    monkeypatch.setattr("agent.db", d)
+    monkeypatch.setattr("etl.db", d)
     ctx = AppContext(settings=settings)
     ctx.interactive_idle.set()
     ctx.vectorstore = _Store(relevante=cobre)
