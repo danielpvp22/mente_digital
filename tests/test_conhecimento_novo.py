@@ -296,8 +296,8 @@ def _etl_com(resposta_llm, tmp_path, monkeypatch):
     dump = tmp_path / "chat_dump.md"
     st.arquivo_chat_dump = str(dump)            # summarize_dump lê ESTE caminho
     os.makedirs(st.dir_conhecimento_novo, exist_ok=True)
-    monkeypatch.setattr("agent.settings", st)   # summarize_dump lê o dump por aqui
-    monkeypatch.setattr("agent.db.log_etl", lambda *a, **k: None)  # hermético: sem SQLite real
+    monkeypatch.setattr("etl.settings", st)     # summarize_dump lê o dump por aqui
+    monkeypatch.setattr("etl.db.log_etl", lambda *a, **k: None)  # hermético: sem SQLite real
     ctx = AppContext(settings=st)
     ctx.llama = FakeLlama([resposta_llm])
     ctx.vectorstore = FakeVectorStore()
