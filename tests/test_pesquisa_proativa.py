@@ -149,7 +149,8 @@ class _StoreComVizinho:
 
 def test_ja_no_banco_pega_quase_identico(tmp_path, monkeypatch):
     ctx = AppContext(settings=settings)
-    ctx.vectorstore = _StoreComVizinho(dist=0.02)        # < dedup_dist_max
+    # 0.005 < dedup_dist_max (0.01, escala e5 — consultoria #2; era 0.02 < 0.08 MiniLM)
+    ctx.vectorstore = _StoreComVizinho(dist=0.005)
     etl = EtlProcessor(ctx)
     assert asyncio.run(etl._ja_no_banco("um átomo qualquer")) is True
 

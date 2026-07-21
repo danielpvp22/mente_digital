@@ -4,6 +4,17 @@ diretivos, curtos e proibindo a IA de ser educada/prolixa.
 """
 from __future__ import annotations
 
+# --- Preâmbulo comum (consultoria TTFT #10 — investigação) -------------------
+# Prefixo IDÊNTICO para TODO system prompt quando MENTE_PROMPT_PREAMBULO_COMUM=true
+# (composição única em llm.montar_system). Prefixo byte-igual entre extrator/roteador/
+# resposta => o llama.cpp reaproveita o KV do maior prefixo comum entre chamadas
+# consecutivas (prefill economizado). Curto e NEUTRO de propósito: não pode mudar o
+# comportamento de nenhuma tarefa, só alinhar o começo do prompt.
+PREAMBULO_COMUM = (
+    "Você é a Mente Digital, assistente local do usuário. "
+    "Siga estritamente a tarefa definida a seguir."
+)
+
 # --- Extrator de query (resolve pronomes cruzados) ---------------------------
 SYS_EXTRATOR = (
     "Você é um gerador de queries de busca. "

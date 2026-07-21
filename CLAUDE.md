@@ -68,6 +68,23 @@ Wiring fino em [main.py](main.py) (lifespan cria os serviços e injeta em `AppCo
 
 Ver [README.md](README.md) para o diagnóstico completo. Resumo: o gate antigo tratava "tem algum contexto" como Cache Hit; com um vault grande, quase toda pergunta achava algo vagamente parecido e a web nunca era consultada. A correção exige contexto **relevante** (aterramento léxico via `textutils.contem_alguma` OU `rag_score_confident`). O botão de calibração é `MENTE_RAG_SCORE_CONFIDENT` (default `0.8`; menor = mais rígido/mais web, maior = mais confiança no local) — cada pergunta loga `[LOCAL] melhor_dist=... relevante=...` para calibrar.
 
+### Consultoria TTFT (2026-07-21)
+
+Rodada de latência focada em TTFT/TTFA — relatório completo (banca, debate, ranking) em [CONSULTORIA_TTFT.md](CONSULTORIA_TTFT.md). As 12 aceitas estão implementadas:
+
+- **Waterfall por estágio (#1)**: `LatencyTracker` ganhou `vad_ms/extrator_ms/busca_ms` (preenchidos em ws.py/agent.py), persistidos em `metricas_latencia` (migração idempotente) e expostos como **p50/p95 por estágio** no bloco `waterfall` do `/api/metrics` (`Database.latencia_percentis`). É o que arbitra qualquer otimização futura (incl. os critérios de reentrada do TensorRT-LLM).
+- **Dedup na escala do e5 (#2)**: `MENTE_DEDUP_DIST_MAX` 0.08→**0.01** (0.08 era escala MiniLM; no e5 marcaria 75% da base como dup e o `_ja_no_banco` descartava átomo legítimo). Recalibrar SEMPRE junto com o gate ao trocar embedding.
+- **Endpointing adaptativo (#3)**: `ws.janela_endpoint` (pura) — fala ≤`MENTE_VAD_FALA_CURTA_SECONDS` (3s) encerra com `MENTE_VAD_SILENCE_CURTA_SECONDS` (0,7s) em vez dos 1,2s; retomada logo após corte curto loga "possível corte precoce" (a taxa que calibra o default). `MENTE_VAD_ADAPTATIVO=false` desliga.
+- **Spike Whisper→GPU (#4)**: `SttService.load` cai para CPU/int8 se o load em cuda falhar (`MENTE_WHISPER_GPU_FALLBACK_CPU`) — o spike (`MENTE_WHISPER_DEVICE=cuda` + `MENTE_WHISPER_COMPUTE_TYPE=int8`) tem aborto automático; pior caso = status quo logado.
+- **Higiene do DB de teste (#5)**: `tests/conftest.py` redireciona `MENTE_DB_TELEMETRIA` pra um tmp ANTES de qualquer import do projeto (e faz `init()`); as 3 lacunas-fixture do banco real foram expurgadas (backup `telemetria_etl.pre-expurgo-2026-07-21.db`).
+- **Bench + guardrail (#6)**: `eval/bench_ttfa.py` — regressão de orquestração com fakes + guardrails (sentinela nunca falado, resposta não-vazia, rota esperada, waterfall preenchido); sai !=0 se violar. Números REAIS vêm do `waterfall` do `/api/metrics`.
+- **Filler ∥ busca web (#7)**: `_responder_web` dispara a busca ANTES de sintetizar o filler (a rede trabalha por baixo da fala); short-circuit do `NENHUM` intacto.
+- **1º chunk agressivo (#8)**: `SentenceChunker(primeiro_max=…)` — só no 1º chunk, vírgula+espaço fecha frase e o flush usa `MENTE_TTS_CHUNK_PRIMEIRO_MAX_CHARS` (60; 0 desliga; nunca alarga o max). Vírgula decimal não fecha (exige espaço).
+- **Fase (b) do extrator (#9)**: quando `QueryOptimizer.pagaria_llm` diz que o LLM vai rodar, `VectorStore.recuperar` (só embedding+HNSW) parte em paralelo e o `search(recuperados=…)` reusa o resultado — o embedding usa a pergunta crua, então é idêntico ao serial. `MENTE_OPTIMIZER_OVERLAP` desliga; fail-open com fakes antigos.
+- **Preâmbulo comum (#10, investigação)**: `llm.montar_system` (ponto único) prefixa `prompts.PREAMBULO_COMUM` quando `MENTE_PROMPT_PREAMBULO_COMUM=true` (default **off** — kill criterion: só cravar com A/B real ≥50ms/turno).
+- **Threads/CCD do STT (#11)**: `scripts/bench_stt_threads.py` — varredura threads × afinidade de CCD (7950X3D) com fala sintetizada pelo próprio Piper; aplica-se o vencedor em `MENTE_WHISPER_CPU_THREADS`.
+- **Gate do bump llama-cpp (#12)**: `eval/retest_speculative.py` — reproduz o crash de shape do prompt-lookup em contexto longo + A/B tok/s; só subir o pin/religar `MENTE_SPECULATIVE_ENABLED` com PASS em env isolada.
+
 ### Convenções
 
 - Toda chamada bloqueante/CPU-bound (IO de arquivo, Whisper, Piper, embeddings, SQLite) passa por `asyncio.to_thread`.

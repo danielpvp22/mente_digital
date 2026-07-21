@@ -129,6 +129,21 @@ class QueryOptimizer:
     def __init__(self, llama: LlamaManager) -> None:
         self._llama = llama
 
+    def pagaria_llm(self, pergunta: str, historico: Deque[Tuple[str, str]]) -> bool:
+        """O optimize() abaixo vai chamar o LLM para ESTA pergunta? Espelho PURO do
+        branching, sem efeito colateral — existe para a fase (b) (consultoria TTFT #9):
+        o Agent só dispara a recuperação vetorial especulativa quando há de fato um
+        decode do extrator para esconder. Se este espelho e o optimize divergirem um
+        dia, o custo é uma especulação inútil (ou uma a menos) — nunca resposta errada,
+        porque o search() usa o resultado especulado apenas quando ele existe."""
+        limpa = pergunta.lower().strip().replace(".", "").replace(",", "")
+        if limpa in STOP_WORDS or len(limpa) < 4:
+            return False                        # caminho de continuação: sem LLM
+        if not (historico and referencia_contexto(pergunta)):
+            # contexto="NENHUM": com o gate ligado o LLM é poupado; desligado, roda.
+            return not settings.optimizer_gate
+        return True
+
     async def optimize(self, pergunta: str, historico: Deque[Tuple[str, str]]) -> str:
         limpa = pergunta.lower().strip().replace(".", "").replace(",", "")
         if limpa in STOP_WORDS or len(limpa) < 4:

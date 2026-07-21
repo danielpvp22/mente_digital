@@ -143,11 +143,12 @@ class Agent(ComandosMestre, Respostas):
 
     async def pipeline_resposta(
         self, texto_usuario: str, send: Sender, mem: SessionMemory,
-        stt_ms: Optional[int] = None,
+        stt_ms: Optional[int] = None, vad_ms: Optional[int] = None,
     ) -> None:
         # Instrumenta o timing por estágio: cada msg passa pelo tracker (F4).
         tracker = LatencyTracker()
         tracker.stt_ms = stt_ms   # transcrição (voz) medida no ws.py, antes daqui
+        tracker.vad_ms = vad_ms   # janela do endpoint aplicada (ws) — waterfall (#1)
 
         async def send_medido(msg: dict) -> bool:
             tracker.note(msg)
@@ -220,7 +221,12 @@ class Agent(ComandosMestre, Respostas):
             # meio (barge-in), "fonte?" nunca responde sobre a resposta errada.
             mem.ultimas_fontes = []
 
-            termos = await self.optimizer.optimize(texto_usuario, mem.chat_history)
+            # extrator_ms = wall-clock da interpretação INTEIRA; com a fase (b), a
+            # recuperação vetorial corre DENTRO desta janela — e o busca_ms do estágio
+            # Banco desaba, que é o overlap aparecendo no waterfall.
+            _t_extrator = time.perf_counter()
+            termos, recuperados = await self._otimizar_e_recuperar(texto_usuario, mem)
+            tracker.extrator_ms = round((time.perf_counter() - _t_extrator) * 1000)
             # Pergunta enriquecida com o histórico p/ o GERADOR da resposta (não a
             # recuperação, que já resolve o pronome via QueryOptimizer). Sem isso, um
             # follow-up cru como "poderia explicar melhor?" chegava ao LLM SEM antecedente
@@ -303,10 +309,15 @@ class Agent(ComandosMestre, Respostas):
                 else:
                     # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base)
                     # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
+                    _t_busca = time.perf_counter()
                     texto_busca = await self._texto_busca(texto_usuario, termos)
+                    # `recuperados` só entra quando a fase (b) especulou — assim os
+                    # fakes/stores antigos (sem o kwarg) seguem funcionando intactos.
+                    _extra = {"recuperados": recuperados} if recuperados is not None else {}
                     local = await self.ctx.vectorstore.search(
-                        termos, texto_busca=texto_busca, economico=mem.economico
+                        termos, texto_busca=texto_busca, economico=mem.economico, **_extra
                     )
+                    tracker.busca_ms = round((time.perf_counter() - _t_busca) * 1000)
                     telemetry.track(
                         "LOCAL",
                         f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
@@ -384,6 +395,45 @@ class Agent(ComandosMestre, Respostas):
         # Sem `finally` liberando o idle: quem faz isso é o `interativo()` do chamador,
         # e só quando o ÚLTIMO pipeline em voo sair (ver AppContext.interativo).
 
+    async def _otimizar_e_recuperar(
+        self, texto_usuario: str, mem: SessionMemory
+    ) -> Tuple[str, Optional[list]]:
+        """FASE (b) do QueryOptimizer (consultoria TTFT #9): otimização e recuperação
+        vetorial em PARALELO quando o extrator vai pagar um decode LLM.
+
+        Por que é seguro: o texto embeddado pela busca é a pergunta CRUA (_texto_busca
+        usa texto_usuario; os `termos` do extrator só alimentam o ATERRAMENTO, que roda
+        depois, dentro do search) — então o resultado da especulação é idêntico ao da
+        busca serial, só chega mais cedo. Cancelamento: barge-in cancela o pipeline →
+        o except abaixo cancela a task especulativa (o to_thread do embedding termina
+        órfão, mas é leitura pura, sem efeito colateral).
+
+        Fica de fora (fail-open, devolve recuperados=None → busca serial de sempre):
+        botão desligado; HyDE (também chama o LLM — a GPU é serializada, não haveria
+        paralelismo); rota time-sensitive (vai direto pra web, nem consulta o Banco);
+        e optimizer/store sem os métodos novos (fakes antigos dos testes)."""
+        pagaria = getattr(self.optimizer, "pagaria_llm", None)
+        recuperar = getattr(self.ctx.vectorstore, "recuperar", None)
+        overlap = (
+            settings.optimizer_overlap
+            and not settings.rag_hyde
+            and callable(pagaria) and callable(recuperar)
+            and not tools.talvez_tempo_real(texto_usuario)
+            and pagaria(texto_usuario, mem.chat_history)
+        )
+        if not overlap:
+            return await self.optimizer.optimize(texto_usuario, mem.chat_history), None
+        tarefa = asyncio.ensure_future(recuperar(texto_usuario))
+        try:
+            termos = await self.optimizer.optimize(texto_usuario, mem.chat_history)
+            recuperados = await tarefa
+        except BaseException:
+            tarefa.cancel()          # barge-in/erro: a especulação não fica órfã viva
+            raise
+        if recuperados is not None:
+            telemetry.track("EXTRATOR", "Fase (b): recuperação correu em paralelo com o LLM.")
+        return termos, recuperados
+
     async def _registrar_latencia(self, tracker: LatencyTracker, rota: str) -> None:
         ttft, ttfa, total = (
             LatencyTracker._ms(tracker.ttft),
@@ -393,11 +443,13 @@ class Agent(ComandosMestre, Respostas):
         toks = tracker.decode_tok_s()
         telemetry.track(
             "LATENCIA",
-            f"rota={rota} stt={tracker.stt_ms}ms TTFT={ttft}ms tok/s={toks} "
-            f"TTFA={ttfa}ms total={total}ms n_tok={tracker.n_tokens}",
+            f"rota={rota} vad={tracker.vad_ms}ms stt={tracker.stt_ms}ms "
+            f"extrator={tracker.extrator_ms}ms busca={tracker.busca_ms}ms "
+            f"TTFT={ttft}ms tok/s={toks} TTFA={ttfa}ms total={total}ms n_tok={tracker.n_tokens}",
         )
         await asyncio.to_thread(
-            db.save_latency, rota, ttft, ttfa, total, tracker.stt_ms, toks, tracker.n_tokens
+            db.save_latency, rota, ttft, ttfa, total, tracker.stt_ms, toks, tracker.n_tokens,
+            vad_ms=tracker.vad_ms, extrator_ms=tracker.extrator_ms, busca_ms=tracker.busca_ms,
         )
 
     async def _rotear(self, texto_usuario: str, observacoes: str = ""):

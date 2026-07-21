@@ -7,6 +7,9 @@ pydantic-settings>=2.2
 
 # --- Núcleo IA ---
 llama-cpp-python>=0.2.70      # compilar com suporte CUDA para a RTX 3080
+                              # gate de bump (consultoria #12): antes de subir a versao,
+                              # rode eval/retest_speculative.py numa env ISOLADA — o
+                              # prompt-lookup crashava em contexto longo ate a 0.3.34
 faster-whisper>=1.0          # STT (CTranslate2) — mesmos pesos do Whisper, mais rápido
 piper-tts>=1.2.0
 numpy>=1.26
