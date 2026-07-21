@@ -7,6 +7,19 @@ store (resultados fixos), então cada teste exercita só a decisão do código.
 """
 from __future__ import annotations
 
+import os
+import tempfile
+
+# ISOLAMENTO DO SQLITE REAL (consultoria TTFT #5): o `telemetry.db` global nasce no
+# IMPORT apontando para MENTE_DB_TELEMETRIA — redirecionar AQUI, antes de qualquer
+# import do projeto, é o único jeito de a suíte não gravar lacunas/latência/log_etl
+# no telemetria_etl.db de produção (medido: 3 lacunas-fixture no topo da fila da
+# pesquisa proativa). setdefault: um runner que já isolou (ex.: CI) não é sobreposto.
+os.environ.setdefault(
+    "MENTE_DB_TELEMETRIA",
+    os.path.join(tempfile.mkdtemp(prefix="mente_pytest_"), "telemetria_teste.db"),
+)
+
 from typing import List, Optional, Tuple
 
 import pytest
@@ -16,6 +29,13 @@ from config import settings as _settings
 
 # Defaults LIMPOS do código (ignora o .env) — a suíte de lógica assume estes valores.
 _DEFAULTS_LIMPOS = Settings(_env_file=None)
+
+# Tabelas no banco ISOLADO do redirect acima: sem isto os writes best-effort dos
+# testes (save_lacuna, save_latency...) falhariam em silêncio por falta de schema —
+# e os testes que LEEM o que gravaram passariam por motivo errado.
+from telemetry import db as _db_teste  # noqa: E402  (precisa vir DEPOIS do redirect)
+
+_db_teste.init()
 
 
 @pytest.fixture(autouse=True)

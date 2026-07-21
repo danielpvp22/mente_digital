@@ -30,6 +30,20 @@ from telemetry import db, telemetry
 _RECV_TIMEOUT = 0.5  # s — granularidade da checagem de silêncio
 
 
+def janela_endpoint(dur_fala: float) -> float:
+    """Janela de silêncio que encerra a fala (endpointing adaptativo, consultoria #3).
+
+    Fala CURTA (comando, pergunta seca) encerra com a janela curta — o 1,2s fixo era
+    pago por TODO turno de voz, e é maior que o próprio TTFT do RAG. Fala longa mantém
+    a margem cheia: pausa de respiração no meio de um raciocínio não pode decapitar a
+    frase. Pura (settings entram por leitura) para testar sem WebSocket."""
+    if not settings.vad_adaptativo:
+        return settings.vad_silence_seconds
+    if dur_fala <= settings.vad_fala_curta_seconds:
+        return settings.vad_silence_curta_seconds
+    return settings.vad_silence_seconds
+
+
 class LiveSession:
     def __init__(self, ctx: AppContext, websocket: WebSocket) -> None:
         self.ctx = ctx
@@ -38,6 +52,12 @@ class LiveSession:
         self.is_recording = False
         self.last_audio_time = time.time()
         self.last_activity = time.time()   # qualquer interação: rearma o timer de idle
+        # Endpointing adaptativo (#3): início da fala corrente (mede a duração p/ a
+        # janela) e o instante/janela do ÚLTIMO endpoint — retomada logo após um corte
+        # CURTO é o sinal de corte-precoce que calibra os defaults (logado abaixo).
+        self._fala_inicio = 0.0
+        self._fim_fala_ts: Optional[float] = None
+        self._janela_usada: Optional[float] = None
         # F3 — wake-word "mestre" (tipo Alexa): com `mestre_wake` ligado, a sessão começa
         # DORMENTE e só processa fala normal após a palavra-mestre ACORDAR; volta a dormir
         # após `mestre_sleep_seconds` de silêncio. Desligado = sempre ativa (hoje).
@@ -62,10 +82,14 @@ class LiveSession:
         if self.pipeline_task and not self.pipeline_task.done():
             self.pipeline_task.cancel()
 
-    def _start_pipeline(self, texto: str, stt_ms: Optional[int] = None) -> None:
+    def _start_pipeline(
+        self, texto: str, stt_ms: Optional[int] = None, vad_ms: Optional[int] = None
+    ) -> None:
         self._cancel_pipeline()
         self.pipeline_task = asyncio.create_task(
-            self.ctx.agent.pipeline_resposta(texto, self.safe_send, self.memory, stt_ms=stt_ms)
+            self.ctx.agent.pipeline_resposta(
+                texto, self.safe_send, self.memory, stt_ms=stt_ms, vad_ms=vad_ms
+            )
         )
 
     async def _dump_pergunta(self, texto: str) -> None:
@@ -215,9 +239,26 @@ class LiveSession:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(pcm ** 2))) if pcm.size else 0.0
         if rms > settings.vad_rms_threshold:
+            if not self.is_recording:
+                agora = time.time()
+                self._fala_inicio = agora   # duração da fala alimenta a janela adaptativa
+                # TAXA DE CORTE-PRECOCE (#3): retomar a fala logo depois de um endpoint
+                # CURTO sugere que cortamos um enunciado que ia continuar. É este log que
+                # decide se vad_silence_curta aperta ou relaxa — medir antes de cravar.
+                if (
+                    self._fim_fala_ts is not None
+                    and self._janela_usada is not None
+                    and self._janela_usada < settings.vad_silence_seconds
+                    and agora - self._fim_fala_ts < settings.vad_silence_seconds
+                ):
+                    telemetry.warn(
+                        "VAD",
+                        f"Retomada {round((agora - self._fim_fala_ts) * 1000)}ms após "
+                        "endpoint curto — possível corte precoce (calibre MENTE_VAD_SILENCE_CURTA_SECONDS).",
+                    )
             # Religa o LLM no PRIMEIRO frame de fala (painel 2026-07): o reload de
-            # 1-2s pós-idle corre em paralelo com a fala + 1,2s de VAD + STT, em vez
-            # de ser pago serialmente no TTFT da primeira resposta. Só na TRANSIÇÃO
+            # 1-2s pós-idle corre em paralelo com a fala + VAD + STT, em vez de ser
+            # pago serialmente no TTFT da primeira resposta. Só na TRANSIÇÃO
             # silêncio→fala (não por frame: `ready` fica False durante todo o load e
             # cada frame criaria mais uma task na fila do _load_lock) e só ACORDADO
             # (dormente = voz de fundo não deve reancorar a VRAM que o idle liberou).
@@ -231,9 +272,14 @@ class LiveSession:
     async def _check_silence(self) -> None:
         if not self.is_recording:
             return
-        if time.time() - self.last_audio_time <= settings.vad_silence_seconds:
+        # Endpointing adaptativo (#3): a janela depende da DURAÇÃO da fala até o último
+        # frame com voz — comando curto encerra mais cedo, raciocínio longo mantém margem.
+        janela = janela_endpoint(self.last_audio_time - self._fala_inicio)
+        if time.time() - self.last_audio_time <= janela:
             return
         self.is_recording = False
+        self._fim_fala_ts = time.time()
+        self._janela_usada = janela          # p/ o detector de corte-precoce (_on_audio)
         buffer, self.audio_buffer = self.audio_buffer, []
         if len(buffer) < settings.vad_min_frames:
             return
@@ -248,7 +294,9 @@ class LiveSession:
         self._marcar_ativa()
         await self.safe_send({"tipo": "transcricao", "texto": texto})
         await self._dump_pergunta(texto)
-        self._start_pipeline(texto, stt_ms=stt_ms)
+        # vad_ms = a janela de silêncio PAGA neste turno (waterfall #1): é o pedaço do
+        # TTFA que mora antes do STT e que o modo adaptativo existe para encolher.
+        self._start_pipeline(texto, stt_ms=stt_ms, vad_ms=round(janela * 1000))
 
     # -- texto / controle -------------------------------------------------------
     async def _on_text(self, raw: str) -> None:

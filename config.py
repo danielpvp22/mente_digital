@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # maioria das perguntas. Desligue se o aterramento léxico degradar (acompanhe
     # o [LOCAL] relevante= nos logs).
     optimizer_gate: bool = True
+    # FASE (b) do extrator (consultoria TTFT #9): quando a pergunta REFERENCIA o turno
+    # anterior (o gate acima NÃO poupa o LLM), a recuperação vetorial parte em PARALELO
+    # com o decode do extrator — o embedding usa a pergunta CRUA (ver _texto_busca),
+    # que não depende dos termos; só o aterramento léxico espera o LLM. Esconde o custo
+    # da busca embaixo de uma chamada que já existia. Sem efeito nos turnos que o gate
+    # (a) já poupa, nem com HyDE ligado (HyDE também chama o LLM — a GPU é serializada,
+    # não haveria paralelismo real).
+    optimizer_overlap: bool = True
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
     # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
@@ -106,6 +114,13 @@ class Settings(BaseSettings):
     # mas o "/no_think" viraria texto solto no system prompt.
     llm_no_think: bool = True       # prefixa "/no_think" no system prompt
     llm_strip_think: bool = True    # remove o bloco <think>…</think> do início do stream
+    # PREÂMBULO COMUM (consultoria TTFT #10 — INVESTIGAÇÃO, off até o bench provar):
+    # prefixa TODO system prompt com prompts.PREAMBULO_COMUM (ver llm.montar_system).
+    # Prefixo byte-idêntico entre extrator/roteador/resposta => o llama.cpp reaproveita
+    # o KV do maior prefixo comum entre chamadas consecutivas (prefill economizado).
+    # Critério de kill da consultoria: só cravar True se um A/B com o modelo REAL
+    # (eval/bench_ttfa.py --real, comparando os dois estados) medir >=50ms/turno RAG.
+    prompt_preambulo_comum: bool = False
 
     # --- Speculative decoding (§5) — prompt-lookup ------------------------------
     # DESLIGADO por default após benchmark no RTX 3080 (2026-07): o
@@ -134,6 +149,15 @@ class Settings(BaseSettings):
     # comparando o stt_ms e as transcrições no log antes/depois).
     whisper_cpu_threads: int = 8
     whisper_beam_size: int = 1
+    # SPIKE Whisper->GPU (consultoria TTFT #4): o STT na CPU custa ~0,8x a duração da
+    # fala — o maior item individual do TTFA de voz. Na GPU int8 o turbo cai a fração
+    # disso, MAS a VRAM opera com ~1,3GB livres (a 3080 também segura o desktop), então
+    # o load em cuda pode falhar por OOM/fragmentação. True = cai para CPU/int8 (o
+    # comportamento estável de produção) em vez de deixar o STT morto — o spike liga
+    # MENTE_WHISPER_DEVICE=cuda + MENTE_WHISPER_COMPUTE_TYPE=int8 sabendo que o pior
+    # caso é voltar ao status quo, logado. Ver também scripts/bench_stt_threads.py
+    # (o plano B barato na CPU: threads/afinidade de CCD no 7950X3D).
+    whisper_gpu_fallback_cpu: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
@@ -361,10 +385,29 @@ class Settings(BaseSettings):
 
     # --- VAD / Áudio -----------------------------------------------------------
     vad_rms_threshold: float = 0.005    # servidor: início de fala
-    vad_silence_seconds: float = 1.2    # servidor: fim de fala
+    vad_silence_seconds: float = 1.2    # servidor: fim de fala (teto/fallback)
     vad_min_frames: int = 15            # ignora ruídos curtos
+    # ENDPOINTING ADAPTATIVO (consultoria TTFT #3): fala CURTA (comando, pergunta seca)
+    # encerra com `vad_silence_curta_seconds` de silêncio em vez do teto cheio — os 1,2s
+    # fixos eram pagos por TODO turno de voz e são maiores que o próprio TTFT do RAG.
+    # Fala mais longa que `vad_fala_curta_seconds` mantém a margem cheia (pausa de
+    # respiração no meio de um raciocínio não pode decapitar a frase). O ws loga
+    # "retomada Nms após endpoint curto" quando a fala recomeça logo depois de um corte
+    # curto — essa taxa de corte-precoce é o que decide se estes defaults apertam ou
+    # relaxam (regra da consultoria: medir antes de cravar). Off = sempre o teto.
+    vad_adaptativo: bool = True
+    vad_silence_curta_seconds: float = 0.7
+    vad_fala_curta_seconds: float = 3.0
     tts_chunk_min_chars: int = 8        # frase mínima antes de sintetizar
     tts_chunk_max_chars: int = 180      # flush forçado em frases longas
+    # 1º CHUNK AGRESSIVO (consultoria TTFT #8): o TTFA espera a PRIMEIRA frase fechar —
+    # a 180 chars e ~120 tok/s isso é >1s de decode antes do 1º áudio. Só no 1º chunk
+    # da resposta, vírgula/;/: também fecham frase (o Piper pausa em vírgula: soa como
+    # respiração, não corte) e o flush forçado usa esta janela menor. Do 2º chunk em
+    # diante valem as regras de sempre. Nunca ALARGA a janela (é min() com o max acima).
+    # 0 desliga (comportamento histórico). Vírgula decimal ("3,5") não fecha — a
+    # fronteira exige espaço após a pontuação.
+    tts_chunk_primeiro_max_chars: int = 60
     # Cache de voz (#1): nº de frases sintetizadas mantidas em RAM (LRU). Frase
     # recorrente (filler, confirmação, status) volta na hora, sem re-sintetizar.
     tts_cache_size: int = 256
@@ -398,9 +441,15 @@ class Settings(BaseSettings):
     # e a proativa pesquisava — medido: 8 átomos sobre a etimologia de "ok" no vault.
     lacuna_min_keywords: int = 2
     # Dedup do átomo novo contra o banco: distância de cosseno abaixo da qual o átomo é
-    # considerado DUPLICADO e descartado. Conservador (0.08 ≈ quase idêntico) para não
-    # podar átomo legitimamente distinto — impede duplicação sem matar cobertura.
-    dedup_dist_max: float = 0.08
+    # considerado DUPLICADO e descartado. A ESCALA É DO EMBEDDING EM USO (consultoria
+    # TTFT #2): o 0.08 histórico era "quase idêntico" no MiniLM, mas o e5-base comprime
+    # as distâncias — o dry-run do painel (scripts/dedup_semantico.py, 12.947 chunks)
+    # mediu p50 do vizinho cross-fonte = 0.045, então 0.08 marcaria 75% da base como
+    # duplicata e o `_ja_no_banco` (etl.py) DESCARTAVA átomo novo legítimo em silêncio.
+    # 0.01 é o "quase idêntico" da escala e5 (<0.01 = 57 de 12.947 fontes). Ao trocar
+    # de embedding, recalibre isto JUNTO com o rag_score_confident — mesmo esquecimento,
+    # mesma causa (a escala muda com o modelo).
+    dedup_dist_max: float = 0.01
 
     # --- Palavra-mestre (fluxo isolado dos agentes) -----------------------------
     # Quando a mensagem COMEÇA por esta palavra, é tratada como COMANDO de agente

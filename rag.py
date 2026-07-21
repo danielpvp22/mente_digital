@@ -748,8 +748,27 @@ class VectorStore:
             itens.sort(key=lambda it: -cent.get(it[1], 0.0))
         return [c for c, _ in itens]
 
+    async def recuperar(self, consulta: str, k: Optional[int] = None) -> Optional[list]:
+        """Só a RECUPERAÇÃO vetorial (embedding + HNSW) — a parte cara do search(),
+        sem gate/aterramento. Existe para a fase (b) da consultoria TTFT (#9): o Agent
+        a dispara em PARALELO com o LLM do extrator (o embedding usa a pergunta CRUA,
+        que não depende dos termos) e entrega o resultado ao search() via `recuperados`.
+        Devolve o mesmo formato do similarity_search_with_score. None em erro/sem
+        loja/consulta vazia — o chamador cai na busca normal (fail-open, como todo o RAG)."""
+        if self._store is None or not consulta.strip():
+            return None
+        try:
+            return await asyncio.to_thread(
+                self._store.similarity_search_with_score,
+                consulta.strip(), k=k or settings.rag_top_k,
+            )
+        except Exception as exc:
+            telemetry.error("LOCAL", "Falha na recuperação especulativa", exc)
+            return None
+
     async def search(
-        self, termos: str, texto_busca: Optional[str] = None, economico: bool = False
+        self, termos: str, texto_busca: Optional[str] = None, economico: bool = False,
+        recuperados: Optional[list] = None,
     ) -> LocalResult:
         """
         Busca híbrida local COM aterramento léxico.
@@ -774,7 +793,12 @@ class VectorStore:
             return LocalResult(NENHUM, None, False)
         consulta = (texto_busca or termos).strip() or termos
         try:
-            res = await asyncio.to_thread(
+            # Fase (b) (consultoria #9): `recuperados` chega pronto quando o Agent
+            # especulou a recuperação em paralelo com o LLM do extrator. A consulta da
+            # especulação é a MESMA pergunta crua que seria embeddada aqui, então o
+            # resultado é idêntico ao da linha de baixo — só o instante muda. Lista
+            # vazia é resultado legítimo ("especulei e não veio nada"), não fallback.
+            res = recuperados if recuperados is not None else await asyncio.to_thread(
                 self._store.similarity_search_with_score, consulta, k=settings.rag_top_k
             )
             if not res:

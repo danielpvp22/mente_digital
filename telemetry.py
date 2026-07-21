@@ -88,6 +88,12 @@ class LatencyTracker:
         self.n_tokens = 0
         self._t_ultimo_token: float | None = None
         self.stt_ms: int | None = None   # transcrição (voz), setado pelo ws.py
+        # WATERFALL (consultoria TTFT #1) — os estágios que vivem ANTES do 1º token,
+        # preenchidos de fora como o stt_ms: sem eles, TTFT/TTFA dizem QUANTO demorou,
+        # mas não ONDE — e toda discussão de otimização vira chute.
+        self.vad_ms: int | None = None       # janela de silêncio do endpoint (voz)
+        self.extrator_ms: int | None = None  # interpretação (gate/LLM ± fase-b overlap)
+        self.busca_ms: int | None = None     # estágio Banco (embedding + HNSW + gate)
 
     def note(self, msg: dict) -> None:
         tipo = msg.get("tipo")
@@ -183,8 +189,11 @@ class Database:
             # antigos, como o conversa_id acima). stt_ms=transcrição, decode_tok_s=tok/s
             # do decode, n_tokens=tokens gerados na resposta.
             lat_cols = [r[1] for r in c.execute("PRAGMA table_info(metricas_latencia)").fetchall()]
+            # vad/extrator/busca: o waterfall da consultoria TTFT (#1) — mesma migração
+            # idempotente dos demais (banco antigo ganha as colunas, linhas velhas = NULL).
             for _col, _tipo in (("stt_ms", "INTEGER"), ("decode_tok_s", "REAL"),
-                                ("n_tokens", "INTEGER")):
+                                ("n_tokens", "INTEGER"), ("vad_ms", "INTEGER"),
+                                ("extrator_ms", "INTEGER"), ("busca_ms", "INTEGER")):
                 if _col not in lat_cols:
                     c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
             # Métricas do ciclo do conhecimento (painel 2026-07): retrato DIÁRIO da
@@ -586,19 +595,63 @@ class Database:
         stt_ms: Optional[int] = None,
         decode_tok_s: Optional[float] = None,
         n_tokens: Optional[int] = None,
+        vad_ms: Optional[int] = None,
+        extrator_ms: Optional[int] = None,
+        busca_ms: Optional[int] = None,
     ) -> None:
         try:
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO metricas_latencia "
-                    "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, n_tokens) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, "
+                    "n_tokens, vad_ms, extrator_ms, busca_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms,
-                     stt_ms, decode_tok_s, n_tokens),
+                     stt_ms, decode_tok_s, n_tokens, vad_ms, extrator_ms, busca_ms),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar latência", exc)
+
+    @staticmethod
+    def _percentil(ordenados: list, frac: float):
+        """Percentil por posto-mais-próximo sobre uma lista JÁ ordenada. Sem dependência
+        nova de propósito (numpy até existe no projeto, mas isto roda no caminho do
+        /api/metrics — 8 sorts de <=200 itens não justificam importar nada)."""
+        if not ordenados:
+            return None
+        return ordenados[min(len(ordenados) - 1, int(round(frac * (len(ordenados) - 1))))]
+
+    def latencia_percentis(self, ultimas: int = 200) -> dict:
+        """WATERFALL (consultoria TTFT #1): p50/p95 POR ESTÁGIO das últimas N respostas.
+
+        Média esconde cauda — e é a cauda que o usuário sente. NULLs ficam fora POR
+        estágio (turno digitado não tem vad/stt; rota web não tem busca do Banco;
+        linhas antigas não têm as colunas novas), por isso cada estágio reporta o
+        próprio `n`. É o que arbitra as apostas da consultoria: se vad+stt dominam,
+        otimizar decode não muda o que o usuário ouve."""
+        campos = ("vad_ms", "stt_ms", "extrator_ms", "busca_ms",
+                  "ttft_ms", "ttfa_ms", "total_ms", "decode_tok_s")
+        out: dict = {"amostras": 0, "estagios": {}}
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT {', '.join(campos)} FROM metricas_latencia "
+                    "ORDER BY id DESC LIMIT ?",
+                    (ultimas,),
+                ).fetchall()
+            out["amostras"] = len(rows)
+            for i, campo in enumerate(campos):
+                valores = sorted(r[i] for r in rows if r[i] is not None)
+                if valores:
+                    out["estagios"][campo] = {
+                        "n": len(valores),
+                        "p50": self._percentil(valores, 0.50),
+                        "p95": self._percentil(valores, 0.95),
+                    }
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro nos percentis de latência", exc)
+        return out
 
     def save_lacuna(self, chave: str, termos: str) -> None:
         """Registra (ou incrementa) uma pergunta que a RAM E o banco não responderam.
@@ -1032,6 +1085,9 @@ class Database:
                 "etl_por_status": por_status,
                 "ultimos_etl": ultimos_etl,
                 "latencia": latencia,
+                # Waterfall (consultoria #1): p50/p95 por estágio — a média acima fica
+                # por compatibilidade, mas é o percentil que orienta otimização.
+                "waterfall": self.latencia_percentis(),
             }
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao calcular métricas", exc)

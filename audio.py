@@ -36,11 +36,26 @@ class SentenceChunker:
         "obs", "ref", "pg", "pág", "cap",
     }
     _BOUNDARY = re.compile(r"[.!?…]+(\s|$)")
+    # Fronteira EXTRA do 1º chunk (consultoria TTFT #8): vírgula/;/: seguidas de espaço.
+    # O espaço é OBRIGATÓRIO (sem o `$` que o _BOUNDARY aceita): protege o decimal
+    # PT-BR ("3,5") e, no streaming, segura a vírgula no fim do buffer até o PRÓXIMO
+    # token confirmar a fronteira — senão "custa 3," cortaria antes de o "5" chegar,
+    # picotando o número (e a decisão dependeria de onde o stream foi fatiado).
+    _VIRGULA = re.compile(r"[,;:]\s")
 
-    def __init__(self, min_len: Optional[int] = None, max_len: Optional[int] = None) -> None:
+    def __init__(
+        self, min_len: Optional[int] = None, max_len: Optional[int] = None,
+        primeiro_max: Optional[int] = None,
+    ) -> None:
         self.buffer = ""
         self.min_len = min_len if min_len is not None else settings.tts_chunk_min_chars
         self.max_len = max_len if max_len is not None else settings.tts_chunk_max_chars
+        # 1º CHUNK AGRESSIVO (#8): o TTFA espera a primeira frase fechar — janela menor
+        # e vírgula-como-fronteira SÓ até a primeira emissão. 0 desliga.
+        self.primeiro_max = (
+            primeiro_max if primeiro_max is not None else settings.tts_chunk_primeiro_max_chars
+        )
+        self._emitiu = False
 
     def push(self, token: str) -> List[str]:
         """Adiciona um token e devolve as frases que ficaram prontas (0..n)."""
@@ -54,6 +69,14 @@ class SentenceChunker:
         return prontas
 
     def _extract(self) -> Optional[str]:
+        # 1º CHUNK AGRESSIVO (consultoria TTFT #8): antes da 1ª emissão, vírgula também
+        # fecha frase (o Piper pausa em vírgula — soa respiração, não corte) e o flush
+        # forçado usa a janela menor. As decisões dependem só do CONTEÚDO do buffer,
+        # nunca de onde o stream foi cortado — é o que preserva as propriedades de
+        # invariância/não-perda do test_propriedades.
+        primeiro = not self._emitiu and (self.primeiro_max or 0) > 0
+
+        fim: Optional[int] = None
         for m in self._BOUNDARY.finditer(self.buffer):
             punct_start = m.start()
             end = m.start() + len(m.group().rstrip())  # posição após a pontuação
@@ -62,22 +85,42 @@ class SentenceChunker:
             ultima = re.split(r"\s", head)[-1].lower().strip("([{\"'") if head else ""
             if self.buffer[punct_start] == "." and ultima in self._ABBREV:
                 continue
-            candidato = self.buffer[:end].strip()
-            if len(candidato) >= self.min_len:
-                self.buffer = self.buffer[end:].lstrip()
-                return candidato
-            # muito curta -> continua acumulando
+            if len(self.buffer[:end].strip()) >= self.min_len:
+                fim = end
+                break
+            # muito curta -> tenta a próxima fronteira
+
+        if primeiro:
+            # A vírgula só VENCE se vier ANTES do fim de frase (fronteira mais cedo =
+            # áudio mais cedo); curta demais (< min_len) pula para a próxima vírgula.
+            for mv in self._VIRGULA.finditer(self.buffer):
+                end_v = mv.start() + 1              # inclui a pontuação no chunk
+                if len(self.buffer[:end_v].strip()) < self.min_len:
+                    continue
+                if fim is None or end_v < fim:
+                    fim = end_v
+                break
+
+        if fim is not None:
+            candidato = self.buffer[:fim].strip()
+            self.buffer = self.buffer[fim:].lstrip()
+            self._emitiu = True
+            return candidato
+
         # flush por tamanho: frase longa sem pontuação não pode travar o áudio.
-        # Corta no último espaço DENTRO da janela de max_len (não no fim do buffer),
-        # para emitir pedaços ~max_len e manter o áudio fluindo.
-        if len(self.buffer) >= self.max_len:
-            janela = self.buffer[: self.max_len]
+        # Corta no último espaço DENTRO da janela (não no fim do buffer), para emitir
+        # pedaços ~janela e manter o áudio fluindo. No 1º chunk a janela é a menor —
+        # min() com max_len para NUNCA alargar (testes usam max_len pequeno de propósito).
+        limite = min(self.primeiro_max, self.max_len) if primeiro else self.max_len
+        if len(self.buffer) >= limite:
+            janela = self.buffer[:limite]
             corte = max(janela.rfind(", "), janela.rfind(" "), janela.rfind("\n"))
             if corte <= 0:
-                corte = self.max_len
+                corte = limite
             candidato = self.buffer[:corte].strip()
             self.buffer = self.buffer[corte:].lstrip()
             if candidato:
+                self._emitiu = True
                 return candidato
         return None
 
@@ -119,16 +162,34 @@ class SttService:
             if compute == "auto":
                 compute = "float16" if device == "cuda" else "int8"
 
-            # download_root: baixa/lê os pesos do Whisper na pasta do projeto
-            # (./modelos/whisper), em vez do cache global do HuggingFace.
-            self._model = WhisperModel(
-                settings.whisper_model,
-                device=device,
-                compute_type=compute,
-                download_root=settings.caminho_cache_whisper,
-                # 16 núcleos no host; o default do CT2 (~4) deixava GEMM int8 na mesa.
-                cpu_threads=settings.whisper_cpu_threads,
-            )
+            def _carregar(dev: str, comp: str):
+                # download_root: baixa/lê os pesos do Whisper na pasta do projeto
+                # (./modelos/whisper), em vez do cache global do HuggingFace.
+                return WhisperModel(
+                    settings.whisper_model,
+                    device=dev,
+                    compute_type=comp,
+                    download_root=settings.caminho_cache_whisper,
+                    # 16 núcleos no host; o default do CT2 (~4) deixava GEMM int8 na mesa.
+                    cpu_threads=settings.whisper_cpu_threads,
+                )
+
+            try:
+                self._model = _carregar(device, compute)
+            except Exception as exc:
+                # Spike Whisper->GPU (consultoria TTFT #4) com critério de aborto
+                # AUTOMÁTICO: a VRAM opera com ~1,3GB livres, então o load em cuda pode
+                # falhar (OOM/fragmentação — a 3080 também segura o desktop). Cair para
+                # CPU/int8 mantém o STT VIVO no comportamento estável de produção; o
+                # pior caso do experimento é voltar ao status quo, logado.
+                if device != "cuda" or not settings.whisper_gpu_fallback_cpu:
+                    raise
+                telemetry.warn(
+                    "WHISPER",
+                    f"Falha ao carregar na GPU ({exc}) — caindo para CPU/int8 (spike #4 abortado).",
+                )
+                device, compute = "cpu", "int8"
+                self._model = _carregar(device, compute)
             telemetry.track(
                 "WHISPER",
                 f"faster-whisper '{settings.whisper_model}' carregado ({device}/{compute}).",

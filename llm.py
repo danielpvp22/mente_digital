@@ -44,10 +44,27 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import AsyncIterator, Optional, Set
 
+import prompts
 from config import settings
 from telemetry import telemetry
 
 _SENTINEL = object()
+
+
+def montar_system(system_prompt: str) -> str:
+    """Composição FINAL do system prompt — ponto único: todo decode passa aqui.
+
+    Ordem fixa: "/no_think" primeiro (diretiva do Qwen3), depois o preâmbulo comum
+    (consultoria #10 — prefixo idêntico entre chamadas p/ reuso do KV do prefixo no
+    llama.cpp), depois a tarefa. Como as flags não mudam durante o processo, o começo
+    do prompt fica byte-idêntico entre extrator/roteador/resposta — a condição do
+    reuso. Pura, para o A/B do bench testar a composição sem carregar modelo."""
+    base = (
+        f"{prompts.PREAMBULO_COMUM}\n{system_prompt}"
+        if settings.prompt_preambulo_comum
+        else system_prompt
+    )
+    return f"/no_think\n{base}" if settings.llm_no_think else base
 
 
 class InferenciaPreemptada(RuntimeError):
@@ -330,10 +347,10 @@ class LlamaManager:
             return
 
         temp = settings.temperatura_resposta if temperature is None else temperature
-        # Qwen3 raciocina por padrão: "/no_think" desliga (o bloco <think> ainda SAI, só
-        # que vazio — quem o remove é o _FiltroThink abaixo). No-op em modelos que ignoram
-        # a diretiva (Qwen2.5, Llama…), por isso é um botão e não um default.
-        sys_prompt = f"/no_think\n{system_prompt}" if settings.llm_no_think else system_prompt
+        # Composição única do system (montar_system): "/no_think" do Qwen3 (o bloco
+        # <think> ainda SAI, vazio — quem o remove é o _FiltroThink abaixo; no-op em
+        # modelos que ignoram a diretiva) + preâmbulo comum (#10) quando ligado.
+        sys_prompt = montar_system(system_prompt)
 
         async with self._inference_lock:
             loop = asyncio.get_running_loop()

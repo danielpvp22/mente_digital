@@ -172,13 +172,23 @@ class Respostas:
         # query enxuta de sempre.
         query_web = frase_citada(consulta_rank or texto_usuario) or termos
 
-        # Filler específico mascara a latência da busca web (diz o que está fazendo).
-        await self._falar_status(send, self._msg_web(query_web))
-
+        # A BUSCA PARTE ANTES do filler ser sintetizado (consultoria TTFT #7): a síntese
+        # Piper do filler (~0,1-0,3s) rodava EM SÉRIE com a rede parada — agora o DDG/
+        # deep-fetch trabalha por baixo da fala. O filler continua saindo primeiro (é
+        # rápido); o short-circuit do NENHUM abaixo não muda — só o await mudou de lugar.
         # `query_web` faz o DDG; `consulta_rank` (pergunta natural crua) guia o ranking
         # dos trechos do deep-fetch — o embedding é simétrico, então a frase inteira
         # casa melhor com os parágrafos das páginas que 5 keywords.
-        dados_web = await self.ctx.web.search(query_web, consulta=consulta_rank or termos)
+        busca = asyncio.ensure_future(
+            self.ctx.web.search(query_web, consulta=consulta_rank or termos)
+        )
+        try:
+            # Filler específico mascara a latência da busca web (diz o que está fazendo).
+            await self._falar_status(send, self._msg_web(query_web))
+            dados_web = await busca
+        except BaseException:
+            busca.cancel()   # barge-in/erro no filler: a busca não fica órfã viva
+            raise
         # Pre-fetch é "curiosidade": baixa contexto AMPLO do tema para virar átomo.
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
         # engordava o vault com dezenas de notas por pergunta sobre o tempo. Em modo
