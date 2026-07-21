@@ -14,8 +14,10 @@ modelos/
 
 ## O que baixar
 
-- **LLM** — `Qwen2.5-7B-Instruct-Q4_K_M.gguf` (Instruct oficial da Alibaba; trocado do
-  antigo `Qwen2.5-Coder-7B-Instruct-Uncensored` após A/B — ver `eval/ab_modelos.py`).
+- **LLM** — `Qwen3-8B-Q4_K_M.gguf`, do repositório oficial
+  [Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF) (trocado do
+  antigo `Qwen2.5-7B-Instruct` após A/B — ver `eval/ab_modelos.py`). Se o download
+  travar/estagnar, pare e rode com `HF_HUB_DISABLE_XET=1`.
 - **Voz Piper** — `pt_BR-cadu` (medium), do repositório oficial
   [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) em
   `pt/pt_BR/cadu/medium/`. Baixe o `.onnx` **e** o `.onnx.json`.
