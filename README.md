@@ -6,17 +6,39 @@
 
 *Um segundo cérebro que fala: conversa por voz, responde a partir das **suas** notas do Obsidian, recorre à web só quando precisa — **age** por comando falado (lembretes, listas, rotinas), **cuida** de coisas sozinho (alarmes, briefings, pomodoro) e, enquanto você não está olhando, destila o que aprendeu em novas notas atômicas.*
 
+🇺🇸 *Prefer English? There's a [condensed overview](README.en.md).*
+
+![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
+![Testes](https://img.shields.io/badge/testes-624_sem_GPU_nem_rede-success)
+![License](https://img.shields.io/badge/License-Apache_2.0-blue)
+
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
 ![llama.cpp](https://img.shields.io/badge/llama.cpp-GGUF_Q4__K__M-000000)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-cosine-FF6B6B)
 ![faster-whisper](https://img.shields.io/badge/faster--whisper-CTranslate2-5A67D8)
 ![Piper](https://img.shields.io/badge/Piper_TTS-ONNX-8E44AD)
-![Testes](https://img.shields.io/badge/testes-560_passed-success)
 ![Deps novas](https://img.shields.io/badge/deps_novas_nas_3_ondas-zero-blue)
 ![Nuvem](https://img.shields.io/badge/nuvem-zero-critical)
 
 **Alvo:** RTX 3080 (10 GB) · Ryzen 9 7950X3D · Windows
+
+</div>
+
+---
+
+<div align="center">
+
+**⏱ A camada de 30 segundos** — seis números, todos medidos neste repositório:
+
+| | |
+|---:|:---|
+| **624 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~6 s — é literalmente o job de CI |
+| **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** (`eval/ab_modelos.py`) |
+| **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
+| **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real (`eval/calibrar_gate.py`) |
+| **TTFT ≈ 1,1 s** | medido ao vivo numa resposta do vault (decode ≈ 85 tok/s), com timing por estágio em `/api/metrics` |
+| **8,9 / 10 GB** | o stack inteiro (Qwen3-8B + e5-base + KV `q8_0`) residente na VRAM da RTX 3080, com ~1,3 GB de folga |
 
 </div>
 
@@ -347,7 +369,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 | **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
 | **Pydantic Settings** | Configuração | **128 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
 | **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (491 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
-| **pytest** | Testes | **560 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado. Testabilidade aqui é restrição de design, não add-on. |
+| **pytest** | Testes | **624 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
@@ -386,7 +408,7 @@ mente_digital/
 ├── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
 ├── templates/      # index.html — a SPA inteira (491 linhas)
 ├── modelos/        # LLM .gguf + voz Piper + whisper/ (binários fora do git)
-└── tests/          # 560 testes em 62 arquivos, sem GPU, sem rede
+└── tests/          # 624 testes em 71 arquivos, sem GPU, sem rede
 ```
 
 <details>
@@ -755,7 +777,7 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ### Testabilidade sem GPU
 
-**560 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…).
+**624 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
 
 > **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
@@ -917,12 +939,24 @@ Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carre
 
 > 🎤 O microfone exige **contexto seguro**: funciona em `localhost`/`127.0.0.1`; de outra máquina, precisa de HTTPS.
 
+### Alternativa: Docker
+
+O stack atual inteiro sobe com um comando — o experimento TensorRT-LLM é outra frente e **não** depende disto:
+
+```bash
+docker compose up --build     # 1º build compila o llama-cpp-python com CUDA (~10 min)
+```
+
+GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale o *NVIDIA Container Toolkit*. Modelos, vault e bancos continuam no **host** (bind mounts) — rebuild nunca toca os seus dados, e o `.env` entra como variável de ambiente sem ser copiado para a imagem. ⚠️ *Recém-adicionado: a sintaxe é validada, mas o build completo com GPU ainda não foi batido de ponta a ponta — se algo falhar, o caminho venv acima segue sendo o oficial.*
+
 ### Testes
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 560 testes, sem GPU e sem rede
+pytest                    # 624 testes, sem GPU e sem rede
 ```
+
+O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **624 passed in 5.91s**.
 
 > **Ambiente:** o projeto roda na env conda `llama-omni`. O `python` no PATH do Windows costuma ser o atalho falso da Microsoft Store — use o caminho absoluto:
 > `C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pytest`
@@ -1075,7 +1109,7 @@ O `EtlProcessor` **já é um worker de background completo** e o `SchedulerServi
 
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 560 testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 624 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 
@@ -1089,16 +1123,20 @@ Exige um ASR de streaming e mexeria no contrato do VAD atual — risco despropor
 
 `93 vs 121 tok/s` em prompt curto e **crash de shape em contexto longo** — justo no caso de uso principal (RAG). Flag experimental, religável após subir o `llama-cpp-python`. *Ligar porque "é otimização" é cargo cult.*
 
+### Multi-tenancy — non-goal, de propósito
+
+O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua máquina, o seu vault". Multi-tenancy de verdade — auth por usuário, isolamento de vault/memória/histórico, escalonamento justo de uma GPU que já é serializada para um usuário só — brigaria com essa tese, e é um projeto inteiro por si só. A fronteira escolhida é outra: **um dono, vários dispositivos**. O [`acesso.py`](acesso.py) protege rotas e WebSocket com token (`MENTE_ACCESS_TOKEN`, comparação em tempo constante) ou trava tudo em loopback por default — a LAN não alcança nada sem opt-in explícito —, valida o `Origin` contra hijacking de WebSocket cross-site, e [`scripts/gerar_cert.py`](scripts/gerar_cert.py) gera o certificado TLS para acessar da LAN com microfone (contexto seguro). O meio-termo que preservaria o espírito de appliance — multi-perfil na mesma máquina, com vault e wake-word por pessoa da casa — fica registrado como em aberto, sem data.
+
 ### O que ainda incomoda, honestamente
 
 | Ponto | Situação |
 |---|---|
 | **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
-| **CI** | 560 testes que rodam sem GPU nem rede — literalmente o cenário de GitHub Actions gratuito. Um badge verde converteria "é testável" em fato verificável |
+| **CI** | ✅ **Resolvido.** GitHub Actions roda os 624 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
 | **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `CALIBRACAO.md` |
 | **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `TESTE_MANUAL.md` |
-| **Licença** | Ainda não definida |
+| **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |
 
 ---
 

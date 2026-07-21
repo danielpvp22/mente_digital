@@ -1,0 +1,24 @@
+# Roda a suíte inteira (sem GPU, sem rede — os testes usam fakes) a cada PR e
+# a cada push no master. Instala só o requirements-ci.txt: os imports pesados do
+# projeto são tardios, então llama-cpp-python/torch/chromadb ficam de fora e o
+# job inteiro fecha em ~1 minuto.
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt
+      - run: pytest -q

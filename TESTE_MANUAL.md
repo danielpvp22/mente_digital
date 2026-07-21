@@ -1,6 +1,6 @@
 # Manual de teste — implementações da sessão 2026-07-19
 
-Tudo aqui é o que a suíte `pytest` (560 verdes) **não** cobre: precisa de GPU, microfone,
+Tudo aqui é o que a suíte `pytest` (624 verdes) **não** cobre: precisa de GPU, microfone,
 rede e do vault real. Faça na ordem. Cada bloco tem **passo → resultado esperado**.
 
 **Pré-requisitos:**
