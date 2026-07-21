@@ -4,6 +4,8 @@ diretivos, curtos e proibindo a IA de ser educada/prolixa.
 """
 from __future__ import annotations
 
+import re
+
 # --- Preâmbulo comum (consultoria TTFT #10 — investigação) -------------------
 # Prefixo IDÊNTICO para TODO system prompt quando MENTE_PROMPT_PREAMBULO_COMUM=true
 # (composição única em llm.montar_system). Prefixo byte-igual entre extrator/roteador/
@@ -61,7 +63,7 @@ def prompt_hyde(pergunta: str) -> str:
 
 # --- Resposta principal (anti-alucinação, brutalmente concisa) ---------------
 SYS_RESPOSTA = """Você é um Engenheiro de Dados Sênior.
-REGRA 1: Baseie-se APENAS nos dados fornecidos. Se não estiver lá, diga 'Não tenho informações suficientes'. NUNCA invente.
+REGRA 1: Baseie-se APENAS nos dados fornecidos. Se não estiver lá, responda EXATAMENTE 'Não tenho informações suficientes' — essa frase SOZINHA, sem reformular nem completar. NUNCA invente.
 REGRA 2: Seja BRUTALMENTE CONCISO. Resuma a resposta em no máximo 3 ou 4 frases curtas e diretas.
 REGRA 3: Vá direto ao ponto, sem introduções polidas."""
 
@@ -74,7 +76,7 @@ REGRA 3: Vá direto ao ponto, sem introduções polidas."""
 # anti-sentinela em _responder_web depende dessa frase idêntica).
 SYS_RESPOSTA_WEB = """Você responde com base nos DADOS DA WEB fornecidos.
 REGRA 1: Os dados da web são sua fonte — USE-OS. Extraia números, preços, datas e fatos que estiverem nos dados e responda direto. Não seja excessivamente cauteloso: se está nos dados, entregue.
-REGRA 2: Só se os dados realmente NÃO contiverem a resposta, responda EXATAMENTE 'Não tenho informações suficientes'. NUNCA invente dado que não está nos textos.
+REGRA 2: Só se os dados realmente NÃO contiverem a resposta, responda EXATAMENTE 'Não tenho informações suficientes' — a frase sozinha, sem reformular. NUNCA invente dado que não está nos textos.
 REGRA 3: Seja conciso: 2 a 4 frases diretas, sem introdução polida."""
 
 
@@ -100,7 +102,7 @@ def prompt_resposta_cache(contexto_combinado: str, texto_usuario: str) -> str:
 # é mantida idêntica: sem base → 'Não tenho informações suficientes' → o pipeline
 # escala para a próxima fonte sem "falar" o sentinela.
 SYS_FUSAO = """Você é um Engenheiro de Dados Sênior.
-REGRA 1: Baseie-se APENAS nos átomos fornecidos. Se a resposta não estiver neles, responda EXATAMENTE 'Não tenho informações suficientes'. NUNCA invente.
+REGRA 1: Baseie-se APENAS nos átomos fornecidos. Se a resposta não estiver neles, responda EXATAMENTE 'Não tenho informações suficientes' — essa frase SOZINHA, sem reformular nem completar com ressalvas. NUNCA invente.
 REGRA 2: A base é Zettelkasten — vários átomos de 1 ideia. INTEGRE os relevantes numa resposta coerente; não liste, não repita, ignore em silêncio os irrelevantes.
 REGRA 3: Se um trecho está marcado como 'WEB — informação GENÉRICA', NÃO o apresente como dado específico do usuário. Deixe claro que é genérico ('de forma geral, na web...') e não afirme que é o projeto/lista/configuração DELE.
 REGRA 4: UM parágrafo, direto, sem introdução polida."""
@@ -111,7 +113,7 @@ def prompt_resposta_atomos(atomos: str, texto_usuario: str) -> str:
         f"Átomos de conhecimento:\n{atomos}\n\n"
         f"Pergunta: '{texto_usuario}'.\n"
         "Escreva UM parágrafo integrando só os átomos que realmente tratam da pergunta. "
-        "Se nenhum tratar, responda 'Não tenho informações suficientes'."
+        "Se nenhum tratar, responda EXATAMENTE 'Não tenho informações suficientes' (a frase sozinha)."
     )
 
 
@@ -139,7 +141,8 @@ def prompt_resposta_ferramentas(resultados: str, texto_usuario: str) -> str:
         f"Resultados das ferramentas:\n{resultados}\n\n"
         f"Usuário: '{texto_usuario}'. "
         "Responda ao usuário de forma direta e natural, baseado nos resultados acima. "
-        "Sem introduções polidas."
+        "Relate APENAS o que está nos resultados — NÃO invente ações, fatos ou números "
+        "que não estejam neles. Sem introduções polidas."
     )
 
 
@@ -164,6 +167,47 @@ TAG_NOVO = "#conhecimento_novo"
 # Vive aqui (camada de linguagem) porque agent.py E respostas.py o consomem; o texto
 # TEM que casar com o que o system prompt manda o modelo dizer.
 SENTINELA_INSUF = "nao tenho informacoes suficientes"
+
+# --- Detecção FUZZY do sentinela (teste real 2026-07-21) ----------------------
+# O Qwen3-4B-2507 PARAFRASEIA o contrato ("não há átomos que confirmem...",
+# "não encontrei dados sobre...") e a checagem por frase exata deixava a dúvida
+# ser FALADA em vez de escalar pra web. A regex cobre a família "não <verbo de
+# posse/busca> ... <recurso de informação>" sobre texto JÁ normalizado
+# (textutils.normaliza: minúsculo, sem acento). O {0,2} no meio é de propósito:
+# {0,3} casaria "não tenho dúvida de que [os] dados..." — exatamente a resposta
+# REAL do teste do guard (falso positivo).
+_SENTINELA_VARIANTES = re.compile(
+    r"nao\s+(?:tenho|ha|possuo|encontrei|encontro|localizei|achei|consta|constam|existe|existem)\s+"
+    r"(?:\w+\s+){0,2}?"
+    r"(?:informacao|informacoes|dados?|registros?|notas?|atomos?|anotacao|anotacoes|evidencias?|contexto)\b"
+)
+
+# Aberturas que ainda PODEM virar um sentinela parafraseado — o guard só retém o
+# stream nesses começos (resposta que abre de outro jeito libera no 1º token,
+# preservando o TTFA). Janela curta: passou dela sem casar, é resposta real.
+_ABERTURAS_SENTINELA = (
+    "nao ", "infelizmente", "desculpe", "desculpa", "ainda nao ", "no momento", "por enquanto",
+)
+JANELA_SENTINELA = 72   # ~18 tokens ≈ 140ms a 130 tok/s — só pago em abertura suspeita
+
+
+def parece_sentinela(texto_normalizado: str) -> bool:
+    """O texto (já normalizado) declara insuficiência — exato OU parafraseado? Puro."""
+    return (
+        SENTINELA_INSUF in texto_normalizado
+        or bool(_SENTINELA_VARIANTES.search(texto_normalizado))
+    )
+
+
+def abre_como_sentinela(texto_normalizado: str) -> bool:
+    """O começo do stream ainda pode ser um sentinela (exato ou paráfrase)? Enquanto
+    True o guard retém áudio/texto; False = pode liberar. Puro."""
+    if len(texto_normalizado) >= JANELA_SENTINELA:
+        return False
+    return any(
+        texto_normalizado.startswith(a) or a.startswith(texto_normalizado)
+        for a in _ABERTURAS_SENTINELA
+    )
 
 
 def prompt_sintese(tema: str, dados: str) -> str:

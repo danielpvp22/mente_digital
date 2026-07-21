@@ -59,6 +59,7 @@ from llm import InferenciaPreemptada, LlamaManager
 # otimizador.py; re-exportada por aqui pelos mesmos motivos de atomos.py.
 from otimizador import (
     QueryOptimizer,
+    e_declarativa,
     extrair_tema_sintese,
     frase_citada,
     lacuna_pesquisavel,
@@ -351,7 +352,22 @@ class Agent(ComandosMestre, Respostas):
                             mem.ultimas_fontes.extend(f"nota:{f}" for f in local.fontes)
 
                 # ESTÁGIO 3 — Web (só SE NECESSÁRIO: nenhuma fonte local produziu algo real).
-                if not paragrafos:
+                if not paragrafos and e_declarativa(texto_usuario):
+                    # DECLARATIVA (caso "Falcão", 2026-07-21): o usuário AFIRMOU um fato
+                    # e o pipeline o tratava como pergunta — escalava pra web, achava um
+                    # homônimo (o drone da Avibras) e o fato ALHEIO contaminava a RAM e
+                    # virava átomo permanente. Afirmação sem âncora local é REGISTRO:
+                    # reconhece, guarda na RAM da sessão (o follow-up enxerga) e deixa o
+                    # dump/ETL atomizar a frase DO USUÁRIO. Web e lacuna ficam fora.
+                    telemetry.track(
+                        "AGENT", f"Declarativa sem âncora local — registro sem web: '{termos}'."
+                    )
+                    mem.lembrar(termos, texto_usuario)
+                    fala = "Entendido, registrei."
+                    await self._falar_status(send_medido, fala)
+                    paragrafos.append(fala)
+                    fontes.append("registro")
+                elif not paragrafos:
                     telemetry.track("AGENT", f"Local insuficiente para '{termos}'. Escalando para a web.")
                     # LACUNA: nem a RAM nem o banco tinham. Registra para a pesquisa
                     # proativa do idle trazer isto pronto na próxima vez. `efemero` (da

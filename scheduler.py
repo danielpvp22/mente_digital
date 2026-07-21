@@ -48,6 +48,9 @@ class SchedulerService:
         self._monitor_vram = vram.MonitorVram(
             settings.vram_leak_amostras, settings.vram_leak_slack_bytes
         )
+        # Estado do LLM no tick anterior: um flip (unload<->reload no ciclo de idle)
+        # muda o patamar de VRAM legitimamente — a janela do detector recomeça (reset).
+        self._llama_ready_anterior: Optional[bool] = None
         # ACK de aplicação (painel 2026-07): pushes ENVIADOS aguardando a confirmação
         # do cliente — ack_id -> (agendamento, enviado_em). Só RAM: num restart, o
         # status durável já é pendente_entrega (pessimista), então nada se perde —
@@ -93,6 +96,14 @@ class SchedulerService:
         uso = await asyncio.to_thread(vram.ler_uso)
         if uso is None:
             return
+        # Unload/religar do LLM muda o patamar por causa CONHECIDA — sem reset, a
+        # janela compara o vale pós-unload com o pico pós-reload e acusa vazamento
+        # falso (medido 2026-07-21: aviso aos 7,33 GB logo após religar o 2507).
+        llama = getattr(self.ctx, "llama", None)
+        ready = bool(getattr(llama, "ready", False))
+        if self._llama_ready_anterior is not None and ready != self._llama_ready_anterior:
+            self._monitor_vram.reset()
+        self._llama_ready_anterior = ready
         if self._monitor_vram.registrar(uso["usado"]):
             telemetry.warn(
                 "VRAM",

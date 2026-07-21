@@ -63,6 +63,13 @@ class MonitorVram:
             return True
         return False
 
+    def reset(self) -> None:
+        """Zera a janela quando o PATAMAR muda por causa CONHECIDA (unload/religar do
+        LLM no ciclo de idle). Sem isto a janela compara o vale pós-unload com o pico
+        pós-reload e acusa vazamento falso (medido 2026-07-21: aviso aos 7,33 GB logo
+        após religar o modelo). Quem detecta o flip é o scheduler."""
+        self._janela.clear()
+
 
 def orcamento_tokens(
     livre_frac: Optional[float],

@@ -20,6 +20,8 @@ from typing import Awaitable, Callable, List, Optional, Tuple
 import prompts
 import textutils
 import verbosidade
+import re
+
 from audio import SentenceChunker
 from config import settings
 from otimizador import frase_citada
@@ -29,6 +31,48 @@ from state import SessionMemory
 from telemetry import LatencyTracker, db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
+
+
+class _SegurarFraseIncompleta:
+    """Emissor de TEXTO em fronteiras de frase — o corte gracioso do teto de tokens.
+
+    Por que existe (teste real 2026-07-21): quando o decode bate no max_tokens, o
+    último pedaço é meia-frase ("...sendo recomendados em") e ia parar ESCRITO no
+    chat e FALADO no flush do chunker. Aqui o texto só é emitido até a última
+    fronteira de frase; a cauda fica retida e, no fim do stream, é emitida apenas
+    se o decode terminou por conta própria — se bateu no teto, é descartada (e o
+    chamador loga). O que é emitido é substring EXATA do stream (nada é reescrito),
+    então tela, voz e histórico ficam consistentes. A VOZ continua token-a-token no
+    SentenceChunker (preserva o 1º chunk agressivo da consultoria #8 / TTFA).
+    """
+
+    # Fronteira: pontuação final (aspas/parêntese opcionais) seguida de espaço.
+    # Vírgula decimal e abreviações não casam (exigem o espaço após a pontuação).
+    _FRONTEIRA = re.compile(r"[.!?…]+[\"')\]]?\s")
+    _FINAL_COMPLETO = re.compile(r"[.!?…][\"')\]]?\s*$")
+
+    def __init__(self) -> None:
+        self._cauda = ""
+
+    def push(self, texto: str) -> str:
+        """Acumula e devolve o que já pode ser emitido (até a última fronteira)."""
+        self._cauda += texto
+        ultimo = None
+        for m in self._FRONTEIRA.finditer(self._cauda):
+            ultimo = m
+        if ultimo is None:
+            return ""
+        corte = ultimo.end()
+        pronto, self._cauda = self._cauda[:corte], self._cauda[corte:]
+        return pronto
+
+    def flush(self, truncado: bool):
+        """Fim do stream -> (texto_a_emitir, texto_descartado). A cauda só é
+        descartada se o decode foi TRUNCADO e ela não fecha frase sozinha."""
+        cauda, self._cauda = self._cauda, ""
+        if not truncado or not cauda.strip() or self._FINAL_COMPLETO.search(cauda):
+            return cauda, ""
+        return "", cauda
 
 
 class Respostas:
@@ -101,43 +145,81 @@ class Respostas:
         passadas sem vazar quebra de linha quando a passada acaba em sentinela.
         """
         chunker = SentenceChunker()
+        visivel = _SegurarFraseIncompleta()
         texto_final = ""
         buffer = ""
         decidido = False
+        n_tokens = 0
+        teto = max_tokens if max_tokens is not None else settings.max_tokens_resposta
         # Governador de verbosidade (#7): a pergunta define quanto a GPU decodifica e se
         # há instrução de brevidade. Sem nível (None) = comportamento de sempre.
         sistema = f"{system}\n{instrucao_extra}" if instrucao_extra else system
+
+        async def _emitir(pedaco: str) -> None:
+            # TEXTO em fronteira de frase (corte gracioso do teto); VOZ token-a-token
+            # no chunker (preserva o 1º chunk agressivo da consultoria #8 — TTFA igual).
+            bloco = visivel.push(pedaco)
+            if bloco:
+                await send({"tipo": "token", "texto": bloco})
+            frases = chunker.push(pedaco)
+            if frases:
+                await self._falar(send, frases)
+
         async for token in self.ctx.llama.stream(
             prompt_fn(contexto, texto_usuario),
-            max_tokens=max_tokens if max_tokens is not None else settings.max_tokens_resposta,
+            max_tokens=teto,
             system_prompt=sistema,
         ):
             texto_final += token
+            n_tokens += 1
             if decidido:
-                await send({"tipo": "token", "texto": token})
-                frases = chunker.push(token)
-                if frases:
-                    await self._falar(send, frases)
+                await _emitir(token)
                 continue
 
             buffer += token
             norm = textutils.normaliza(buffer)
-            if SENTINELA_INSUF in norm:
-                return None                       # confirmou insuficiência
-            if not SENTINELA_INSUF.startswith(norm):
-                decidido = True                   # divergiu do sentinela -> resposta real
-                if prefixo:
-                    await send({"tipo": "token", "texto": prefixo})
-                await send({"tipo": "token", "texto": buffer})
-                frases = chunker.push(buffer)
-                if frases:
-                    await self._falar(send, frases)
-            # senão: ainda é prefixo do sentinela -> segura o buffer
+            # FUZZY (2026-07-21): o 2507 PARAFRASEIA o sentinela ("não há átomos que
+            # confirmem...") e a checagem por frase exata deixava a dúvida ser FALADA
+            # em vez de escalar. Agora o guard também escala nas variantes; e só retém
+            # o stream em ABERTURA suspeita ("não...", "infelizmente...") dentro de uma
+            # janela curta — resposta que abre de outro jeito libera no 1º token.
+            if prompts.parece_sentinela(norm):
+                return None                       # insuficiência (exata ou variante)
+            if prompts.abre_como_sentinela(norm):
+                continue                          # ainda pode ser sentinela -> segura
+            decidido = True                       # abertura inocente ou janela vencida
+            if prefixo:
+                await send({"tipo": "token", "texto": prefixo})
+            await _emitir(buffer)
 
         if not decidido:
-            return None                           # só saiu (prefixo do) sentinela
+            # O stream acabou com o guard em dúvida. Se o que sobrou NÃO parece
+            # sentinela, é resposta real curta que abriu negando (ex.: "Não.") —
+            # libera; nunca engolir fala legítima. (Corrige de quebra o caso antigo
+            # em que "Não" seco, prefixo do sentinela, era descartado.)
+            if buffer and not prompts.parece_sentinela(textutils.normaliza(buffer)):
+                decidido = True
+                if prefixo:
+                    await send({"tipo": "token", "texto": prefixo})
+                await _emitir(buffer)
+            else:
+                return None                       # só saiu (variante de) sentinela
+
+        truncado = n_tokens >= teto
+        resto_visivel, descartado = visivel.flush(truncado)
+        if resto_visivel:
+            await send({"tipo": "token", "texto": resto_visivel})
+        if descartado:
+            # Bateu no teto no meio de uma frase: melhor calar a meia-frase do que
+            # mostrá-la/falá-la. O classificador de verbosidade evita a maioria
+            # destes casos; isto é a rede de segurança.
+            telemetry.track(
+                "RESPOSTA",
+                f"Teto de {teto} tokens: frase incompleta retida ({len(descartado)} chars).",
+            )
+            texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         resto = chunker.flush()
-        if resto:
+        if resto and not truncado:
             await self._falar(send, [resto])
         return texto_final
 
@@ -286,19 +368,35 @@ class Respostas:
         self, prompt_resposta: str, send: Sender, system: str = prompts.SYS_RESPOSTA
     ) -> str:
         chunker = SentenceChunker()
+        visivel = _SegurarFraseIncompleta()
         texto_final = ""
+        n_tokens = 0
         async for token in self.ctx.llama.stream(
             prompt_resposta,
             max_tokens=settings.max_tokens_resposta,
             system_prompt=system,
         ):
             texto_final += token
-            await send({"tipo": "token", "texto": token})
+            n_tokens += 1
+            bloco = visivel.push(token)
+            if bloco:
+                await send({"tipo": "token", "texto": bloco})
             frases = chunker.push(token)
             if frases:
                 await self._falar(send, frases)
+        truncado = n_tokens >= settings.max_tokens_resposta
+        resto_visivel, descartado = visivel.flush(truncado)
+        if resto_visivel:
+            await send({"tipo": "token", "texto": resto_visivel})
+        if descartado:
+            telemetry.track(
+                "RESPOSTA",
+                f"Teto de {settings.max_tokens_resposta} tokens: frase incompleta retida "
+                f"({len(descartado)} chars).",
+            )
+            texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         resto = chunker.flush()
-        if resto:
+        if resto and not truncado:
             await self._falar(send, [resto])
         return texto_final
 
