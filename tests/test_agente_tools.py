@@ -14,13 +14,22 @@ from config import settings
 
 
 class FakeVS:
+    def __init__(self) -> None:
+        self.sync_calls = 0
+
     async def sync(self):
+        self.sync_calls += 1
         return None
 
 
 class FakeCtx:
     def __init__(self) -> None:
         self.vectorstore = FakeVS()
+        # #38: escrita no vault marca "sujo" (reindex vai pro idle) em vez de sync inline.
+        self.vault_pendente_sync = False
+
+    def marcar_vault_sujo(self) -> None:
+        self.vault_pendente_sync = True
 
     def track_task(self, coro):
         coro.close()  # não deixamos a corrotina pendente no teste
@@ -109,6 +118,27 @@ async def test_captura_vazia(ambiente):
     ctx = FakeCtx()
     resp = await tools._t_capturar({"texto": "  "}, ctx)
     assert "faltou" in resp.lower()
+
+
+async def test_escrita_no_vault_defere_reindex(ambiente):
+    """#38: nota/lista/captura marcam o vault "sujo" (reindex vai pro idle) e NÃO
+    disparam sync inline — o sync na hora congelava o próximo turno (~46s) na GPU
+    serializada. A escrita em disco continua imediata; só a indexação espera o idle."""
+    ctx = FakeCtx()
+
+    await tools._t_salvar_nota({"titulo": "Nota", "conteudo": "corpo"}, ctx)
+    assert ctx.vault_pendente_sync is True         # marcou p/ o idle
+    assert ctx.vectorstore.sync_calls == 0         # NÃO reindexou inline
+
+    ctx.vault_pendente_sync = False
+    await tools._t_adicionar_item({"lista": "compras", "item": "pão"}, ctx)
+    assert ctx.vault_pendente_sync is True
+    assert ctx.vectorstore.sync_calls == 0
+
+    ctx.vault_pendente_sync = False
+    await tools._t_capturar({"texto": "ideia"}, ctx)
+    assert ctx.vault_pendente_sync is True
+    assert ctx.vectorstore.sync_calls == 0
 
 
 class _Svc:

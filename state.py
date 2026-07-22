@@ -167,6 +167,14 @@ class AppContext:
     # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
     # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
     _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
+    # #38: escrita no vault via ferramenta (nota/lista/captura) DURANTE a conversa não
+    # reindexa na hora — o `sync` re-embeda os chunks E reconstrói a MALHA sobre ~13k
+    # átomos na GPU serializada, o que congelava o PRÓXIMO turno (~46s: o STT em cuda e
+    # o decode disputavam a GPU). Marcamos o vault "sujo" e o `EtlProcessor.run_idle`
+    # sincroniza no idle pós-conversa, quando a GPU está livre (o mesmo padrão do ETL).
+    # Tradeoff aceito: a nota entra no ÍNDICE só no próximo idle — no disco/Obsidian ela
+    # já está na hora. É um booleano no event loop -> mutação atômica, sem lock.
+    vault_pendente_sync: bool = field(default=False, repr=False)
 
     # Serviços (preenchidos no lifespan)
     llama: "LlamaManager" = None          # type: ignore[assignment]
@@ -227,6 +235,13 @@ class AppContext:
         self._bg_tasks.add(task)
         task.add_done_callback(self._task_done)
         return task
+
+    def marcar_vault_sujo(self) -> None:
+        """#38: uma escrita no vault (nota/lista/captura) ficou pendente de reindexação.
+        Em vez de sincronizar na hora — o que disputaria a GPU serializada com o STT/decode
+        do próximo turno e o congelava por ~46s — só marcamos. O `EtlProcessor.run_idle`
+        faz o `sync` no idle pós-conversa, com a GPU livre (ver `vault_pendente_sync`)."""
+        self.vault_pendente_sync = True
 
     def _task_done(self, task: "asyncio.Task") -> None:
         """Remove do set E torna a exceção VISÍVEL (painel 2026-07): sem isto, uma
