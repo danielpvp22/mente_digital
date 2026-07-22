@@ -162,6 +162,43 @@ def proximo_dia_semana(agora: datetime, weekday: int, hora: int, minuto: int) ->
     return alvo + timedelta(days=dias)
 
 
+# Dias da semana por extenso (weekday(): 0=segunda ... 6=domingo), para a
+# confirmação falada do disparo. Acentuados de propósito — a saída é lida em voz.
+_DIAS_NOME = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
+
+def descrever_disparo(dt: datetime, agora: datetime) -> str:
+    """Descreve um disparo já resolvido em PT-BR falável, ancorando o dia RELATIVO
+    ao absoluto. Puro (`agora` injetado, como o resto do módulo).
+
+    Bug real (#3): "me lembra às 9h" foi p/ o dia seguinte (9h já passara) e o dono
+    só percebeu depois. A confirmação nomeia hoje/amanhã + dia da semana + data
+    absoluta, para um agendamento no dia errado saltar na hora — ex.:
+    "amanhã (sábado, 18/07) às 9h". Distâncias:
+      0 dia  -> "hoje (sexta, 17/07) às 20h"
+      1 dia  -> "amanhã (sábado, 18/07) às 9h"
+      2..6   -> "segunda, 20/07 às 9h30"   (dia da semana ainda orienta)
+      além   -> "28/07 às 7h"              (semana não ajuda; só a data)
+    O ano só entra quando difere do de `agora` (evita ruído no caso comum).
+    """
+    # Horário no jeito que a voz fala: "9h", "9h30" (não "09:00").
+    hora = f"{dt.hour}h" if dt.minute == 0 else f"{dt.hour}h{dt.minute:02d}"
+    data_abs = f"{dt.day:02d}/{dt.month:02d}"
+    if dt.year != agora.year:
+        data_abs += f"/{dt.year}"
+    dia_semana = _DIAS_NOME[dt.weekday()]
+    dias_diff = (dt.date() - agora.date()).days
+    if dias_diff == 0:
+        prefixo = f"hoje ({dia_semana}, {data_abs})"
+    elif dias_diff == 1:
+        prefixo = f"amanhã ({dia_semana}, {data_abs})"
+    elif 2 <= dias_diff <= 6:
+        prefixo = f"{dia_semana}, {data_abs}"
+    else:
+        prefixo = data_abs
+    return f"{prefixo} às {hora}"
+
+
 def proximo_disparo(atual: datetime, recorrencia: str) -> Optional[datetime]:
     """Dado um disparo que ACABOU de ocorrer, calcula o próximo para a recorrência.
 

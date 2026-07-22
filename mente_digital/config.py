@@ -519,6 +519,14 @@ class Settings(BaseSettings):
     # Granularidade do loop: de quanto em quanto tempo checa a tabela. 20s dá precisão
     # de sub-minuto para lembretes sem custar quase nada (uma consulta SQLite indexada).
     scheduler_tick_seconds: float = 20.0
+    # PESQUISA PROATIVA AGENDADA (#1 evolução, "cresce a noite toda"): gatilho POR TEMPO
+    # que faz o scheduler rodar EtlProcessor.pesquisa_proativa() + pesquisa_temas_quentes()
+    # mesmo SEM sessão aberta. O run_idle só dispara ao fim de uma conversa (oportunista);
+    # sem isto a base não cresce enquanto o app fica ocioso. Intervalo entre passadas, em
+    # segundos. 0 = DESLIGADO (default seguro; o idle por fim-de-sessão segue como o único
+    # gatilho). Dispara em background (não atrasa o loop de alarmes) e nunca concorre com
+    # sessão viva. Ex.: MENTE_PESQUISA_AGENDADA_INTERVALO_SEGUNDOS=7200 (a cada 2h).
+    pesquisa_agendada_intervalo_seconds: int = 0
     # ACK de aplicação do push proativo (painel 2026-07): o disparo só é CONCLUÍDO
     # quando o cliente confirma que exibiu ({"tipo":"ack_proativo"}); sem ack neste
     # prazo, volta à reentrega normal (pendente_entrega). O send "com sucesso" num

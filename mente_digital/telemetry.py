@@ -22,6 +22,23 @@ from mente_digital import textutils
 from mente_digital.config import settings
 
 
+def _reconfig_utf8(stream: object) -> None:
+    """Best-effort: força utf-8/replace no stream de log.
+
+    Sem isso, um char fora do cp1252 (átomo vietnamita do vault, terminal Windows,
+    ou stdout redirecionado p/ arquivo) faz o `write` estourar UnicodeEncodeError e
+    DERRUBAR o pipeline no meio do turno (bug real). Guardado porque nem todo stream
+    tem `reconfigure` (pytest capture, Python antigo) — nesses casos o _safe_write
+    abaixo é a rede de segurança no ponto de escrita.
+    """
+    with contextlib.suppress(Exception):
+        stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+
+
+_reconfig_utf8(sys.stdout)
+_reconfig_utf8(sys.stderr)
+
+
 class TelemetryStream:
     _C = {
         "reset": "\033[0m", "blue": "\033[94m", "cyan": "\033[96m",
@@ -37,6 +54,21 @@ class TelemetryStream:
     def _fmt(t: float) -> str:
         return f"{t:.4f}s"
 
+    @staticmethod
+    def _safe_write(stream: object, text: str) -> None:
+        """Escreve sem NUNCA propagar UnicodeEncodeError.
+
+        Rede de segurança no ponto de escrita para o caso de o stream não ter sido
+        reconfigurado p/ utf-8 (pytest capture, stdout cp1252 já aberto): re-sanitiza
+        contra o encoding do próprio stream e escreve a versão com `replace`. Logging
+        é instrumentação — não pode ter poder de quebrar o pipeline.
+        """
+        try:
+            stream.write(text)  # type: ignore[attr-defined]
+        except UnicodeEncodeError:
+            enc = getattr(stream, "encoding", None) or "ascii"
+            stream.write(text.encode(enc, "replace").decode(enc))  # type: ignore[attr-defined]
+
     def track(self, module: str, message: str, level: str = "INFO") -> None:
         now = time.perf_counter()
         with self._lock:
@@ -45,10 +77,11 @@ class TelemetryStream:
             self.last_time = now
             c = self._C
             lvl = c["blue"] if level == "INFO" else c["yellow"] if level == "WARN" else c["red"]
-            sys.stdout.write(
+            self._safe_write(
+                sys.stdout,
                 f"{c['gray']}[{self._fmt(total)}]{c['reset']} "
                 f"{c['cyan']}(+{self._fmt(delta)}){c['reset']} "
-                f"{lvl}[{module}]{c['reset']} {message}\n"
+                f"{lvl}[{module}]{c['reset']} {message}\n",
             )
             sys.stdout.flush()
 
@@ -59,9 +92,11 @@ class TelemetryStream:
         self.track(module, message, "ERROR")
         if exc is not None:
             with self._lock:
-                sys.stderr.write(self._C["red"])
-                traceback.print_exception(type(exc), exc, exc.__traceback__)
-                sys.stderr.write(self._C["reset"] + "\n")
+                # Formata o traceback p/ string e escreve via _safe_write: a mensagem
+                # da exceção pode carregar conteúdo do vault (char não-cp1252), então
+                # o próprio dump de erro é um vetor de UnicodeEncodeError.
+                tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+                self._safe_write(sys.stderr, self._C["red"] + tb + self._C["reset"] + "\n")
                 sys.stderr.flush()
 
 
