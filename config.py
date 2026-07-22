@@ -401,6 +401,17 @@ class Settings(BaseSettings):
     vad_rms_threshold: float = 0.005    # servidor: início de fala
     vad_silence_seconds: float = 1.2    # servidor: fim de fala (teto/fallback)
     vad_min_frames: int = 15            # ignora ruídos curtos
+    # BARGE-IN DO SERVIDOR (teste real 2507): cortar a resposta quando o dono fala POR
+    # CIMA dela. O barge-in do front nem sempre disparava; este é a rede de segurança no
+    # servidor. GUARD ANTI-ECO: como não há cancelamento de eco no servidor, o próprio TTS
+    # captado pelo mic NÃO pode auto-cortar — por isso o limiar é ALTO (4x o VAD normal: a
+    # voz direta no mic é bem mais forte que o eco pelo alto-falante) E precisa ser
+    # SUSTENTADO por `barge_min_frames` consecutivos (um pico curto de eco não corta). Só
+    # vale enquanto há resposta em voo. Se auto-cortar por eco: suba o threshold/frames;
+    # se demorar a obedecer: baixe. Desligue com MENTE_BARGE_IN_SERVIDOR=false.
+    barge_in_servidor: bool = True
+    barge_rms_threshold: float = 0.02
+    barge_min_frames: int = 8
     # ENDPOINTING ADAPTATIVO (consultoria TTFT #3): fala CURTA (comando, pergunta seca)
     # encerra com `vad_silence_curta_seconds` de silêncio em vez do teto cheio — os 1,2s
     # fixos eram pagos por TODO turno de voz e são maiores que o próprio TTFT do RAG.

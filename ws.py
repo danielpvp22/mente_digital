@@ -64,6 +64,7 @@ class LiveSession:
         # após `mestre_sleep_seconds` de silêncio. Desligado = sempre ativa (hoje).
         self.dormente = settings.mestre_wake
         self.pipeline_task: Optional[asyncio.Task] = None
+        self._barge_frames = 0   # frames de fala ALTA consecutivos durante a resposta (barge-in servidor)
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
         # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
         # compartilhado por todas: o cliente reconecta sozinho (backoff) e reenvia
@@ -253,6 +254,22 @@ class LiveSession:
     def _on_audio(self, raw: bytes) -> None:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(pcm ** 2))) if pcm.size else 0.0
+        # BARGE-IN DO SERVIDOR (anti-eco): se o dono fala DURANTE a resposta, corta a fala
+        # dela. Guard: só RMS ALTO (barge_rms_threshold, bem acima do VAD — o eco do TTS
+        # chega atenuado) SUSTENTADO por barge_min_frames consecutivos derruba o pipeline;
+        # um pico curto de eco zera o contador sem cortar. Ativo só com resposta em voo.
+        pipeline_vivo = self.pipeline_task is not None and not self.pipeline_task.done()
+        if settings.barge_in_servidor and pipeline_vivo:
+            if rms > settings.barge_rms_threshold:
+                self._barge_frames += 1
+                if self._barge_frames >= settings.barge_min_frames:
+                    telemetry.track("VAD", "Barge-in do servidor: dono falou por cima — cortando a resposta.")
+                    self._cancel_pipeline()
+                    self._barge_frames = 0
+            else:
+                self._barge_frames = 0
+        else:
+            self._barge_frames = 0
         if rms > settings.vad_rms_threshold:
             if not self.is_recording:
                 agora = time.time()
