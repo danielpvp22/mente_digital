@@ -7,11 +7,11 @@ DB testado num arquivo temporário; o fluxo com LLM/TTS/vault fakes.
 """
 import os
 
-import tools
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
-from telemetry import Database
+from mente_digital import tools
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
+from mente_digital.telemetry import Database
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -45,9 +45,9 @@ def _agent(monkeypatch, tmp_path):
     ctx.llama = FakeLlama(["ok."])
     ctx.tts = FakeTts()
     ctx.vectorstore = type("VS", (), {"sync": lambda self: _noop()})()
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.registrar_auditoria", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.registrar_auditoria", lambda *a, **k: None)
     monkeypatch.setattr(settings, "caminho_obsidian", str(tmp_path / "vault"))
     settings.dir_listas.mkdir(parents=True, exist_ok=True)
     agent = Agent(ctx)
@@ -67,8 +67,8 @@ async def test_sugere_atalho_ao_virar_habito(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
     marcados = []
     # 3ª vez, ainda não sugerido -> deve oferecer.
-    monkeypatch.setattr("agent.db.registrar_frequencia", lambda a, e: (3, False))
-    monkeypatch.setattr("agent.db.marcar_sugerido", lambda a: marcados.append(a))
+    monkeypatch.setattr("mente_digital.agent.db.registrar_frequencia", lambda a, e: (3, False))
+    monkeypatch.setattr("mente_digital.agent.db.marcar_sugerido", lambda a: marcados.append(a))
     send, enviados = make_send()
 
     await agent.pipeline_resposta("mestre, adiciona pão na lista", send, mem)
@@ -79,8 +79,8 @@ async def test_sugere_atalho_ao_virar_habito(monkeypatch, tmp_path):
 
 async def test_nao_sugere_se_ja_sugerido(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
-    monkeypatch.setattr("agent.db.registrar_frequencia", lambda a, e: (9, True))
-    monkeypatch.setattr("agent.db.marcar_sugerido", lambda a: None)
+    monkeypatch.setattr("mente_digital.agent.db.registrar_frequencia", lambda a, e: (9, True))
+    monkeypatch.setattr("mente_digital.agent.db.marcar_sugerido", lambda a: None)
     send, enviados = make_send()
 
     await agent.pipeline_resposta("mestre, adiciona pão na lista", send, mem)
@@ -89,10 +89,10 @@ async def test_nao_sugere_se_ja_sugerido(monkeypatch, tmp_path):
 
 async def test_cria_e_expande_atalho(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
-    monkeypatch.setattr("agent.db.registrar_frequencia", lambda a, e: (1, False))
-    monkeypatch.setattr("agent.db.marcar_sugerido", lambda a: None)
+    monkeypatch.setattr("mente_digital.agent.db.registrar_frequencia", lambda a, e: (1, False))
+    monkeypatch.setattr("mente_digital.agent.db.marcar_sugerido", lambda a: None)
     salvos = {}
-    monkeypatch.setattr("agent.db.salvar_atalho", lambda nome, cmd: salvos.__setitem__(nome, cmd))
+    monkeypatch.setattr("mente_digital.agent.db.salvar_atalho", lambda nome, cmd: salvos.__setitem__(nome, cmd))
     send, _ = make_send()
 
     # 1) uma ação real -> vira o "último comando".

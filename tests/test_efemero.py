@@ -13,10 +13,10 @@ qualquer pergunta sobre clima.
 
 Sem GPU/rede: LLM, TTS, vectorstore e web são fakes.
 """
-from agent import Agent
-from config import settings
-from rag import NENHUM, LocalResult
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM, LocalResult
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -52,10 +52,10 @@ def _agent(monkeypatch, tmp_path):
     ctx.web = FakeWeb()
     ctx.vectorstore = FakeVectorStoreVazio()
     # Hermético: sem SQLite real e sem escrever no dump do projeto.
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     dump = tmp_path / "dump.md"
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(dump))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(dump))
     return Agent(ctx), SessionMemory(settings), dump
 
 

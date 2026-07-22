@@ -7,12 +7,12 @@ Pura (srs.proximo), detectores (mestre) e integração ponta-a-ponta com db real
 """
 from datetime import datetime
 
-import mestre
-import srs
-import telemetry
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import mestre
+from mente_digital import srs
+from mente_digital import telemetry
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -60,13 +60,13 @@ class _FakeVS:
 
 
 def _agent(monkeypatch, tmp_path):
-    monkeypatch.setattr(telemetry.db, "path", str(tmp_path / "srs.db"))
+    monkeypatch.setattr(telemetry.db, "path", str(tmp_path / "mente_digital.srs.db"))
     telemetry.db.init()
     ctx = AppContext(settings=settings)
     ctx.llama = FakeLlama(["ok."])
     ctx.tts = FakeTts()
     ctx.vectorstore = _FakeVS()
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     return Agent(ctx), SessionMemory(settings)
 
 

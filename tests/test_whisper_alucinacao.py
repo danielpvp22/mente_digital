@@ -2,7 +2,7 @@
 (mic abrindo -> ruído -> frase-lixo), mas preserva um 'obrigado' realmente falado.
 Puro — sem áudio, sem GPU, sem modelo carregado.
 """
-from audio import parece_alucinacao, transcricao_incerta
+from mente_digital.audio import parece_alucinacao, transcricao_incerta
 
 
 def test_filler_com_no_speech_alto_e_descartado():

@@ -3,7 +3,7 @@ Testes do parser de tempo PT-BR (agenda.py) — puro, com `agora` injetado, sem 
 """
 from datetime import datetime
 
-import agenda
+from mente_digital import agenda
 
 # Sexta-feira, 17/07/2026, 14:30. weekday()==4 (0=segunda ... 4=sexta).
 AGORA = datetime(2026, 7, 17, 14, 30, 0)

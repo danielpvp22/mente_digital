@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from agent import QueryOptimizer, referencia_contexto
-from config import settings
+from mente_digital.agent import QueryOptimizer, referencia_contexto
+from mente_digital.config import settings
 
 
 class _SpyCollect:

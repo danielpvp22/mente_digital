@@ -16,14 +16,19 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Raiz do projeto = pasta deste arquivo. TODOS os caminhos default são derivados
-# daqui (não de caminhos absolutos de uma máquina específica), então o projeto
+# Raiz do projeto = a pasta que CONTÉM o pacote mente_digital/. Este arquivo mora em
+# mente_digital/config.py, então subimos DOIS níveis: .parent = mente_digital/,
+# .parent.parent = raiz do repo. TODOS os caminhos default derivam daqui — de
+# __file__, não de caminhos absolutos de uma máquina específica — então o projeto
 # roda de qualquer diretório e em qualquer máquina, sem editar código. Cada campo
 # ainda pode ser sobrescrito por .env / variável de ambiente (prefixo MENTE_).
-BASE_DIR = Path(__file__).resolve().parent
-# Modelos de IA (LLM .gguf, voz Piper) e cache do Whisper ficam versionados como
-# pastas (com .gitkeep), mas os binários em si não vão pro git — ver .gitignore.
-DIR_MODELOS = BASE_DIR / "modelos"
+BASE_DIR = Path(__file__).resolve().parent.parent
+# Dados de runtime (vault, índice vetorial, SQLite, dump, modelos) vivem TODOS sob
+# dados/ — a raiz fica só com código/config. Tudo gitignored (ver .gitignore).
+DIR_DADOS = BASE_DIR / "dados"
+# Modelos de IA (LLM .gguf, voz Piper) e cache do Whisper: pastas versionadas
+# (com .gitkeep), mas os binários em si não vão pro git — ver .gitignore.
+DIR_MODELOS = DIR_DADOS / "modelos"
 DIR_WHISPER = DIR_MODELOS / "whisper"
 
 
@@ -43,10 +48,10 @@ class Settings(BaseSettings):
     caminho_cache_whisper: str = str(DIR_WHISPER)
     # Vault Obsidian: default dentro do projeto (pode começar vazio); aponte para
     # o seu vault real via MENTE_CAMINHO_OBSIDIAN no .env.
-    caminho_obsidian: str = str(BASE_DIR / "Cerebro_Digital")
-    diretorio_banco_vetorial: str = str(BASE_DIR / "banco_vetorial_cerebro")
-    arquivo_chat_dump: str = str(BASE_DIR / "chat_dump_bruto.md")
-    db_telemetria: str = str(BASE_DIR / "telemetria_etl.db")
+    caminho_obsidian: str = str(DIR_DADOS / "Cerebro_Digital")
+    diretorio_banco_vetorial: str = str(DIR_DADOS / "banco_vetorial_cerebro")
+    arquivo_chat_dump: str = str(DIR_DADOS / "chat_dump_bruto.md")
+    db_telemetria: str = str(DIR_DADOS / "telemetria_etl.db")
     subpasta_conhecimento_novo: str = "Conhecimento_Novo"
 
     # --- LLM (GPU) -------------------------------------------------------------
@@ -461,6 +466,22 @@ class Settings(BaseSettings):
     idle_pesquisa_proativa: bool = True
     # Quantas lacunas pesquisar por ciclo de idle (cada uma: 1 busca web + 1 síntese).
     idle_pesquisa_max: int = 3
+    # RE-PESQUISA DE TEMAS QUENTES (#4): além das LACUNAS (o que FALTOU), o idle também
+    # re-pesquisa os temas que o usuário MAIS REUSA do vault (o estágio Banco respondeu de
+    # fato) — sinal de interesse recorrente. Ao contrário da lacuna, aqui o banco JÁ cobre
+    # o tema; o valor é a NOVIDADE que a web traz (o dedup por átomo descarta o já-sabido),
+    # então a base "amadurece" nos temas favoritos, não só nos buracos. Desligue p/ pausar.
+    idle_pesquisa_temas: bool = True
+    # Quantos temas quentes re-pesquisar por ciclo (extra, DEPOIS das lacunas). Baixo de
+    # propósito: buraco genuíno (lacuna) tem prioridade sobre refrescar o que já se sabe.
+    idle_temas_max: int = 2
+    # Mínimo de REUSOS (Banco respondeu) para um tema virar "quente" e valer re-pesquisa.
+    # Separa o perguntado uma vez do interesse recorrente de verdade (evita re-pesquisar
+    # curiosidade passageira). Maior = só favoritos consolidados.
+    idle_temas_min_reuso: int = 3
+    # Cooldown: não re-pesquisa o mesmo tema quente antes de N dias (evita spam de web e
+    # de átomos sobre o favorito). ~quinzenal traz novidade sem reprocessar à toa.
+    idle_temas_cooldown_dias: int = 14
     # Mínimo de keywords significativas para uma pergunta virar LACUNA pesquisável.
     # Sem isto, 'ok'/'sim' (falso-positivo do VAD/Whisper, 0 keywords) escalavam pra web
     # e a proativa pesquisava — medido: 8 átomos sobre a etimologia de "ok" no vault.
@@ -596,6 +617,10 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         """Cria as pastas necessárias. Chamado no startup, nunca no import."""
+        # dados/ primeiro: é o pai do SQLite e do chat_dump (arquivos soltos que o
+        # Database/etl abrem com open() sem criar a pasta). As demais pastas abaixo
+        # já ficam sob dados/, mas garantimos a raiz de dados explicitamente.
+        os.makedirs(DIR_DADOS, exist_ok=True)
         os.makedirs(self.diretorio_banco_vetorial, exist_ok=True)
         os.makedirs(self.caminho_obsidian, exist_ok=True)
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)

@@ -3,8 +3,8 @@ Hubs primeiro na Síntese sob Demanda (G7, Onda 3): `VectorStore.buscar_conteudo
 reordena os átomos por centralidade na malha (backbone do tema primeiro), para o núcleo
 cair nos primeiros lotes do map-reduce. Sem malha construída, mantém a ordem vetorial.
 """
-from config import settings
-from rag import VectorStore
+from mente_digital.config import settings
+from mente_digital.rag import VectorStore
 
 from conftest import FakeDoc, FakeStore
 

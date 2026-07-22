@@ -9,10 +9,10 @@ Prova o WIRING no _pipeline contando as buscas Banco vs web. Sem GPU/rede: tudo 
 """
 from collections import deque
 
-from agent import Agent
-from config import settings
-from rag import LocalResult
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import LocalResult
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -59,10 +59,10 @@ def _agent(monkeypatch, tmp_path, vs):
     ctx.tts = FakeTts()
     ctx.web = FakeWeb()
     ctx.vectorstore = vs
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_lacuna", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     agent = Agent(ctx)
     agent.optimizer = FakeOptimizer("rag conceito")
     mem = SessionMemory(settings)
@@ -72,8 +72,8 @@ def _agent(monkeypatch, tmp_path, vs):
 
 async def test_definicional_vault_fraco_vai_pra_web(monkeypatch, tmp_path):
     # 1 átomo < min 3 (o caso Tarkov): o Banco é consultado mas DESCARTADO -> web.
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("mente_digital.agent.settings.definicional_min_atomos", 3)
     vs = SpyVS(fontes=["so_uma_nota.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -87,8 +87,8 @@ async def test_definicional_vault_fraco_vai_pra_web(monkeypatch, tmp_path):
 async def test_definicional_imperativo_nu_vai_pra_web(monkeypatch, tmp_path):
     # Teste real 2507: "explica RAG" (sem "me") ANTES caía no local e devolvia a nota-piada.
     # Agora casa o gatilho imperativo nu; vault fraco (1 átomo) escala pra web como "o que é".
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("mente_digital.agent.settings.definicional_min_atomos", 3)
     vs = SpyVS(fontes=["so_uma_nota.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -100,8 +100,8 @@ async def test_definicional_imperativo_nu_vai_pra_web(monkeypatch, tmp_path):
 
 async def test_definicional_vault_forte_usa_local(monkeypatch, tmp_path):
     # 4 átomos >= min 3: tema bem coberto -> responde LOCAL, sem pagar web.
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("mente_digital.agent.settings.definicional_min_atomos", 3)
     vs = SpyVS(fontes=["a.md", "b.md", "c.md", "d.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -114,9 +114,9 @@ async def test_definicional_vault_forte_usa_local(monkeypatch, tmp_path):
 
 async def test_min_atomos_e_o_botao_de_ajuste(monkeypatch, tmp_path):
     # O mesmo vault de 2 átomos: com min=2 passa (local), com min=3 falha (web).
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", True)
     for minimo, web_esperado in ((2, 0), (3, 1)):
-        monkeypatch.setattr("agent.settings.definicional_min_atomos", minimo)
+        monkeypatch.setattr("mente_digital.agent.settings.definicional_min_atomos", minimo)
         vs = SpyVS(fontes=["a.md", "b.md"])
         agent, mem = _agent(monkeypatch, tmp_path, vs)
         send, _ = make_send()
@@ -126,7 +126,7 @@ async def test_min_atomos_e_o_botao_de_ajuste(monkeypatch, tmp_path):
 
 async def test_definicional_desligado_confia_no_local(monkeypatch, tmp_path):
     # Botão off: cascata normal, confia no local mesmo com 1 átomo.
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", False)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", False)
     vs = SpyVS(fontes=["so_uma.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -139,8 +139,8 @@ async def test_definicional_desligado_confia_no_local(monkeypatch, tmp_path):
 async def test_pergunta_pessoal_usa_local_mesmo_fraco(monkeypatch, tmp_path):
     # "reservando local pra pessoais": pergunta pessoal não é definicional -> local,
     # mesmo com 1 átomo (o gate de força só vale para definição geral).
-    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
-    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    monkeypatch.setattr("mente_digital.agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("mente_digital.agent.settings.definicional_min_atomos", 3)
     vs = SpyVS(fontes=["so_uma.md"])
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()

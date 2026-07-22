@@ -4,9 +4,9 @@ persistência (tabela contradicoes: par ordenado, dedup, só as não-resolvidas)
 """
 import pytest
 
-import contradicao
-import mestre
-import telemetry
+from mente_digital import contradicao
+from mente_digital import mestre
+from mente_digital import telemetry
 
 
 # ----------------------- parser do veredito (puro) -----------------------

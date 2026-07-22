@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import textutils
+from mente_digital import textutils
 
 
 def parse_veredito(resposta: str) -> Optional[str]:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-import textutils
+from mente_digital import textutils
 
 
 def escolher_fio(

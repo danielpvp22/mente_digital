@@ -6,9 +6,9 @@ zera o contador sem cortar. Sem WebSocket/GPU: só a lógica pura do _on_audio.
 """
 import numpy as np
 
-from config import settings
-from state import AppContext
-from ws import LiveSession
+from mente_digital.config import settings
+from mente_digital.state import AppContext
+from mente_digital.ws import LiveSession
 
 
 class _Ws:

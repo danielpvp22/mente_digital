@@ -4,9 +4,9 @@ que ele vira, o gatilho-mestre e a persistência (chave única 'conversa').
 """
 import pytest
 
-import diapasao
-import mestre
-import telemetry
+from mente_digital import diapasao
+from mente_digital import mestre
+from mente_digital import telemetry
 
 
 # ----------------------- parser puro -----------------------

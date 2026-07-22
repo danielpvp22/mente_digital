@@ -1,12 +1,90 @@
-# Manual de teste — implementações da sessão 2026-07-19
+# Manual de teste — validações fora da suíte (voz, GPU, vault, rota)
 
-Tudo aqui é o que a suíte `pytest` (624 verdes) **não** cobre: precisa de GPU, microfone,
-rede e do vault real. Faça na ordem. Cada bloco tem **passo → resultado esperado**.
+Tudo aqui é o que a suíte `pytest` **não** cobre: precisa de GPU, microfone, rede e do
+vault real. Cada bloco tem **passo → resultado esperado**. As seções estão em ordem
+cronológica **inversa** — a mais nova (revalidação do 2507, 2026-07-21) vem primeiro;
+abaixo dela, o stack de modelos/voz de 2026-07-19.
 
 **Pré-requisitos:**
 - Rode pela env certa: `C:\ProgramData\miniconda3\envs\llama-omni\python.exe main.py`
 - O `.env` já está com `MENTE_RAG_DEBUG=true` — os logs `[LOCAL]`/`[LATENCIA]` vão aparecer (é isso que a gente quer aqui; desligue em produção depois).
 - Deixe o **terminal do servidor visível** — a maioria dos "resultados esperados" é uma linha de log.
+
+---
+
+## 🎯 Sessão 2026-07-21 — Revalidação do experimento 2507 (COMECE AQUI)
+
+> Consertos do **PR #31** (já na `master`): governador de verbosidade, corte gracioso,
+> sentinela fuzzy, declarativa→registro + reset da janela de VRAM. Suíte: **674 verdes**.
+> **Stack atual:** Qwen3-4B-2507 · Whisper **cuda/int8** · web deep-fetch ON · gate RAG `0.16`.
+> Reinicie o `main.py` na `master` antes de começar.
+> Legenda: ✅ = esperado agora · ❌ = bug de antes (se repetir, é FAIL).
+
+### Bloco R — os 4 consertos (prioridade)
+
+- [ ] **R1** — `O codinome do meu drone é Falcão.`
+  → ✅ só REGISTRA na RAM (reconhecimento curto tipo "anotado"), **sem** filler de web e **sem** falar do drone Avibras Falcão. ❌ antes escalava pra web, achava o homônimo e contaminava a RAM (virava átomo permanente).
+- [ ] **R1b** — `Qual o codinome do meu drone?` (logo após R1)
+  → ✅ **"Falcão"** (da RAM da sessão). ❌ antes: fato da Avibras, ou "não sei".
+- [ ] **R2** — `O que eu anotei sobre pneus balão?`
+  → ✅ resposta **completa**, terminando numa frase inteira. ❌ antes cortava no teto de 90 tokens no meio ("...recomendados em").
+- [ ] **R3** — `O que é o framework Astro?`
+  → ✅ resposta **completa** (web): framework web de "islands", zero-JS por padrão. ❌ antes vinha cortada em 1 frase.
+- [ ] **R4** — `Quanto o TensorRT acelera uma rede YOLO?`
+  → ✅ **completa**, ganho plausível (~2–5x) + porquê (fusão de camadas, FP16/INT8). ❌ antes cortada.
+- [ ] **Sentinela fuzzy (observar em R3/R4)** — se o vault não cobrir, escala pra web **em silêncio**; nunca pode *falar* "não tenho informações suficientes" nem "não há átomos que confirmem isso".
+
+### Bloco C — verbosidade (#7 + #45): o conserto não pode matar a resposta de 1 frase
+
+- [ ] `que horas são?` → ✅ 1 frase: "São HHhMM."
+- [ ] `qual a capital da França?` → ✅ "Paris."
+- [ ] `quanto é 15% de 240` → ✅ "36."
+- [ ] `me explica como funciona o RAG` → ✅ resposta **detalhada** (cheia).
+- [ ] `me explica o que é RAG como para uma criança` → ✅ analogia do dia a dia, sem jargão.
+
+### Bloco M — memória de sessão (RAM multi-turno, mesma conversa)
+
+- [ ] `Vou viajar pra Salvador na sexta.` → ✅ registra (reconhecimento curto).
+- [ ] `Pra onde eu vou viajar mesmo?` → ✅ "Salvador" (da RAM, sem web).
+- [ ] `E em que dia?` → ✅ "Sexta" (resolve o contexto cruzado).
+
+### Bloco T — ferramentas (sanity pós-restart)
+
+- [ ] `salva uma nota: testar o drone amanhã cedo` → ✅ "Nota salva: ..." (inbox do vault).
+- [ ] `status do sistema` → ✅ autoteste falado dos serviços (.ready).
+- [ ] `que horas são?` → ✅ hora atual.
+
+### Bloco E — palavra-mestre (lista + encadeamento + desfazer + cofre de confirmação)
+
+- [ ] **E1** `mestre, adiciona leite, farinha e ovos na lista de compras` → ✅ **3** itens (o "e" interno da lista não vira 4º corte).
+- [ ] **E2** `mestre, o que tem na lista de compras` → ✅ leite, farinha, ovos.
+- [ ] **E3** `mestre, adiciona pão na lista de compras` → ✅ adiciona pão.
+- [ ] **E4** `mestre, desfaz isso` → ✅ remove **pão** (última adição).
+- [ ] **E5** `mestre, cria um lembrete pra beber água daqui a 2 minutos` → ✅ agenda; **~2 min depois → push falado 🔔** (testa o scheduler).
+- [ ] **E6** `mestre, cancela o lembrete de beber água` → ✅ pede "diga 'mestre, confirma'".
+- [ ] **E7** `mestre, confirma` → ✅ aí sim cancela.
+
+### Bloco S — síntese sob demanda
+
+- [ ] `o que eu sei sobre <tema que EXISTE no seu vault>` → ✅ map-reduce: recupera vários átomos e resume numa fala coerente (não corta nem estoura o contexto).
+
+### Bloco B falado (voz) — usa os blocos 1, 4 e 5 mais abaixo
+
+Microfone real: valida o ganho do **Whisper na GPU** (o `stt_ms` no `/api/metrics` deve cair de milhares → centenas de ms), o wake-word "mestre" e o barge-in. Passos detalhados nas seções **1**, **4** e **5** deste doc.
+
+### Anotações desta rodada
+
+| Caso | PASS/FAIL | Observação |
+|------|-----------|------------|
+| R1 / R1b |  |  |
+| R2   |  |  |
+| R3   |  |  |
+| R4   |  |  |
+| C    |  |  |
+| M    |  |  |
+| T    |  |  |
+| E    |  |  |
+| S    |  |  |
 
 ---
 
@@ -134,3 +212,27 @@ Rodei tudo que **não** precisa de microfone nem julgamento humano — não prec
 - **VRAM apertada** (> ~9,8 GB, travas): ponha o embedding em fp16 ou na CPU (`MENTE_EMBEDDING_DEVICE=cpu`, +~50 ms/query), ou o Whisper de volta em `small`.
 - **RAG pior que antes**: calibre `MENTE_RAG_SCORE_CONFIDENT` (passo 2). Se quiser reverter tudo do embedding: restaure `D:\projetos\_mente_backup_etapa3\` sobre `banco_vetorial_cerebro/`, reverta as linhas da Etapa 3 no `.env`, `git checkout config.py rag.py`.
 - **F3/F5 atrapalhando**: `MENTE_MESTRE_WAKE=false` (desliga o wake) e/ou `git checkout templates/index.html` (reverte o barge-in).
+
+---
+
+## 🎤 Bloco Voz — finalização dos testes (só o microfone valida) — 2026-07-21
+
+> Rode o `main.py` na master (**aguarde o reindex terminar antes**, p/ não brigar por GPU). Abra o live (🎤). Deixe o terminal do servidor visível (rota/latência).
+
+- [ ] **V1 — Transcrição real (Whisper GPU):** fale "me explica o pipeline de RAG e o TensorRT". → transcrição fiel + `/api/metrics` mostra `stt_ms` em **centenas** de ms (não milhares como na CPU).
+- [ ] **V2 — Latência waterfall:** 3-4 perguntas; abra `/api/metrics` bloco **`waterfall`** (p50/p95 de vad/stt/extrator/busca/TTFT/TTFA). É o número REAL da voz.
+- [ ] **V3 — Barge-in:** pergunta longa; enquanto ela fala, diga "para"/"chega" alto e perto → corta. Repita com ruído baixo ao fundo → NÃO corta.
+- [ ] **V4 — Wake-word** (se ligar `MENTE_MESTRE_WAKE=true` + restart): fala comum sem "mestre" → ignorada; "mestre, que horas são?" → acorda+responde; 15s de silêncio → dorme.
+- [ ] **V5 — Palavra-mestre POR VOZ** (o que o harness de texto não validou):
+  - "mestre, adiciona leite, farinha e ovos na lista de compras" → 3 itens
+  - "mestre, o que tem na lista de compras" → lê os 3
+  - "mestre, desfaz isso" → remove o último
+  - "mestre, cria um lembrete pra beber água daqui a 2 minutos" → agenda; ~2min depois → push falado 🔔
+  - "mestre, cancela o lembrete de beber água" → pede "mestre, confirma"
+  - "mestre, confirma" → cancela
+- [ ] **V6 — Re-conferir os 2 defeitos POR VOZ:**
+  - "O codinome do meu drone é Falcão." → deve **só registrar** (reconhecimento curto). Se falar specs do drone Avibras → **#32 confirmado por voz**.
+  - "Vou viajar pra Salvador na sexta." → deve **registrar**, não agendar. Se tentar agendar → **#33 confirmado**.
+- [ ] **V7 — Síntese falada:** "o que eu sei sobre treinamento de YOLO?" → espera ~10-20s → deve falar uma síntese (map-reduce), não só o filler.
+
+> ⚠️ **Lembrete do #34:** o disconnect atomiza a sessão MESMO em confidencial. Se não quiser que a voz vire átomo permanente, limpe depois com o mesmo sweep de mtime — ou espere o fix do #34.

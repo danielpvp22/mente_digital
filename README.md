@@ -100,7 +100,7 @@ Cada troca foi decidida por **A/B medido**, não por intuição — os harnesses
 | **Barge-in só do dono (#F5)** — limiar + debounce no cliente (`BARGE_RMS`/`BARGE_FRAMES` no `index.html`) | Interromper o narrador passa a exigir voz **alta e sustentada**: ruído e voz de fundo curta **não cortam mais** a resposta. (Tier 1 — reconhecer *a sua* voz por speaker-ID é o Tier 2, adiado) |
 | **Timing por estágio (#F4)** — `LatencyTracker` + `/api/metrics` + colunas novas em `metricas_latencia` | Cada resposta passa a registrar **decode `tok/s`** e o tempo de **STT** (além de TTFT/TTFA/total/nº de tokens): dá para ver **onde** o tempo vai. Medido ao vivo: `tok/s≈85`, TTFT≈1,1 s numa resposta do vault |
 
-> Roteiro de verificação (o que já foi validado automaticamente e o que exige microfone) em [`TESTE_MANUAL.md`](TESTE_MANUAL.md).
+> Roteiro de verificação (o que já foi validado automaticamente e o que exige microfone) em [`TESTE_MANUAL.md`](docs/TESTE_MANUAL.md).
 
 </details>
 
@@ -585,7 +585,7 @@ O que cada peça faz e por quê:
 
 - **Descobridor de Conexões (G8).** "Mestre, alguma conexão nova?" → `_descobrir_conexoes` fala **pontes**: notas que ligam dois conceitos estabelecidos que quase nunca co-ocorrem. O ranking é por **surpresa** — `1 − Jaccard` das vizinhanças dos dois conceitos, **domínios disjuntos primeiro** (`grafo.py`). O ranking ingênuo por tamanho de tema surfava trivialidades ("python↔vram"); o de surpresa surfa o que interessa ("modelo whisper↔modelo yolo", "custo↔sensor de torque").
 
-**Medição na base real (12.778 átomos):** a atomização serve bem ao grafo (0,6% de átomos sem conceito, mediana de 3 conceitos/átomo, 2.415 conceitos com df≥3). O grafo é **rápido** (pontes 58ms, centralidade <1ms) — **não** é gargalo de resposta. E os thresholds de IDF são **invariantes ao N** (`idf ≥ T ⟺ df/N ≤ e⁻ᵀ`, uma fração constante), documentado em `CALIBRACAO.md`.
+**Medição na base real (12.778 átomos):** a atomização serve bem ao grafo (0,6% de átomos sem conceito, mediana de 3 conceitos/átomo, 2.415 conceitos com df≥3). O grafo é **rápido** (pontes 58ms, centralidade <1ms) — **não** é gargalo de resposta. E os thresholds de IDF são **invariantes ao N** (`idf ≥ T ⟺ df/N ≤ e⁻ᵀ`, uma fração constante), documentado em `docs/CALIBRACAO.md`.
 
 ---
 
@@ -944,7 +944,7 @@ MENTE_RAG_SCORE_CONFIDENT=0.7
 ### 4. Rodar
 
 ```bash
-python main.py            # ou: uvicorn main:app --host 0.0.0.0 --port 8000
+python -m mente_digital.main   # ou: uvicorn mente_digital.main:app --host 0.0.0.0 --port 8000
 ```
 
 Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carregar. Diga *"mestre, ajuda"* (ou `/ajuda`) para ouvir os comandos disponíveis.
@@ -977,7 +977,7 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 ## 🔧 Configuração
 
-**128 parâmetros** vivem em [`config.py`](config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `CALIBRACAO.md`. Os mais úteis:
+**128 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
@@ -1137,7 +1137,7 @@ Exige um ASR de streaming e mexeria no contrato do VAD atual — risco despropor
 
 ### Multi-tenancy — non-goal, de propósito
 
-O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua máquina, o seu vault". Multi-tenancy de verdade — auth por usuário, isolamento de vault/memória/histórico, escalonamento justo de uma GPU que já é serializada para um usuário só — brigaria com essa tese, e é um projeto inteiro por si só. A fronteira escolhida é outra: **um dono, vários dispositivos**. O [`acesso.py`](acesso.py) protege rotas e WebSocket com token (`MENTE_ACCESS_TOKEN`, comparação em tempo constante) ou trava tudo em loopback por default — a LAN não alcança nada sem opt-in explícito —, valida o `Origin` contra hijacking de WebSocket cross-site, e [`scripts/gerar_cert.py`](scripts/gerar_cert.py) gera o certificado TLS para acessar da LAN com microfone (contexto seguro). O meio-termo que preservaria o espírito de appliance — multi-perfil na mesma máquina, com vault e wake-word por pessoa da casa — fica registrado como em aberto, sem data.
+O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua máquina, o seu vault". Multi-tenancy de verdade — auth por usuário, isolamento de vault/memória/histórico, escalonamento justo de uma GPU que já é serializada para um usuário só — brigaria com essa tese, e é um projeto inteiro por si só. A fronteira escolhida é outra: **um dono, vários dispositivos**. O [`acesso.py`](mente_digital/acesso.py) protege rotas e WebSocket com token (`MENTE_ACCESS_TOKEN`, comparação em tempo constante) ou trava tudo em loopback por default — a LAN não alcança nada sem opt-in explícito —, valida o `Origin` contra hijacking de WebSocket cross-site, e [`scripts/gerar_cert.py`](scripts/gerar_cert.py) gera o certificado TLS para acessar da LAN com microfone (contexto seguro). O meio-termo que preservaria o espírito de appliance — multi-perfil na mesma máquina, com vault e wake-word por pessoa da casa — fica registrado como em aberto, sem data.
 
 ### O que ainda incomoda, honestamente
 
@@ -1146,8 +1146,8 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 | **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
 | **CI** | ✅ **Resolvido.** GitHub Actions roda os 624 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
-| **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `CALIBRACAO.md` |
-| **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `TESTE_MANUAL.md` |
+| **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |
+| **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `docs/TESTE_MANUAL.md` |
 | **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |
 
 ---

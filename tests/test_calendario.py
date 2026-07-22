@@ -4,12 +4,12 @@ não-recorrente), leitura de pasta, e o comando "mestre, o que tenho hoje".
 """
 from datetime import date, datetime
 
-import calendario
-import mestre
-import telemetry
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import calendario
+from mente_digital import mestre
+from mente_digital import telemetry
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -85,9 +85,9 @@ class _FakeVS:
 
 
 async def test_comando_fala_a_agenda_de_hoje(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.db.listar_atalhos", lambda *a, **k: {})
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.listar_atalhos", lambda *a, **k: {})
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     monkeypatch.setattr(settings, "caminho_obsidian", str(tmp_path / "vault"))
     settings.dir_agenda.mkdir(parents=True, exist_ok=True)
     # evento para HOJE (o handler usa date.today())

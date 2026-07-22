@@ -27,17 +27,17 @@ import json
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
-import agenda
-import calendario
-import prompts
-import textutils
-import vram
-from config import settings
-from rag import NENHUM
-from telemetry import db, telemetry
+from mente_digital import agenda
+from mente_digital import calendario
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital import vram
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM
+from mente_digital.telemetry import db, telemetry
 
 if TYPE_CHECKING:
-    from state import AppContext
+    from mente_digital.state import AppContext
 
 
 class SchedulerService:

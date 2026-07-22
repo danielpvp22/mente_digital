@@ -9,9 +9,9 @@ import asyncio
 
 import pytest
 
-import telemetry as tel
-from config import settings
-from state import AppContext
+from mente_digital import telemetry as tel
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 
 async def test_excecao_de_task_e_reportada(monkeypatch):

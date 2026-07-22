@@ -10,8 +10,8 @@ import asyncio
 
 import numpy as np
 
-from config import settings
-from state import AppContext
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 
 class _WsFake:
@@ -50,7 +50,7 @@ class _AgentNoop:
 
 
 def _sessao(monkeypatch, ready=False, wake=False):
-    from ws import LiveSession
+    from mente_digital.ws import LiveSession
 
     monkeypatch.setattr(settings, "mestre_wake", wake)
     ctx = AppContext(settings=settings)
@@ -91,6 +91,6 @@ def test_dormente_nao_religa_com_voz_de_fundo(monkeypatch):
 
 async def test_turno_digitado_religa(monkeypatch, tmp_path):
     s = _sessao(monkeypatch, ready=False)
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     await s._on_text('{"tipo": "texto", "payload": "oi, tudo bem por aí"}')
     assert s.ctx.llama.pedidos == 1

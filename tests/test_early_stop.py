@@ -8,10 +8,10 @@ Sem GPU/rede: LLM/TTS/web/vectorstore são fakes; o optimizer é fixado; DB neut
 """
 from collections import deque
 
-from agent import Agent
-from config import settings
-from rag import NENHUM, LocalResult
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM, LocalResult
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -61,10 +61,10 @@ def _agent(monkeypatch, tmp_path, vs):
     ctx.tts = FakeTts()
     ctx.web = FakeWeb()
     ctx.vectorstore = vs
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_lacuna", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     agent = Agent(ctx)
     agent.optimizer = FakeOptimizer("arquitetura software")   # termos fixos
     mem = SessionMemory(settings)
@@ -74,7 +74,7 @@ def _agent(monkeypatch, tmp_path, vs):
 
 
 async def test_early_stop_pula_banco_quando_ram_responde(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.settings.early_stop_cascata", True)
+    monkeypatch.setattr("mente_digital.agent.settings.early_stop_cascata", True)
     vs = SpyVS()
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -86,7 +86,7 @@ async def test_early_stop_pula_banco_quando_ram_responde(monkeypatch, tmp_path):
 
 
 async def test_fusao_completa_quando_desligado(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.settings.early_stop_cascata", False)
+    monkeypatch.setattr("mente_digital.agent.settings.early_stop_cascata", False)
     vs = SpyVS()
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     send, _ = make_send()
@@ -98,7 +98,7 @@ async def test_fusao_completa_quando_desligado(monkeypatch, tmp_path):
 
 async def test_sem_ram_o_banco_roda_normalmente(monkeypatch, tmp_path):
     # Early-stop LIGADO, mas a RAM não respondeu -> o Banco tem que rodar (não pula à toa).
-    monkeypatch.setattr("agent.settings.early_stop_cascata", True)
+    monkeypatch.setattr("mente_digital.agent.settings.early_stop_cascata", True)
     vs = SpyVS()
     agent, mem = _agent(monkeypatch, tmp_path, vs)
     mem.conhecimento_sessao = deque()      # sem RAM relevante

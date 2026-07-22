@@ -20,13 +20,13 @@ from typing import List, Optional
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
-import mestre
-import tools
-from agent import append_chat_dump
-from otimizador import e_backchannel
-from config import settings
-from state import AppContext, SessionMemory
-from telemetry import db, telemetry
+from mente_digital import mestre
+from mente_digital import tools
+from mente_digital.agent import append_chat_dump
+from mente_digital.otimizador import e_backchannel
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
+from mente_digital.telemetry import db, telemetry
 
 _RECV_TIMEOUT = 0.5  # s — granularidade da checagem de silêncio
 

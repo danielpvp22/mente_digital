@@ -10,10 +10,10 @@ Sem GPU/rede: LLM/TTS/vectorstore são fakes; o DB é neutralizado por monkeypat
 """
 import os
 
-import tools
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import tools
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -28,9 +28,9 @@ def _agent(monkeypatch, tmp_path):
     ctx.llama = FakeLlama(["ok."])
     ctx.tts = FakeTts()
     ctx.vectorstore = FakeVS()
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.registrar_auditoria", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.registrar_auditoria", lambda *a, **k: None)
     # Vault temporário: as listas gravam de verdade, isoladas do vault do projeto.
     monkeypatch.setattr(settings, "caminho_obsidian", str(tmp_path / "vault"))
     settings.dir_listas.mkdir(parents=True, exist_ok=True)

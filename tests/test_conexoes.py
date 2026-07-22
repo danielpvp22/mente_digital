@@ -4,12 +4,12 @@ Descobridor de Conexões (G8, Onda 3): "mestre, alguma conexão nova?" acha PONT
 co-ocorrem. Algoritmo puro em grafo.py; detector puro em mestre.py; entrega SOB DEMANDA no
 _fluxo_mestre. Sem comunidades (não são necessárias): co-ocorrência baixa = "vivem separados".
 """
-import grafo
-import mestre
-from agent import Agent
-from config import settings
-from rag import MalhaIndex
-from state import AppContext, SessionMemory
+from mente_digital import grafo
+from mente_digital import mestre
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import MalhaIndex
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -138,9 +138,9 @@ def _agent(monkeypatch, malha):
     ctx.llama = FakeLlama(["ok."])
     ctx.tts = FakeTts()
     ctx.vectorstore = _VSComMalha(malha)
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.listar_atalhos", lambda *a, **k: {})
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.listar_atalhos", lambda *a, **k: {})
     return Agent(ctx), SessionMemory(settings)
 
 

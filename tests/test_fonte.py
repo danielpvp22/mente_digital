@@ -4,10 +4,10 @@ pura no mestre.py, fontes acumuladas na SessionMemory (só RAM), fala por TEMPLA
 """
 from __future__ import annotations
 
-import mestre
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import mestre
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeTts, make_send
 

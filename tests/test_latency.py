@@ -2,7 +2,7 @@
 LatencyTracker — instrumentação de TTFT (1º token) e TTFA (1º áudio).
 Clock injetável => teste determinístico, sem depender do relógio real.
 """
-from agent import LatencyTracker
+from mente_digital.agent import LatencyTracker
 
 
 def _clock_de(valores):

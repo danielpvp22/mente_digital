@@ -21,20 +21,20 @@ import re
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, List, Optional, Tuple
 
-import agenda
-import calendario
-import diapasao
-import fio
-import grafo
-import habitos
-import mestre
-import srs
-import textutils
-import tools
-import verbosidade
-from config import settings
-from state import SessionMemory
-from telemetry import LatencyTracker, db, telemetry
+from mente_digital import agenda
+from mente_digital import calendario
+from mente_digital import diapasao
+from mente_digital import fio
+from mente_digital import grafo
+from mente_digital import habitos
+from mente_digital import mestre
+from mente_digital import srs
+from mente_digital import textutils
+from mente_digital import tools
+from mente_digital import verbosidade
+from mente_digital.config import settings
+from mente_digital.state import SessionMemory
+from mente_digital.telemetry import LatencyTracker, db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
 

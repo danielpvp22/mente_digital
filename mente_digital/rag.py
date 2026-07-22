@@ -23,14 +23,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-import antiinjecao
-import disjuntor as _disjuntor
-import egressao
-import grafo
-import textutils
-from config import settings
-from state import LruCache
-from telemetry import db, telemetry
+from mente_digital import antiinjecao
+from mente_digital import disjuntor as _disjuntor
+from mente_digital import egressao
+from mente_digital import grafo
+from mente_digital import textutils
+from mente_digital.config import settings
+from mente_digital.state import LruCache
+from mente_digital.telemetry import db, telemetry
 
 NENHUM = "NENHUM DADO"
 

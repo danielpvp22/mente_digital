@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("MENTE_EMBEDDING_DEVICE", "cpu")
 os.environ.setdefault("MENTE_RAG_DEBUG", "false")
 
-from rag import EmbeddingProvider, VectorStore  # noqa: E402
-from telemetry import db  # noqa: E402
+from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.telemetry import db  # noqa: E402
 
 _MALHA_LINHA = re.compile(r"^\s*\*\*Malha Neural:\*\*.*$", re.MULTILINE)
 _TAGS_LINHA = re.compile(r"^\s*#[\w_]+(?:\s+#[\w_]+)*\s*$", re.MULTILINE)

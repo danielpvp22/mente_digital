@@ -20,10 +20,10 @@ import time
 
 import pytest
 
-from agent import Agent, EtlProcessor
-from config import Settings, settings
-from llm import InferenciaPreemptada, LlamaManager
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent, EtlProcessor
+from mente_digital.config import Settings, settings
+from mente_digital.llm import InferenciaPreemptada, LlamaManager
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -120,7 +120,7 @@ class FakeVectorStore:
         self.syncs += 1
 
     async def search(self, termos, texto_busca=None, economico=False):
-        from rag import NENHUM, LocalResult
+        from mente_digital.rag import NENHUM, LocalResult
         return LocalResult(NENHUM, None, False)
 
 
@@ -130,8 +130,8 @@ def _ctx(tokens, tmp_path, monkeypatch):
     st.arquivo_chat_dump = str(tmp_path / "dump.md")
     import os
     os.makedirs(st.dir_conhecimento_novo, exist_ok=True)
-    monkeypatch.setattr("agent.settings", st)
-    monkeypatch.setattr("agent.db.log_etl", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.settings", st)
+    monkeypatch.setattr("mente_digital.agent.db.log_etl", lambda *a, **k: None)
     ctx = AppContext(settings=st)
     ctx.llama = FakeLlama(tokens)
     ctx.tts = FakeTts()
@@ -143,8 +143,8 @@ def _ctx(tokens, tmp_path, monkeypatch):
 async def test_pipeline_preempta_o_etl_ao_entrar(tmp_path, monkeypatch):
     ctx = _ctx(["ok."], tmp_path, monkeypatch)
     agent = Agent(ctx)
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     send, _ = make_send()
 
     await agent.pipeline_resposta("qualquer pergunta durável sobre python", send, SessionMemory(ctx.settings))
@@ -157,8 +157,8 @@ async def test_gpu_marcada_como_ocupada_antes_do_preempt(tmp_path, monkeypatch):
     # na janela entre os dois, veria "GPU livre" e começaria OUTRA síntese.
     ctx = _ctx(["ok."], tmp_path, monkeypatch)
     agent = Agent(ctx)
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
 
     visto = {}
     original = ctx.llama.preempt

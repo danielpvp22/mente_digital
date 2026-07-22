@@ -5,15 +5,15 @@ achava um homônimo e o fato alheio contaminava a RAM e virava átomo permanente
 """
 from collections import deque
 
-import tools
-from agent import Agent
-from config import settings
-from rag import NENHUM, LocalResult
-from state import AppContext, SessionMemory
+from mente_digital import tools
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM, LocalResult
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
-from otimizador import e_backchannel, e_declarativa
+from mente_digital.otimizador import e_backchannel, e_declarativa
 
 
 def test_backchannel_reconhece_acuse_recebido():
@@ -88,10 +88,10 @@ def _agent(monkeypatch, tmp_path):
     ctx.tts = FakeTts()
     ctx.web = _WebNoop()
     ctx.vectorstore = _VSVazio()
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_lacuna", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     agent = Agent(ctx)
     agent.optimizer = _Optimizer()
     mem = SessionMemory(settings)

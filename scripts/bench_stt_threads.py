@@ -34,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np  # noqa: E402
 
-from audio import SttService, TtsService  # noqa: E402
-from config import settings  # noqa: E402
+from mente_digital.audio import SttService, TtsService  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
 
 FRASE = (
     "Mestre, adiciona leite e ovos na lista de compras e me lembra de revisar "

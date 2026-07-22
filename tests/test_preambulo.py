@@ -5,9 +5,9 @@ do prefixo entre chamadas. Off por default (kill criterion: só cravar com A/B r
 """
 from __future__ import annotations
 
-import llm
-import prompts
-from config import settings
+from mente_digital import llm
+from mente_digital import prompts
+from mente_digital.config import settings
 
 
 def test_off_composicao_historica(monkeypatch):
@@ -35,6 +35,6 @@ def test_on_sem_no_think(monkeypatch):
 
 def test_default_do_botao_e_off():
     # contrato da consultoria: investigação com critério de kill — não crava default
-    from config import Settings
+    from mente_digital.config import Settings
 
     assert Settings(_env_file=None).prompt_preambulo_comum is False

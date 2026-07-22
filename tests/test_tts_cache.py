@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from audio import TtsService
-from config import settings
+from mente_digital.audio import TtsService
+from mente_digital.config import settings
 
 
 class _Cfg:

@@ -2,7 +2,7 @@
 Utilitários de relevância léxica — o coração do anti "Cache Hit falso".
 Pura lógica de string; sem dependências pesadas.
 """
-import textutils
+from mente_digital import textutils
 
 
 def test_normaliza_tira_acento_e_caixa():

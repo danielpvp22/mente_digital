@@ -12,12 +12,12 @@ from __future__ import annotations
 import re
 from typing import Deque, Tuple
 
-import prompts
-import textutils
-import tools
-from config import settings
-from llm import LlamaManager
-from telemetry import telemetry
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital import tools
+from mente_digital.config import settings
+from mente_digital.llm import LlamaManager
+from mente_digital.telemetry import telemetry
 
 STOP_WORDS = {"não", "nao", "sim", "nada", "tudo", "pode falar", "continue", "isso", "nenhum"}
 

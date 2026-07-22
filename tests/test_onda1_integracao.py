@@ -7,10 +7,10 @@ Testes de INTEGRAÇÃO/fiação das features da Onda 1 — o ponto onde bugs se 
 
 Sem GPU/rede: um "SpyLlama" captura os kwargs de cada chamada.
 """
-from agent import Agent, LatencyTracker
-from audio import TtsService
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent, LatencyTracker
+from mente_digital.audio import TtsService
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeTts, make_send
 
@@ -79,8 +79,8 @@ async def test_responder_contexto_sem_nivel_usa_padrao():
 # #23 — map-reduce quebra em vários lotes
 # ---------------------------------------------------------------------------
 async def test_sintese_quebra_em_varios_lotes(monkeypatch):
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     # 6 átomos grandes contra um orçamento de 6000 chars -> 3 lotes (2 átomos cada).
     atomos = ["X" * 3000 for _ in range(6)]
     ctx = AppContext(settings=settings)
@@ -99,8 +99,8 @@ async def test_sintese_quebra_em_varios_lotes(monkeypatch):
 
 
 async def test_sintese_um_lote_faz_um_map(monkeypatch):
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     ctx = AppContext(settings=settings)
     ctx.llama = SpyLlama(["ok."])
     ctx.tts = FakeTts()

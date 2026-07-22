@@ -6,9 +6,9 @@ pro chat e FALADA no flush do chunker ("...sendo recomendados em"). Agora o text
 é emitido em fronteiras de frase e a cauda truncada é retida em tela, voz e
 histórico. Sem teto atingido, nada muda: a cauda sai inteira no fim.
 """
-from agent import Agent
-from config import settings
-from state import AppContext
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 from conftest import FakeLlama, FakeTts, make_send, textos_de_tokens
 

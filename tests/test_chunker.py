@@ -3,7 +3,7 @@ SentenceChunker — quebra o stream de tokens em frases prontas para o TTS.
 Regras sutis: não quebrar em abreviações/decimais, mas quebrar em fim de frase
 real e fazer flush por tamanho para não segurar o áudio.
 """
-from audio import SentenceChunker
+from mente_digital.audio import SentenceChunker
 
 
 def _push_all(chunker: SentenceChunker, texto: str, passo: int = 3):

@@ -44,9 +44,9 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import AsyncIterator, Optional, Set
 
-import prompts
-from config import settings
-from telemetry import telemetry
+from mente_digital import prompts
+from mente_digital.config import settings
+from mente_digital.telemetry import telemetry
 
 _SENTINEL = object()
 

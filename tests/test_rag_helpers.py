@@ -8,8 +8,8 @@ from datetime import datetime
 
 import pytest
 
-from config import settings
-from rag import (
+from mente_digital.config import settings
+from mente_digital.rag import (
     _META_VERSAO,
     metadados_da_nota,
     parse_frontmatter,

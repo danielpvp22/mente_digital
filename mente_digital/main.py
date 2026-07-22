@@ -22,16 +22,16 @@ from fastapi.templating import Jinja2Templates
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-import acesso  # noqa: E402
-from agent import Agent, EtlProcessor  # noqa: E402
-from audio import SttService, TtsService  # noqa: E402
-from config import settings  # noqa: E402
-from llm import LlamaManager  # noqa: E402
-from rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
-from scheduler import SchedulerService  # noqa: E402
-from state import AppContext  # noqa: E402
-from telemetry import db, telemetry  # noqa: E402
-from ws import LiveSession  # noqa: E402
+from mente_digital import acesso  # noqa: E402
+from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
+from mente_digital.audio import SttService, TtsService  # noqa: E402
+from mente_digital.config import BASE_DIR, settings  # noqa: E402
+from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
+from mente_digital.scheduler import SchedulerService  # noqa: E402
+from mente_digital.state import AppContext  # noqa: E402
+from mente_digital.telemetry import db, telemetry  # noqa: E402
+from mente_digital.ws import LiveSession  # noqa: E402
 
 
 async def _boot(ctx: AppContext) -> None:
@@ -91,7 +91,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-templates = Jinja2Templates(directory="templates")
+# templates/ fica na RAIZ do repo (não dentro do pacote). Ancorado em BASE_DIR
+# em vez de relativo ao cwd — assim `python -m mente_digital.main` funciona de
+# qualquer diretório (o único caminho do app que antes dependia do cwd).
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 def get_ctx(request: Request = None, websocket: WebSocket = None) -> AppContext:
@@ -215,6 +218,6 @@ if __name__ == "__main__":
                 f"({settings.ssl_cert!r}, {settings.ssl_key!r}) — subindo em HTTP.",
             )
     uvicorn.run(
-        "main:app", host=settings.host, port=settings.port,
+        "mente_digital.main:app", host=settings.host, port=settings.port,
         log_level="error", reload=False, **ssl_kwargs,
     )

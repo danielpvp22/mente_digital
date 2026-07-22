@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from hypothesis import given, settings, strategies as st
 
-from audio import SentenceChunker
-from llm import _FiltroThink
-import mestre
+from mente_digital.audio import SentenceChunker
+from mente_digital.llm import _FiltroThink
+from mente_digital import mestre
 
 # Suíte de 600+ testes roda no Windows: teto de exemplos + sem deadline (o shrinking
 # e a variação de tempo de máquina não podem deixar a suíte flaky nem lenta).

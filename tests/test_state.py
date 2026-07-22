@@ -1,8 +1,8 @@
 """
 Memória de sessão e cache — todas limitadas por tamanho (sem creep de RAM).
 """
-from config import settings
-from state import LruCache, SessionMemory
+from mente_digital.config import settings
+from mente_digital.state import LruCache, SessionMemory
 
 
 def test_lru_evicta_o_mais_antigo():

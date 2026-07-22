@@ -20,11 +20,11 @@ import tempfile
 # produção (medido: 3 lacunas-fixture no topo da fila da pesquisa proativa).
 # Atribuição DURA, não setdefault: uma MENTE_DB_TELEMETRIA herdada do shell
 # apontaria a suíte de volta ao banco real — o redirect tem que vencer sempre.
-if "config" in sys.modules:
+if "mente_digital.config" in sys.modules:
     raise RuntimeError(
-        "conftest: 'config' foi importado antes do redirect de MENTE_DB_TELEMETRIA — "
-        "o db global nasceria no telemetria_etl.db real. Mantenha este bloco acima "
-        "de qualquer import do projeto."
+        "conftest: 'mente_digital.config' foi importado antes do redirect de "
+        "MENTE_DB_TELEMETRIA — o db global nasceria no telemetria_etl.db real. "
+        "Mantenha este bloco acima de qualquer import do projeto."
     )
 _TMP_DB_DIR = tempfile.mkdtemp(prefix="mente_pytest_")
 os.environ["MENTE_DB_TELEMETRIA"] = os.path.join(_TMP_DB_DIR, "telemetria_teste.db")
@@ -34,8 +34,8 @@ from typing import List, Optional, Tuple
 
 import pytest
 
-from config import Settings
-from config import settings as _settings
+from mente_digital.config import Settings
+from mente_digital.config import settings as _settings
 
 # Defaults LIMPOS do código (ignora o .env) — a suíte de lógica assume estes valores.
 _DEFAULTS_LIMPOS = Settings(_env_file=None)
@@ -43,7 +43,7 @@ _DEFAULTS_LIMPOS = Settings(_env_file=None)
 # Tabelas no banco ISOLADO do redirect acima: sem isto os writes best-effort dos
 # testes (save_lacuna, save_latency...) falhariam em silêncio por falta de schema —
 # e os testes que LEEM o que gravaram passariam por motivo errado.
-from telemetry import db as _db_teste  # noqa: E402  (precisa vir DEPOIS do redirect)
+from mente_digital.telemetry import db as _db_teste  # noqa: E402  (precisa vir DEPOIS do redirect)
 
 _db_teste.init()
 
@@ -90,7 +90,7 @@ class FakeLlama:
         self._preemptar_proximo = True
 
     async def stream(self, prompt: str, **kwargs):
-        from llm import InferenciaPreemptada
+        from mente_digital.llm import InferenciaPreemptada
 
         if kwargs.get("preemptible") and self._preemptar_proximo:
             self._preemptar_proximo = False

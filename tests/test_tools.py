@@ -2,7 +2,7 @@
 Ferramentas: parse do JSON do roteador, calculadora segura, gate lexical de ação,
 e o registry. Tudo puro (sem GPU/LLM).
 """
-import tools
+from mente_digital import tools
 
 
 # --- e_efemero: gate de INGESTÃO (mais largo que o de roteamento) ------------

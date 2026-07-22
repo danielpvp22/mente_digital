@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import settings  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
 
 TEXTO_PADRAO = (
     "Oi! Tudo bem por aí? Deixa eu te contar uma coisa... a voz também conversa. "

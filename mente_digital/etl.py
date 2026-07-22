@@ -18,17 +18,17 @@ import time
 from datetime import datetime
 from typing import List, Tuple
 
-import contradicao
-import diapasao
-import prompts
-import textutils
-from atomos import _slug_titulo, dividir_atomos, normalizar_atomo
-from config import settings
-from llm import InferenciaPreemptada
-from otimizador import lacuna_pesquisavel
-from rag import NENHUM, strip_frontmatter
-from state import AppContext
-from telemetry import db, telemetry
+from mente_digital import contradicao
+from mente_digital import diapasao
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
+from mente_digital.config import settings
+from mente_digital.llm import InferenciaPreemptada
+from mente_digital.otimizador import lacuna_pesquisavel
+from mente_digital.rag import NENHUM, strip_frontmatter
+from mente_digital.state import AppContext
+from mente_digital.telemetry import db, telemetry
 
 
 async def append_chat_dump(ator: str, texto: str) -> None:
@@ -380,13 +380,76 @@ class EtlProcessor:
             await self.ctx.vectorstore.sync()
             telemetry.track("ETL_PROATIVO", f"Pesquisa proativa: {feitas} lacuna(s) trazida(s) ao banco.")
 
+    async def pesquisa_temas_quentes(self) -> None:
+        """#4: no idle, RE-PESQUISA na web os temas que o usuário mais REUSA do vault (o
+        estágio Banco respondeu de fato) para trazer NOVIDADE. É o ESPELHO da lacuna:
+        lacuna = o que FALTOU (banco não cobria); tema quente = o favorito que o banco JÁ
+        cobre — por isso, ao contrário da proativa, NÃO há o skip Nível-1 por cobertura do
+        banco (o banco sempre cobre; seria pular tudo). O valor vem do dedup por átomo em
+        `_salvar_atomos`: só o fato INÉDITO vira nota, o resto é descartado.
+
+        Roda DEPOIS da pesquisa_proativa (buraco genuíno tem prioridade sobre refrescar o
+        que já se sabe). Preemptível: se o usuário volta, InferenciaPreemptada encerra e os
+        temas não-tocados ficam para a próxima passada de idle. Capado por ciclo."""
+        if not settings.idle_pesquisa_temas:
+            return
+        temas = await asyncio.to_thread(
+            db.get_temas_quentes,
+            settings.idle_temas_max * 4,
+            settings.idle_temas_min_reuso,
+            settings.idle_temas_cooldown_dias,
+        )
+        if not temas:
+            return
+        feitas = 0
+        for tema in temas:
+            if feitas >= settings.idle_temas_max:
+                break
+            termos = tema["termos"]
+            chave = textutils.normaliza(termos)
+            # Mesmo backstop da lacuna: trivial ('ok') e sem-núcleo não viram pesquisa.
+            if not lacuna_pesquisavel(termos):
+                await asyncio.to_thread(db.marcar_tema_pesquisado, chave)
+                continue
+            await self._esperar_idle()
+            dados = await self.ctx.web.search(termos, consulta=termos)
+            if not dados or dados == NENHUM:
+                await asyncio.to_thread(db.marcar_tema_pesquisado, chave)
+                continue
+            try:
+                conteudo = await self.ctx.llama.collect(
+                    prompts.prompt_sintese(termos, dados),
+                    max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
+                    system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,
+                )
+            except InferenciaPreemptada:
+                telemetry.track("ETL_TEMAS", "Usuário voltou — re-pesquisa de temas adiada.")
+                return
+            except Exception as exc:
+                telemetry.error("ETL_TEMAS", f"Falha ao sintetizar tema quente '{termos}'", exc)
+                await asyncio.to_thread(db.marcar_tema_pesquisado, chave)
+                continue
+            # O dedup por átomo (dentro de _salvar_atomos) descarta o que já se sabe —
+            # salvos>0 só quando a web trouxe fato INÉDITO. Marca em todo caso (cooldown).
+            salvos = await self._salvar_atomos(conteudo, "TemaQuente", "ETL_TEMAS")
+            await asyncio.to_thread(db.marcar_tema_pesquisado, chave)
+            if salvos:
+                feitas += 1
+                telemetry.track("ETL_TEMAS", f"Tema quente '{termos}': {salvos} átomo(s) novos.")
+        if feitas:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("ETL_TEMAS", f"Re-pesquisa de temas quentes: {feitas} tema(s) atualizado(s).")
+
     async def run_idle(self, itens: List[Tuple[str, str]]) -> None:
         """Orquestra o idle: 1) atomiza as pesquisas da fila, 2) atomiza a conversa,
-        3) PESQUISA PROATIVA das lacunas, 4) DESCARREGA o modelo, liberando a VRAM (o
-        pilar pedido: a GPU volta pra outros trabalhos quando o chat para).
+        3) PESQUISA PROATIVA das lacunas, 4) RE-PESQUISA os TEMAS QUENTES (#4: os favoritos
+        que o usuário mais reusa), 5) DESCARREGA o modelo, liberando a VRAM (o pilar pedido:
+        a GPU volta pra outros trabalhos quando o chat para).
 
         A ordem importa e foi pedida assim: o ETL PRECISA do modelo, então o unload é o
-        ÚLTIMO passo. E só descarrega se ninguém voltou a interagir no meio-tempo —
+        ÚLTIMO passo. Lacunas (buraco) vêm antes dos temas quentes (refrescar o conhecido):
+        prioridade ao que falta. E só descarrega se ninguém voltou a interagir no meio-tempo —
         `interactive_idle` está SETADO quando não há inferência interativa em voo; se o
         usuário mandou algo, o pipeline o limpou e o unload é pulado (o próprio pipeline
         religou/manteve o modelo). Se descarregar e a mensagem chegar logo depois,
@@ -394,6 +457,7 @@ class EtlProcessor:
         await self.process_queue(itens)
         await self.summarize_dump()
         await self.pesquisa_proativa()
+        await self.pesquisa_temas_quentes()
         await self._sincronizar_vault_pendente()
         await self._snapshot_base()
 

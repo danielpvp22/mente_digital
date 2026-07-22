@@ -5,8 +5,8 @@ silencioso — só o carimbo detecta. Testes com fakes, sem Chroma real.
 """
 from __future__ import annotations
 
-from config import settings
-from rag import EmbeddingProvider, VectorStore
+from mente_digital.config import settings
+from mente_digital.rag import EmbeddingProvider, VectorStore
 
 
 class _Col:

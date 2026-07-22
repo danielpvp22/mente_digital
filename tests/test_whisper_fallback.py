@@ -10,9 +10,9 @@ import sys
 import types
 from types import SimpleNamespace
 
-import rag
-from audio import SttService
-from config import settings
+from mente_digital import rag
+from mente_digital.audio import SttService
+from mente_digital.config import settings
 
 
 class _StubWhisper:

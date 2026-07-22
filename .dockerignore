@@ -7,9 +7,9 @@
 .venv
 __pycache__/
 *.pyc
-modelos/
-Cerebro_Digital/
-banco_vetorial_cerebro/
+# Dados do dono/derivados (vault, Chroma, modelos, SQLite, dump) — TODOS sob dados/,
+# entram por bind mount em runtime, nunca na imagem. backups/ idem (nunca na imagem).
 dados/
+backups/
 *.db
 graphify-out/

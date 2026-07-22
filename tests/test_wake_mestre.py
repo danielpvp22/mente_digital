@@ -6,8 +6,8 @@ a lógica de gate (ws.LiveSession._deve_processar / _check_sono) com fakes.
 import asyncio
 import time
 
-from config import settings
-from state import AppContext
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 
 class _WsFake:
@@ -24,7 +24,7 @@ class _WsFake:
 def _sessao(monkeypatch, wake: bool):
     """LiveSession com WS/ctx falsos. `mestre_wake` é setado ANTES de construir (o
     __init__ deriva `dormente` dele). `track_task` é stubado (sem event loop no teste)."""
-    from ws import LiveSession
+    from mente_digital.ws import LiveSession
     monkeypatch.setattr(settings, "mestre_wake", wake)
     ctx = AppContext(settings=settings)
     s = LiveSession(ctx, _WsFake())

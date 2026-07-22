@@ -11,10 +11,10 @@ Sem GPU/rede: LLM/TTS fakes; db.cancelar_agendamento espionado; vault em tmp_pat
 """
 import os
 
-import tools
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import tools
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -29,12 +29,12 @@ def _agent(monkeypatch, tmp_path):
     ctx.llama = FakeLlama(["ok."])
     ctx.tts = FakeTts()
     ctx.vectorstore = FakeVS()
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.registrar_auditoria", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.registrar_auditoria", lambda *a, **k: None)
     # Espiona os cancelamentos REAIS (a ferramenta chama tools.db.cancelar_agendamento).
     cancelados = []
-    monkeypatch.setattr("tools.db.cancelar_agendamento",
+    monkeypatch.setattr("mente_digital.tools.db.cancelar_agendamento",
                         lambda ag_id: (cancelados.append(ag_id), True)[1])
     # Vault temporário p/ o caso "adiciona pão" (supersede) escrever de verdade.
     monkeypatch.setattr(settings, "caminho_obsidian", str(tmp_path / "vault"))
@@ -105,7 +105,7 @@ async def test_add_remove_nao_pedem_confirmacao(monkeypatch, tmp_path):
 
 
 async def test_botao_desligado_executa_direto(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.settings.confirmacao_habilitada", False)
+    monkeypatch.setattr("mente_digital.agent.settings.confirmacao_habilitada", False)
     agent, mem, cancelados = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
 

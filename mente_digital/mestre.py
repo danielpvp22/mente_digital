@@ -25,9 +25,9 @@ import re
 from datetime import datetime
 from typing import List, Optional
 
-import agenda
-import textutils
-import tools
+from mente_digital import agenda
+from mente_digital import textutils
+from mente_digital import tools
 
 # Frase da lista: "na lista", "à minha lista", "lista de compras"... O nome opcional
 # vem depois de "de". Palavras estruturais são ASCII, então casam em `.lower()`

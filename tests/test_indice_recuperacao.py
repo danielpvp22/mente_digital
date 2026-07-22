@@ -4,7 +4,7 @@ Só toca um diretório temporário; nunca o vault. Sem GPU, sem Chroma real.
 """
 import os
 
-import rag
+from mente_digital import rag
 
 
 def _criar_banco(diretorio: str, marcador: str = "chroma.sqlite3") -> None:

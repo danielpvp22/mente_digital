@@ -9,11 +9,11 @@ import asyncio
 
 import pytest
 
-import prompts
-import telemetry
-from agent import EtlProcessor
-from config import settings
-from state import AppContext
+from mente_digital import prompts
+from mente_digital import telemetry
+from mente_digital.agent import EtlProcessor
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 
 @pytest.fixture
