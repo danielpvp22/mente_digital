@@ -139,3 +139,34 @@ def test_extenso_preserva_meia_noite():
     # "meia hora" (30min) NÃO pode quebrar "meia-noite" (00:00).
     dt, _ = agenda.parse_quando("me acorda à meia-noite", AGORA)
     assert dt.hour == 0 and dt.minute == 0
+
+
+# --- descrever_disparo (#3): confirmação de data relativa ---------------------
+# Bug real: "me lembra às 9h" foi p/ o dia seguinte (9h já passara) e o dono só
+# viu depois. A confirmação passa a ancorar hoje/amanhã + dia da semana + data
+# absoluta, para o mismatch saltar na hora do agendamento. AGORA = sexta 17/07.
+
+
+def test_descrever_hoje():
+    dt = datetime(2026, 7, 17, 20, 0, 0)  # mesmo dia, à noite
+    assert agenda.descrever_disparo(dt, AGORA) == "hoje (sexta, 17/07) às 20h"
+
+
+def test_descrever_amanha():
+    dt = datetime(2026, 7, 18, 9, 0, 0)  # sábado
+    assert agenda.descrever_disparo(dt, AGORA) == "amanhã (sábado, 18/07) às 9h"
+
+
+def test_descrever_dentro_da_semana_com_minutos():
+    dt = datetime(2026, 7, 20, 9, 30, 0)  # segunda
+    assert agenda.descrever_disparo(dt, AGORA) == "segunda, 20/07 às 9h30"
+
+
+def test_descrever_alem_da_semana_sem_dia_semana():
+    dt = datetime(2026, 7, 28, 7, 0, 0)  # +11 dias: só a data absoluta
+    assert agenda.descrever_disparo(dt, AGORA) == "28/07 às 7h"
+
+
+def test_descrever_outro_ano_inclui_ano():
+    dt = datetime(2027, 1, 3, 8, 0, 0)
+    assert agenda.descrever_disparo(dt, AGORA) == "03/01/2027 às 8h"

@@ -415,7 +415,8 @@ async def _t_buscar_web(args: dict, ctx) -> str:
 async def _t_criar_lembrete(args: dict, ctx) -> str:
     quando = str(args.get("quando", "")).strip()
     mensagem = str(args.get("mensagem", "")).strip() or "Lembrete"
-    disparo, rec = agenda.parse_quando(quando, datetime.now())
+    agora = datetime.now()
+    disparo, rec = agenda.parse_quando(quando, agora)
     if disparo is None:
         return (
             f"não entendi o horário '{quando}'. Tente algo como 'daqui a 10 minutos', "
@@ -424,7 +425,9 @@ async def _t_criar_lembrete(args: dict, ctx) -> str:
     ag_id = await asyncio.to_thread(
         db.criar_agendamento, "lembrete", mensagem, disparo.isoformat(), rec, None, None
     )
-    quando_fmt = disparo.strftime("%d/%m às %H:%M")
+    # Confirma a data RELATIVA resolvida (#3): "amanhã (sábado, 18/07) às 9h" — o
+    # dono pega na hora se "às 9h" caiu no dia errado (9h já passou -> vai p/ amanhã).
+    quando_fmt = agenda.descrever_disparo(disparo, agora)
     extra = " (recorrente)" if rec else ""
     return f"lembrete #{ag_id} criado para {quando_fmt}{extra}: {mensagem}"
 
@@ -477,11 +480,13 @@ async def _t_agendar_briefing(args: dict, ctx) -> str:
     if hm is None:
         partes = settings.briefing_hora_padrao.split(":")
         hm = (int(partes[0]), int(partes[1]) if len(partes) > 1 else 0)
-    disparo = agenda.proximo_no_horario(datetime.now(), hm[0], hm[1])
+    agora = datetime.now()
+    disparo = agenda.proximo_no_horario(agora, hm[0], hm[1])
     await asyncio.to_thread(
         db.criar_agendamento, "briefing", "Briefing diário", disparo.isoformat(), "diario", None, None
     )
-    return f"briefing diário agendado para as {hm[0]:02d}:{hm[1]:02d}. Bom dia garantido."
+    # Nomeia a 1ª ocorrência (#3): deixa claro se começa hoje ou só amanhã.
+    return f"briefing diário agendado, começando {agenda.descrever_disparo(disparo, agora)}. Bom dia garantido."
 
 
 # --- Agente de Listas (compras / tarefas) ----------------------------------------
