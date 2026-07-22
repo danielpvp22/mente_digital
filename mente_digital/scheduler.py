@@ -56,6 +56,10 @@ class SchedulerService:
         # status durável já é pendente_entrega (pessimista), então nada se perde —
         # no pior caso o usuário ouve o aviso duas vezes, nunca zero.
         self._aguardando_ack: dict[str, tuple[dict, datetime]] = {}
+        # Pesquisa proativa AGENDADA (#1): quando a última passada rodou e se há uma em
+        # voo. Só RAM — um restart apenas adia a 1ª passada em um intervalo, sem perda.
+        self._ultima_pesquisa_idle: Optional[datetime] = None
+        self._pesquisa_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -87,6 +91,52 @@ class SchedulerService:
         if self._ha_sessoes():
             for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
                 await self._entregar_pendente(ag, agora)
+        # Pesquisa proativa AGENDADA (#1): dispara em BACKGROUND para NÃO atrasar o loop
+        # de alarmes — uma passada leva dezenas de segundos (web + LLM), e um lembrete não
+        # pode esperar por isso. A flag/última-passada guardam contra sobreposição.
+        if self._pesquisa_idle_devida(agora):
+            self._ultima_pesquisa_idle = agora
+            self._pesquisa_em_andamento = True
+            self.ctx.track_task(self._executar_pesquisa_idle())
+
+    # -- pesquisa proativa AGENDADA (#1): o "cresce a noite toda" ---------------
+    def _pesquisa_idle_devida(self, agora: datetime) -> bool:
+        """Decide se ESTE tick deve disparar uma passada de pesquisa proativa.
+
+        Gatilho POR TEMPO (não por fim-de-sessão): o run_idle roda 1x quando o chat
+        para; sem sessão a base não cresce. Guardas: desligado por default (intervalo
+        0); nunca concorre com sessão viva (o run_idle dela já cobre e disputaria a GPU
+        serializada); uma passada por vez; respeita o intervalo configurado."""
+        if settings.pesquisa_agendada_intervalo_seconds <= 0:
+            return False
+        if self._pesquisa_em_andamento or self._ha_sessoes():
+            return False
+        ult = self._ultima_pesquisa_idle
+        if ult is not None and (agora - ult).total_seconds() < settings.pesquisa_agendada_intervalo_seconds:
+            return False
+        return True
+
+    async def _executar_pesquisa_idle(self) -> None:
+        """Uma passada de pesquisa proativa + temas quentes, SEM sessão aberta.
+
+        Religa o modelo (o idle o descarrega e `collect` NÃO auto-carrega — só `stream`)
+        e devolve a VRAM ao fim. Os métodos do ETL já cedem a vez à conversa
+        (interactive_idle + preemptible) e são auto-capados, então rodar em background é
+        seguro. NUNCA propaga: é trabalho de fundo, não pode derrubar o scheduler."""
+        try:
+            telemetry.track("PESQUISA_IDLE", "Passada agendada iniciada (sem sessão).")
+            await self.ctx.llama.ensure_loaded()
+            await self.ctx.etl.pesquisa_proativa()
+            await self.ctx.etl.pesquisa_temas_quentes()
+            # Devolve a GPU entre as passadas (pilar do idle), mas só se ninguém voltou.
+            if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
+                    and not self._ha_sessoes()):
+                await self.ctx.llama.unload()
+            telemetry.track("PESQUISA_IDLE", "Passada agendada concluída.")
+        except Exception as exc:
+            telemetry.error("PESQUISA_IDLE", "Falha na pesquisa agendada", exc)
+        finally:
+            self._pesquisa_em_andamento = False
 
     async def _probe_vram(self) -> None:
         """#28: alimenta o detector de vazamento e avisa se disparar. #29: recalibra
