@@ -106,3 +106,36 @@ def test_proximo_dia_semana_hoje_ainda_nao_passou():
     # Hoje é sexta (wd 4). "toda sexta às 20h" e agora são 14:30 -> hoje mesmo.
     dt = agenda.proximo_dia_semana(AGORA, 4, 20, 0)
     assert dt == datetime(2026, 7, 17, 20, 0)
+
+
+# -- Número por extenso (voz transcreve "dois", não "2") -----------------------
+def test_relativo_por_extenso():
+    dt, rec = agenda.parse_quando("me lembra daqui a dois minutos", AGORA)
+    assert rec is None
+    assert dt == datetime(2026, 7, 17, 14, 32, 0)
+
+
+def test_relativo_uma_hora_por_extenso():
+    dt, _ = agenda.parse_quando("em uma hora", AGORA)
+    assert dt == datetime(2026, 7, 17, 15, 30, 0)
+
+
+def test_meia_hora():
+    dt, _ = agenda.parse_quando("me acorda daqui a meia hora", AGORA)
+    assert dt == datetime(2026, 7, 17, 15, 0, 0)
+
+
+def test_intervalo_por_extenso():
+    _dt, rec = agenda.parse_quando("a cada dez minutos", AGORA)
+    assert rec == "intervalo:600"
+
+
+def test_composto_vinte_e_cinco():
+    dt, _ = agenda.parse_quando("daqui a vinte e cinco minutos", AGORA)
+    assert dt == datetime(2026, 7, 17, 14, 55, 0)
+
+
+def test_extenso_preserva_meia_noite():
+    # "meia hora" (30min) NÃO pode quebrar "meia-noite" (00:00).
+    dt, _ = agenda.parse_quando("me acorda à meia-noite", AGORA)
+    assert dt.hour == 0 and dt.minute == 0
