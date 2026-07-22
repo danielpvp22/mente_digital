@@ -378,43 +378,52 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 **~10.500 linhas de Python** em 33 módulos (de ~3.300 em 12), mais ~7.500 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
-mente_digital/
-├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
-├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
-├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
-├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
-├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
-├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
-├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
-├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
-├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
-├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
-├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
-├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
-├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
-├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
-├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
-├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
-├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
-├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
-├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
-├── srs.py          # 25   repetição espaçada (Leitner) — puro
-├── habitos.py      # 22   sequência de hábitos (streak) — puro
-├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
-├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
-├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
-├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
-├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
-├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
-├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
-├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
-├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
-├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
-├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
-├── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
-├── templates/      # index.html — a SPA inteira (491 linhas)
-├── modelos/        # LLM .gguf + voz Piper + whisper/ (binários fora do git)
-└── tests/          # 624 testes em 71 arquivos, sem GPU, sem rede
+.                        # a RAIZ fica só com código-do-pacote e config; o resto em pastas
+├── mente_digital/       # o PACOTE do app — rode com `python -m mente_digital.main`
+│   ├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
+│   ├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
+│   ├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
+│   ├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
+│   ├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
+│   ├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
+│   ├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
+│   ├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
+│   ├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
+│   ├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
+│   ├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
+│   ├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
+│   ├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
+│   ├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
+│   ├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
+│   ├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
+│   ├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
+│   ├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
+│   ├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+│   ├── srs.py          # 25   repetição espaçada (Leitner) — puro
+│   ├── habitos.py      # 22   sequência de hábitos (streak) — puro
+│   ├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
+│   ├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
+│   ├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
+│   ├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
+│   ├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
+│   ├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
+│   ├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
+│   ├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
+│   ├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
+│   ├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
+│   ├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
+│   └── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+├── dados/               # TODO dado de runtime (gitignored) — nada disto vai pro git
+│   ├── modelos/         # LLM .gguf + voz Piper + whisper/ (binários fora do git)
+│   ├── Cerebro_Digital/ # vault Obsidian (as notas do dono)
+│   ├── banco_vetorial_cerebro/ # índice Chroma (derivado do vault)
+│   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
+│   └── chat_dump_bruto.md      # fila do ETL de conversa
+├── templates/           # index.html — a SPA inteira (491 linhas)
+├── tests/               # 716 testes em 72 arquivos, sem GPU, sem rede
+├── eval/                # benches e A/B (TTFA, embeddings, modelos)
+├── scripts/             # utilitários (import de histórico, reindex, certs, bench de STT)
+└── docs/                # CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
 ```
 
 <details>
