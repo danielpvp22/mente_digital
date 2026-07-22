@@ -600,7 +600,7 @@ O que cada peça faz e por quê:
 
 ## 🗄 O banco vetorial: como ele é formado
 
-A regra que governa tudo: **o vault é a fonte de verdade; o Chroma é um índice derivado e descartável.** Apagar `banco_vetorial_cerebro/` não perde nada — o próximo boot reconstrói. É essa hierarquia que dá liberdade de trocar métrica, modelo de embedding ou estratégia de chunking sem que isso seja *perda de dados*.
+A regra que governa tudo: **o vault é a fonte de verdade; o Chroma é um índice derivado e descartável.** Apagar `dados/banco_vetorial_cerebro/` não perde nada — o próximo boot reconstrói. É essa hierarquia que dá liberdade de trocar métrica, modelo de embedding ou estratégia de chunking sem que isso seja *perda de dados*.
 
 ```mermaid
 flowchart TD
@@ -648,7 +648,7 @@ E isso **aparece literalmente no prompt** (`[Local - Confiança: 0.6] ...`): o m
 
 Porque **a granularidade do corpus dita a configuração**. A base é atômica — 1 nota = 1 ideia. Colher 4 chunks rende contexto pobre demais. Daí `rag_top_k=40` / `rag_max_chunks=30` e a resposta por **fusão** — o LLM integra dezenas de átomos num parágrafo coerente. A Malha soma vizinhos a isso, e o dedup near-dup tira as quase-duplicatas antes de gastar o orçamento.
 
-> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `banco_vetorial_cerebro/`** e reindexar.
+> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `dados/banco_vetorial_cerebro/`** e reindexar.
 
 ---
 
@@ -926,8 +926,10 @@ pip install -r requirements.txt
 
 ### 2. Baixar os modelos (não vêm no repositório)
 
+Os pesos ficam em **`dados/modelos/`** (toda a pasta `dados/` é gitignored — dado do dono e binários grandes nunca vão pro git):
+
 ```
-modelos/
+dados/modelos/
 ├── Qwen3-8B-Q4_K_M.gguf                                # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
 ├── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
@@ -940,7 +942,7 @@ modelos/
 
 ### 3. (Opcional) `.env`
 
-Por padrão tudo funciona com caminhos relativos. Crie um `.env` só se os modelos/vault moram em outro lugar:
+Por padrão tudo funciona com caminhos relativos a `dados/` — vault, índice Chroma, modelos e SQLite são derivados de `BASE_DIR` (a raiz do repo), então roda de qualquer máquina sem editar código. Crie um `.env` só se os modelos/vault moram em outro lugar:
 
 ```ini
 MENTE_CAMINHO_MODELO_LLAMA=D:\outro\caminho\modelo.gguf
