@@ -45,6 +45,40 @@ _UNIDADES = {
     "dia": 86400, "dias": 86400,
 }
 
+# Numerais PT-BR por extenso -> dígito. A VOZ transcreve "dois", "dez", "meia hora";
+# sem isto o parser (que só casa \d+) devolvia None e a ferramenta pedia pra reformular.
+_EXTENSO_TENS = {"vinte": 20, "trinta": 30, "quarenta": 40, "cinquenta": 50}
+_EXTENSO_UNIT = {
+    "um": 1, "uma": 1, "dois": 2, "duas": 2, "tres": 3, "quatro": 4, "cinco": 5,
+    "seis": 6, "sete": 7, "oito": 8, "nove": 9,
+}
+_EXTENSO = {
+    **{k: str(v) for k, v in _EXTENSO_UNIT.items()},
+    "dez": "10", "onze": "11", "doze": "12", "treze": "13", "quatorze": "14",
+    "catorze": "14", "quinze": "15", "dezesseis": "16", "dezessete": "17",
+    "dezoito": "18", "dezenove": "19",
+    **{k: str(v) for k, v in _EXTENSO_TENS.items()}, "sessenta": "60",
+}
+_EXTENSO_RE = re.compile(r"\b(" + "|".join(sorted(_EXTENSO, key=len, reverse=True)) + r")\b")
+_COMPOSTO_RE = re.compile(
+    r"\b(vinte|trinta|quarenta|cinquenta)\s+e\s+"
+    r"(um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove)\b"
+)
+
+
+def _converter_extenso(norm: str) -> str:
+    """Numerais por extenso -> dígitos, ANTES do parsing por regex. Puro/testável.
+
+    Trata 'meia hora' (30 min) e compostos 'vinte e cinco' (25); PRESERVA 'meia noite'
+    (que o _extrai_hora resolve como 00:00). Só toca tokens de número inteiros —
+    'daqui a dois minutos' vira 'daqui a 2 minutos'."""
+    norm = re.sub(r"\bmeia[\s-]+hora\b", "30 minutos", norm)
+    norm = _COMPOSTO_RE.sub(
+        lambda m: str(_EXTENSO_TENS[m.group(1)] + _EXTENSO_UNIT[m.group(2)]), norm
+    )
+    norm = _EXTENSO_RE.sub(lambda m: _EXTENSO[m.group(1)], norm)
+    return norm
+
 
 def _extrai_hora(norm: str, default_hm: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int]]:
     """Acha um horário na frase normalizada. Devolve (hora, minuto) ou o default.
@@ -159,6 +193,7 @@ def parse_quando(texto: str, agora: datetime) -> Tuple[Optional[datetime], Recor
     if not texto or not texto.strip():
         return (None, None)
     norm = textutils.normaliza(texto)
+    norm = _converter_extenso(norm)   # "daqui a dois minutos" -> "daqui a 2 minutos" (voz)
 
     # 1) RECORRENTE por intervalo: "a cada 30 minutos", "de 2 em 2 horas".
     segs = _intervalo_recorrente(norm)

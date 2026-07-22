@@ -134,6 +134,31 @@ class SentenceChunker:
 # ==========================================================================
 # STT — Whisper
 # ==========================================================================
+# Alucinações típicas do faster-whisper em NÃO-FALA: ao abrir o mic, um respiro/ruído
+# vira a frase-lixo mais provável em PT ("Obrigado", "Tchau", créditos de legenda). O
+# no_speech_prob separa o fantasma (prob alta) de um "obrigado" REALMENTE falado (baixa).
+_FILLER_ALUC = frozenset({
+    "obrigado", "obrigada", "muito obrigado", "obrigado por assistir",
+    "tchau", "ate logo", "ate a proxima", "valeu",
+    "legendas pela comunidade amara org", "amara org",
+    "inscreva se no canal", "compartilhe o video",
+})
+_NO_SPEECH_ALUC = 0.6
+
+
+def parece_alucinacao(texto: str, no_speech_prob: float) -> bool:
+    """True se a transcrição é um filler de alucinação do Whisper em não-fala.
+
+    Puro/testável. Só descarta quando o no_speech_prob é alto (>= _NO_SPEECH_ALUC) —
+    assim um 'obrigado' de verdade (prob baixa) passa, mas o fantasma do mic abrindo
+    (silêncio/ruído -> prob alta) é barrado."""
+    if no_speech_prob < _NO_SPEECH_ALUC:
+        return False
+    import textutils
+    norm = textutils.normaliza(texto).strip(" .!?,")
+    return norm in _FILLER_ALUC
+
+
 class SttService:
     """STT via faster-whisper (CTranslate2): mesmos pesos do Whisper, mais rápido.
 
@@ -218,7 +243,19 @@ class SttService:
                     beam_size=settings.whisper_beam_size,
                     condition_on_previous_text=False,
                 )
-                return "".join(seg.text for seg in segmentos).strip()
+                segs = list(segmentos)
+                texto = "".join(s.text for s in segs).strip()
+                # Descarta a alucinação de não-fala ("Obrigado" fantasma do mic abrindo):
+                # texto é um filler típico E os segmentos têm no_speech_prob alto.
+                if segs:
+                    nsp = sum(getattr(s, "no_speech_prob", 0.0) for s in segs) / len(segs)
+                    if parece_alucinacao(texto, nsp):
+                        telemetry.track(
+                            "WHISPER",
+                            f"Descartada alucinação de não-fala: '{texto}' (no_speech={nsp:.2f}).",
+                        )
+                        return ""
+                return texto
 
             return await asyncio.to_thread(_run)
         except Exception as exc:
