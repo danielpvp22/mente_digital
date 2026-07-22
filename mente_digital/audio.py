@@ -24,6 +24,7 @@ import numpy as np
 
 from mente_digital.config import DICIONARIO_FONETICO, settings
 from mente_digital.telemetry import telemetry
+from mente_digital.verbalizar import verbalizar
 
 
 # ==========================================================================
@@ -300,13 +301,6 @@ class TtsService:
     # e-vírgula, dois-pontos e travessão = respiro de vírgula). Descartar deixava a
     # fala monótona e emendada — a pontuação É o canal de prosódia do Piper.
     _PAUSAS = (("…", "..."), ("—", ","), ("–", ","), (";", ","), (":", ","))
-    # Dígitos exigem leitura própria ANTES da troca genérica acima: "14:30" com vírgula
-    # viraria decimal falado ("quatorze vírgula trinta") e, com o strip antigo, virava
-    # milhar ("1430"). "14 e 30" é a leitura natural de horário em PT-BR — e atinge as
-    # falas mais frequentes do assistente (hora_atual, confirmações de agenda). Mesmo
-    # racional para intervalo com traço: "10–15" lê "10 a 15".
-    _HORA = re.compile(r"(\d):(\d)")
-    _INTERVALO = re.compile(r"(\d)\s*[–—]\s*(\d)")
 
     def __init__(self) -> None:
         self._voice = None
@@ -355,8 +349,10 @@ class TtsService:
 
     def _normalizar(self, texto: str) -> str:
         texto = self._STRIP_MD.sub("", texto)
-        texto = self._HORA.sub(r"\1 e \2", texto)
-        texto = self._INTERVALO.sub(r"\1 a \2", texto)
+        # Números/símbolos → palavras faláveis ANTES do filtro _ALLOWED (que apagaria
+        # $ % ° º) e do Piper (cujo espeak-ng adivinha e erra decimal/hora em PT-BR).
+        # Ver verbalizar.py para o porquê de cada caso.
+        texto = verbalizar(texto)
         for de, para in self._PAUSAS:
             texto = texto.replace(de, para)
         for ing, pt in DICIONARIO_FONETICO.items():
