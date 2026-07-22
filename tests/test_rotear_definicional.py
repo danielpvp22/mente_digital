@@ -84,6 +84,20 @@ async def test_definicional_vault_fraco_vai_pra_web(monkeypatch, tmp_path):
     assert agent.ctx.web.searches == 1     # vault fraco -> escalou pra web
 
 
+async def test_definicional_imperativo_nu_vai_pra_web(monkeypatch, tmp_path):
+    # Teste real 2507: "explica RAG" (sem "me") ANTES caía no local e devolvia a nota-piada.
+    # Agora casa o gatilho imperativo nu; vault fraco (1 átomo) escala pra web como "o que é".
+    monkeypatch.setattr("agent.settings.rotear_definicional_web", True)
+    monkeypatch.setattr("agent.settings.definicional_min_atomos", 3)
+    vs = SpyVS(fontes=["so_uma_nota.md"])
+    agent, mem = _agent(monkeypatch, tmp_path, vs)
+    send, _ = make_send()
+
+    await agent.pipeline_resposta("explica RAG", send, mem)
+
+    assert agent.ctx.web.searches == 1     # imperativo nu roteou igual "o que é RAG"
+
+
 async def test_definicional_vault_forte_usa_local(monkeypatch, tmp_path):
     # 4 átomos >= min 3: tema bem coberto -> responde LOCAL, sem pagar web.
     monkeypatch.setattr("agent.settings.rotear_definicional_web", True)

@@ -319,10 +319,25 @@ def test_composto_add_mais_cancelar():
 
 
 def test_composto_defere_se_uma_parte_falha():
-    # A 2ª parte tem MENSAGEM ("comprar") -> parse_rapido defere -> o TODO defere (None).
+    # WATCHER ("me avise quando X") é fuzzy e defere SEMPRE (single e composto) -> o TODO
+    # defere (None): nunca faz metade quando uma parte é irredutível a regex.
     assert mestre.parse_composto(
-        "adiciona pão na lista e me lembra de comprar amanhã", AGORA
+        "adiciona pão na lista e me avise quando o dólar passar de 5,50", AGORA
     ) is None
+
+
+def test_composto_lista_mais_lembrete_com_mensagem():
+    # BÔNUS DB (falhava 62×): lista-add + lembrete-COM-mensagem. O lembrete-com-mensagem
+    # defere ao LLM quando SOZINHO (qualidade), mas num COMPOSTO o LLM recusaria o todo —
+    # então a mensagem é extraída por regex e o composto resolve inteiro (não faz metade).
+    # Lembrete COM hora parseável ('amanhã às 9h'); "amanhã" nu é ambíguo e não agenda.
+    acoes = mestre.parse_composto(
+        "adiciona pão na lista e me lembra de comprar leite amanhã às 9h", AGORA
+    )
+    assert [a.tool for a in acoes] == ["adicionar_item", "criar_lembrete"]
+    assert acoes[0].args["item"] == "pão"
+    assert "leite" in acoes[1].args["mensagem"].lower()   # mensagem extraída, não perdida
+    assert acoes[1].args["quando"]                         # o tool re-parseia a hora
 
 
 def test_composto_comando_simples_inalterado():

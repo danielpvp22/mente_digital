@@ -2,7 +2,7 @@
 (mic abrindo -> ruído -> frase-lixo), mas preserva um 'obrigado' realmente falado.
 Puro — sem áudio, sem GPU, sem modelo carregado.
 """
-from audio import parece_alucinacao
+from audio import parece_alucinacao, transcricao_incerta
 
 
 def test_filler_com_no_speech_alto_e_descartado():
@@ -24,3 +24,29 @@ def test_fala_real_nunca_e_alucinacao():
 def test_limiar_do_no_speech():
     assert parece_alucinacao("obrigado", 0.6)        # no limiar: descarta
     assert not parece_alucinacao("obrigado", 0.59)   # logo abaixo: passa
+
+
+# --- Gate de confiança do STT (#37 parte 1) ----------------------------------
+# Fala CURTA + avg_logprob abaixo do limiar = provável mistranscrição -> descarta.
+_LIMIAR = -1.0
+_MAXP = 2
+
+
+def test_curta_e_incerta_e_descartada():
+    # "oração" cravado de um ruído, confiança baixa (-1.5 < -1.0) e 1 palavra.
+    assert transcricao_incerta("oração", -1.5, _LIMIAR, _MAXP)
+    assert transcricao_incerta("atenção reparação", -2.0, _LIMIAR, _MAXP)
+
+
+def test_curta_mas_confiante_passa():
+    # 1 palavra, mas confiança ALTA (avg_logprob perto de 0) -> fala de verdade, passa.
+    assert not transcricao_incerta("sim", -0.2, _LIMIAR, _MAXP)
+
+
+def test_longa_mesmo_incerta_passa():
+    # Enunciado longo (> max_palavras): uma palavra incerta não condena o todo.
+    assert not transcricao_incerta("me explica o que é o rag", -1.5, _LIMIAR, _MAXP)
+
+
+def test_vazia_nao_e_incerta():
+    assert not transcricao_incerta("", -3.0, _LIMIAR, _MAXP)

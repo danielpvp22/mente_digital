@@ -185,6 +185,13 @@ _GATILHOS_DEFINICIONAL = (
     "o que vem a ser", "o que representa", "quem e ", "quem foi ",
     "defina ", "definicao de ", "significado de ", "conceito de ",
     "para que serve", "me explica", "me explique",
+    # Imperativo NU (teste real 2507): "explica RAG"/"explique overfitting" (sem "me")
+    # escapavam e caíam no local — devolvendo a nota-piada do Tarkov. O espaço final
+    # exige um termo após o verbo ("explicando"/"explicação" NÃO casam), e o marcador
+    # pessoal abaixo ainda protege "explica meu código". Follow-up ("explica isso") é
+    # de-risked: a RAM responde antes do estágio Banco, e o Lever B mantém local o tema
+    # bem coberto — só o raso/desconhecido escala pra web (comportamento desejado).
+    "explica ", "explique ",
 )
 # Marcadores de pergunta PESSOAL/ESPECÍFICA: se presentes, NÃO roteia pra web — o assunto
 # mora no vault do dono, não na web genérica. "reservando local pra pessoais". A síntese

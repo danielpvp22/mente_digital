@@ -159,6 +159,19 @@ def parece_alucinacao(texto: str, no_speech_prob: float) -> bool:
     return norm in _FILLER_ALUC
 
 
+def transcricao_incerta(texto: str, avg_logprob: float, limiar: float, max_palavras: int) -> bool:
+    """True se a transcrição é CURTA e de BAIXA confiança (#37 parte 1). Puro/testável.
+
+    Diferente da alucinação de NÃO-fala (parece_alucinacao, no_speech alto): aqui é fala
+    REAL que o Whisper cravou errado numa palavra válida ("oração"/"atenção"), com
+    avg_logprob baixo. Só morde enunciado curto (<= max_palavras): um texto longo com uma
+    palavra incerta ainda passa. Quem chama decide se aplica (flag whisper_descartar_incerto)."""
+    palavras = texto.split()
+    if not palavras or len(palavras) > max_palavras:
+        return False
+    return avg_logprob < limiar
+
+
 class SttService:
     """STT via faster-whisper (CTranslate2): mesmos pesos do Whisper, mais rápido.
 
@@ -253,6 +266,19 @@ class SttService:
                         telemetry.track(
                             "WHISPER",
                             f"Descartada alucinação de não-fala: '{texto}' (no_speech={nsp:.2f}).",
+                        )
+                        return ""
+                    # GATE DE CONFIANÇA (#37 parte 1): fala curta cravada errado de um ruído.
+                    # avg_logprob médio dos segmentos; descarta só com a flag ligada (o limiar
+                    # é calibrado por voz — ver config). Logado sempre p/ dar o número a calibrar.
+                    alp = sum(getattr(s, "avg_logprob", 0.0) for s in segs) / len(segs)
+                    if settings.whisper_descartar_incerto and transcricao_incerta(
+                        texto, alp, settings.whisper_confianca_min_logprob,
+                        settings.whisper_incerto_max_palavras,
+                    ):
+                        telemetry.track(
+                            "WHISPER",
+                            f"Descartada transcrição incerta: '{texto}' (confiança={alp:.2f}).",
                         )
                         return ""
                 return texto

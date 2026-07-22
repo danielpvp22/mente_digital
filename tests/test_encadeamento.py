@@ -70,12 +70,14 @@ async def test_composto_com_destrutiva_executa_segura_e_confirma_resto(monkeypat
 
 
 async def test_composto_mal_formado_defere_nao_faz_metade(monkeypatch, tmp_path):
-    # 2ª parte tem mensagem ("comprar") -> parse_composto devolve None -> cai no roteador
-    # LLM (FakeLlama não devolve tool) -> comando desconhecido; a 1ª parte NÃO é executada.
+    # WATCHER ("me avise quando X") é irredutível a regex -> parse_composto devolve None ->
+    # cai no roteador LLM (FakeLlama não devolve tool) -> desconhecido; a 1ª parte NÃO roda.
+    # (O caso lista+lembrete-com-mensagem agora RESOLVE — ver test_mestre; aqui garantimos
+    # que uma parte genuinamente irredutível ainda protege o "não faz metade".)
     agent, mem, _ = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
 
     await agent.pipeline_resposta(
-        "mestre, adiciona pão na lista e me lembra de comprar leite amanhã", send, mem
+        "mestre, adiciona pão na lista e me avise quando o dólar passar de 5,50", send, mem
     )
     assert "pão" not in _lista("compras")          # não fez metade
