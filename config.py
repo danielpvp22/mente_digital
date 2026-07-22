@@ -158,6 +158,16 @@ class Settings(BaseSettings):
     # caso é voltar ao status quo, logado. Ver também scripts/bench_stt_threads.py
     # (o plano B barato na CPU: threads/afinidade de CCD no 7950X3D).
     whisper_gpu_fallback_cpu: bool = True
+    # GATE DE CONFIANÇA DO STT (#37 parte 1): fala CURTA que o Whisper crava de um ruído
+    # ("oração"/"atenção"/"reparação" — palavra válida, baixa confiança) era respondida a
+    # sério. Com o gate LIGADO, uma transcrição de <= N palavras cujo avg_logprob médio
+    # fica abaixo do limiar é DESCARTADA (o app não responde lixo). DEFAULT OFF: o limiar é
+    # sensível ao mic/ambiente e deve ser calibrado por VOZ (ligue e observe o log
+    # [WHISPER] "confiança=..."; avg_logprob ~0 = ótimo, mais negativo = pior; ~-1.0 é um
+    # ponto de partida). Só morde fala curta — enunciado longo com 1 palavra incerta passa.
+    whisper_descartar_incerto: bool = False
+    whisper_confianca_min_logprob: float = -1.0
+    whisper_incerto_max_palavras: int = 2
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta

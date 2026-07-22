@@ -200,7 +200,13 @@ class Agent(ComandosMestre, Respostas):
             # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
             # roteador LLM. Pergunta de conhecimento nem paga essa chamada — cai
             # direto no pipeline afinado abaixo (TTFA preservado).
-            if tools.talvez_acao(texto_usuario):
+            # VETO DECLARATIVO (#33): uma AFIRMAÇÃO nunca é pedido de ferramenta, ainda
+            # que trombe num gatilho de ação. "Vou viajar pra Salvador na sexta" disparava
+            # talvez_acao ('salva' é substring de 'Salvador') e o roteador, vendo 'sexta',
+            # tentava criar_lembrete — a frase não virava memória. Comando explícito ('me
+            # lembra', 'adiciona', 'salva nota') começa por imperativo → e_declarativa=False
+            # → segue roteando; só a afirmação é poupada e cai no pipeline como memória.
+            if tools.talvez_acao(texto_usuario) and not e_declarativa(texto_usuario):
                 decisao = await self._rotear(texto_usuario)
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")

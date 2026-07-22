@@ -168,8 +168,18 @@ class LiveSession:
         if self._finalizada:
             return
         self._finalizada = True
+        itens = self.memory.drenar_etl()   # sempre esvazia a fila (limpa a RAM da sessão)
+        # PRIVACIDADE (#34): sessão confidencial NÃO atomiza nada ao encerrar. Os guards
+        # por-turno já mantêm o turno sigiloso fora do dump/fila/SQLite, mas o disconnect
+        # era o furo — run_idle atomizaria o dump acumulado + resultados web em átomos
+        # PERMANENTES no vault (medido: ~40 átomos vazaram no teste real). Dreno a fila e
+        # DESCARTO; conhecimento legítimo anterior (se houver) é re-atomizado no próximo
+        # idle não-confidencial (deferido, nunca perdido). Cobre disconnect, end_session e
+        # inatividade — todos passam por aqui. Tradeoff: o modelo não descarrega neste idle.
+        if self.memory.confidencial:
+            telemetry.track("SERVER", "Sessão confidencial — idle de conhecimento pulado (nada atomizado).")
+            return
         telemetry.track("SERVER", "Sessão encerrada. Iniciando processamento IDLE...")
-        itens = self.memory.drenar_etl()
         self.ctx.track_task(self.ctx.etl.run_idle(itens))
 
     def _marcar_ativa(self) -> None:

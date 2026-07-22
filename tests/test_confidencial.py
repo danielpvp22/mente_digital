@@ -78,3 +78,45 @@ async def test_desligar_volta_a_persistir(monkeypatch, tmp_path):
 
     await agent.pipeline_resposta("me fale sobre redes neurais", send, mem)
     assert len(salvos) == 1                    # voltou a gravar no SQLite
+
+
+# --- Disconnect NÃO atomiza sob confidencial (#34, privacidade) --------------
+# Os guards por-turno já mantêm o sigiloso fora de dump/fila/SQLite; o FURO era o
+# disconnect: LiveSession._finalizar_sessao chamava etl.run_idle() sem checar o modo,
+# atomizando dump+web em átomos PERMANENTES. Agora a sessão confidencial pula o idle.
+class _WsFake:
+    async def accept(self): ...
+    async def send_json(self, _): ...
+
+
+def _live(monkeypatch, confidencial):
+    from ws import LiveSession
+    ctx = AppContext(settings=settings)
+    s = LiveSession(ctx, _WsFake())
+    s.memory.confidencial = confidencial
+    s.memory.enfileirar_etl("tema secreto", "- conteúdo sensível")  # havia algo na fila
+    rodou = []
+
+    class _Etl:
+        def run_idle(self, itens):
+            rodou.append(itens)
+            async def _c(): ...
+            return _c()
+
+    ctx.etl = _Etl()
+    monkeypatch.setattr(ctx, "track_task", lambda coro: coro.close())  # não agenda no loop
+    return s, rodou
+
+
+def test_disconnect_confidencial_nao_dispara_idle(monkeypatch):
+    s, rodou = _live(monkeypatch, confidencial=True)
+    s._finalizar_sessao()
+    assert rodou == []                          # run_idle NEM foi chamado -> nada atomizado
+    assert list(s.memory.fila_etl) == []        # a fila foi drenada (limpa a RAM)
+
+
+def test_disconnect_normal_dispara_idle(monkeypatch):
+    s, rodou = _live(monkeypatch, confidencial=False)
+    s._finalizar_sessao()
+    assert len(rodou) == 1                       # sessão normal atomiza como sempre
+    assert rodou[0] == [("tema secreto", "- conteúdo sensível")]

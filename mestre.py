@@ -731,8 +731,12 @@ def refazer_com(forward: List[tools.Decisao], certo: str) -> Optional[List[tools
     return None
 
 
-def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]:
-    """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM)."""
+def parse_rapido(comando: str, agora: datetime, composto: bool = False) -> Optional[List[tools.Decisao]]:
+    """Tenta resolver o comando SEM LLM. Devolve a lista de ações ou None (defere ao LLM).
+
+    `composto=True` (só o parse_composto passa) muda UM caso: lembrete-COM-mensagem, que
+    sozinho defere ao LLM (extração melhor), é resolvido por regex — porque num composto o
+    LLM recusaria o TODO e o passo se perderia (o bônus DB que falhava 62×)."""
     if not comando or not comando.strip():
         return None
     orig = comando.strip()
@@ -779,7 +783,11 @@ def parse_rapido(comando: str, agora: datetime) -> Optional[List[tools.Decisao]]
         if dt is None:
             return None
         if _tem_mensagem(norm):
-            return None
+            # Sozinho: o LLM extrai a mensagem melhor -> defere. No COMPOSTO: o LLM
+            # recusaria o todo (não dá pra deferir só uma parte), então extrai por regex.
+            if not composto:
+                return None
+            return [tools.Decisao("criar_lembrete", {"quando": orig, "mensagem": _mensagem_lembrete(norm)})]
         titulo = "Alarme" if ("alarme" in norm or "despertador" in norm) else "Lembrete"
         # `quando`=orig: o próprio tool re-parseia o horário (parse_quando ignora prosa).
         return [tools.Decisao("criar_lembrete", {"quando": orig, "mensagem": titulo})]
@@ -859,7 +867,7 @@ def parse_composto(comando: str, agora: datetime) -> Optional[List[tools.Decisao
         return parse_rapido(comando, agora)
     todas: List[tools.Decisao] = []
     for p in partes:
-        acoes = parse_rapido(p, agora)
+        acoes = parse_rapido(p, agora, composto=True)
         if not acoes:
             return None   # uma parte falhou -> defere o todo (não faz só metade)
         todas.extend(acoes)
@@ -919,8 +927,10 @@ def _itens_para_lista(orig: str, low: str) -> List[str]:
     return itens
 
 
-def _tem_mensagem(norm: str) -> bool:
-    """Sobra algum ASSUNTO depois de tirar gatilho + tempo + fillers? (então há mensagem)."""
+def _resto_mensagem(norm: str) -> str:
+    """O que SOBRA de `norm` depois de tirar gatilho + tempo + fillers + verbos: o ASSUNTO
+    do lembrete ('me lembra de comprar leite amanhã' -> 'comprar leite'). Puro. Base tanto
+    do `_tem_mensagem` (bool) quanto da extração determinística do composto (str)."""
     resto = norm
     fillers = (
         "lembrete", "lembra", "lembre", "lembrar", "alarme", "despertador", "timer",
@@ -941,7 +951,20 @@ def _tem_mensagem(norm: str) -> bool:
         resto = re.sub(rf"\b{u}\b", " ", resto)
     for d in agenda._DIAS_SEMANA:
         resto = re.sub(rf"\b{re.escape(d)}\b", " ", resto)
-    return bool(textutils.palavras_chave(resto))
+    # Sobras de 1 caractere ('a' de 'daqui a 30', 'o'/'e' soltos) não são assunto.
+    return " ".join(t for t in resto.split() if len(t) > 1)
+
+
+def _tem_mensagem(norm: str) -> bool:
+    """Sobra algum ASSUNTO depois de tirar gatilho + tempo + fillers? (então há mensagem)."""
+    return bool(textutils.palavras_chave(_resto_mensagem(norm)))
+
+
+def _mensagem_lembrete(norm: str) -> str:
+    """Mensagem do lembrete extraída por regex (só o composto usa — ver parse_rapido).
+    Devolve o resto significativo ('comprar leite') ou 'Lembrete' se nada sobrar."""
+    resto = _resto_mensagem(norm)
+    return resto if textutils.palavras_chave(resto) else "Lembrete"
 
 
 def _del(orig: str, low: str, pattern: re.Pattern) -> tuple[str, str]:

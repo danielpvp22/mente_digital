@@ -53,6 +53,11 @@ def test_definicional_pega_perguntas_gerais():
         "me explica o transformer",
         "defina entropia",
         "significado de idempotência",
+        # Imperativo NU (teste real 2507): "explica RAG" (sem "me") caía no local e
+        # devolvia a nota-piada do Tarkov. "me explica" já pegava; "explica"/"explique" não.
+        "explica RAG",
+        "explique overfitting",
+        "explica o que é um transformer",
     ):
         assert tools.pergunta_definicional(q), q
 
@@ -75,6 +80,7 @@ def test_definicional_nao_pega_nao_definicional():
         "o que estava acontecendo no servidor?",   # trailing-space guard: != "o que e "
         "qual a cotação do dólar hoje?",
         "resuma a reunião de ontem",
+        "explicando melhor a ideia",   # trailing-space guard: "explica " exige espaço após
     ):
         assert tools.pergunta_definicional(q) is False, q
 
