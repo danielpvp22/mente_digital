@@ -393,7 +393,7 @@ async def _t_salvar_nota(args: dict, ctx) -> str:
             f.write(f"# {titulo}\n\n{conteudo}")
 
     await asyncio.to_thread(_save)
-    ctx.track_task(ctx.vectorstore.sync())  # reindexa em background (ref. retida)
+    ctx.marcar_vault_sujo()  # #38: reindexa no idle, não na hora (não trava o próximo turno)
     return f"nota '{titulo}' salva ({nome})"
 
 
@@ -498,7 +498,7 @@ async def _t_adicionar_item(args: dict, ctx) -> str:
             f.write(f"- {item}\n")
 
     await asyncio.to_thread(_add)
-    ctx.track_task(ctx.vectorstore.sync())  # a lista também é indexada (ref. retida)
+    ctx.marcar_vault_sujo()  # #38: a lista é indexada no idle, não na hora
     return f"adicionei '{item}' à lista de {lista}."
 
 
@@ -544,7 +544,7 @@ async def _t_remover_item(args: dict, ctx) -> str:
 
     ok = await asyncio.to_thread(_rem)
     if ok:
-        ctx.track_task(ctx.vectorstore.sync())
+        ctx.marcar_vault_sujo()  # #38: reindexa no idle, não na hora
         return f"removi '{item}' da lista de {lista}."
     return f"não achei '{item}' na lista de {lista}."
 
@@ -567,7 +567,7 @@ async def _t_capturar(args: dict, ctx) -> str:
             f.write(f"- [{carimbo}] {texto}\n")
 
     await asyncio.to_thread(_add)
-    ctx.track_task(ctx.vectorstore.sync())  # indexa a captura (ref. retida)
+    ctx.marcar_vault_sujo()  # #38: indexa a captura no idle, não na hora
     return f"anotado na inbox: {texto}"
 
 

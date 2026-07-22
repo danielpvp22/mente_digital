@@ -394,6 +394,7 @@ class EtlProcessor:
         await self.process_queue(itens)
         await self.summarize_dump()
         await self.pesquisa_proativa()
+        await self._sincronizar_vault_pendente()
         await self._snapshot_base()
 
         if not settings.idle_descarregar_modelo:
@@ -402,6 +403,25 @@ class EtlProcessor:
             telemetry.track("ETL_POST_CHAT", "Interação retomada no idle — modelo mantido.")
             return
         await self.ctx.llama.unload()
+
+    async def _sincronizar_vault_pendente(self) -> None:
+        """#38: flush das escritas via ferramenta (nota/lista/captura) que, DURANTE a
+        conversa, só marcaram o vault "sujo" em vez de reindexar na hora (o sync re-embeda
+        os chunks E reconstrói a malha sobre ~13k átomos na GPU serializada — inline isso
+        congelava o próximo turno por ~46s). Aqui, no idle e com a GPU livre, o `sync`
+        incremental (por mtime) leva as notas ao índice.
+
+        Idempotente e barato: se um passo anterior do idle já sincronizou
+        (process_queue/summarize/proativa reindexam a base inteira por mtime, então já
+        pegaram esses arquivos), o `sync` acha "nada novo" e volta rápido; ou o `_esperar_idle`
+        segura até a GPU estar livre se o usuário voltou no meio. A flag é limpa em todo caso —
+        o snapshot da base logo abaixo passa a ver o índice fresco."""
+        if not self.ctx.vault_pendente_sync:
+            return
+        await self._esperar_idle()
+        await self.ctx.vectorstore.sync()
+        self.ctx.vault_pendente_sync = False
+        telemetry.track("IDLE", "Escritas do vault (nota/lista/captura) reindexadas no idle.")
 
     async def _snapshot_base(self) -> None:
         """Métricas do ciclo (painel 2026-07): retrato DIÁRIO da base — total de
