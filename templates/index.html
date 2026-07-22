@@ -389,7 +389,15 @@
                     currentIaBubble.innerHTML = parseMarkdown(currentIaRaw);
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
-                else if (data.tipo === "audio") { audioQueue.push(data.base64); if (!iaFalando) tocarProximoAudio(); }
+                else if (data.tipo === "audio") {
+                    // Só enfileira áudio no modo live. Fora dele (resposta a pergunta
+                    // ESCRITA), o servidor ainda sintetiza e envia, mas tocarProximoAudio
+                    // não toca sem live — e o push aqui ACUMULAVA os áudios das respostas
+                    // de texto, que drenavam todos ao entrar no voice depois (bug da fila).
+                    if (!isLiveMode) return;
+                    audioQueue.push(data.base64);
+                    if (!iaFalando) tocarProximoAudio();
+                }
                 else if (data.tipo === "proativo") {
                     // Mensagem que o servidor INICIA (alarme/lembrete/watcher/briefing): abre
                     // uma bolha própria com o sino, sem se colar à resposta anterior. O áudio
@@ -450,6 +458,11 @@
 
             abrirConversa();
             isLiveMode = true;
+            // Zera qualquer áudio pendente ANTES de começar a ouvir: garante que o voice
+            // fale só a resposta atual, nunca sobras de turnos anteriores (rede de segurança
+            // sobre o guard do onmessage — cobre também áudio em voo na troca de modo).
+            audioQueue = []; iaFalando = false;
+            if (currentAudio) { currentAudio.pause(); currentAudio = null; }
             document.getElementById('live-overlay').classList.add('active');
             atualizarEstadoOrb('listening');
 
