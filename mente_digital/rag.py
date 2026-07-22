@@ -532,10 +532,16 @@ class VectorStore:
         if "emb_model" not in meta:
             # Coleção legada (pré-fingerprint): carimba a config ATUAL — correto
             # porque o índice vigente foi construído com ela (o reindex do e5-base
-            # acabou de acontecer). ATENÇÃO: modify() SUBSTITUI o dict inteiro,
-            # então grava a UNIÃO para não perder o hnsw:space=cosine.
+            # acabou de acontecer). ATENÇÃO: o Chroma REJEITA modify() com QUALQUER
+            # chave hnsw:* — mesmo com o valor idêntico — porque a distância é IMUTÁVEL
+            # pós-criação ("Changing the distance function of a collection once it is
+            # created is not supported currently"). A distância vive na CONFIGURAÇÃO da
+            # coleção, não no metadata mutável, então um modify de metadata não a perde:
+            # basta carimbar os campos REGULARES (sem hnsw:*). Reenviar hnsw:space era o
+            # que gerava o warning "Não consegui carimbar a coleção legada".
+            regulares = {k: v for k, v in meta.items() if not k.startswith("hnsw:")}
             try:
-                store._collection.modify(metadata={**meta, **atual})
+                store._collection.modify(metadata={**regulares, **atual})
                 telemetry.track("DB", "Fingerprint: coleção legada carimbada com a config atual.")
             except Exception as exc:
                 telemetry.warn("DB", f"Não consegui carimbar a coleção legada: {exc}")

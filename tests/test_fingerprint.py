@@ -15,6 +15,14 @@ class _Col:
         self.modificado = None
 
     def modify(self, metadata):
+        # Reproduz o Chroma REAL: modify() com QUALQUER hnsw:* é rejeitado (a distância
+        # é imutável pós-criação). Era exatamente o que gerava o warning em produção —
+        # o fake antigo aceitava tudo, então o teste passava enquanto a prod avisava.
+        if any(k.startswith("hnsw:") for k in metadata):
+            raise ValueError(
+                "Changing the distance function of a collection once it is created "
+                "is not supported currently."
+            )
         self.metadata = metadata
         self.modificado = metadata
 
@@ -66,14 +74,15 @@ def test_so_o_prefixo_diferente_tambem_falha(monkeypatch):
     assert vs._fingerprint_ok(store) is False
 
 
-def test_colecao_legada_e_carimbada_com_uniao(monkeypatch):
-    # Sem carimbo = base pré-fingerprint: carimba a config ATUAL preservando o
-    # hnsw:space (modify substitui o dict INTEIRO — a união é obrigatória).
+def test_colecao_legada_carimbada_sem_hnsw(monkeypatch):
+    # Base pré-fingerprint: carimba a config ATUAL. O Chroma REJEITA modify() que inclua
+    # hnsw:* (distância imutável — era o warning em produção), então o carimbo grava só
+    # os campos REGULARES. A distância vive na config da coleção, não se perde no modify.
     vs = _vs(monkeypatch)
     store = _Store({"hnsw:space": "cosine"})
     assert vs._fingerprint_ok(store) is True
-    assert store._collection.modificado is not None
-    assert store._collection.modificado["hnsw:space"] == "cosine"
+    assert store._collection.modificado is not None            # carimbou sem estourar
+    assert "hnsw:space" not in store._collection.modificado    # não reenvia a distância
     assert store._collection.modificado["emb_model"] == "intfloat/multilingual-e5-base"
 
 
