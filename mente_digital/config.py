@@ -472,9 +472,10 @@ class Settings(BaseSettings):
     # Device do XTTS (auto/cuda/cuda:1/cpu), resolvido por rag.resolve_device. Use
     # "cuda:1" se um dia segmentar (LLM numa GPU, XTTS noutra). CPU é inviável (lento demais).
     tts_xtts_device: str = "cuda"
-    # fp16 (half precision): ~metade da VRAM, perda de qualidade desprezível. Ligado
-    # por padrão porque na 3080 compartilhada a VRAM é o gargalo. Desligue se a voz
-    # sair com ruído/NaN (alguns ambientes instabilizam o XTTS em fp16).
+    # fp16 = MIXED PRECISION via torch.autocast (NÃO pesos half: o XTTS quebra com
+    # model.half() — "expected scalar type Float but found Half" no layer_norm do GPT).
+    # Ganho de compute/velocidade; os PESOS seguem em fp32, então NÃO reduz a VRAM pela
+    # metade (o XTTS usa ~2-4GB de qualquer forma). Desligue p/ inferência fp32 pura.
     tts_xtts_fp16: bool = True
     # Voz: locutor EMBUTIDO do XTTS por nome (padrão). Para CLONAR, aponte
     # tts_xtts_speaker_wav para uma amostra .wav limpa de 6-30s (tem precedência).

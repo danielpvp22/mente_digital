@@ -58,6 +58,7 @@ class XttsService:
         self._gpt_cond_latent = None
         self._speaker_embedding = None
         self._sample_rate = 24000
+        self._autocast_fp16 = False
         self._cache: "OrderedDict[str, str]" = OrderedDict()
 
     def load(self) -> None:
@@ -78,15 +79,15 @@ class XttsService:
                 config, checkpoint_dir=cfg_dir, use_deepspeed=settings.tts_xtts_use_deepspeed,
             )
             model.to(device)
-            usar_fp16 = settings.tts_xtts_fp16 and device.startswith("cuda")
-            if usar_fp16:
-                model.half()
             model.eval()
+            # fp16 = MIXED PRECISION via autocast, NÃO model.half(): o XTTS QUEBRA com
+            # pesos half ("expected scalar type Float but found Half" no layer_norm do GPT).
+            # O autocast casta só as ops seguras p/ fp16 e mantém layer_norm/softmax em fp32.
+            # (Consequência: os PESOS ficam em fp32 — o ganho é de compute/ativação, não a
+            # metade da VRAM dos pesos; o XTTS não suporta pesos half de forma estável.)
+            self._autocast_fp16 = settings.tts_xtts_fp16 and device.startswith("cuda")
 
             gpt_cond, spk_emb = self._resolver_speaker(model)
-            if usar_fp16:
-                # Latentes precisam casar o dtype do modelo (senão inference_stream quebra).
-                gpt_cond, spk_emb = gpt_cond.half(), spk_emb.half()
 
             self._model = model
             self._device = device
@@ -102,7 +103,8 @@ class XttsService:
                 pass
             telemetry.track(
                 "XTTS",
-                f"XTTS-v2 carregado ({device}, fp16={usar_fp16}, sr={self._sample_rate}).",
+                f"XTTS-v2 carregado ({device}, fp16={self._autocast_fp16}, "
+                f"sr={self._sample_rate}).",
             )
         except Exception as exc:
             telemetry.error("XTTS", "Falha ao carregar XTTS-v2", exc)  # ready fica False
@@ -158,6 +160,8 @@ class XttsService:
 
     def _run(self, texto_voz: str) -> bytes:
         """Streaming interno do XTTS -> um WAV (mono, 16-bit, sample_rate no cabeçalho)."""
+        import contextlib
+
         kw = {
             "stream_chunk_size": settings.tts_xtts_stream_chunk_size,
             "enable_text_splitting": settings.tts_xtts_enable_text_splitting,
@@ -171,15 +175,24 @@ class XttsService:
         ):
             if valor is not None:
                 kw[nome] = valor
-        chunks = self._model.inference_stream(
-            texto_voz, settings.tts_xtts_language,
-            self._gpt_cond_latent, self._speaker_embedding, **kw,
-        )
+        # autocast fp16 (mixed precision) SÓ com modelo real na GPU. Nos testes (modelo
+        # falso, sem torch) usa nullcontext — nada de importar torch no caminho mockado.
+        if getattr(self, "_autocast_fp16", False):
+            import torch
+
+            ctx = torch.autocast("cuda", dtype=torch.float16)
+        else:
+            ctx = contextlib.nullcontext()
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(self._sample_rate)
-            for ch in chunks:                            # torch float @ sample_rate em [-1,1]
-                w.writeframes(_to_int16(ch))
+            with ctx:
+                chunks = self._model.inference_stream(
+                    texto_voz, settings.tts_xtts_language,
+                    self._gpt_cond_latent, self._speaker_embedding, **kw,
+                )
+                for ch in chunks:                        # torch float @ sample_rate em [-1,1]
+                    w.writeframes(_to_int16(ch))
         return buf.getvalue()
