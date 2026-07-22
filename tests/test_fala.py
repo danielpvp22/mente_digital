@@ -107,17 +107,17 @@ async def test_sem_syn_config_nao_passa_kwarg():
     assert fake.recebidos == [None]
 
 
-# -- dígitos têm leitura própria (não viram vírgula decimal) -------------------
+# -- dígitos têm leitura própria (números soletrados via verbalizar) -----------
 def test_normalizar_horario_vira_leitura_natural():
-    # "14,30" seria falado "quatorze vírgula trinta"; "14 e 30" é a leitura de horário.
+    # A hora vira palavras faláveis (ver verbalizar.py); "14:30" → "catorze e trinta".
     tts = TtsService()
-    assert tts._normalizar("Agora são 14:30.") == "Agora são 14 e 30."
-    assert tts._normalizar("amanhã às 09:05, certo?") == "amanhã às 09 e 05, certo?"
+    assert tts._normalizar("Agora são 14:30.") == "Agora são catorze e trinta."
+    assert tts._normalizar("amanhã às 09:05, certo?") == "amanhã às nove e cinco, certo?"
 
 
 def test_normalizar_intervalo_numerico_vira_a():
     tts = TtsService()
-    assert tts._normalizar("leva uns 10–15 minutos") == "leva uns 10 a 15 minutos"
+    assert tts._normalizar("leva uns 10–15 minutos") == "leva uns dez a quinze minutos"
 
 
 def test_normalizar_dois_pontos_de_prosa_ainda_vira_virgula():
