@@ -18,13 +18,16 @@ import io
 import re
 import wave
 from collections import OrderedDict
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import numpy as np
 
 from mente_digital.config import DICIONARIO_FONETICO, settings
 from mente_digital.telemetry import telemetry
 from mente_digital.verbalizar import verbalizar
+
+if TYPE_CHECKING:
+    from mente_digital.tts_xtts import XttsService
 
 
 # ==========================================================================
@@ -403,3 +406,17 @@ class TtsService:
         except Exception as exc:
             telemetry.error("PIPER", "Erro ao sintetizar áudio", exc)
             return None
+
+
+def build_tts() -> "Union[TtsService, XttsService]":
+    """Fábrica do engine de TTS: Piper (default) ou XTTS-v2 (GPU, opt-in).
+
+    Único ponto que decide o backend (usado no lifespan em main.py). O import do XTTS é
+    TARDIO: no caminho Piper (default) o módulo tts_xtts — e por tabela coqui-tts/torch —
+    NUNCA é tocado, então o startup e o CI seguem leves. Ambos os engines respeitam o
+    mesmo contrato duck-typed (load/ready/synth_base64)."""
+    if settings.tts_engine == "xtts":
+        from mente_digital.tts_xtts import XttsService
+
+        return XttsService()
+    return TtsService()

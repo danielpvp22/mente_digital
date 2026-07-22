@@ -24,7 +24,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital import acesso  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
-from mente_digital.audio import SttService, TtsService  # noqa: E402
+from mente_digital.audio import SttService, TtsService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     ctx = AppContext(settings=settings)
     ctx.llama = LlamaManager()
     ctx.stt = SttService()
-    ctx.tts = TtsService()
+    ctx.tts = build_tts()   # Piper (default) ou XTTS-v2 conforme MENTE_TTS_ENGINE
     # Embeddings singleton compartilhado: o VectorStore o carrega no boot e o
     # WebSearcher reusa a MESMA instância para rankear os trechos do deep-fetch
     # (RAG efêmero) — sem carregar um segundo modelo nem gastar VRAM extra.

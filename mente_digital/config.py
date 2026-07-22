@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
     caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
+    # XTTS-v2 (engine de voz GPU alternativo): DIRETÓRIO com config.json + model.pth +
+    # vocab.json + speakers_xtts.pth (não é um arquivo único como o Piper). Baixe o
+    # modelo "coqui/XTTS-v2" para cá. Só é usado quando MENTE_TTS_ENGINE=xtts.
+    caminho_modelo_xtts: str = str(DIR_MODELOS / "xtts_v2")
     # Cache onde o faster-whisper baixa os pesos do Whisper na 1ª execução.
     caminho_cache_whisper: str = str(DIR_WHISPER)
     # Vault Obsidian: default dentro do projeto (pode começar vazio); aponte para
@@ -458,6 +462,42 @@ class Settings(BaseSettings):
     tts_noise_scale: float | None = None
     tts_noise_w_scale: float | None = None
     tts_length_scale: float | None = None
+
+    # --- Engine de TTS: Piper (CPU) x XTTS-v2 (GPU) ----------------------------
+    # "piper" (default) = VITS na CPU, baixa latência, voz do histórico. "xtts" =
+    # XTTS-v2 (coqui-tts) na GPU: voz muito mais natural/clonável, mas PESA VRAM e
+    # DISPUTA a GPU serializada do LLM (na 3080 compartilhada há contenção/risco de
+    # OOM — daí o fp16 abaixo). Só troque com o modelo baixado e coqui-tts instalado.
+    tts_engine: str = "piper"
+    # Device do XTTS (auto/cuda/cuda:1/cpu), resolvido por rag.resolve_device. Use
+    # "cuda:1" se um dia segmentar (LLM numa GPU, XTTS noutra). CPU é inviável (lento demais).
+    tts_xtts_device: str = "cuda"
+    # fp16 (half precision): ~metade da VRAM, perda de qualidade desprezível. Ligado
+    # por padrão porque na 3080 compartilhada a VRAM é o gargalo. Desligue se a voz
+    # sair com ruído/NaN (alguns ambientes instabilizam o XTTS em fp16).
+    tts_xtts_fp16: bool = True
+    # Voz: locutor EMBUTIDO do XTTS por nome (padrão). Para CLONAR, aponte
+    # tts_xtts_speaker_wav para uma amostra .wav limpa de 6-30s (tem precedência).
+    tts_xtts_speaker: str = "Ana Florence"
+    tts_xtts_speaker_wav: str = ""
+    tts_xtts_language: str = "pt"
+    # inference_stream: nº de tokens GPT por chunk de áudio (menor = 1º som interno mais
+    # cedo, mais overhead). Os chunks são juntados num WAV por frase.
+    tts_xtts_stream_chunk_size: int = 20
+    # enable_text_splitting: OFF — o SentenceChunker do pipeline já entrega frase a frase;
+    # deixar o XTTS re-dividir dobraria o corte e pioraria o 1º áudio.
+    tts_xtts_enable_text_splitting: bool = False
+    # Cache LRU (reusa tts_cache_size): OFF porque o XTTS amostra (não-determinístico) —
+    # cachear congelaria uma "tomada" aleatória. Ligue só se aceitar isso p/ frases fixas.
+    tts_xtts_cache_enabled: bool = False
+    # Amostragem (None = default treinado do XTTS): temperatura (~0.65), etc.
+    tts_xtts_temperature: float | None = None
+    tts_xtts_repetition_penalty: float | None = None
+    tts_xtts_top_k: int | None = None
+    tts_xtts_top_p: float | None = None
+    # DeepSpeed: acelera ~2-3x o GPT, mas exige CUDA toolkit + MSVC (build frágil no
+    # Windows). OFF por padrão; só ligue com um deepspeed compatível instalado.
+    tts_xtts_use_deepspeed: bool = False
 
     # --- Fase de idle (inatividade -> ETL + pesquisa proativa -> unload) --------
     # Segundos de silêncio (chat aberto, mas parado) até entrar em idle: consolidar
