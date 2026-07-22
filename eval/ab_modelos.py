@@ -48,14 +48,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-import prompts  # noqa: E402
-import textutils  # noqa: E402
-import tools  # noqa: E402
-from agent import SENTINELA_INSUF, Agent, dividir_atomos  # noqa: E402
-from config import settings  # noqa: E402
-from llm import LlamaManager  # noqa: E402
-from rag import EmbeddingProvider, VectorStore  # noqa: E402
-from telemetry import db, telemetry  # noqa: E402
+from mente_digital import prompts  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital import tools  # noqa: E402
+from mente_digital.agent import SENTINELA_INSUF, Agent, dividir_atomos  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.telemetry import db, telemetry  # noqa: E402
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 CASOS = os.path.join(DIR, "casos.json")

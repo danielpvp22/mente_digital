@@ -13,12 +13,12 @@ Tudo com fakes (sem GPU/rede/Chroma).
 import os
 from datetime import datetime
 
-import prompts
-import textutils
-from agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo, normalizar_malha
-from config import Settings, settings
-from rag import NENHUM, VectorStore, strip_frontmatter
-from state import AppContext, SessionMemory
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital.agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo, normalizar_malha
+from mente_digital.config import Settings, settings
+from mente_digital.rag import NENHUM, VectorStore, strip_frontmatter
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeDoc, FakeLlama, FakeStore, FakeTts
 
@@ -296,8 +296,8 @@ def _etl_com(resposta_llm, tmp_path, monkeypatch):
     dump = tmp_path / "chat_dump.md"
     st.arquivo_chat_dump = str(dump)            # summarize_dump lê ESTE caminho
     os.makedirs(st.dir_conhecimento_novo, exist_ok=True)
-    monkeypatch.setattr("etl.settings", st)     # summarize_dump lê o dump por aqui
-    monkeypatch.setattr("etl.db.log_etl", lambda *a, **k: None)  # hermético: sem SQLite real
+    monkeypatch.setattr("mente_digital.etl.settings", st)     # summarize_dump lê o dump por aqui
+    monkeypatch.setattr("mente_digital.etl.db.log_etl", lambda *a, **k: None)  # hermético: sem SQLite real
     ctx = AppContext(settings=st)
     ctx.llama = FakeLlama([resposta_llm])
     ctx.vectorstore = FakeVectorStore()
@@ -379,7 +379,7 @@ def test_normalizar_rejeita_bloco_nada():
     # O sentinela "nada a extrair" vazava por bloco (o check do importador/ETL só pega
     # a saída inteira). Um bloco NADA não pode virar átomo com título.
     from datetime import datetime
-    import agent
+    from mente_digital import agent
     assert agent.normalizar_atomo("## Preço de GPUs na AWS\nNADA", "x.json", datetime(2026, 7, 17)) == ""
     assert agent.normalizar_atomo("## Assunto\nnada.", "x.json", datetime(2026, 7, 17)) == ""
 
@@ -387,7 +387,7 @@ def test_normalizar_rejeita_bloco_nada():
 def test_normalizar_rejeita_atomo_so_com_malha():
     # Linha de Malha sem corpo = átomo oco (9 na base). Sem fato, não é átomo.
     from datetime import datetime
-    import agent
+    from mente_digital import agent
     out = agent.normalizar_atomo(
         "## Reflexos\n**Malha Neural:** [[FPS]] [[APM]]", "x.json", datetime(2026, 7, 17))
     assert out == ""
@@ -396,7 +396,7 @@ def test_normalizar_rejeita_atomo_so_com_malha():
 def test_normalizar_mantem_atomo_com_fato_e_malha():
     # Não pode ser zeloso demais: átomo real com Malha continua passando.
     from datetime import datetime
-    import agent
+    from mente_digital import agent
     out = agent.normalizar_atomo(
         "## Stratum\nO Stratum conecta o minerador à pool.\n**Malha Neural:** [[Zcash]]",
         "x.json", datetime(2026, 7, 17))

@@ -487,7 +487,7 @@ def test_backup_do_limpar_vault_fica_fora_do_vault():
     # recursivo **/*.md), anulando a limpeza — os 38 átomos de lixo voltaram ao Chroma.
     import importar_gemini  # garante o sys.path do scripts/
     import limpar_vault
-    from config import settings
+    from mente_digital.config import settings
     vault = os.path.abspath(settings.caminho_obsidian)
     lixo = os.path.abspath(limpar_vault.LIXO)
     # o destino do lixo NÃO pode estar sob o caminho indexado

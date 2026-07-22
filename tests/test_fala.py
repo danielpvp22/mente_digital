@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from collections import deque
 
-from agent import Agent
-from audio import TtsService
-from config import settings
-from rag import NENHUM
-from state import AppContext, SessionMemory
-from verbosidade import aplicar_fala, aplicar_tutor, classificar
+from mente_digital.agent import Agent
+from mente_digital.audio import TtsService
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM
+from mente_digital.state import AppContext, SessionMemory
+from mente_digital.verbosidade import aplicar_fala, aplicar_tutor, classificar
 
 from conftest import FakeTts, make_send
 
@@ -159,15 +159,15 @@ class _FakeOptimizer:
 def _agent_ram(monkeypatch, tmp_path):
     """Cascata mínima em que a RAM responde (early-stop): só a passada de resposta
     chama o LLM, então stream_calls[0] é o system da resposta ao usuário."""
-    monkeypatch.setattr("agent.settings.early_stop_cascata", True)
+    monkeypatch.setattr("mente_digital.agent.settings.early_stop_cascata", True)
     ctx = AppContext(settings=settings)
     ctx.llama = _SpyLlama(["Arquitetura ", "é ", "sobre ", "camadas."])
     ctx.tts = FakeTts()
     ctx.vectorstore = _VS()
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_lacuna", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     agent = Agent(ctx)
     agent.optimizer = _FakeOptimizer()
     mem = SessionMemory(settings)

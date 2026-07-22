@@ -2,10 +2,10 @@
 Ajuda (/help falável): "mestre, ajuda" / "mestre /ajuda" / "o que você pode fazer" fala
 um resumo das capacidades. Checado tarde no fluxo pra não roubar comandos estruturados.
 """
-import mestre
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import mestre
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -22,12 +22,12 @@ class _FakeVS:
 
 
 async def test_ajuda_fala_capacidades(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.db.listar_atalhos", lambda *a, **k: {})
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.listar_atalhos", lambda *a, **k: {})
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     ctx = AppContext(settings=settings)
     ctx.llama, ctx.tts, ctx.vectorstore = FakeLlama(["ok."]), FakeTts(), _FakeVS()
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "d.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "d.md"))
     agent, mem = Agent(ctx), SessionMemory(settings)
 
     for cmd in ("mestre, ajuda", "mestre /ajuda", "mestre, o que você pode fazer"):

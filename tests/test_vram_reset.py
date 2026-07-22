@@ -4,7 +4,7 @@ patamar de VRAM por causa conhecida — sem reset, a janela compara o vale
 pós-unload com o pico pós-reload e acusa vazamento falso (medido 2026-07-21:
 aviso aos 7,33 GB logo após religar o modelo).
 """
-from vram import MonitorVram
+from mente_digital.vram import MonitorVram
 
 
 def test_reset_zera_a_janela():

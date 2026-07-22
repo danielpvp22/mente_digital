@@ -6,11 +6,11 @@ import asyncio
 
 import pytest
 
-from agent import EtlProcessor
-from config import settings
-from rag import NENHUM
-from state import AppContext
-from telemetry import Database
+from mente_digital.agent import EtlProcessor
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM
+from mente_digital.state import AppContext
+from mente_digital.telemetry import Database
 
 
 # --- lacunas no SQLite ------------------------------------------------------
@@ -67,10 +67,10 @@ class _Llama:
 
 
 def _etl(tmp_path, monkeypatch, *, cobre, dados="corpo web real com fatos"):
-    from telemetry import db as db_global
+    from mente_digital.telemetry import db as db_global
     d = _db(tmp_path)
     # aponta o db global (que o EtlProcessor usa) para o de teste
-    monkeypatch.setattr("etl.db", d)
+    monkeypatch.setattr("mente_digital.etl.db", d)
     ctx = AppContext(settings=settings)
     ctx.interactive_idle.set()
     ctx.vectorstore = _Store(relevante=cobre)
@@ -186,7 +186,7 @@ def test_proativa_pula_lacuna_trivial(tmp_path, monkeypatch):
 
 # --- lacuna_pesquisavel: núcleo substantivo ---------------------------------
 def test_lacuna_pesquisavel_distingue_lixo_de_assunto_real():
-    from agent import lacuna_pesquisavel
+    from mente_digital.agent import lacuna_pesquisavel
     # trivial (0 keywords) e sem-núcleo (moeda + número) -> NÃO pesquisa
     assert lacuna_pesquisavel("ok") is False
     assert lacuna_pesquisavel("dolar 542") is False          # tira num+moeda -> vazio
@@ -203,7 +203,7 @@ def test_lacuna_pesquisavel_e_secundario_ao_efemero():
     # barrado antes pelo `not efemero` da pergunta ORIGINAL (euro é gatilho). Este
     # filtro é o 2º nível — resolve o que o efêmero não pega (número+moeda), não o
     # que ele já pega. Documenta a divisão de trabalho.
-    import tools
-    from agent import lacuna_pesquisavel
+    from mente_digital import tools
+    from mente_digital.agent import lacuna_pesquisavel
     assert tools.e_efemero("euro hoje") is True              # o efêmero pega
     assert lacuna_pesquisavel("euro hoje") is True           # o núcleo, sozinho, não

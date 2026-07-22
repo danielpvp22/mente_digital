@@ -19,7 +19,7 @@ import math
 from collections import defaultdict
 from typing import Dict, List, Sequence, Tuple
 
-import textutils
+from mente_digital import textutils
 
 
 def _termos(texto: str) -> List[str]:

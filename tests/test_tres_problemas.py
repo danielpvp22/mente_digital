@@ -6,9 +6,9 @@ Três problemas achados no primeiro teste em produção:
 """
 from datetime import datetime
 
-import agent
-import textutils
-from rag import NENHUM, LocalResult
+from mente_digital import agent
+from mente_digital import textutils
+from mente_digital.rag import NENHUM, LocalResult
 
 
 # --- Problema 3: idioma errado ----------------------------------------------

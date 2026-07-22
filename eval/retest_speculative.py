@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from config import settings  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
 
 PROMPT_CURTO = "Explique em poucas frases o que é uma lista em Python."
 # ~2k tokens de contexto repetitivo — o regime onde o prompt-lookup DEVERIA brilhar

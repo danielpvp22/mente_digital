@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from config import settings  # noqa: E402
-from rag import EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
 
 
 async def main() -> None:

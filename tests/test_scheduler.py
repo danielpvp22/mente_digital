@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import telemetry
+from mente_digital import telemetry
 from conftest import FakeTts
-from scheduler import SchedulerService
+from mente_digital.scheduler import SchedulerService
 
 
 class FakeSession:
@@ -110,7 +110,7 @@ async def test_reentrega_nao_duplica_enquanto_espera_ack(db_tmp):
 
 async def test_sem_ack_apos_timeout_reentrega(db_tmp, monkeypatch):
     # Ack nunca chegou: expirada a espera, a reentrega normal volta a falar.
-    from config import settings
+    from mente_digital.config import settings
 
     monkeypatch.setattr(settings, "proativo_ack_timeout_seconds", 0.0)
     sessao = FakeSession()

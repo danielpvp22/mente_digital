@@ -4,12 +4,12 @@ Diário de hábitos (#37, Onda 3): "fiz X" / "marca que ..." registra o hábito 
 """
 from datetime import date, timedelta
 
-import habitos
-import mestre
-import telemetry
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import habitos
+from mente_digital import mestre
+from mente_digital import telemetry
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -53,10 +53,10 @@ def _agent(monkeypatch, tmp_path):
     telemetry.db.init()
     ctx = AppContext(settings=settings)
     ctx.llama, ctx.tts, ctx.vectorstore = FakeLlama(["ok."]), FakeTts(), _FakeVS()
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.listar_atalhos", lambda *a, **k: {})
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.listar_atalhos", lambda *a, **k: {})
     return Agent(ctx), SessionMemory(settings)
 
 

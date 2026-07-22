@@ -34,4 +34,6 @@ ENV PATH=/opt/venv/bin:$PATH
 WORKDIR /app
 COPY . .
 EXPOSE 8000
-CMD ["python", "main.py"]
+# O app agora é o pacote mente_digital/ (main.py mora em mente_digital/main.py, com
+# guard __main__). `-m` roda o módulo como __main__ a partir do WORKDIR /app.
+CMD ["python", "-m", "mente_digital.main"]

@@ -5,7 +5,7 @@ Bug medido em produção: "da onde saiu a expressão pega um prato faz a linha d
 na farinha?" virou a query 'saiu expressão pega prato' — o extrator de 5 palavras jogou
 fora a EXPRESSÃO, que é o alvo. Para a web, a frase citada é o de maior sinal.
 """
-from agent import frase_citada
+from mente_digital.agent import frase_citada
 
 
 def test_extrai_a_expressao_apos_o_gatilho():

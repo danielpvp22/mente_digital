@@ -8,9 +8,9 @@ import asyncio
 
 import pytest
 
-from agent import EtlProcessor
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital.agent import EtlProcessor
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 
 # --- timer de inatividade (ws.LiveSession._check_inatividade) ---------------
@@ -21,7 +21,7 @@ class _WsFake:
 
 def _sessao(monkeypatch):
     """LiveSession com WS/ctx falsos; registra se o idle foi disparado."""
-    from ws import LiveSession
+    from mente_digital.ws import LiveSession
     ctx = AppContext(settings=settings)
     s = LiveSession(ctx, _WsFake())
     disparos = []

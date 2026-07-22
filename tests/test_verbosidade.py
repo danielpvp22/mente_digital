@@ -2,8 +2,8 @@
 Governador de verbosidade (#7): pergunta factual curta -> resposta de 1 frase (teto de
 tokens menor); pedido de explicação -> resposta normal. Classificador puro.
 """
-from config import settings
-from verbosidade import classificar
+from mente_digital.config import settings
+from mente_digital.verbosidade import classificar
 
 
 def test_pergunta_curta_e_curta():

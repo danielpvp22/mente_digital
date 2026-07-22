@@ -8,9 +8,9 @@ em streaming. Este é o ponto mais fácil de quebrar numa refatoração — daí
 
 Exercitado com um LLM falso (tokens controlados) e um TTS no-op: sem GPU, sem rede.
 """
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send, textos_de_tokens
 
@@ -60,7 +60,7 @@ async def test_prefixo_do_sentinela_que_diverge_libera_o_buffer():
 
 
 # -- FUZZY (teste real 2026-07-21): o 2507 parafraseia o sentinela --------------
-from prompts import abre_como_sentinela, parece_sentinela  # noqa: E402
+from mente_digital.prompts import abre_como_sentinela, parece_sentinela  # noqa: E402
 
 
 def test_parece_sentinela_pega_parafrases():

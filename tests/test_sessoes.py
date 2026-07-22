@@ -16,8 +16,8 @@ o `conversa_id` de todos. Consequências, em ordem de gravidade:
 Sem WebSocket real: a memória é o objeto que a LiveSession possui, então testá-la
 diretamente cobre o mecanismo.
 """
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 
 def test_appcontext_nao_tem_mais_memoria_global():

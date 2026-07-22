@@ -33,9 +33,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import textutils  # noqa: E402
-from config import settings  # noqa: E402
-from rag import strip_frontmatter  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.rag import strip_frontmatter  # noqa: E402
 
 AUTO = os.path.join(settings.caminho_obsidian, "Importado_Gemini")
 # FORA do vault: o sync faz glob recursivo `**/*.md`, então um backup DENTRO do vault

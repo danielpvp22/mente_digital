@@ -4,8 +4,8 @@ do "Cache Hit falso". Um chunk só é relevante se (a) menciona uma keyword da
 pergunta (aterramento léxico) OU (b) é semanticamente muito próximo
 (distância < rag_score_confident). Testado com um store falso (sem ChromaDB).
 """
-from config import settings
-from rag import NENHUM, VectorStore
+from mente_digital.config import settings
+from mente_digital.rag import NENHUM, VectorStore
 
 from conftest import FakeDoc, FakeStore
 
@@ -158,7 +158,7 @@ def test_defaults_de_calibracao_intactos():
     # Trava os DEFAULTS DO CÓDIGO, não o valor efetivo: se mudarem sem querer, o gate
     # inteiro se desloca. Ignora o .env de propósito — o usuário PODE sobrescrever no
     # runtime (ex.: MENTE_RAG_SCORE_CONFIDENT=0.45); o contrato aqui é o default limpo.
-    from config import Settings
+    from mente_digital.config import Settings
 
     padrao = Settings(_env_file=None)
     assert padrao.rag_score_confident == 0.8

@@ -4,8 +4,8 @@ vizinho pelo conceito raro COMPARTILHADO, mas medido: vem "do assunto certo, da 
 errada". Agora o vizinho só entra se a similaridade de cosseno do seu texto com a pergunta
 for >= malha_sim_min. Sem embeddings, o filtro é pulado (fail-open).
 """
-from config import settings
-from rag import VectorStore
+from mente_digital.config import settings
+from mente_digital.rag import VectorStore
 
 from conftest import FakeDoc, FakeStore
 

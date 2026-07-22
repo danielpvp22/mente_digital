@@ -4,7 +4,7 @@ o 1º resultado não-vazio (corrige o ponto único de falha do DuckDuckGo).
 """
 import pytest
 
-from rag import _chunk_texto, buscar_com_fallback, rankear_por_similaridade
+from mente_digital.rag import _chunk_texto, buscar_com_fallback, rankear_por_similaridade
 
 
 def test_usa_primeiro_backend_que_retorna():

@@ -100,7 +100,7 @@ Cada troca foi decidida por **A/B medido**, não por intuição — os harnesses
 | **Barge-in só do dono (#F5)** — limiar + debounce no cliente (`BARGE_RMS`/`BARGE_FRAMES` no `index.html`) | Interromper o narrador passa a exigir voz **alta e sustentada**: ruído e voz de fundo curta **não cortam mais** a resposta. (Tier 1 — reconhecer *a sua* voz por speaker-ID é o Tier 2, adiado) |
 | **Timing por estágio (#F4)** — `LatencyTracker` + `/api/metrics` + colunas novas em `metricas_latencia` | Cada resposta passa a registrar **decode `tok/s`** e o tempo de **STT** (além de TTFT/TTFA/total/nº de tokens): dá para ver **onde** o tempo vai. Medido ao vivo: `tok/s≈85`, TTFT≈1,1 s numa resposta do vault |
 
-> Roteiro de verificação (o que já foi validado automaticamente e o que exige microfone) em [`TESTE_MANUAL.md`](TESTE_MANUAL.md).
+> Roteiro de verificação (o que já foi validado automaticamente e o que exige microfone) em [`TESTE_MANUAL.md`](docs/TESTE_MANUAL.md).
 
 </details>
 
@@ -378,43 +378,52 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 **~10.500 linhas de Python** em 33 módulos (de ~3.300 em 12), mais ~7.500 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
-mente_digital/
-├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
-├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
-├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
-├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
-├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
-├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
-├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
-├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
-├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
-├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
-├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
-├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
-├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
-├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
-├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
-├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
-├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
-├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
-├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
-├── srs.py          # 25   repetição espaçada (Leitner) — puro
-├── habitos.py      # 22   sequência de hábitos (streak) — puro
-├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
-├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
-├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
-├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
-├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
-├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
-├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
-├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
-├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
-├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
-├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
-├── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
-├── templates/      # index.html — a SPA inteira (491 linhas)
-├── modelos/        # LLM .gguf + voz Piper + whisper/ (binários fora do git)
-└── tests/          # 624 testes em 71 arquivos, sem GPU, sem rede
+.                        # a RAIZ fica só com código-do-pacote e config; o resto em pastas
+├── mente_digital/       # o PACOTE do app — rode com `python -m mente_digital.main`
+│   ├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
+│   ├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
+│   ├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
+│   ├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
+│   ├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
+│   ├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
+│   ├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
+│   ├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
+│   ├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
+│   ├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
+│   ├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
+│   ├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
+│   ├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
+│   ├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
+│   ├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
+│   ├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
+│   ├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
+│   ├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
+│   ├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+│   ├── srs.py          # 25   repetição espaçada (Leitner) — puro
+│   ├── habitos.py      # 22   sequência de hábitos (streak) — puro
+│   ├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
+│   ├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
+│   ├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
+│   ├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
+│   ├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
+│   ├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
+│   ├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
+│   ├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
+│   ├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
+│   ├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
+│   ├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
+│   └── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+├── dados/               # TODO dado de runtime (gitignored) — nada disto vai pro git
+│   ├── modelos/         # LLM .gguf + voz Piper + whisper/ (binários fora do git)
+│   ├── Cerebro_Digital/ # vault Obsidian (as notas do dono)
+│   ├── banco_vetorial_cerebro/ # índice Chroma (derivado do vault)
+│   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
+│   └── chat_dump_bruto.md      # fila do ETL de conversa
+├── templates/           # index.html — a SPA inteira (491 linhas)
+├── tests/               # 716 testes em 72 arquivos, sem GPU, sem rede
+├── eval/                # benches e A/B (TTFA, embeddings, modelos)
+├── scripts/             # utilitários (import de histórico, reindex, certs, bench de STT)
+└── docs/                # CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
 ```
 
 <details>
@@ -585,13 +594,13 @@ O que cada peça faz e por quê:
 
 - **Descobridor de Conexões (G8).** "Mestre, alguma conexão nova?" → `_descobrir_conexoes` fala **pontes**: notas que ligam dois conceitos estabelecidos que quase nunca co-ocorrem. O ranking é por **surpresa** — `1 − Jaccard` das vizinhanças dos dois conceitos, **domínios disjuntos primeiro** (`grafo.py`). O ranking ingênuo por tamanho de tema surfava trivialidades ("python↔vram"); o de surpresa surfa o que interessa ("modelo whisper↔modelo yolo", "custo↔sensor de torque").
 
-**Medição na base real (12.778 átomos):** a atomização serve bem ao grafo (0,6% de átomos sem conceito, mediana de 3 conceitos/átomo, 2.415 conceitos com df≥3). O grafo é **rápido** (pontes 58ms, centralidade <1ms) — **não** é gargalo de resposta. E os thresholds de IDF são **invariantes ao N** (`idf ≥ T ⟺ df/N ≤ e⁻ᵀ`, uma fração constante), documentado em `CALIBRACAO.md`.
+**Medição na base real (12.778 átomos):** a atomização serve bem ao grafo (0,6% de átomos sem conceito, mediana de 3 conceitos/átomo, 2.415 conceitos com df≥3). O grafo é **rápido** (pontes 58ms, centralidade <1ms) — **não** é gargalo de resposta. E os thresholds de IDF são **invariantes ao N** (`idf ≥ T ⟺ df/N ≤ e⁻ᵀ`, uma fração constante), documentado em `docs/CALIBRACAO.md`.
 
 ---
 
 ## 🗄 O banco vetorial: como ele é formado
 
-A regra que governa tudo: **o vault é a fonte de verdade; o Chroma é um índice derivado e descartável.** Apagar `banco_vetorial_cerebro/` não perde nada — o próximo boot reconstrói. É essa hierarquia que dá liberdade de trocar métrica, modelo de embedding ou estratégia de chunking sem que isso seja *perda de dados*.
+A regra que governa tudo: **o vault é a fonte de verdade; o Chroma é um índice derivado e descartável.** Apagar `dados/banco_vetorial_cerebro/` não perde nada — o próximo boot reconstrói. É essa hierarquia que dá liberdade de trocar métrica, modelo de embedding ou estratégia de chunking sem que isso seja *perda de dados*.
 
 ```mermaid
 flowchart TD
@@ -639,7 +648,7 @@ E isso **aparece literalmente no prompt** (`[Local - Confiança: 0.6] ...`): o m
 
 Porque **a granularidade do corpus dita a configuração**. A base é atômica — 1 nota = 1 ideia. Colher 4 chunks rende contexto pobre demais. Daí `rag_top_k=40` / `rag_max_chunks=30` e a resposta por **fusão** — o LLM integra dezenas de átomos num parágrafo coerente. A Malha soma vizinhos a isso, e o dedup near-dup tira as quase-duplicatas antes de gastar o orçamento.
 
-> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `banco_vetorial_cerebro/`** e reindexar.
+> ⚠️ **`hnsw:space` é fixado na criação da coleção.** Trocar a métrica exige **apagar `dados/banco_vetorial_cerebro/`** e reindexar.
 
 ---
 
@@ -917,8 +926,10 @@ pip install -r requirements.txt
 
 ### 2. Baixar os modelos (não vêm no repositório)
 
+Os pesos ficam em **`dados/modelos/`** (toda a pasta `dados/` é gitignored — dado do dono e binários grandes nunca vão pro git):
+
 ```
-modelos/
+dados/modelos/
 ├── Qwen3-8B-Q4_K_M.gguf                                # LLM (~4.7 GB)
 ├── pt_BR-cadu-medium.onnx                              # voz TTS (Piper)
 ├── pt_BR-cadu-medium.onnx.json                         # config da voz (fica junto do .onnx)
@@ -931,7 +942,7 @@ modelos/
 
 ### 3. (Opcional) `.env`
 
-Por padrão tudo funciona com caminhos relativos. Crie um `.env` só se os modelos/vault moram em outro lugar:
+Por padrão tudo funciona com caminhos relativos a `dados/` — vault, índice Chroma, modelos e SQLite são derivados de `BASE_DIR` (a raiz do repo), então roda de qualquer máquina sem editar código. Crie um `.env` só se os modelos/vault moram em outro lugar:
 
 ```ini
 MENTE_CAMINHO_MODELO_LLAMA=D:\outro\caminho\modelo.gguf
@@ -944,7 +955,7 @@ MENTE_RAG_SCORE_CONFIDENT=0.7
 ### 4. Rodar
 
 ```bash
-python main.py            # ou: uvicorn main:app --host 0.0.0.0 --port 8000
+python -m mente_digital.main   # ou: uvicorn mente_digital.main:app --host 0.0.0.0 --port 8000
 ```
 
 Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carregar. Diga *"mestre, ajuda"* (ou `/ajuda`) para ouvir os comandos disponíveis.
@@ -977,7 +988,7 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 ## 🔧 Configuração
 
-**128 parâmetros** vivem em [`config.py`](config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `CALIBRACAO.md`. Os mais úteis:
+**128 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
@@ -1137,7 +1148,7 @@ Exige um ASR de streaming e mexeria no contrato do VAD atual — risco despropor
 
 ### Multi-tenancy — non-goal, de propósito
 
-O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua máquina, o seu vault". Multi-tenancy de verdade — auth por usuário, isolamento de vault/memória/histórico, escalonamento justo de uma GPU que já é serializada para um usuário só — brigaria com essa tese, e é um projeto inteiro por si só. A fronteira escolhida é outra: **um dono, vários dispositivos**. O [`acesso.py`](acesso.py) protege rotas e WebSocket com token (`MENTE_ACCESS_TOKEN`, comparação em tempo constante) ou trava tudo em loopback por default — a LAN não alcança nada sem opt-in explícito —, valida o `Origin` contra hijacking de WebSocket cross-site, e [`scripts/gerar_cert.py`](scripts/gerar_cert.py) gera o certificado TLS para acessar da LAN com microfone (contexto seguro). O meio-termo que preservaria o espírito de appliance — multi-perfil na mesma máquina, com vault e wake-word por pessoa da casa — fica registrado como em aberto, sem data.
+O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua máquina, o seu vault". Multi-tenancy de verdade — auth por usuário, isolamento de vault/memória/histórico, escalonamento justo de uma GPU que já é serializada para um usuário só — brigaria com essa tese, e é um projeto inteiro por si só. A fronteira escolhida é outra: **um dono, vários dispositivos**. O [`acesso.py`](mente_digital/acesso.py) protege rotas e WebSocket com token (`MENTE_ACCESS_TOKEN`, comparação em tempo constante) ou trava tudo em loopback por default — a LAN não alcança nada sem opt-in explícito —, valida o `Origin` contra hijacking de WebSocket cross-site, e [`scripts/gerar_cert.py`](scripts/gerar_cert.py) gera o certificado TLS para acessar da LAN com microfone (contexto seguro). O meio-termo que preservaria o espírito de appliance — multi-perfil na mesma máquina, com vault e wake-word por pessoa da casa — fica registrado como em aberto, sem data.
 
 ### O que ainda incomoda, honestamente
 
@@ -1146,8 +1157,8 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 | **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
 | **CI** | ✅ **Resolvido.** GitHub Actions roda os 624 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
-| **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `CALIBRACAO.md` |
-| **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `TESTE_MANUAL.md` |
+| **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |
+| **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `docs/TESTE_MANUAL.md` |
 | **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |
 
 ---

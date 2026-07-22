@@ -28,10 +28,10 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import numpy as np  # noqa: E402
 
-import textutils  # noqa: E402
-from config import settings  # noqa: E402
-from rag import EmbeddingProvider, VectorStore  # noqa: E402
-from telemetry import db  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.telemetry import db  # noqa: E402
 
 # Perguntas claramente FORA das temáticas do vault (YOLO/TensorRT/RAG/mineração/
 # DuckDB/bike/culinária/negócios/Gemini) — servem de piso de ruído.

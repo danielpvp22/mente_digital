@@ -4,7 +4,7 @@ Puro/testável — `agora` injetado, sem LLM/DB.
 """
 from datetime import datetime
 
-import mestre
+from mente_digital import mestre
 
 AGORA = datetime(2026, 7, 17, 14, 30, 0)
 

@@ -13,9 +13,9 @@ import re
 from datetime import datetime
 from typing import List, Tuple
 
-import prompts
-import textutils
-from rag import strip_frontmatter
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital.rag import strip_frontmatter
 
 # Linha só de tags ('#a #b') e a tag isolada — usadas para canonizar o rodapé do átomo.
 _TAG_LINHA_RE = re.compile(r"^\s*#[\w/\-]+(?:\s+#[\w/\-]+)*\s*$")

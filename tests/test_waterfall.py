@@ -9,11 +9,11 @@ from __future__ import annotations
 import sqlite3
 from collections import deque
 
-from agent import Agent
-from config import settings
-from rag import LocalResult
-from state import AppContext, SessionMemory
-from telemetry import Database, LatencyTracker
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.rag import LocalResult
+from mente_digital.state import AppContext, SessionMemory
+from mente_digital.telemetry import Database, LatencyTracker
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -53,12 +53,12 @@ def _agent(monkeypatch, tmp_path):
     ctx.web = _Web()
     ctx.vectorstore = _VS()
     capturas = []
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_lacuna", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_lacuna", lambda *a, **k: None)
     monkeypatch.setattr(
-        "agent.db.save_latency", lambda *a, **k: capturas.append((a, k))
+        "mente_digital.agent.db.save_latency", lambda *a, **k: capturas.append((a, k))
     )
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     agent = Agent(ctx)
     agent.optimizer = _Optimizer()
     mem = SessionMemory(settings)

@@ -7,8 +7,8 @@ import asyncio
 
 import pytest
 
-import disjuntor
-from rag import WebSearcher
+from mente_digital import disjuntor
+from mente_digital.rag import WebSearcher
 
 
 class _Relogio:
@@ -75,7 +75,7 @@ async def test_cooldown_nao_toca_o_ddg_e_enfileira(monkeypatch):
 
     # Com o disjuntor aberto, a próxima NEM chama o DDG — e vai para a fila offline.
     res = await ws.search("pergunta C")
-    from rag import NENHUM
+    from mente_digital.rag import NENHUM
     assert res == NENHUM
     assert chamadas["n"] == 2                     # <- não bateu no DDG
     assert ("pergunta C", None) in list(ws._pendentes)

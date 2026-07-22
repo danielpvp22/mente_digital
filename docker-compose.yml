@@ -26,10 +26,10 @@ services:
       # criaria como DIRETÓRIO se não existisse, quebrando o SQLite).
       MENTE_DB_TELEMETRIA: /app/dados/telemetria_etl.db
     volumes:
-      - ./modelos:/app/modelos                              # LLM .gguf + voz Piper + cache Whisper
-      - ./Cerebro_Digital:/app/Cerebro_Digital              # o vault (fonte de verdade)
-      - ./banco_vetorial_cerebro:/app/banco_vetorial_cerebro # índice derivado (Chroma)
-      - ./dados:/app/dados                                  # telemetria/histórico (SQLite)
+      # TODO dado do dono/derivado vive sob ./dados no host e /app/dados no container
+      # (BASE_DIR=/app, então config aponta p/ /app/dados/*): vault, índice Chroma,
+      # modelos .gguf/voz, SQLite e dump — um mount só cobre todos.
+      - ./dados:/app/dados
       - hf-cache:/root/.cache/huggingface                   # e5-base baixa 1x, não por rebuild
     deploy:
       resources:

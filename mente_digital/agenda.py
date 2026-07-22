@@ -19,7 +19,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
-import textutils
+from mente_digital import textutils
 
 # Recorrência é serializada como string simples na coluna `recorrencia`:
 #   None                -> disparo único

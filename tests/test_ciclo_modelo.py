@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from llm import LlamaManager
+from mente_digital.llm import LlamaManager
 
 
 class FakeModel:

@@ -13,14 +13,14 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
 
-from config import Settings
+from mente_digital.config import Settings
 
 if TYPE_CHECKING:  # evita imports circulares em runtime
-    from agent import Agent, EtlProcessor
-    from audio import SttService, TtsService
-    from llm import LlamaManager
-    from rag import VectorStore, WebSearcher
-    from scheduler import SchedulerService
+    from mente_digital.agent import Agent, EtlProcessor
+    from mente_digital.audio import SttService, TtsService
+    from mente_digital.llm import LlamaManager
+    from mente_digital.rag import VectorStore, WebSearcher
+    from mente_digital.scheduler import SchedulerService
 
 
 class SessionMemory:
@@ -255,7 +255,7 @@ class AppContext:
             return
         exc = task.exception()
         if exc is not None:
-            from telemetry import telemetry
+            from mente_digital.telemetry import telemetry
 
             telemetry.error("TASK", f"Task de fundo falhou: {task.get_coro()!r}", exc)
 

@@ -1,7 +1,7 @@
 # Guia de calibração (RAG / gate de relevância)
 
 Todos os botões abaixo são lidos do arquivo `.env` na raiz (prefixo `MENTE_`, sem tocar
-no código — ver [config.py](config.py)). **Edite o `.env` e reinicie `python main.py`**
+no código — ver [config.py](../mente_digital/config.py)). **Edite o `.env` e reinicie `python main.py`**
 (o `.env` é lido no startup). O `.env` está no `.gitignore` — não vai pro git.
 
 ## Ligar o diagnóstico primeiro

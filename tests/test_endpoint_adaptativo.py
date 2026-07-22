@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import ws as ws_mod
-from config import settings
-from state import AppContext
-from ws import LiveSession, janela_endpoint
+from mente_digital import ws as ws_mod
+from mente_digital.config import settings
+from mente_digital.state import AppContext
+from mente_digital.ws import LiveSession, janela_endpoint
 
 
 # ---------- a função pura ----------

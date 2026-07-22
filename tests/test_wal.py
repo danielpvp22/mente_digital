@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from telemetry import Database
+from mente_digital.telemetry import Database
 
 
 def _db(tmp_path) -> Database:

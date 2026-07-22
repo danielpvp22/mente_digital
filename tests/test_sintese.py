@@ -2,9 +2,9 @@
 Síntese sob Demanda (#23): "o que eu sei sobre X" tem fluxo próprio (map-reduce) e não
 estoura o contexto. Detector puro + orquestração com fakes.
 """
-from agent import Agent, extrair_tema_sintese
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital.agent import Agent, extrair_tema_sintese
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send, textos_de_tokens
 
@@ -46,8 +46,8 @@ def _agent(monkeypatch, atomos):
     ctx.llama = FakeLlama(["Você ", "sabe ", "bastante ", "sobre ", "o ", "tema."])
     ctx.tts = FakeTts()
     ctx.vectorstore = FakeVSComAtomos(atomos)
-    monkeypatch.setattr("agent.db.save_chat", lambda *a, **k: None)
-    monkeypatch.setattr("agent.db.save_latency", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_chat", lambda *a, **k: None)
+    monkeypatch.setattr("mente_digital.agent.db.save_latency", lambda *a, **k: None)
     return Agent(ctx), SessionMemory(settings)
 
 

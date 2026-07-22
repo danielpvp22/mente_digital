@@ -3,11 +3,11 @@ Tutor Socrático (#44, Onda 3): modo de sessão que faz o assistente PERGUNTAR e
 entregar a resposta pronta. Injeta a instrução socrática via verbosidade.aplicar_tutor
 (reusa a fiação nivel->LLM do #7/#45). Ligado/desligado por comando-mestre.
 """
-import mestre
-import verbosidade
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import mestre
+from mente_digital import verbosidade
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -35,10 +35,10 @@ class _FakeVS:
 
 
 async def test_tutor_toggle_pela_sessao(monkeypatch, tmp_path):
-    monkeypatch.setattr("agent.db.listar_atalhos", lambda *a, **k: {})
+    monkeypatch.setattr("mente_digital.agent.db.listar_atalhos", lambda *a, **k: {})
     ctx = AppContext(settings=settings)
     ctx.llama, ctx.tts, ctx.vectorstore = FakeLlama(["ok."]), FakeTts(), _FakeVS()
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "d.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "d.md"))
     agent, mem = Agent(ctx), SessionMemory(settings)
     send, _ = make_send()
 

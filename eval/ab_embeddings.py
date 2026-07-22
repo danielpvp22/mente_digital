@@ -42,9 +42,9 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import numpy as np  # noqa: E402
 
-import textutils  # noqa: E402
-from config import settings  # noqa: E402
-from telemetry import db  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.telemetry import db  # noqa: E402
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 SAIDAS = os.path.join(DIR, "saidas")

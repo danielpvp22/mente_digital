@@ -12,9 +12,9 @@ e é no-op quando nada mudou. Sem GPU/rede — vectorstore é fake.
 """
 from __future__ import annotations
 
-from agent import EtlProcessor
-from config import settings
-from state import AppContext
+from mente_digital.agent import EtlProcessor
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 
 class _CountingVS:
@@ -71,6 +71,7 @@ async def test_run_idle_consolida_escrita_pendente(monkeypatch):
     monkeypatch.setattr(etl, "process_queue", _noop)
     monkeypatch.setattr(etl, "summarize_dump", _noop)
     monkeypatch.setattr(etl, "pesquisa_proativa", _noop)
+    monkeypatch.setattr(etl, "pesquisa_temas_quentes", _noop)
     monkeypatch.setattr(etl, "_snapshot_base", _noop)
     # Sem descarregar o modelo: run_idle retorna antes de tocar em ctx.llama.
     monkeypatch.setattr(settings, "idle_descarregar_modelo", False)

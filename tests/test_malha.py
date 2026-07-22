@@ -9,7 +9,7 @@ pelo conceito COMPARTILHADO, com peso de IDF para o hub não arrastar a base int
 """
 import math
 
-from rag import MalhaIndex, extrair_conceitos, metadados_da_nota
+from mente_digital.rag import MalhaIndex, extrair_conceitos, metadados_da_nota
 
 MALHA = "**Malha Neural:** [[Mineração de Zcash]] [[Protocolo Stratum]] [[Servidor da Pool]]"
 

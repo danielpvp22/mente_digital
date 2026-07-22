@@ -28,13 +28,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import textutils  # noqa: E402
-from agent import Agent  # noqa: E402
-from config import settings  # noqa: E402
-from prompts import SENTINELA_INSUF  # noqa: E402
-from rag import NENHUM, LocalResult  # noqa: E402
-from state import AppContext, SessionMemory  # noqa: E402
-from telemetry import Database, db  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital.agent import Agent  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.prompts import SENTINELA_INSUF  # noqa: E402
+from mente_digital.rag import NENHUM, LocalResult  # noqa: E402
+from mente_digital.state import AppContext, SessionMemory  # noqa: E402
+from mente_digital.telemetry import Database, db  # noqa: E402
 
 
 # ---------- fakes (mesmo contrato dos usados na suíte, sem depender de pytest) ----------

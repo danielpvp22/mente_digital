@@ -8,9 +8,9 @@ import asyncio
 
 import pytest
 
-import telemetry
-import tools
-from config import settings
+from mente_digital import telemetry
+from mente_digital import tools
+from mente_digital.config import settings
 
 
 class FakeVS:

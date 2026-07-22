@@ -87,7 +87,7 @@ waterfall da Leila confirmar o peso do STT (vai confirmar).
 ### 3. Caio Bernardes (tempo-real / VAD)
 
 **Pitch.** "Todo turno de voz paga **1,2 segundo de silêncio obrigatório** antes de o STT sequer
-começar (`vad_silence_seconds=1.2`, [ws.py](ws.py) `_check_silence`). Isso é maior que o TTFT de
+começar (`vad_silence_seconds=1.2`, [ws.py](../mente_digital/ws.py) `_check_silence`). Isso é maior que o TTFT de
 vocês. **Endpointing adaptativo**: fala curta encerra com ~0,6–0,7s de silêncio; fala longa com pausa
 de respiração mantém margem maior; teto atual vira fallback. E carimbem o estágio na telemetria."
 Segunda ideia: comprimir o áudio do WS com Opus.
@@ -106,7 +106,7 @@ dor."
 ### 4. Bianca Furtado (TTS / percepção)
 
 **Pitch.** Duas cirurgias pequenas. (a) No caminho web, o filler falado é sintetizado **em série**
-antes de a busca começar ([respostas.py:176](respostas.py:176) — `await _falar_status(...)` e só
+antes de a busca começar ([respostas.py:176](../mente_digital/respostas.py:176) — `await _falar_status(...)` e só
 depois `web.search`): dispare a busca como task primeiro e o filler mascara latência que está
 **correndo em paralelo**, não parada. (b) **Primeiro chunk agressivo no SentenceChunker**: hoje a
 primeira frase pode acumular até 180 chars antes do flush — em ~120 tok/s isso é mais de um segundo
@@ -309,7 +309,7 @@ As 12 aceitas foram implementadas na branch `feat/consultoria-ttft` — suíte *
 | # | Ideia | Onde ficou | Estado |
 |---|-------|-----------|--------|
 | 1 | Waterfall p50/p95 por estágio | `LatencyTracker.{vad,extrator,busca}_ms` + `Database.latencia_percentis` → bloco `waterfall` do `/api/metrics` | ✅ ligado |
-| 2 | Dedup escala e5 | `MENTE_DEDUP_DIST_MAX` 0.08→0.01 ([config.py](config.py)) | ✅ ligado |
+| 2 | Dedup escala e5 | `MENTE_DEDUP_DIST_MAX` 0.08→0.01 ([config.py](../mente_digital/config.py)) | ✅ ligado |
 | 3 | Endpointing adaptativo | `ws.janela_endpoint` + log de corte-precoce; knobs `MENTE_VAD_*` | ✅ ligado (0,7s fala curta) |
 | 4 | Whisper→GPU int8 | fallback GPU→CPU automático em `SttService.load`; spike = `MENTE_WHISPER_DEVICE=cuda` no .env | ✅ mecanismo pronto; **ligar o spike é decisão do dono** |
 | 5 | Higiene do DB | conftest redireciona `MENTE_DB_TELEMETRIA` pré-import; 3 lacunas-fixture expurgadas (backup `.pre-expurgo-2026-07-21.db`) | ✅ feito |

@@ -5,7 +5,7 @@ Sem ele, a tag vaza para o SentenceChunker e o TTS **fala a marcação**. Puro: 
 tokens, devolve o que pode ser emitido. Testado token-a-token, inclusive com a tag
 quebrada entre tokens (é assim que ela chega no streaming real).
 """
-from llm import _FiltroThink
+from mente_digital.llm import _FiltroThink
 
 
 def _rodar(tokens):

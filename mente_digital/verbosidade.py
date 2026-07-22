@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import textutils
-from config import settings
+from mente_digital import textutils
+from mente_digital.config import settings
 
 
 @dataclass(frozen=True)

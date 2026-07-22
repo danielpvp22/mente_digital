@@ -3,9 +3,9 @@ O dump da conversa (matéria-prima do idle) NÃO pode receber comandos de agente
 senão "mestre, adiciona leite" e "mestre, modo sigiloso" viram os átomos-lixo
 "## Leite" e "## Modo Sigiloso" (bug visto no teste real).
 """
-from config import settings
-from state import AppContext
-from ws import LiveSession
+from mente_digital.config import settings
+from mente_digital.state import AppContext
+from mente_digital.ws import LiveSession
 
 
 def _sess():
@@ -19,7 +19,7 @@ def _spy(monkeypatch):
     async def fake_dump(ator, texto):
         chamadas.append((ator, texto))
 
-    monkeypatch.setattr("ws.append_chat_dump", fake_dump)
+    monkeypatch.setattr("mente_digital.ws.append_chat_dump", fake_dump)
     return chamadas
 
 

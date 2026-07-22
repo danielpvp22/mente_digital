@@ -2,8 +2,8 @@
 Navegação por Voz (#14): parse_navegacao mapeia comando falado -> ação de UI, e
 casar_conversa resolve "abre a conversa sobre X" num id. Ambos puros.
 """
-import fio
-import mestre
+from mente_digital import fio
+from mente_digital import mestre
 
 
 # ----------------------- parser de navegação -----------------------

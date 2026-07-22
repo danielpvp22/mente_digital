@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-import textutils
+from mente_digital import textutils
 
 # Assinaturas de injeção (comparadas sobre texto NORMALIZADO: minúsculo, sem acento).
 # Cada uma é um comando de OVERRIDE — coisa que texto informativo raramente traz

@@ -5,7 +5,7 @@ Regra pura em acesso.py — testável sem servidor.
 """
 from __future__ import annotations
 
-from acesso import cliente_autorizado, origin_confere
+from mente_digital.acesso import cliente_autorizado, origin_confere
 
 
 # -- token/loopback ------------------------------------------------------------

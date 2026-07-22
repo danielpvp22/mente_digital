@@ -26,20 +26,20 @@ import time
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Deque, List, Optional, Tuple
 
-import calendario
-import contradicao
-import diapasao
-import fio
-import habitos
-import mestre
-import prompts
-import srs
-import textutils
-import tools
-import verbosidade
+from mente_digital import calendario
+from mente_digital import contradicao
+from mente_digital import diapasao
+from mente_digital import fio
+from mente_digital import habitos
+from mente_digital import mestre
+from mente_digital import prompts
+from mente_digital import srs
+from mente_digital import textutils
+from mente_digital import tools
+from mente_digital import verbosidade
 # A atomização (um .md por ideia — Zettelkasten puro) mora em atomos.py; os nomes
 # seguem re-exportados por aqui porque scripts/, eval/ e testes importam de `agent`.
-from atomos import (
+from mente_digital.atomos import (
     _e_titulo,
     _parece_atomo,
     _slug_titulo,
@@ -47,17 +47,17 @@ from atomos import (
     normalizar_atomo,
     normalizar_malha,
 )
-from audio import SentenceChunker
-from comandos_mestre import ComandosMestre
-from config import settings
+from mente_digital.audio import SentenceChunker
+from mente_digital.comandos_mestre import ComandosMestre
+from mente_digital.config import settings
 # O ETL idle (EtlProcessor) e o dump da conversa (a fila que ele consome) moram em
 # etl.py; re-exportados por aqui (main.py, ws.py e testes importam de `agent`).
-from etl import EtlProcessor, append_chat_dump
-from llm import InferenciaPreemptada, LlamaManager
+from mente_digital.etl import EtlProcessor, append_chat_dump
+from mente_digital.llm import InferenciaPreemptada, LlamaManager
 # A interpretação da pergunta (QueryOptimizer + heurísticas puras: referência ao
 # turno anterior, tema de síntese, frase citada, lacuna pesquisável) mora em
 # otimizador.py; re-exportada por aqui pelos mesmos motivos de atomos.py.
-from otimizador import (
+from mente_digital.otimizador import (
     QueryOptimizer,
     e_backchannel,
     e_declarativa,
@@ -67,12 +67,12 @@ from otimizador import (
     referencia_contexto,
 )
 # O sentinela mudou-se para prompts.py (é camada de linguagem); eval/ importa daqui.
-from prompts import SENTINELA_INSUF
-from rag import NENHUM, LocalResult, strip_frontmatter
-from respostas import Respostas
-from state import AppContext, SessionMemory
+from mente_digital.prompts import SENTINELA_INSUF
+from mente_digital.rag import NENHUM, LocalResult, strip_frontmatter
+from mente_digital.respostas import Respostas
+from mente_digital.state import AppContext, SessionMemory
 # LatencyTracker mudou-se para telemetry.py (instrumentação mora com o save_latency).
-from telemetry import LatencyTracker, db, telemetry
+from mente_digital.telemetry import LatencyTracker, db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
 # "Sem banco local" — usado no estágio RAM para reaproveitar _montar_contexto sem
@@ -363,6 +363,16 @@ class Agent(ComandosMestre, Respostas):
                         # Em background: não pesa no TTFA da resposta atual.
                         if len(paragrafos) > antes and local.fontes:
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
+                            # #4 TEMA QUENTE: o Banco respondeu de fato -> o usuário REUSOU
+                            # o vault neste tema (interesse recorrente). Registra p/ a
+                            # re-pesquisa periódica do idle trazer NOVIDADE (o dedup por
+                            # átomo filtra o já-sabido). Mesmos guards da lacuna: efêmero/
+                            # confidencial/trivial ficam de fora. Em background (só o UPSERT
+                            # do contador) — não pesa no TTFA da resposta atual.
+                            if not efemero and not mem.confidencial and lacuna_pesquisavel(termos):
+                                self.ctx.track_task(asyncio.to_thread(
+                                    db.save_tema_quente, textutils.normaliza(termos), termos
+                                ))
                         if len(paragrafos) > antes:
                             # Proveniência ("fonte?"): os MESMOS chunks da promoção.
                             mem.ultimas_fontes.extend(f"nota:{f}" for f in local.fontes)

@@ -2,7 +2,7 @@
 Testes da Guarda de Egressão (#6) — mascaramento de PII na query web (egressao.py).
 Puro, sem rede: exercita cada detector E os falsos-positivos que ele NÃO pode causar.
 """
-import egressao
+from mente_digital import egressao
 
 
 def test_email_mascarado():

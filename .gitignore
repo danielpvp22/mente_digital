@@ -2,26 +2,32 @@ __pycache__/
 *.pyc
 .env
 .claude/settings.local.json
+.claude/settings.json
 
 # Artefatos de teste
 .pytest_cache/
+.hypothesis/
 
+# ==== Dados de runtime — TUDO sob dados/ (reorg de estrutura 2026-07) ====
 # Modelos de IA (binários grandes) — versiona só a estrutura de pastas
-modelos/*
-!modelos/.gitkeep
-!modelos/README.md
-!modelos/whisper/
-modelos/whisper/*
-!modelos/whisper/.gitkeep
+dados/modelos/*
+!dados/modelos/.gitkeep
+!dados/modelos/README.md
+!dados/modelos/whisper/
+dados/modelos/whisper/*
+!dados/modelos/whisper/.gitkeep
 
 # Vault Obsidian local (notas do usuário, não versionadas)
-Cerebro_Digital/
+dados/Cerebro_Digital/
 
-# Dados gerados em runtime
-banco_vetorial_cerebro/
-banco_vetorial_cerebro.bak_l2/
-telemetria_etl.db
-chat_dump_bruto.md
+# Índice derivado (Chroma) + SQLite + dump — regenerados em runtime
+dados/banco_vetorial_cerebro/
+dados/banco_vetorial_cerebro.bak_l2/
+dados/banco_vetorial_cerebro.corrompido/
+dados/telemetria_etl.db
+dados/telemetria_etl.db-wal
+dados/telemetria_etl.db-shm
+dados/chat_dump_bruto.md
 
 # Saídas do A/B de modelos: carregam perguntas reais e trechos do VAULT (mesma regra
 # do Cerebro_Digital acima). São regeneráveis com `ab_modelos.py --preparar`, então
@@ -42,7 +48,11 @@ eval/saidas/
 # eval/amostras_tts.py — versiona-se a ferramenta, não o áudio.
 eval/amostras_tts_out/
 
-# Backup do limpar_vault.py — FORA do vault (senao o sync recursivo o re-indexa)
+# Backups locais: pré-expurgo do DB + backup do limpar_vault.py (_lixo_purgado).
+# Nunca versionar. `backups/` cobre a pasta de arquivamento; `_lixo_purgado/`
+# (depth-agnostic) cobre o backup que o limpar_vault.py cria em dados/ — FORA do
+# vault, senão o sync recursivo o re-indexaria.
+backups/
 _lixo_purgado/
 
 # Grafo do Graphify: ~220 MB (cache + backups datados), GERADO localmente com

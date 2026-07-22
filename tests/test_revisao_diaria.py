@@ -7,11 +7,11 @@ na revisão de cards).
 from datetime import date, timedelta
 from pathlib import Path
 
-import mestre
-import telemetry
-from agent import Agent
-from config import settings
-from state import AppContext, SessionMemory
+from mente_digital import mestre
+from mente_digital import telemetry
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
@@ -35,7 +35,7 @@ def _agent(monkeypatch, tmp_path):
     settings.dir_agenda.mkdir(parents=True, exist_ok=True)
     ctx = AppContext(settings=settings)
     ctx.llama, ctx.tts, ctx.vectorstore = FakeLlama(["ok."]), FakeTts(), _FakeVS()
-    monkeypatch.setattr("agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
+    monkeypatch.setattr("mente_digital.agent.settings.arquivo_chat_dump", str(tmp_path / "dump.md"))
     return Agent(ctx), SessionMemory(settings)
 
 

@@ -2,7 +2,7 @@
 Anti-injeção de prompt no conteúdo web (#26): dropa trechos com imperativos de
 override antes de virarem contexto do LLM. Puro (antiinjecao.py).
 """
-import antiinjecao
+from mente_digital import antiinjecao
 
 
 def test_detecta_override_ingles():

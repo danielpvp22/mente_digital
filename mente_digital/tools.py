@@ -23,13 +23,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 
-import agenda
-import textutils
-from config import settings
-from telemetry import db, telemetry
+from mente_digital import agenda
+from mente_digital import textutils
+from mente_digital.config import settings
+from mente_digital.telemetry import db, telemetry
 
 if TYPE_CHECKING:  # evita import circular em runtime
-    from state import AppContext
+    from mente_digital.state import AppContext
 
 Executor = Callable[[dict, "AppContext"], Awaitable[str]]
 

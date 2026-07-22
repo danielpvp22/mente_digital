@@ -54,15 +54,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("MENTE_RAG_DEBUG", "false")
 
-import prompts  # noqa: E402
-import textutils  # noqa: E402
-import tools  # noqa: E402
-from agent import SENTINELA_INSUF, Agent, QueryOptimizer  # noqa: E402
-from config import settings  # noqa: E402
-from llm import LlamaManager  # noqa: E402
-from rag import NENHUM, EmbeddingProvider, VectorStore  # noqa: E402
-from state import AppContext, SessionMemory  # noqa: E402
-from telemetry import db  # noqa: E402
+from mente_digital import prompts  # noqa: E402
+from mente_digital import textutils  # noqa: E402
+from mente_digital import tools  # noqa: E402
+from mente_digital.agent import SENTINELA_INSUF, Agent, QueryOptimizer  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
+from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital.rag import NENHUM, EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.state import AppContext, SessionMemory  # noqa: E402
+from mente_digital.telemetry import db  # noqa: E402
 
 DIR_SAIDA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saidas")
 

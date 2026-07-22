@@ -18,8 +18,8 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Callable, Iterator, Optional
 
-import textutils
-from config import settings
+from mente_digital import textutils
+from mente_digital.config import settings
 
 
 class TelemetryStream:
@@ -210,6 +210,17 @@ class Database:
             # forma normalizada (agrupa 'o que é X?' e 'X, o que é'); `n` acumula.
             c.execute(
                 """CREATE TABLE IF NOT EXISTS lacunas
+                   (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
+                    visto_em TEXT, pesquisado_em TEXT)"""
+            )
+            # TEMAS QUENTES (#4): o ESPELHO da lacuna. Lacuna = o que a RAM E o banco NÃO
+            # responderam (buraco). Tema quente = o que o usuário mais REUSA do banco (o
+            # estágio Banco respondeu de fato) — interesse recorrente. A pesquisa proativa
+            # do idle re-pesquisa estes na web para trazer NOVIDADE (dedup por átomo filtra
+            # o já-sabido), então a base amadurece nos temas favoritos, não só nos buracos.
+            # Mesmo shape da lacuna; `chave` normalizada agrupa; `n` conta os reusos.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS temas_quentes
                    (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
                     visto_em TEXT, pesquisado_em TEXT)"""
             )
@@ -702,6 +713,57 @@ class Database:
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao marcar lacuna", exc)
+
+    # ---- Temas quentes (#4): o que o usuário mais REUSA do banco -> re-pesquisa ----
+    def save_tema_quente(self, chave: str, termos: str) -> None:
+        """Registra (ou incrementa) um tema que o usuário REUSOU do vault (o estágio Banco
+        respondeu de fato). UPSERT: o mesmo interesse recorrente sobe `n` em vez de virar N
+        linhas — a re-pesquisa proativa prioriza o favorito mais consultado."""
+        if not chave:
+            return
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO temas_quentes (chave, termos, n, visto_em)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
+                    (chave, termos, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar tema quente", exc)
+
+    def get_temas_quentes(
+        self, limit: int = 10, min_reuso: int = 3, nao_pesquisadas_ha_dias: int = 14
+    ) -> list[dict]:
+        """Os temas MAIS REUSADOS ainda não re-pesquisados (ou fora do cooldown), do mais
+        reusado ao menos. `min_reuso` separa o interesse recorrente da curiosidade de uma
+        vez só; `nao_pesquisadas_ha_dias` é o cooldown (não refresca o mesmo favorito à toa)."""
+        try:
+            corte = (datetime.now() - timedelta(days=nao_pesquisadas_ha_dias)).isoformat()
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """SELECT termos, n FROM temas_quentes
+                       WHERE n >= ? AND (pesquisado_em IS NULL OR pesquisado_em < ?)
+                       ORDER BY n DESC, visto_em DESC LIMIT ?""",
+                    (min_reuso, corte, limit),
+                ).fetchall()
+            return [{"termos": t, "n": n} for t, n in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler temas quentes", exc)
+            return []
+
+    def marcar_tema_pesquisado(self, chave: str) -> None:
+        """Carimba que o tema quente foi re-pesquisado — entra no cooldown de N dias."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE temas_quentes SET pesquisado_em = ? WHERE chave = ?",
+                    (datetime.now().isoformat(), chave),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar tema quente", exc)
 
     # ---- Agendamentos (SchedulerService: lembretes/alarmes, watchers, briefing) ----
     def criar_agendamento(

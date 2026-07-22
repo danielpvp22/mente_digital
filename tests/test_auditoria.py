@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import pytest
 
-import telemetry
-import tools
-from agent import Agent
-from config import settings
-from state import AppContext
+from mente_digital import telemetry
+from mente_digital import tools
+from mente_digital.agent import Agent
+from mente_digital.config import settings
+from mente_digital.state import AppContext
 
 from conftest import FakeTts, make_send
 

@@ -2,8 +2,8 @@
 Modo Econômico (#30): meta-comando de sessão que BYPASSA o gate de relevância
 (responde do vault em vez de escalar pra web). Parser puro + o bypass no search.
 """
-import mestre
-from rag import NENHUM, VectorStore
+from mente_digital import mestre
+from mente_digital.rag import NENHUM, VectorStore
 
 from conftest import FakeDoc, FakeStore
 

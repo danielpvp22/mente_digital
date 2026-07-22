@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import textutils
+from mente_digital import textutils
 
 _LIMITE_PERFIL = 400  # o perfil é uma diretriz curta; corta divagação do LLM
 

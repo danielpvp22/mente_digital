@@ -22,8 +22,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from config import DICIONARIO_FONETICO, settings
-from telemetry import telemetry
+from mente_digital.config import DICIONARIO_FONETICO, settings
+from mente_digital.telemetry import telemetry
 
 
 # ==========================================================================
@@ -154,7 +154,7 @@ def parece_alucinacao(texto: str, no_speech_prob: float) -> bool:
     (silêncio/ruído -> prob alta) é barrado."""
     if no_speech_prob < _NO_SPEECH_ALUC:
         return False
-    import textutils
+    from mente_digital import textutils
     norm = textutils.normaliza(texto).strip(" .!?,")
     return norm in _FILLER_ALUC
 
@@ -187,7 +187,7 @@ class SttService:
         try:
             from faster_whisper import WhisperModel
 
-            from rag import resolve_device  # reusa a resolução auto/cuda/cpu
+            from mente_digital.rag import resolve_device  # reusa a resolução auto/cuda/cpu
 
             try:
                 import torch

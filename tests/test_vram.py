@@ -3,7 +3,7 @@ Governador de VRAM (#28) + orçamento de tokens de fundo (#29): as partes puras
 (detector de vazamento e cálculo do orçamento). A leitura torch.cuda não é testada
 aqui — sem GPU ela devolve None e tudo degrada.
 """
-import vram
+from mente_digital import vram
 
 
 # ----------------------- #28: detector de vazamento -----------------------

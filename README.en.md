@@ -115,13 +115,13 @@ python -m venv .venv && .venv\Scripts\activate   # source .venv/bin/activate on 
 pip install -r requirements.txt
 ```
 
-Download the models (not in the repo): the LLM (`Qwen3-8B` GGUF `Q4_K_M`) and the Piper voice (`pt_BR-cadu-medium.onnx` **and** its `.onnx.json`) go into `modelos/`; Whisper and the embedding model download themselves on first run. The vault can start empty. Then:
+Download the models (not in the repo): the LLM (`Qwen3-8B` GGUF `Q4_K_M`) and the Piper voice (`pt_BR-cadu-medium.onnx` **and** its `.onnx.json`) go into `dados/modelos/`; Whisper and the embedding model download themselves on first run. The vault can start empty. Then:
 
 ```bash
-python main.py        # http://localhost:8000
+python -m mente_digital.main   # http://localhost:8000
 ```
 
-Configuration is `.env`-driven (`MENTE_*` prefix) — every knob is documented in [`config.py`](config.py). Tests:
+Configuration is `.env`-driven (`MENTE_*` prefix) — every knob is documented in [`config.py`](mente_digital/config.py). Tests:
 
 ```bash
 pip install -r requirements-dev.txt

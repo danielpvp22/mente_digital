@@ -17,18 +17,18 @@ import asyncio
 import os
 from typing import Awaitable, Callable, List, Optional, Tuple
 
-import prompts
-import textutils
-import verbosidade
+from mente_digital import prompts
+from mente_digital import textutils
+from mente_digital import verbosidade
 import re
 
-from audio import SentenceChunker
-from config import settings
-from otimizador import frase_citada
-from prompts import SENTINELA_INSUF
-from rag import NENHUM
-from state import SessionMemory
-from telemetry import LatencyTracker, db, telemetry
+from mente_digital.audio import SentenceChunker
+from mente_digital.config import settings
+from mente_digital.otimizador import frase_citada
+from mente_digital.prompts import SENTINELA_INSUF
+from mente_digital.rag import NENHUM
+from mente_digital.state import SessionMemory
+from mente_digital.telemetry import LatencyTracker, db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
 

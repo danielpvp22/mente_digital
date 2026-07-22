@@ -2,8 +2,8 @@
 Fio da Conversa (#35): escolher_fio pega a conversa anterior COM SUBSTÂNCIA (não a
 atual, não um 'oi' solto). Parser puro + o gatilho-mestre.
 """
-import fio
-import mestre
+from mente_digital import fio
+from mente_digital import mestre
 
 
 def test_pega_a_mais_recente_que_nao_e_a_atual():

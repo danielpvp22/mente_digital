@@ -32,7 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import BASE_DIR  # noqa: E402
+from mente_digital.config import BASE_DIR  # noqa: E402
 
 CERTS = os.path.join(str(BASE_DIR), "certs")
 CERT = os.path.join(CERTS, "mente.crt")

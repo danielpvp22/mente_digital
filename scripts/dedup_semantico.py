@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np  # noqa: E402
 
-from config import settings  # noqa: E402
+from mente_digital.config import settings  # noqa: E402
 
 LIXO = os.path.join(os.path.dirname(settings.caminho_obsidian), "_lixo_purgado", "dedup_semantico")
 _BLOCO = 1024  # linhas por bloco do all-pairs (1024 x N floats ~= 50 MB em N=13k)
