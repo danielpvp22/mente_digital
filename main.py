@@ -4,7 +4,7 @@ Mente Digital — ponto de entrada FastAPI.
 Só faz a montagem (wiring) e expõe rotas. Toda a lógica vive nos módulos:
 config, telemetry, llm, audio, rag, agent, ws.
 
-    python -m mente_digital        (ou)   uvicorn mente_digital.main:app
+    python main.py        (ou)   uvicorn main:app
 """
 from __future__ import annotations
 
@@ -91,9 +91,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-# templates/ fica na RAIZ do repo (não dentro do pacote). Ancorado em BASE_DIR
-# em vez de relativo ao cwd — assim `python -m mente_digital.main` funciona de
-# qualquer diretório (o único caminho do app que antes dependia do cwd).
+# templates/ fica na RAIZ do repo (mesmo nível de main.py). Ancorado em BASE_DIR
+# (derivado de config.py, não de main.py) em vez de relativo ao cwd — assim
+# `python main.py` funciona de qualquer diretório (o único caminho do app que
+# antes dependia do cwd).
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
@@ -218,6 +219,6 @@ if __name__ == "__main__":
                 f"({settings.ssl_cert!r}, {settings.ssl_key!r}) — subindo em HTTP.",
             )
     uvicorn.run(
-        "mente_digital.main:app", host=settings.host, port=settings.port,
+        "main:app", host=settings.host, port=settings.port,
         log_level="error", reload=False, **ssl_kwargs,
     )

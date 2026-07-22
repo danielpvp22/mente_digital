@@ -378,9 +378,9 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 **~10.500 linhas de Python** em 33 módulos (de ~3.300 em 12), mais ~7.500 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
-.                        # a RAIZ fica só com código-do-pacote e config; o resto em pastas
-├── mente_digital/       # o PACOTE do app — rode com `python -m mente_digital.main`
-│   ├── main.py         # 175  wiring: lifespan monta o AppContext, sobe o scheduler, rotas + WS
+.                        # a RAIZ fica com o entrypoint + o resto em pastas
+├── main.py              # 175  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
+├── mente_digital/       # o PACOTE do app (lógica de domínio; importado por caminho absoluto)
 │   ├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
 │   ├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
 │   ├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
@@ -955,7 +955,7 @@ MENTE_RAG_SCORE_CONFIDENT=0.7
 ### 4. Rodar
 
 ```bash
-python -m mente_digital.main   # ou: uvicorn mente_digital.main:app --host 0.0.0.0 --port 8000
+python main.py                 # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 Abra `http://localhost:8000`. O servidor sobe **antes** do LLM terminar de carregar. Diga *"mestre, ajuda"* (ou `/ajuda`) para ouvir os comandos disponíveis.
