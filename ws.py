@@ -23,6 +23,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import mestre
 import tools
 from agent import append_chat_dump
+from otimizador import e_backchannel
 from config import settings
 from state import AppContext, SessionMemory
 from telemetry import db, telemetry
@@ -63,6 +64,7 @@ class LiveSession:
         # após `mestre_sleep_seconds` de silêncio. Desligado = sempre ativa (hoje).
         self.dormente = settings.mestre_wake
         self.pipeline_task: Optional[asyncio.Task] = None
+        self._barge_frames = 0   # frames de fala ALTA consecutivos durante a resposta (barge-in servidor)
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
         # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
         # compartilhado por todas: o cliente reconecta sozinho (backoff) e reenvia
@@ -106,6 +108,10 @@ class LiveSession:
         de agente NUNCA é conhecimento: se a msg começa pela palavra-mestre, fora do dump.
         """
         if tools.e_efemero(texto) or self.memory.confidencial:
+            return
+        # Backchannel ("ok"/"aham"/"tchau") não é conhecimento: fora do dump que o idle
+        # atomiza — senão vira átomo-lixo. Espelha o gate do Agent._pipeline.
+        if settings.ignorar_backchannel and e_backchannel(texto):
             return
         if settings.palavra_mestre_habilitada and mestre.separar(texto, settings.palavra_mestre) is not None:
             return
@@ -248,6 +254,22 @@ class LiveSession:
     def _on_audio(self, raw: bytes) -> None:
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(pcm ** 2))) if pcm.size else 0.0
+        # BARGE-IN DO SERVIDOR (anti-eco): se o dono fala DURANTE a resposta, corta a fala
+        # dela. Guard: só RMS ALTO (barge_rms_threshold, bem acima do VAD — o eco do TTS
+        # chega atenuado) SUSTENTADO por barge_min_frames consecutivos derruba o pipeline;
+        # um pico curto de eco zera o contador sem cortar. Ativo só com resposta em voo.
+        pipeline_vivo = self.pipeline_task is not None and not self.pipeline_task.done()
+        if settings.barge_in_servidor and pipeline_vivo:
+            if rms > settings.barge_rms_threshold:
+                self._barge_frames += 1
+                if self._barge_frames >= settings.barge_min_frames:
+                    telemetry.track("VAD", "Barge-in do servidor: dono falou por cima — cortando a resposta.")
+                    self._cancel_pipeline()
+                    self._barge_frames = 0
+            else:
+                self._barge_frames = 0
+        else:
+            self._barge_frames = 0
         if rms > settings.vad_rms_threshold:
             if not self.is_recording:
                 agora = time.time()

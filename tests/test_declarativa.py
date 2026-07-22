@@ -13,7 +13,20 @@ from state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send
 
-from otimizador import e_declarativa
+from otimizador import e_backchannel, e_declarativa
+
+
+def test_backchannel_reconhece_acuse_recebido():
+    for t in ["ok", "Ok.", "aham", "Aham!", "tchau", "tchau tchau", "valeu", "beleza",
+              "certo", "entendi", "hmm", "isso", "isso mesmo"]:
+        assert e_backchannel(t), t
+
+
+def test_backchannel_nao_pega_frase_real():
+    # Só a fala que É exatamente backchannel — não uma que apenas começa com "ok".
+    for t in ["ok, agenda a reunião", "explica RAG", "beleza da vida",
+              "que horas são", "isso está correto porque"]:
+        assert not e_backchannel(t), t
 
 
 def test_afirmacao_e_declarativa():
@@ -101,6 +114,22 @@ async def test_declarativa_com_tempo_nao_roteia_ferramenta(monkeypatch, tmp_path
     await agent.pipeline_resposta("Vou viajar pra Salvador na sexta", send, mem)
 
     assert roteou == []                        # veto: roteador de ferramenta não rodou
+
+
+async def test_backchannel_ignorado_no_pipeline(monkeypatch, tmp_path):
+    # "ok" não roteia, não responde "registrei", não registra na RAM (só é ignorado).
+    agent, mem = _agent(monkeypatch, tmp_path)
+    send, capturado = make_send()
+    roteou = []
+    async def _spy_rotear(texto):
+        roteou.append(texto)
+        return None
+    monkeypatch.setattr(agent, "_rotear", _spy_rotear)
+
+    await agent.pipeline_resposta("ok", send, mem)
+
+    assert roteou == []                                              # nem chegou ao roteador
+    assert not any("registrei" in str(m).lower() for m in capturado)  # não disse "registrei"
 
 
 async def test_comando_explicito_ainda_roteia(monkeypatch, tmp_path):

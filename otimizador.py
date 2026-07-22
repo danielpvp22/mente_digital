@@ -79,6 +79,26 @@ def e_declarativa(texto: str) -> bool:
     )
 
 
+# BACKCHANNEL — acuse-recebido/preenchimento: fala CURTA que não é pergunta, comando
+# nem fato. Medido no teste real 2507 (voz): "ok"/"aham"/"tchau"/"valeu" caíam no
+# registro declarativo ("Entendido, registrei") virando átomo de memória, e ativavam o
+# pipeline à toa. Aqui só a fala que É *exatamente* um desses (normalizada) — nunca uma
+# frase que apenas COMEÇA com "ok" ("ok, agenda a reunião" segue sendo comando).
+_BACKCHANNEL = {
+    "aham", "uhum", "uhm", "hmm", "hm", "ah", "aha", "aa", "ha",
+    "ok", "okay", "ta", "ta bom", "ta bem", "ta certo", "certo", "sei", "sei la",
+    "entendi", "entendido", "blz", "beleza", "valeu", "vlw",
+    "tchau", "tchau tchau", "ate logo", "ate mais", "falou",
+    "isso", "isso ai", "isso mesmo", "pois e", "opa", "eita", "nossa", "uau",
+}
+
+
+def e_backchannel(texto: str) -> bool:
+    """True se a fala é SÓ um acuse-recebido/preenchimento (ignorar). Puro/testável."""
+    n = textutils.normaliza(texto).strip(" .,!?…-")
+    return n in _BACKCHANNEL
+
+
 def lacuna_pesquisavel(termos: str) -> bool:
     """A lacuna vale uma pesquisa proativa (autônoma, escreve no vault)? Puro/testável.
 
