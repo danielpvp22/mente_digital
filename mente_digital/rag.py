@@ -19,6 +19,7 @@ import math
 import os
 import re
 import shutil
+import ssl
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -1040,6 +1041,35 @@ def rankear_por_similaridade(
     return out
 
 
+# User-Agent de navegador reusado nos DOIS clients do deep-fetch (o normal e o de
+# fallback sem verificação de cert) — muitos sites 403-am requisições sem um UA real.
+_HEADERS_FETCH = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
+
+def _erro_de_certificado(exc: BaseException) -> bool:
+    """True se a exceção é falha de VERIFICAÇÃO de certificado TLS (cert vencido,
+    cadeia inválida, ou hostname mismatch) — NÃO uma falha de rede/HTTP qualquer.
+
+    Puro/testável. Só esse caso autoriza o re-fetch sem verificar o cert: um 500/403/
+    timeout não é problema de certificado, e desativar SSL neles não ajudaria (só
+    baixaria a segurança à toa). Desce a cadeia de causas porque o httpx embrulha o
+    erro de SSL num ConnectError; cai para a string se o tipo não for reconhecível."""
+    e: BaseException | None = exc
+    for _ in range(6):  # trava contra ciclo de __cause__/__context__
+        if isinstance(e, ssl.SSLCertVerificationError):
+            return True
+        if e is None:
+            break
+        e = e.__cause__ or e.__context__
+    texto = str(exc).lower()
+    return "certificate_verify_failed" in texto or "certificate verify failed" in texto
+
+
 class WebSearcher:
     """Busca web em DOIS estágios:
 
@@ -1093,12 +1123,8 @@ class WebSearcher:
     async def _baixar_pagina(self, client, url: str) -> Optional[str]:
         """Baixa e extrai o texto principal de UMA página. Nunca levanta — devolve
         None em qualquer falha (timeout, 404, HTML sem corpo), pois é best-effort."""
-        try:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            html = resp.text
-        except Exception as exc:
-            telemetry.warn("WEB_FETCH", f"Falha ao baixar {url[:60]}: {exc}")
+        html = await self._baixar_html(client, url)
+        if html is None:
             return None
 
         def _extrair() -> Optional[str]:
@@ -1115,6 +1141,46 @@ class WebSearcher:
             return await asyncio.to_thread(_extrair)
         except Exception as exc:
             telemetry.warn("WEB_FETCH", f"Falha ao extrair {url[:60]}: {exc}")
+            return None
+
+    async def _baixar_html(self, client, url: str) -> Optional[str]:
+        """Baixa o HTML cru. Nunca levanta. Se (e só se) a falha for de VERIFICAÇÃO de
+        certificado e o fallback estiver ligado, re-tenta a MESMA página SEM verificar o
+        cert — salva sites com cert quebrado/hostname errado (comuns em blogs BR, ex.:
+        www.orapha.dev visto ao vivo). É conteúdo público lido p/ RAG (rankeado/filtrado),
+        então o risco de MITM é baixo; ainda assim, por ser downgrade de segurança, fica
+        atrás de `web_fetch_ssl_fallback`."""
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as exc:
+            if settings.web_fetch_ssl_fallback and _erro_de_certificado(exc):
+                return await self._baixar_sem_verificar_cert(url)
+            telemetry.warn("WEB_FETCH", f"Falha ao baixar {url[:60]}: {exc}")
+            return None
+
+    async def _baixar_sem_verificar_cert(self, url: str) -> Optional[str]:
+        """Re-fetch de UMA página com a verificação de TLS desligada (verify=False).
+        Só chamado após um erro de certificado confirmado. Client próprio e efêmero
+        (o de fora verifica; este não) — como é raro, o custo de abrir um é aceitável."""
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                timeout=settings.web_fetch_timeout, follow_redirects=True,
+                headers=_HEADERS_FETCH, verify=False,
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            telemetry.warn(
+                "WEB_FETCH", f"Cert inválido em {url[:60]} — baixado SEM verificar SSL (fallback)."
+            )
+            return resp.text
+        except Exception as exc:
+            telemetry.warn(
+                "WEB_FETCH", f"Falha ao baixar {url[:60]} mesmo sem verificar cert: {exc}"
+            )
             return None
 
     async def _deep_fetch(self, res: list, consulta: str) -> Optional[str]:
@@ -1138,14 +1204,8 @@ class WebSearcher:
             telemetry.warn("WEB_FETCH", "httpx ausente — usando só snippets.")
             return None
 
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-            )
-        }
         async with httpx.AsyncClient(
-            timeout=settings.web_fetch_timeout, follow_redirects=True, headers=headers
+            timeout=settings.web_fetch_timeout, follow_redirects=True, headers=_HEADERS_FETCH
         ) as client:
             paginas = await asyncio.gather(*(self._baixar_pagina(client, u) for u in urls))
 
