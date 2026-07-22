@@ -23,6 +23,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import mestre
 import tools
 from agent import append_chat_dump
+from otimizador import e_backchannel
 from config import settings
 from state import AppContext, SessionMemory
 from telemetry import db, telemetry
@@ -106,6 +107,10 @@ class LiveSession:
         de agente NUNCA é conhecimento: se a msg começa pela palavra-mestre, fora do dump.
         """
         if tools.e_efemero(texto) or self.memory.confidencial:
+            return
+        # Backchannel ("ok"/"aham"/"tchau") não é conhecimento: fora do dump que o idle
+        # atomiza — senão vira átomo-lixo. Espelha o gate do Agent._pipeline.
+        if settings.ignorar_backchannel and e_backchannel(texto):
             return
         if settings.palavra_mestre_habilitada and mestre.separar(texto, settings.palavra_mestre) is not None:
             return

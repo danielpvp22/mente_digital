@@ -168,6 +168,10 @@ class Settings(BaseSettings):
     whisper_descartar_incerto: bool = False
     whisper_confianca_min_logprob: float = -1.0
     whisper_incerto_max_palavras: int = 2
+    # BACKCHANNEL (teste real 2507): ignora "ok"/"aham"/"tchau"/"valeu" — acuse-recebido
+    # que virava átomo de memória ("Entendido, registrei") e ativava o pipeline à toa.
+    # Ignora em silêncio (nada dito, nada gravado). Lista em otimizador._BACKCHANNEL.
+    ignorar_backchannel: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta

@@ -59,6 +59,7 @@ from llm import InferenciaPreemptada, LlamaManager
 # otimizador.py; re-exportada por aqui pelos mesmos motivos de atomos.py.
 from otimizador import (
     QueryOptimizer,
+    e_backchannel,
     e_declarativa,
     extrair_tema_sintese,
     frase_citada,
@@ -195,6 +196,15 @@ class Agent(ComandosMestre, Respostas):
             if tema_sintese:
                 telemetry.track("AGENT", f"Síntese sob demanda: '{tema_sintese}'.")
                 await self._sintese_sob_demanda(tema_sintese, send_medido, mem, tracker)
+                return
+
+            # BACKCHANNEL (teste real 2507, voz): "ok"/"aham"/"tchau"/"valeu" não são
+            # pergunta, comando nem fato — caíam no registro declarativo ("Entendido,
+            # registrei"), virando átomo de memória, e ativavam o pipeline à toa (o dono
+            # relatou "ativa com palavras pequenas"). Ignora em SILÊNCIO: nada dito, nada
+            # gravado, sem inferência. Botão MENTE_IGNORAR_BACKCHANNEL (default on).
+            if settings.ignorar_backchannel and e_backchannel(texto_usuario):
+                telemetry.track("AGENT", f"Backchannel ignorado (não responde, não registra): '{texto_usuario}'.")
                 return
 
             # ROTEAMENTO DE AÇÃO (aditivo): só mensagens que parecem AÇÃO chamam o
