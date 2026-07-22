@@ -306,7 +306,10 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000
-    web_max_results: int = 4
+    # Resultados do DDG. 6 (era 4) porque parte dos sites BLOQUEIA o fetch (403 anti-bot,
+    # 500, cert quebrado) — pedir mais candidatos garante que sobrem fontes boas mesmo
+    # quando 2-3 caem. É o teto de URLs que o deep-fetch pode abrir (ver web_fetch_pages).
+    web_max_results: int = 6
     web_prefetch_results: int = 3
     # Fallback de busca: tenta cada backend do ddgs em ordem até um dar resultado.
     web_backends: list[str] = ["auto", "html", "lite"]
@@ -322,9 +325,14 @@ class Settings(BaseSettings):
     # efêmero, nada é indexado). Desligue com MENTE_WEB_FETCH_ENABLED=false para
     # voltar ao comportamento antigo (só snippets).
     web_fetch_enabled: bool = True
-    web_fetch_pages: int = 3            # quantas URLs do resultado abrir de fato
+    web_fetch_pages: int = 6            # quantas URLs abrir (6, era 3: previne bloqueio parcial)
     web_fetch_timeout: float = 6.0      # timeout por página (s) — não travar o TTFA
     web_fetch_max_chars: int = 20000    # teto de texto extraído por página (anti-lixo)
+    # Fallback de SSL: se a página falhar por VERIFICAÇÃO de certificado (cert vencido,
+    # cadeia inválida, hostname mismatch — comum em blogs BR), re-baixa SEM verificar o
+    # cert. Só nesse erro (nunca em 403/500/timeout). É conteúdo público lido p/ RAG, mas
+    # como é downgrade de segurança fica aqui como botão. False = comportamento estrito.
+    web_fetch_ssl_fallback: bool = True
     web_chunk_size: int = 600           # tamanho do átomo efêmero (chars)
     web_chunk_overlap: int = 80
     web_rank_top_k: int = 12            # nº de trechos rankeados que entram no contexto
