@@ -269,27 +269,43 @@ class Respostas:
         )
         try:
             # FILLER CONTÍNUO: o deep-fetch leva 3-12s; uma ponte fixa de ~3s deixava
-            # silêncio. Fala a 1ª ponte na hora (o _msg_web dinâmico, que nomeia a query)
-            # e, ENQUANTO a busca não volta, emite pontes curtas adicionais a cada
-            # filler_intervalo_s até a busca terminar OU bater filler_max_pontes — o
+            # silêncio. Após a carência (abaixo), fala a 1ª ponte (o _msg_web dinâmico, que
+            # nomeia a query) e, ENQUANTO a busca não volta, emite pontes curtas adicionais
+            # a cada filler_intervalo_s até a busca terminar OU bater filler_max_pontes — o
             # filler dura ~o tempo real do fetch. Não fala ponte inútil se a busca já
             # voltou (o break abaixo). Barge-in corta: cada await é ponto de cancelamento
             # e o except cancela a busca antes de propagar a CancelledError.
-            await self._falar_status(send, self._msg_web(query_web))
-            pontes = 0
-            while not busca.done() and pontes < settings.filler_max_pontes:
+            # CARÊNCIA (correção pós-race): desde o race-first-K a web volta em ~3s (às
+            # vezes <1,5s). A 1ª ponte falada NA HORA passou a atropelar a resposta —
+            # "vou buscar..." e logo em cima o dado real. Antes de falar QUALQUER ponte,
+            # dá esta carência de silêncio à busca; se ela terminar na janela, PULA o
+            # filler inteiro (sem 1ª ponte, sem loop) e vai direto à resposta. Mesmo
+            # shield de sempre (protege a busca do cancel do wait_for no timeout); o
+            # barge-in propaga a CancelledError ao except externo, que cancela a busca.
+            if settings.filler_carencia_s > 0:
                 try:
-                    # Espera o intervalo OU a busca terminar (o que vier antes). O shield
-                    # protege a busca do cancelamento que o wait_for faz ao dar timeout.
                     await asyncio.wait_for(
-                        asyncio.shield(busca), timeout=settings.filler_intervalo_s
+                        asyncio.shield(busca), timeout=settings.filler_carencia_s
                     )
                 except asyncio.TimeoutError:
                     pass
-                if busca.done():
-                    break               # busca voltou dentro do intervalo -> sem ponte
-                await self._falar_status(send, prompts.ponte_continuacao(pontes))
-                pontes += 1
+            if not busca.done():
+                # A busca furou a carência — agora vale mascarar a espera com filler.
+                await self._falar_status(send, self._msg_web(query_web))
+                pontes = 0
+                while not busca.done() and pontes < settings.filler_max_pontes:
+                    try:
+                        # Espera o intervalo OU a busca terminar (o que vier antes). O shield
+                        # protege a busca do cancelamento que o wait_for faz ao dar timeout.
+                        await asyncio.wait_for(
+                            asyncio.shield(busca), timeout=settings.filler_intervalo_s
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    if busca.done():
+                        break               # busca voltou dentro do intervalo -> sem ponte
+                    await self._falar_status(send, prompts.ponte_continuacao(pontes))
+                    pontes += 1
             dados_web = await busca
         except BaseException:
             busca.cancel()   # barge-in/erro no filler: a busca não fica órfã viva

@@ -365,6 +365,13 @@ class Settings(BaseSettings):
     # não um valor fixo. Barge-in corta (o pipeline é task cancelável). 0 = só a 1ª ponte.
     filler_max_pontes: int = 3          # teto de pontes ADICIONAIS além da 1ª
     filler_intervalo_s: float = 2.5     # intervalo entre pontes enquanto a busca roda
+    # CARÊNCIA: desde o race-first-K a web ficou RÁPIDA (~3s, às vezes <1,5s). A 1ª ponte
+    # falada na hora passou a ATROPELAR a resposta quando a busca já volta quase junto —
+    # o dono ouvia "vou buscar..." e logo em cima a resposta real. Antes de falar QUALQUER
+    # ponte, o _responder_web dá esta carência de silêncio à busca; se ela terminar dentro
+    # da janela, PULA o filler inteiro e vai direto à resposta. 0 = sem carência (comportamento
+    # antigo: 1ª ponte sempre imediata). Curto de propósito: acima disso o silêncio incomoda.
+    filler_carencia_s: float = 1.5      # head-start de silêncio dado à busca antes da 1ª ponte
     # --- Guarda de Egressão (#6): anti-PII na query web ------------------------
     # A ÚNICA saída de rede é o WebSearcher. Antes de a query ir ao DDG, mascara
     # PII do dono (e-mail, CPF/CNPJ, cartão via Luhn, telefone) por um token
