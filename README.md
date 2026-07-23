@@ -9,7 +9,7 @@
 🇺🇸 *Prefer English? There's a [condensed overview](README.en.md).*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-624_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-803_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
@@ -34,7 +34,7 @@
 
 | | |
 |---:|:---|
-| **624 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~6 s — é literalmente o job de CI |
+| **803 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** (`eval/ab_modelos.py`) |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real (`eval/calibrar_gate.py`) |
@@ -92,7 +92,7 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 | **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru (`chat_dump_bruto.md`, HTML) → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **624 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Qualidade de dados / DataOps** | **803 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
 | **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -275,7 +275,7 @@ Por que separar tão fisicamente? Porque as duas naturezas têm requisitos opost
 
 ## 🗝 O plano de comando: a palavra-mestre
 
-`mestre.py` (836 linhas, o 2º maior módulo) é o **fluxo isolado que aciona os agentes**. Ele é quase todo **puro e testável** — funções que recebem `(texto, agora)` e devolvem uma `Decisao`, com o instante de referência **injetado** para o teste ser determinístico.
+`mestre.py` (982 linhas, o 3º maior módulo) é o **fluxo isolado que aciona os agentes**. Ele é quase todo **puro e testável** — funções que recebem `(texto, agora)` e devolvem uma `Decisao`, com o instante de referência **injetado** para o teste ser determinístico.
 
 ```mermaid
 flowchart TD
@@ -406,45 +406,47 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 
 | Tecnologia | Papel | Como é usada **neste** projeto |
 |---|---|---|
-| **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~170 linhas e **zero lógica de domínio** — só wiring e rotas. |
+| **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~240 linhas e **zero lógica de domínio** — só wiring e rotas. |
 | **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
-| **Pydantic Settings** | Configuração | **128 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
-| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (491 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
-| **pytest** | Testes | **624 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
+| **Pydantic Settings** | Configuração | **189 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
+| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (529 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
+| **pytest** | Testes | **803 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
 ## 🗂 Papel de cada módulo
 
-**~10.500 linhas de Python** em 33 módulos (de ~3.300 em 12), mais ~7.500 de testes e ~490 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
+**~12.900 linhas de Python** em 34 módulos (de ~3.300 em 12), mais ~10.600 de testes e ~530 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
 .                        # a RAIZ fica com o entrypoint + o resto em pastas
-├── main.py              # 175  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
+├── main.py              # 242  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
 ├── mente_digital/       # o PACOTE do app (lógica de domínio; importado por caminho absoluto)
-│   ├── config.py       # 510  Settings (Pydantic), 128 knobs + dicionário fonético do TTS
-│   ├── prompts.py      # 408  todos os prompts de sistema/tarefa + as tags Zettelkasten
-│   ├── state.py        # 221  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
-│   ├── llm.py          # 321  LlamaManager: GPU serializada, streaming, cancelamento, preempção
-│   ├── audio.py        # 229  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
-│   ├── rag.py          # 1184 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
-│   ├── agent.py        # 506  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
+│   ├── config.py       # 789  Settings (Pydantic), 189 knobs + dicionário fonético do TTS
+│   ├── prompts.py      # 483  todos os prompts de sistema/tarefa + as tags Zettelkasten
+│   ├── state.py        # 335  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
+│   ├── llm.py          # 514  LlamaManager: GPU serializada, streaming, cancelamento, preempção
+│   ├── audio.py        # 429  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
+│   ├── tts_xtts.py     # 286  XttsService: engine TTS alternativo (XTTS-v2/coqui, GPU, opt-in)
+│   ├── verbalizar.py   # 144  verbalização de números PT-BR p/ fala (num2words, puro/testável)
+│   ├── rag.py          # 1509 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
+│   ├── agent.py        # 662  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
 │   ├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
-│   ├── respostas.py    # 353  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
-│   ├── otimizador.py   # 174  QueryOptimizer + heurísticas puras da pergunta
+│   ├── respostas.py    # 517  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
+│   ├── otimizador.py   # 249  QueryOptimizer + heurísticas puras da pergunta
 │   ├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
-│   ├── etl.py          # 435  EtlProcessor do idle: fila web, conversa, proativa, snapshot
-│   ├── tools.py        # 708  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
-│   ├── mestre.py       # 941  PALAVRA-MESTRE: plano de comando isolado e determinístico
-│   ├── agenda.py       # 199  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
-│   ├── scheduler.py    # 338  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
+│   ├── etl.py          # 519  EtlProcessor do idle: fila web, conversa, proativa, snapshot
+│   ├── tools.py        # 720  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
+│   ├── mestre.py       # 982  PALAVRA-MESTRE: plano de comando isolado e determinístico
+│   ├── agenda.py       # 271  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
+│   ├── scheduler.py    # 443  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
 │   ├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
-│   ├── verbosidade.py  # 94   governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+│   ├── verbosidade.py  # 139  governador de verbosidade: 1-frase, detalhe, ELI5, tutor
 │   ├── srs.py          # 25   repetição espaçada (Leitner) — puro
 │   ├── habitos.py      # 22   sequência de hábitos (streak) — puro
 │   ├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
 │   ├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
-│   ├── vram.py         # 87   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
+│   ├── vram.py         # 94   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
 │   ├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
 │   ├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
 │   ├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
@@ -452,16 +454,16 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 │   ├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
 │   ├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
 │   ├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
-│   ├── ws.py           # 299  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
-│   └── telemetry.py    # 899  logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+│   ├── ws.py           # 433  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
+│   └── telemetry.py    # 1278 logs coloridos thread-safe + Database (SQLite, todas as tabelas)
 ├── dados/               # TODO dado de runtime (gitignored) — nada disto vai pro git
 │   ├── modelos/         # LLM .gguf + voz Piper + whisper/ (binários fora do git)
 │   ├── Cerebro_Digital/ # vault Obsidian (as notas do dono)
 │   ├── banco_vetorial_cerebro/ # índice Chroma (derivado do vault)
 │   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
 │   └── chat_dump_bruto.md      # fila do ETL de conversa
-├── templates/           # index.html — a SPA inteira (491 linhas)
-├── tests/               # 716 testes em 72 arquivos, sem GPU, sem rede
+├── templates/           # index.html — a SPA inteira (529 linhas)
+├── tests/               # 803 testes em 91 arquivos, sem GPU, sem rede
 ├── eval/                # benches e A/B (TTFA, embeddings, modelos)
 ├── scripts/             # utilitários (import de histórico, reindex, certs, bench de STT)
 └── docs/                # CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
@@ -474,7 +476,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 Único arquivo executável. No `lifespan`: cria as pastas, sobe o SQLite, monta o `AppContext`, instancia todos os serviços **e inicia o `SchedulerService`** como task retida. **A GPU carrega em background** (`track_task`) para o servidor aceitar conexões enquanto o modelo sobe; Whisper/Piper/embeddings vão para `asyncio.to_thread`. Zero lógica de domínio, por decisão explícita.
 
 ### `config.py` — o painel de controle
-Uma classe `Settings` (Pydantic) com **128 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
+Uma classe `Settings` (Pydantic) com **189 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
 
 ### `state.py` — estado compartilhado, sem lógica
 `AppContext` é o container de DI que vive em `app.state.ctx`. Contém `track_task` (referência forte contra o GC — ver [war stories](#2-as-tasks-que-o-garbage-collector-comia)), o `interactive_idle` (prioridade de GPU), `sessoes` (as conexões vivas, alvo do PUSH proativo) e a `SessionMemory`. Esta última cresceu com os agentes: além de histórico e fila de ETL, guarda o **estado de sessão** dos meta-comandos — `confidencial`, `confirmacao_pendente`, `ultima_reversivel`, `ultima_acao`, `ultimo_comando_mestre`, `revisao` (SRS), `tutor` — tudo `deque`/campo com vida só na RAM.
@@ -488,8 +490,8 @@ Uma classe `Settings` (Pydantic) com **128 campos**. **Todos os caminhos derivam
 ### `rag.py` — as fontes de conhecimento (hoje o maior arquivo do repo)
 `EmbeddingProvider` (singleton — hoje o **e5-base**, com os prefixos `query:`/`passage:` aplicados num **ponto só** (`_com_prefixos`), de onde Chroma, Malha e RAG efêmero herdam), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source` **e near-dup por Jaccard**), o **`MalhaIndex`** (o grafo do vault por conceito compartilhado — ver seção própria) e `WebSearcher` (DDG com fallback, cache, pre-fetch, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, rankeia por cosseno e **não indexa nada**). Detalhes: `strip_frontmatter`, `split_markdown`, `resolve_device`.
 
-### `agent.py` — o núcleo do cérebro (506 linhas; era um deus-módulo de 2.472)
-`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 624 testes verdes em cada passo.
+### `agent.py` — o núcleo do cérebro (662 linhas; era um deus-módulo de 2.472)
+`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 803 testes verdes em cada passo.
 
 ### `comandos_mestre.py` / `respostas.py` — as duas metades do Agent
 `comandos_mestre.py` (847): o **plano de comando** — `_fluxo_mestre` orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor. `respostas.py` (353): os **geradores falados** — `_responder_contexto` (segura o áudio até provar que não é o sentinela), `_responder_web` (filler + escalada), `_responder_stream` (token→frase→TTS), `_sintese_sob_demanda` (map-reduce) e `_consolidar_fontes` (a promoção do `#conhecimento_novo`).
@@ -501,7 +503,7 @@ Uma classe `Settings` (Pydantic) com **128 campos**. **Todos os caminhos derivam
 "Aditivo" é a decisão arquitetural: pergunta de conhecimento **não paga nada** pela existência das ferramentas. O gate lexical `talvez_acao` filtra: só mensagem de **ação** chega ao roteador LLM (por **JSON**, não o tool-calling nativo). `calcular_seguro` compila AST com whitelist (nunca `eval`) e capa o expoente. As ferramentas: as básicas (calcular, hora, notas, buscar_web), os **agentes de agenda/lista** (lembrete, listar/cancelar, avisar_quando, briefing, itens de lista), a **captura rápida** (inbox GTD), o **health-check** (`status_sistema`) e a **auditoria** (`auditoria_hoje`). As de agenda/lista têm `registra_conhecimento=False`: seu turno **não** vira Zettelkasten.
 
 ### `mestre.py` — o plano de comando (ver [seção própria](#-o-plano-de-comando-a-palavra-mestre))
-941 linhas quase todas puras: `separar`, `parse_rapido`, `parse_composto`/`dividir_comandos`, `comando_desfazer`/`reverter`, `tem_correcao`/`parse_correcao`/`refazer_com`, `comando_confirmar`/`_abortar`, `parse_atalho`, `parse_gatilho`, `comando_conexoes`. O instante de referência é sempre injetado.
+982 linhas quase todas puras: `separar`, `parse_rapido`, `parse_composto`/`dividir_comandos`, `comando_desfazer`/`reverter`, `tem_correcao`/`parse_correcao`/`refazer_com`, `comando_confirmar`/`_abortar`, `parse_atalho`, `parse_gatilho`, `comando_conexoes`. O instante de referência é sempre injetado.
 
 ### `agenda.py` — o tempo em português, puro
 `parse_quando(texto, agora) -> (primeiro_disparo, recorrencia)` sem dependência nova. Relativo, absoluto e recorrente; o que não casa devolve `(None, None)`. `proximo_disparo` calcula a próxima ocorrência. Como `mestre.py`, o `agora` é injetado — 100% testável.
@@ -839,7 +841,7 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ### Testabilidade sem GPU
 
-**624 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
+**803 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
 
 > **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
@@ -1017,10 +1019,10 @@ GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale 
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 624 testes, sem GPU e sem rede
+pytest                    # 803 testes, sem GPU e sem rede
 ```
 
-O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **624 passed in 5.91s**.
+O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **803 passed**.
 
 > **Ambiente:** o projeto roda na env conda `llama-omni`. O `python` no PATH do Windows costuma ser o atalho falso da Microsoft Store — use o caminho absoluto:
 > `C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pytest`
@@ -1029,7 +1031,7 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 ## 🔧 Configuração
 
-**128 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
+**189 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
@@ -1155,7 +1157,7 @@ A cascata RAM → banco → web é o fluxo mental de um atendente. **Ceticismo p
 <details>
 <summary><b>6. Kiosk, embarcado e acessibilidade</b></summary>
 
-**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (128 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
+**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (189 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
 
 </details>
 
@@ -1173,7 +1175,7 @@ O `EtlProcessor` **já é um worker de background completo** e o `SchedulerServi
 
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 624 testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 803 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 
@@ -1197,7 +1199,7 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 |---|---|
 | **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
-| **CI** | ✅ **Resolvido.** GitHub Actions roda os 624 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
+| **CI** | ✅ **Resolvido.** GitHub Actions roda os 803 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
 | **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |
 | **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `docs/TESTE_MANUAL.md` |
 | **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |
