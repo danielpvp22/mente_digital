@@ -18,6 +18,7 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-cosine-FF6B6B)
 ![faster-whisper](https://img.shields.io/badge/faster--whisper-CTranslate2-5A67D8)
 ![Piper](https://img.shields.io/badge/Piper_TTS-ONNX-8E44AD)
+![XTTS](https://img.shields.io/badge/XTTS--v2-opt--in_GPU-8E44AD)
 ![Deps novas](https://img.shields.io/badge/deps_novas_nas_3_ondas-zero-blue)
 ![Nuvem](https://img.shields.io/badge/nuvem-zero-critical)
 
@@ -85,7 +86,26 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é uma feature real, com o comando de voz (`mestre, …`) ou o botão `.env` quando existe. As seções técnicas mais abaixo aprofundam o *como* e o *porquê*; aqui é o *o quê*.
 
 <details open>
-<summary><b>🔧 Modelos &amp; Voz — recuperação 2×, wake-word "mestre" e a análise de tempo (mais recente)</b></summary>
+<summary><b>🔊 Voz — engine XTTS-v2 (GPU, opt-in), números falados e correções (mais recente)</b></summary>
+
+A camada de voz ganhou um **segundo motor** e uma leitura de números correta. Tudo atrás de flag, com o **Piper seguindo como default** — nada muda até você ligar.
+
+| Mudança | Resultado esperado |
+|---|---|
+| **Verbalização PT-BR de números** (`verbalizar.py`, dep `num2words`) — roda **antes** do Piper/XTTS | O foneizador não adivinha mais: `3,5`→"três vírgula cinco", `14h30`→"catorze e trinta", `R$ 5,50`→"cinco reais e cinquenta centavos", além de `80°C`, `1º`, `50%`, `1.200`. |
+| **Novo engine XTTS-v2** (Coqui, GPU) — opt-in por `MENTE_TTS_ENGINE=xtts` (`tts_xtts.py`) | Voz muito mais natural e **clonável** (58 locutores embutidos + clone de `.wav`), **multilíngue** (PT/EN/…). Contrato duck-typed idêntico ao Piper, fábrica `build_tts()`, import do coqui/torch **tardio** (CI e o caminho Piper seguem leves). Roda no próprio `to_thread`, **não** no executor do LLM (rodar por lá deadlockaria o streaming). |
+| **fp16 via autocast** (`MENTE_TTS_XTTS_FP16`) | `model.half()` quebra o XTTS (layer_norm do GPT); autocast dá mixed precision estável. Os **pesos ficam em fp32** (~2-4 GB de VRAM — não corta pela metade). |
+| **Pin `transformers<5`** — o coqui-tts 0.27 quebra com transformers≥5 (`isin_mps_friendly` removido) | Validado empiricamente: e5-base **bit-idêntico** (cosseno 1.0 vs o vetor gravado no Chroma), faster-whisper e a suíte seguem OK — o projeto não usa `transformers` direto, só via `sentence-transformers`. |
+| **Pré-init do cuDNN no boot** (`_preinit_cudnn`) | XTTS (torch, cuDNN 9) + faster-whisper (ctranslate2, cuDNN 8) crashavam juntos (`cudnnGetLibConfig`, erro 127); pré-carregar o cuDNN do torch fixa a ordem. **Medido ao vivo: Qwen + Whisper-cuda + XTTS-cuda + e5 = 9,0 / 10 GB, online.** |
+| **Fix da fila de fala** (`index.html`) | Áudio de turnos de **texto** deixa de acumular e tocar antes da resposta de voz seguinte. |
+| **Fix do warning de fingerprint** (`rag.py`) | Deixa de reenviar `hnsw:space` no carimbo da coleção legada (o Chroma rejeita) — o warning `[DB] Não consegui carimbar…` some. |
+
+> Custo do XTTS na 3080 compartilhada: **~3 s a mais no 1º áudio** (TTFA−TTFT) vs Piper em respostas longas — troca de latência por naturalidade. Ideal quando a 4090 assumir o LLM e liberar a 3080.
+
+</details>
+
+<details>
+<summary><b>🔧 Modelos &amp; Voz — recuperação 2×, wake-word "mestre" e a análise de tempo</b></summary>
 
 Cada troca foi decidida por **A/B medido**, não por intuição — os harnesses ficaram no repositório (`eval/`). O que mudou e o que esperar de cada mudança:
 
@@ -346,7 +366,8 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 | **llama-cpp-python** | LLM local | Compilado com CUDA. Encapsulado em `LlamaManager` com **GPU serializada por um `ThreadPoolExecutor(max_workers=1)`** — dois decodes nunca coexistem, por construção. `flash_attn=True` invertendo o default da lib; `n_batch`/`n_ubatch`/`kv_cache_type` expostos como botões calibráveis. Streaming token-a-token com `stop_event` para barge-in de ~1 token de granularidade, e `preemptible` para o trabalho de fundo ceder a GPU. |
 | **Qwen3-8B** `Q4_K_M` | Modelo | GGUF de ~4.7 GB. A quantização não é sobre qualidade — é **orçamento de coabitação**: pesos + KV-cache de 8k (`q8_0`) + embeddings na GPU têm que caber juntos em 10 GB. **Medido com tudo carregado: 8,9 / 10 GB** — ~1,3 GB de folga, o que fecha a porta para o Whisper na GPU. Escolhido por **A/B com contexto fixo** (`eval/ab_modelos.py`): venceu o `Qwen2.5-7B-Instruct` lendo muito melhor os átomos recuperados. Exige `MENTE_LLM_NO_THINK` + `MENTE_LLM_STRIP_THINK` — ele abre toda resposta com `<think>…</think>`. |
 | **faster-whisper** (CTranslate2) | STT | Mesmos pesos do Whisper, execução muito mais rápida. Roda na **CPU por padrão** — deliberadamente: sai da GPU para o embedding poder entrar. Este projeto adota `MENTE_WHISPER_MODEL=large-v3-turbo` (multilíngue, qualidade ~`large-v3` sobre o `small`); suba para a GPU quando houver VRAM. |
-| **Piper TTS** (ONNX) | Voz PT-BR | `onnxruntime` puro: sem PyTorch, sem CUDA, **zero VRAM**. Chamado **uma vez por frase** — é o que faz o primeiro áudio sair enquanto o LLM ainda decodifica. Um **cache LRU** de frases sintetizadas (#1) memoiza as falas recorrentes (fillers, confirmações). |
+| **Piper TTS** (ONNX) | Voz PT-BR (**default**) | `onnxruntime` puro: sem PyTorch, sem CUDA, **zero VRAM**. Chamado **uma vez por frase** — é o que faz o primeiro áudio sair enquanto o LLM ainda decodifica. Um **cache LRU** de frases sintetizadas (#1) memoiza as falas recorrentes (fillers, confirmações). Números viram palavras faláveis antes da síntese (`verbalizar.py`). |
+| **XTTS-v2** (Coqui, **opt-in**) | Voz neural GPU | `MENTE_TTS_ENGINE=xtts` (`tts_xtts.py`): voz muito mais natural e **clonável**, multilíngue (PT/EN). fp16 via autocast (~2-4 GB), roda **fora** do executor serializado do LLM (rodar por lá deadlockaria o streaming por frase). Import do coqui/torch **tardio** → CI e o caminho Piper seguem leves; exige `transformers<5` (o coqui 0.27 quebra com o 5.x). Custo: ~3 s a mais no 1º áudio na 3080 compartilhada. |
 | **sentence-transformers** | Embeddings | `intfloat/multilingual-e5-base` (com prefixos `query:`/`passage:`), **singleton** criado uma vez e injetado em **dois** consumidores: o `VectorStore` (busca no vault) e o `WebSearcher` (ranking do deep-fetch). Um modelo, uma alocação de VRAM, dois usos. |
 
 ### RAG e dados

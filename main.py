@@ -24,7 +24,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital import acesso  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
-from mente_digital.audio import SttService, TtsService  # noqa: E402
+from mente_digital.audio import SttService, TtsService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
@@ -34,8 +34,26 @@ from mente_digital.telemetry import db, telemetry  # noqa: E402
 from mente_digital.ws import LiveSession  # noqa: E402
 
 
+def _preinit_cudnn() -> None:
+    """Força o cuDNN do torch (9.x) a carregar AGORA. Sem efeito se não houver CUDA/torch."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            _ = torch.zeros(1, device="cuda")
+            torch.backends.cudnn.version()   # carrega a lib cuDNN do torch no processo
+    except Exception as exc:
+        telemetry.warn("BOOT", f"pré-init do cuDNN falhou (segue): {exc}")
+
+
 async def _boot(ctx: AppContext) -> None:
     """Carrega modelos sem bloquear o startup do servidor."""
+    # cuDNN: com o XTTS (torch, cuDNN 9) ligado, o faster-whisper (ctranslate2, cuDNN 8)
+    # NÃO pode carregar o cuDNN primeiro — senão o torch não acha 'cudnnGetLibConfig'
+    # (erro 127) e o XTTS crasha o processo ao carregar. Pré-inicializar o cuDNN do torch
+    # antes do Whisper fixa a ordem das DLLs. Só quando o XTTS está ativo.
+    if settings.tts_engine == "xtts":
+        await asyncio.to_thread(_preinit_cudnn)
     # GPU: em background (inclui warm-up).
     ctx.track_task(ctx.llama.load())
     # CPU: Whisper e Piper em threads.
@@ -57,7 +75,7 @@ async def lifespan(app: FastAPI):
     ctx = AppContext(settings=settings)
     ctx.llama = LlamaManager()
     ctx.stt = SttService()
-    ctx.tts = TtsService()
+    ctx.tts = build_tts()   # Piper (default) ou XTTS-v2 conforme MENTE_TTS_ENGINE
     # Embeddings singleton compartilhado: o VectorStore o carrega no boot e o
     # WebSearcher reusa a MESMA instância para rankear os trechos do deep-fetch
     # (RAG efêmero) — sem carregar um segundo modelo nem gastar VRAM extra.

@@ -12,7 +12,15 @@ llama-cpp-python>=0.2.70      # compilar com suporte CUDA para a RTX 3080
                               # prompt-lookup crashava em contexto longo ate a 0.3.34
 faster-whisper>=1.0          # STT (CTranslate2) — mesmos pesos do Whisper, mais rápido
 piper-tts>=1.2.0
-num2words>=0.5.13     # verbalização de números PT-BR p/ o TTS (decimal/hora/moeda)
+# XTTS-v2 (engine de voz GPU, opt-in via MENTE_TTS_ENGINE=xtts; código em tts_xtts.py,
+# import tardio, default piper). O coqui-tts 0.27.5 quebra com transformers>=5
+# ("isin_mps_friendly" foi removido), então FIXAMOS transformers em 4.57.x — o que também
+# rebaixa huggingface-hub p/ 0.x. Validado neste stack: embeddings e5-base (sim 0.84),
+# faster-whisper e a suíte (767) seguem OK — o projeto não usa transformers direto, só via
+# sentence-transformers (que aceita >=4.41). NADA disto entra no requirements-ci.txt (leve).
+coqui-tts>=0.27.5    # XTTS-v2 (fork Idiap). Baixe o modelo p/ dados/modelos/xtts_v2/
+transformers>=4.57,<5   # travado <5 por causa do coqui/XTTS (ver acima)
+num2words>=0.5.13    # verbalização de números PT-BR p/ o TTS (decimal/hora/moeda)
 numpy>=1.26
 
 # --- RAG / VectorDB ---
