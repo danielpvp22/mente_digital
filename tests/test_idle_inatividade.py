@@ -105,6 +105,9 @@ def _etl(monkeypatch, interativo_livre: bool):
 
 
 def test_run_idle_descarrega_o_modelo_quando_ocioso(monkeypatch):
+    # Fixa o botão ON explicitamente (hermético): o default pode vir do .env local
+    # como false (máquina dedicada) — este teste é sobre a LÓGICA do unload, não o default.
+    monkeypatch.setattr(settings, "idle_descarregar_modelo", True)
     etl, ctx = _etl(monkeypatch, interativo_livre=True)
     asyncio.run(etl.run_idle([]))
     assert ctx.llama.descarregou is True

@@ -65,6 +65,10 @@ class LiveSession:
         self.dormente = settings.mestre_wake
         self.pipeline_task: Optional[asyncio.Task] = None
         self._barge_frames = 0   # frames de fala ALTA consecutivos durante a resposta (barge-in servidor)
+        # Meia-duplex anti-eco: instante em que o ÚLTIMO áudio saiu ao front. O servidor não
+        # vê o fim do playback no browser, então usa uma janela de guarda a partir daqui para
+        # saber que "o TTS provavelmente ainda toca" (ver _tts_tocando/_check_silence).
+        self._ultimo_audio_ts = 0.0
         self._finalizada = False  # guarda: idle roda UMA vez (end_session OU disconnect)
         # A memória é DESTA conexão. Antes era um SessionMemory único no AppContext,
         # compartilhado por todas: o cliente reconecta sozinho (backoff) e reenvia
@@ -74,6 +78,11 @@ class LiveSession:
 
     # -- envio seguro (falha esperada durante barge-in/disconnect) --------------
     async def safe_send(self, data: dict) -> bool:
+        # Todo áudio que vai ao front passa por aqui — é o ponto natural para marcar que o
+        # TTS está saindo (a janela anti-eco do _check_silence descarta o que o mic capta
+        # enquanto a resposta toca, senão o próprio TTS vira pergunta-fantasma no Whisper).
+        if data.get("tipo") == "audio":
+            self._ultimo_audio_ts = time.time()
         try:
             await self.ws.send_json(data)
             return True
@@ -99,12 +108,25 @@ class LiveSession:
     def _start_pipeline(
         self, texto: str, stt_ms: Optional[int] = None, vad_ms: Optional[int] = None
     ) -> None:
+        # Novo turno: a resposta anterior é obsoleta. Corta a síntese em voo (e, no XTTS,
+        # incrementa a geração para a thread órfã abortar rápido — sem isso ela e a nova
+        # rodariam JUNTAS no mesmo contexto CUDA, o que dispara o device-side assert). O
+        # front descarta a cauda pelo mesmo caminho do barge-in quando o áudio novo chega.
+        self._cancel_tts()
         self._cancel_pipeline()
         self.pipeline_task = asyncio.create_task(
             self.ctx.agent.pipeline_resposta(
                 texto, self.safe_send, self.memory, stt_ms=stt_ms, vad_ms=vad_ms
             )
         )
+
+    def _tts_tocando(self) -> bool:
+        """A resposta ainda está saindo em VOZ? Pipeline em voo OU áudio enviado há menos de
+        `eco_guarda_seconds` (a cauda que o front continua tocando depois de o pipeline
+        fechar — o servidor não enxerga o fim do playback, então usa a janela de guarda)."""
+        if self.pipeline_task is not None and not self.pipeline_task.done():
+            return True
+        return (time.time() - self._ultimo_audio_ts) < settings.eco_guarda_seconds
 
     async def _dump_pergunta(self, texto: str) -> None:
         """Grava a pergunta no dump — MENOS quando é efêmera OU é comando de agente.
@@ -347,6 +369,21 @@ class LiveSession:
         texto = await self.ctx.stt.transcribe(final_audio)
         stt_ms = round((time.perf_counter() - _t_stt) * 1000)
         if len(texto) < 3:
+            return
+        # MEIA-DUPLEX ANTI-ECO + PARADA POR PALAVRA (cadeia de eventos separada): enquanto a
+        # resposta TOCA, o mic capta o próprio TTS (eco) + ruído e o Whisper alucina "e aí"/
+        # "obrigado"/"buponte" — que viravam perguntas-fantasma intercaladas. Durante esse
+        # intervalo, a fala do usuário NÃO abre turno novo; o ÚNICO efeito é o comando de
+        # PARAR, que corta a fala aqui mesmo (regex puro, sem tocar no LLM/agente — leve).
+        # Assim uma palavra basta e nada pesado roda. Fora da fala dela, o fluxo é o normal.
+        if settings.parada_habilitada and self._tts_tocando():
+            if mestre.e_comando_parada(texto):
+                telemetry.track("VAD", f"Comando de parada durante a fala: '{texto}' — cortando.")
+                self._cancel_tts()
+                self._cancel_pipeline()
+                await self.safe_send({"tipo": "barge_in"})   # front esvazia a fila de áudio
+            else:
+                telemetry.track("VAD", f"Ignorado (eco/ruído durante a fala): '{texto}'.")
             return
         if not await self._deve_processar(texto):
             return   # F3: dormente e não foi "mestre" -> ignora (voz de fundo/de outros)

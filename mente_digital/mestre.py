@@ -76,6 +76,34 @@ def separar(texto: str, palavra: str) -> Optional[str]:
     return (m.group(2) or "").strip()
 
 
+# COMANDO DE PARADA (meia-duplex por voz): enquanto a assistente FALA, o mic capta o
+# próprio TTS (eco) e ruído — nada disso deve virar pergunta. O ÚNICO comando aceito nesse
+# intervalo é mandar PARAR, e ele corta a fala por um caminho LEVE (este regex puro, sem
+# LLM/roteador). Já casa contra texto NORMALIZADO (sem acento, minúsculo): "silêncio"->
+# "silencio". "mestre," na frente é opcional. O sufixo opcional " de falar"/" a boca" e o
+# fim-de-string impedem falso-positivo em "para que serve X" (após "para" vem outra coisa).
+_PARADA_RE = re.compile(
+    r"^(?:mestre[\s,]+)?"
+    r"(?:pare|para|parar|parou|chega|silencio|quiet[ao]|"
+    r"cala(?:\s+a\s+boca)?|pausa|pause|psiu|shh+|stop)"
+    r"(?:\s+(?:de\s+)?(?:falar|falando))?$"
+)
+
+
+def e_comando_parada(texto: str) -> bool:
+    """True se a fala é um comando de PARAR (cortar a resposta em voz). Puro/testável.
+
+    Casa "pare", "para", "pare de falar", "chega", "silêncio", "quieta", "cala (a boca)",
+    "pausa", "psiu", "stop", com "mestre," opcional na frente. Deliberadamente CURTO e por
+    regex: é a "cadeia de eventos separada" — durante a fala da IA, isto corta o TTS SEM
+    tocar no pipeline pesado (LLM/roteador). Uma frase que NÃO casa é tratada como eco/ruído
+    e descartada pelo chamador (não abre turno). NÃO casa "para que serve X" (tem cauda)."""
+    if not texto or not texto.strip():
+        return False
+    norm = textutils.normaliza(texto).strip(" .,!?;:")
+    return _PARADA_RE.match(norm) is not None
+
+
 def modo_confidencial(comando: str) -> Optional[bool]:
     """Detecta o comando de LIGAR/DESLIGAR o modo confidencial (#5). Puro/testável.
 
