@@ -70,7 +70,7 @@ class _VSVazio:
 
 
 class _WebNoop:
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         return "- FONTE WEB: genérico."
 
     async def prefetch(self, tema):

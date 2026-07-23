@@ -27,7 +27,7 @@ class FakeWeb:
     def __init__(self) -> None:
         self.prefetches = 0
 
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         return "- FONTE WEB: o dólar está a R$ 5,42 agora."
 
     async def prefetch(self, tema):

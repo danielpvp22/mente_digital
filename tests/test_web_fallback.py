@@ -108,10 +108,10 @@ async def test_coletar_uteis_pega_os_mais_rapidos_e_cancela_o_resto():
         fetch("medio", 0.03, "B"),
         fetch("lento", 0.5, "C"),   # nunca deve terminar — é cancelado ao atingir K
     ]
-    uteis, n_cancelados = await coletar_uteis(coros, aceitar=2, timeout=1.0)
+    uteis, perdedores = await coletar_uteis(coros, aceitar=2, timeout=1.0)
 
     assert uteis == ["A", "B"]          # os 2 mais rápidos, em ordem de conclusão
-    assert n_cancelados == 1
+    assert len(perdedores) == 1         # devolve os perdedores (aqui, já cancelados)
     assert cancelados == ["lento"]      # o lento foi de fato cancelado
 
 
@@ -122,10 +122,10 @@ async def test_coletar_uteis_timeout_por_pagina_descarta_a_travada():
 
     coros = [fetch(0.01, "A"), fetch(0.5, "B")]
     # B (0.5s) estoura o timeout por-página de 0.05s -> vira None (não contribui).
-    uteis, n_cancelados = await coletar_uteis(coros, aceitar=2, timeout=0.05)
+    uteis, perdedores = await coletar_uteis(coros, aceitar=2, timeout=0.05)
 
     assert uteis == ["A"]              # só a rápida entrou; K não foi atingido (degrada)
-    assert n_cancelados == 0           # ambas resolveram (B via timeout), nada pendente
+    assert len(perdedores) == 0        # ambas resolveram (B via timeout), nada pendente
 
 
 async def test_coletar_uteis_ignora_resultado_nao_util():
@@ -144,6 +144,65 @@ async def test_coletar_uteis_nada_util_devolve_vazio():
     async def fetch(resultado):
         return resultado
 
-    uteis, n_cancelados = await coletar_uteis([fetch(None), fetch("")], aceitar=2)
+    uteis, perdedores = await coletar_uteis([fetch(None), fetch("")], aceitar=2)
     assert uteis == []                 # nenhuma página teve corpo -> chamador cai nos snippets
-    assert n_cancelados == 0
+    assert len(perdedores) == 0
+
+
+# --- Colheita dos perdedores (web_colheita) ----------------------------------
+async def test_coletar_uteis_modo_colheita_nao_cancela_perdedores():
+    # cancelar_perdedores=False: aceita os K e devolve os perdedores VIVOS (não cancela) —
+    # é o que deixa o chamador colher o trabalho já em curso durante a fala.
+    cancelados = []
+
+    async def fetch(nome, atraso, resultado):
+        try:
+            await asyncio.sleep(atraso)
+            return resultado
+        except asyncio.CancelledError:
+            cancelados.append(nome)
+            raise
+
+    coros = [fetch("rapido", 0.01, "A"), fetch("lento", 0.05, "C")]
+    uteis, perdedores = await coletar_uteis(
+        coros, aceitar=1, timeout=1.0, cancelar_perdedores=False
+    )
+
+    assert uteis == ["A"]
+    assert len(perdedores) == 1 and not perdedores[0].done()   # vivo, não cancelado
+    assert cancelados == []                                    # nada foi cancelado
+    assert await perdedores[0] == "C"                          # termina sozinho
+
+
+async def test_agendar_colheita_entrega_corpos_deduplica_e_fecha_client():
+    # A task de fundo espera os perdedores, entrega cada corpo útil ao sink (dedup por
+    # URL, ignora vazios) e SÓ ENTÃO fecha o client. Isolado: client e fetches são fakes.
+    from mente_digital.rag import WebSearcher
+
+    ws = WebSearcher()   # sem embeddings: a colheita não precisa deles
+    fechou = []
+    colhidos = []
+
+    class FakeClient:
+        async def aclose(self):
+            fechou.append(True)
+
+    async def _res(url, texto, atraso):
+        await asyncio.sleep(atraso)
+        return (url, texto)
+
+    # Atrasos crescentes -> ordem de conclusão determinística (u1, u1-dup, u2, u3-vazio).
+    perdedores = [
+        asyncio.ensure_future(_res("u1", "corpo1", 0.01)),
+        asyncio.ensure_future(_res("u1", "corpo1", 0.02)),   # URL repetida -> dedup
+        asyncio.ensure_future(_res("u2", "corpo2", 0.03)),
+        asyncio.ensure_future(_res("u3", "", 0.04)),         # sem corpo -> ignorado
+    ]
+
+    ws._agendar_colheita(FakeClient(), perdedores, lambda u, t: colhidos.append((u, t)))
+    assert len(ws._colheita_tasks) == 1          # ref forte retida enquanto roda
+    await next(iter(ws._colheita_tasks))         # espera a colheita terminar
+
+    assert colhidos == [("u1", "corpo1"), ("u2", "corpo2")]  # dedup u1, dropa u3 vazio
+    assert fechou == [True]                                  # client fechado no fim
+    assert ws._colheita_tasks == set()                       # auto-liberou a ref

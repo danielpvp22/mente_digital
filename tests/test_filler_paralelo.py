@@ -32,7 +32,7 @@ class _WebOrdenada:
         self.ev = eventos
         self._resposta = resposta
 
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         self.ev.append("web:inicio")
         await asyncio.sleep(0)
         self.ev.append("web:fim")

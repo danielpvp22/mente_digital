@@ -69,7 +69,7 @@ class _Store:
 
 class _Web:
     def __init__(self, dados): self.dados = dados; self.chamou = []
-    async def search(self, termo, consulta=None): self.chamou.append(termo); return self.dados
+    async def search(self, termo, consulta=None, on_colheita=None): self.chamou.append(termo); return self.dados
 
 
 class _Llama:

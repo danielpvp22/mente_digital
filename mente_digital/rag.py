@@ -1048,10 +1048,17 @@ def rankear_por_similaridade(
 
 
 async def coletar_uteis(
-    coros: List[Awaitable], aceitar: int, timeout: Optional[float] = None
-) -> Tuple[list, int]:
+    coros: List[Awaitable], aceitar: int, timeout: Optional[float] = None,
+    *, cancelar_perdedores: bool = True,
+) -> Tuple[list, list]:
     """RACE-FIRST-K: dispara todas as `coros` como tasks, itera conforme COMPLETAM e
     coleta os resultados ÚTEIS (truthy) até `aceitar`; então CANCELA as restantes.
+
+    `cancelar_perdedores=False` (colheita): NÃO cancela os perdedores no caminho feliz —
+    devolve-os VIVOS para o chamador aproveitar o trabalho já em curso (ver a colheita do
+    WebSearcher). Barge-in/erro AINDA cancela tudo (o perdedor não vira task órfã). Nesse
+    modo o chamador vira DONO das tasks vivas: precisa aguardá-las e liberar o recurso
+    (ex.: o httpx.AsyncClient) só depois — senão elas rodam sob um client fechado.
 
     É a "consulta ~15 sites ao mesmo tempo, aceita os 3 primeiros que responderem":
     não espera as fontes lentas/mortas. Puro do ponto de vista de REDE (as coros é que
@@ -1077,21 +1084,27 @@ async def coletar_uteis(
 
     tarefas = [asyncio.ensure_future(_guardado(c)) for c in coros]
     uteis: list = []
-    pendentes: list = []
+    erro = False
     try:
         for fut in asyncio.as_completed(tarefas):
             r = await fut
             if r:
                 uteis.append(r)
                 if len(uteis) >= aceitar:
-                    break               # já temos os K mais rápidos — cancela o resto
+                    break               # já temos os K mais rápidos
+    except BaseException:
+        erro = True   # barge-in/erro: cancela TUDO no finally, mesmo em modo colheita
+        raise
     finally:
         pendentes = [t for t in tarefas if not t.done()]
-        for t in pendentes:
-            t.cancel()
-        if pendentes:
-            await asyncio.gather(*pendentes, return_exceptions=True)
-    return uteis, len(pendentes)
+        # Cancela se o chamador pediu (default) OU se estamos desenrolando por erro/barge-in
+        # (nesse caso o perdedor NÃO pode virar task órfã, mesmo colhendo).
+        if cancelar_perdedores or erro:
+            for t in pendentes:
+                t.cancel()
+            if pendentes:
+                await asyncio.gather(*pendentes, return_exceptions=True)
+    return uteis, pendentes
 
 
 # User-Agent de navegador reusado nos DOIS clients do deep-fetch (o normal e o de
@@ -1145,6 +1158,11 @@ class WebSearcher:
             maxlen=settings.web_pendentes_max
         )
         self._retry_task = None  # ref forte: sem ela o GC come o drain (war story #2)
+        # Colheita dos perdedores do race: tasks de fundo (ref. forte retida, mesma war
+        # story do _retry_task) que terminam os fetches perdedores e os atomizam. LRU de
+        # URL já colhida deduplica entre turnos (não re-baixa nem re-enfileira a mesma pág).
+        self._colheita_tasks: "set[asyncio.Task]" = set()
+        self._urls_colhidas = LruCache(settings.web_colheita_url_cache)
         # "FONTE?" (painel 2026-07): domínios das páginas que a ÚLTIMA busca abriu no
         # deep-fetch. Lido pelo Agent logo após o search() (single-user, GPU
         # serializada — a janela de corrida é desprezível e o dado é só informativo).
@@ -1236,11 +1254,55 @@ class WebSearcher:
             )
             return None
 
-    async def _deep_fetch(self, res: list, consulta: str) -> Optional[str]:
+    def _agendar_colheita(self, client, perdedores: list, on_colheita) -> None:
+        """Task de fundo que COLHE os perdedores do race: espera cada um terminar, entrega
+        o corpo útil (deduplicado por URL) ao `on_colheita`, e SÓ ENTÃO fecha o client (é
+        a dona dele agora). Web-only, roda durante a fala — nunca no hot-path. Best-effort:
+        erro de uma fonte é ignorado; erro do sink é logado, nada derruba (é background)."""
+        async def _colher() -> None:
+            colhidas = 0
+            try:
+                for fut in asyncio.as_completed(perdedores):
+                    try:
+                        r = await fut
+                    except Exception:
+                        continue   # perdedor que falhou/estourou timeout: ignora
+                    if not r:
+                        continue
+                    url, texto = r
+                    if not texto or self._urls_colhidas.get(url) is not None:
+                        continue   # sem corpo, ou já colhida (dedup anti-refetch entre turnos)
+                    self._urls_colhidas.put(url, "1")
+                    try:
+                        on_colheita(url, texto)
+                        colhidas += 1
+                    except Exception as exc:
+                        telemetry.error("COLHEITA", "sink da colheita falhou", exc)
+            finally:
+                try:
+                    await client.aclose()   # dona do client: fecha só com a colheita pronta
+                except Exception:
+                    pass
+                if colhidas:
+                    telemetry.track(
+                        "COLHEITA", f"{colhidas} página(s) perdedora(s) colhida(s) p/ o idle."
+                    )
+
+        task = asyncio.ensure_future(_colher())
+        self._colheita_tasks.add(task)            # ref forte enquanto roda (war story #2)
+        task.add_done_callback(self._colheita_tasks.discard)  # auto-libera ao terminar
+
+    async def _deep_fetch(
+        self, res: list, consulta: str, on_colheita=None
+    ) -> Optional[str]:
         """Estágio 2: abre as top-N páginas, atomiza e rankeia contra a consulta.
 
         Devolve o contexto montado (só os melhores trechos) ou None se nada útil saiu
         — nesse caso o chamador cai de volta pros snippets.
+
+        `on_colheita(url, texto)` (opcional): se dado E `web_colheita_habilitada`, os
+        perdedores do race NÃO são cancelados — terminam em background e cada corpo útil
+        (deduplicado por URL) é entregue ao callback para virar #conhecimento_novo.
         """
         emb = self._embeddings.instance if self._embeddings else None
         if emb is None:
@@ -1259,24 +1321,36 @@ class WebSearcher:
 
         from urllib.parse import urlparse
 
-        async with httpx.AsyncClient(
+        # RACE-FIRST-K: dispara até web_fetch_pool fetches concorrentes e aceita os
+        # web_fetch_aceitar mais rápidos com corpo útil. Cada coro devolve (url, texto)
+        # só se a página teve corpo.
+        # LIFECYCLE do client: sem colheita, `coletar_uteis` cancela os perdedores e o
+        # client fecha AQUI (no finally) — nada sobrevive a este método. COM colheita, os
+        # perdedores continuam vivos depois daqui, então o client NÃO pode fechar já:
+        # `_agendar_colheita` vira dono do client e o fecha só quando a colheita termina
+        # (senão os fetches rodariam sob um client fechado — o que o `async with` evitava).
+        vai_colher = bool(on_colheita) and settings.web_colheita_habilitada
+        client = httpx.AsyncClient(
             timeout=settings.web_fetch_timeout, follow_redirects=True, headers=_HEADERS_FETCH
-        ) as client:
-            # RACE-FIRST-K: dispara até web_fetch_pool fetches concorrentes e aceita os
-            # web_fetch_aceitar mais rápidos com corpo útil, cancelando o resto — não
-            # espera as fontes lentas/mortas. Cada coro devolve (url, texto) só se a
-            # página teve corpo. O cancelamento/gather acontece DENTRO do `async with`
-            # (coletar_uteis só retorna com as tarefas resolvidas), então o client nunca
-            # fecha sob uma requisição viva.
+        )
+        client_delegado = False
+        try:
             async def _fetch_um(u):
                 texto = await self._baixar_pagina(client, u)
                 return (u, texto) if texto else None
 
-            aceitos, n_cancelados = await coletar_uteis(
+            aceitos, perdedores = await coletar_uteis(
                 [_fetch_um(u) for u in urls],
                 settings.web_fetch_aceitar,
                 settings.web_fetch_timeout_s,
+                cancelar_perdedores=not vai_colher,
             )
+            if vai_colher and perdedores:
+                self._agendar_colheita(client, perdedores, on_colheita)
+                client_delegado = True   # a task de colheita fecha o client
+        finally:
+            if not client_delegado:
+                await client.aclose()
 
         # Proveniência ("fonte?"): domínios das páginas ACEITAS — as que contribuíram
         # com trechos. Falado como domínio (URL é inaudível).
@@ -1288,7 +1362,7 @@ class WebSearcher:
         telemetry.track(
             "WEB_FETCH",
             f"race: {len(urls)} disparados, {len(aceitos)}/{settings.web_fetch_aceitar} "
-            f"aceitos, {n_cancelados} cancelados.",
+            f"aceitos, {len(perdedores)} {'em colheita' if vai_colher else 'cancelados'}.",
         )
         if not textos:
             return None
@@ -1335,7 +1409,7 @@ class WebSearcher:
         )
         return "\n\n".join(f"- FONTE WEB: {t}" for t in usar) if usar else None
 
-    async def search(self, termo: str, consulta: Optional[str] = None) -> str:
+    async def search(self, termo: str, consulta: Optional[str] = None, on_colheita=None) -> str:
         """Busca web com cache. `consulta` (pergunta natural) guia o ranking do
         deep-fetch; sem ela, usa o próprio `termo`."""
         # Proveniência: zera SEMPRE — resultado de cache/snippet não herda os
@@ -1374,7 +1448,9 @@ class WebSearcher:
             ctx = None
             if settings.web_fetch_enabled:
                 try:
-                    ctx = await self._deep_fetch(res, (consulta or termo).strip() or termo)
+                    ctx = await self._deep_fetch(
+                        res, (consulta or termo).strip() or termo, on_colheita=on_colheita
+                    )
                 except Exception as exc:
                     telemetry.error("WEB_FETCH", "Falha no deep-fetch — usando snippets", exc)
                     ctx = None

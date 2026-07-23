@@ -403,7 +403,12 @@ class LlamaManager:
             if tracker is not None:
                 tracker.lock_wait_ms = (time.monotonic() - _t_call) * 1000
                 tracker.mark("lock")
-                self._reset_vram_peak()   # zera o pico p/ medir só ESTE decode
+                if settings.trace_enabled:
+                    # Só em modo trace: reset_peak_memory_stats() muta o contador GLOBAL de
+                    # pico do torch — que o detector de vazamento e o _probe_vram também
+                    # leem. Fora de uma sessão de medição, esse efeito colateral em TODO
+                    # decode não paga por si (o vram_peak_mb fica None, como sem CUDA).
+                    self._reset_vram_peak()   # zera o pico p/ medir só ESTE decode
             _t_lock = time.monotonic()
             loop = asyncio.get_running_loop()
             queue: asyncio.Queue = asyncio.Queue()
@@ -497,7 +502,8 @@ class LlamaManager:
                     pass
                 # vram_peak_mb: pico alocado neste decode (a suspeita de oversubscrição
                 # ~9-10/10GB e spill WDDM). Lido AQUI, com a thread da GPU já livre.
-                if tracker is not None:
+                # Pareado com o reset acima: só em modo trace (senão fica None).
+                if tracker is not None and settings.trace_enabled:
                     tracker.vram_peak_mb = self._ler_vram_peak()
 
     async def collect(self, prompt: str, **kwargs) -> str:

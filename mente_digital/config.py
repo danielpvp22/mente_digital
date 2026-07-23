@@ -357,6 +357,16 @@ class Settings(BaseSettings):
     # contribui) em vez de segurar a coleta. Rede de segurança — como só esperamos os K
     # mais rápidos, ele raramente dispara. Mais curto que o web_fetch_timeout do client.
     web_fetch_timeout_s: float = 4.0
+    # --- Colheita dos perdedores do race (aproveitamento + anti-ban) ------------
+    # O race dispara ~pool páginas e usa só os `aceitar` 1ºs — os perdedores eram
+    # CANCELADOS (conexão abortada no meio, que a sites anti-bot parece bot). Ligada, a
+    # colheita NÃO cancela: deixa os perdedores TERMINAREM em background durante a fala
+    # (web-only, sem GPU) e atomiza os corpos como #conhecimento_novo (mesma fila do idle,
+    # mesmos guards do pre-fetch: nada em turno efêmero/confidencial). Ganho duplo: a base
+    # cresce da própria curiosidade do usuário SEM nova busca, e as requisições completam
+    # naturalmente (menos padrão-de-bot). Dedup por LRU de URL já colhida (anti-refetch).
+    web_colheita_habilitada: bool = True
+    web_colheita_url_cache: int = 512   # tamanho da LRU de URLs já colhidas (dedup)
     # --- Filler contínuo da web (aceleração da PERCEPÇÃO de latência) -----------
     # O deep-fetch leva 3-12s; um filler fixo de ~3s (uma ponte só) deixava silêncio. Em
     # vez de UMA ponte e esperar, o _responder_web fala a 1ª ponte na hora e, ENQUANTO a
@@ -365,6 +375,13 @@ class Settings(BaseSettings):
     # não um valor fixo. Barge-in corta (o pipeline é task cancelável). 0 = só a 1ª ponte.
     filler_max_pontes: int = 3          # teto de pontes ADICIONAIS além da 1ª
     filler_intervalo_s: float = 2.5     # intervalo entre pontes enquanto a busca roda
+    # CARÊNCIA: desde o race-first-K a web ficou RÁPIDA (~3s, às vezes <1,5s). A 1ª ponte
+    # falada na hora passou a ATROPELAR a resposta quando a busca já volta quase junto —
+    # o dono ouvia "vou buscar..." e logo em cima a resposta real. Antes de falar QUALQUER
+    # ponte, o _responder_web dá esta carência de silêncio à busca; se ela terminar dentro
+    # da janela, PULA o filler inteiro e vai direto à resposta. 0 = sem carência (comportamento
+    # antigo: 1ª ponte sempre imediata). Curto de propósito: acima disso o silêncio incomoda.
+    filler_carencia_s: float = 1.5      # head-start de silêncio dado à busca antes da 1ª ponte
     # --- Guarda de Egressão (#6): anti-PII na query web ------------------------
     # A ÚNICA saída de rede é o WebSearcher. Antes de a query ir ao DDG, mascara
     # PII do dono (e-mail, CPF/CNPJ, cartão via Luhn, telefone) por um token

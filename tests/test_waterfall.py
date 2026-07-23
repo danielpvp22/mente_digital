@@ -34,7 +34,7 @@ class _VS:
 
 
 class _Web:
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         return "- FONTE WEB."
 
     async def prefetch(self, tema):

@@ -36,7 +36,7 @@ class FakeWeb:
     def __init__(self):
         self.searches = 0
 
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         self.searches += 1
         return "- FONTE WEB: genérico."
 
