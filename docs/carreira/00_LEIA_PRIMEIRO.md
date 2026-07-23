@@ -18,19 +18,25 @@ Trabalhe nos arquivos nesta ordem:
 - **Foco:** modelar dados p/ times de IA, camadas Bronze/Silver/Gold, dados bancários
 - **Link:** https://job-boards.greenhouse.io/xpinc/jobs/8504488002
 
-## O que ainda preciso de você (para finalizar o CV e o LinkedIn)
-1. **Experiência no Grupo SC:** período, ferramentas reais que usou (Spark? Databricks?
-   Airflow? qual banco? qual cloud?), volume de dados, e 2–3 resultados com número.
-2. **Formação:** curso, instituição, ano.
-3. **Contatos:** email e telefone para o cabeçalho do CV (não coloquei dados sensíveis
-   nos arquivos por serem de repositório público).
-4. **Nível de inglês** e certificações em andamento.
+## O que já foi preenchido com seus dados reais
+Extraí do PDF do seu LinkedIn: experiências (Grupo SC, Oi, Freelance), formação
+(Eng. de Software na Estácio), contato (e-mail) e stack real. O CV e o guia de LinkedIn
+já estão preenchidos com isso.
 
-Me passe isso e eu finalizo o CV e o "Sobre" do LinkedIn com os números reais no lugar
-dos `«...»`.
+## O que ainda falta de você (só 3 coisas)
+1. **Telefone** para o cabeçalho do CV.
+2. **Nível de inglês** (básico / intermediário / avançado).
+3. **Números de impacto** (opcional, mas forte): volume de dados, % de redução de
+   tempo/erro/custo em algum projeto do Grupo SC ou da Oi. Onde faltou número, deixei
+   um `«...»` para você completar.
 
-## Você já atende os requisitos essenciais
-Você confirmou experiência prática em **Databricks/Spark** e enquadramento **PCD** —
-ou seja, atende os requisitos essenciais e o critério da vaga. Os documentos já
-tratam a stack como afirmada (não como "em progresso"). O roteiro de como apresentar
-isso em entrevista está no fim do `MAPA_PROJETO_PARA_VAGA.md`.
+## Ponto de atenção honesto: a stack Databricks/Spark
+Seu LinkedIn mostra **Python, SQL, Qlik, Docker, Cloud, LLMs** — mas **não** Databricks,
+Spark, Airflow ou ADF, que são *essenciais* na vaga. Os documentos tratam essas
+ferramentas como **"em desenvolvimento"** (honesto), e não como experiência que você tem.
+Seu diferencial real e forte para esta vaga é **preparar dados para IA** (Oi + Mente
+Digital). Leia o `MAPA_PROJETO_PARA_VAGA.md` — ele tem a estratégia e o roteiro de
+entrevista para transformar isso a seu favor.
+
+> Se você **usou** Databricks/Spark/Airflow em algum momento (mesmo sem constar no
+> LinkedIn), me avise que eu movo para o topo das competências e ajusto a narrativa.

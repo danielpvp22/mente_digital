@@ -116,19 +116,43 @@ DataOps. É isso que você conecta.
 - *"Trabalhei com orçamento de recursos apertado, então otimização de custo e
   profiling por estágio (p50/p95) fazem parte do meu default, não do meu extra."*
 
-## Como usar isto na entrevista (você já tem a stack)
+## Sua situação real vs. a vaga (honestidade estratégica)
 
-Você já tem experiência prática de **Databricks/Spark** (no Grupo SC), então a stack
-essencial da vaga está coberta pela sua **experiência profissional** — é ela que
-lidera o CV e a conversa. O Mente Digital entra como **reforço**: mostra que você
-pensa engenharia de dados por princípios (ETL incremental, qualidade, DataOps,
-otimização por métrica) mesmo fora do Databricks, e que sabe **preparar dado para
-uma camada de IA consumir** — exatamente a missão do time desta vaga.
+Pelo seu LinkedIn, sua stack real é **Python, SQL, Qlik, Docker, Cloud, Web Scraping,
+LLMs** — e você tem **3+ anos** somando Grupo SC (Eng. de Dados) e Oi (dados para IA).
+A vaga da XP exige **Databricks (Spark, Delta)** e **Airflow/ADF** como *essenciais* —
+e esses **não** estão na sua experiência. Isso é um gap real; a estratégia é atacá-lo
+com honestidade, não escondê-lo.
 
-Roteiro sugerido para a entrevista:
-1. **Abra pela experiência real:** "no Grupo SC eu construí pipelines em Databricks/Spark
-   que faziam «...»" — números primeiro.
-2. **Traga o vocabulário da vaga:** descreva suas camadas como Bronze/Silver/Gold.
-3. **Feche com o projeto autoral** como prova de profundidade e iniciativa: "e para
-   entender o problema de dados-para-IA de ponta a ponta, construí o Mente Digital,
-   onde levei DataOps ao extremo — 624 testes em CI, decisões por A/B."
+**O que joga a seu favor (e é genuíno):**
+- A vaga é *"modelar dados para consumo pelos times de IA"* — e você tem **experiência
+  direta preparando dados para IA** (Oi: LLMs, dados não estruturados; + Mente Digital).
+  Poucos candidatos de ETL têm esse ângulo. **É o seu maior trunfo — lidere com ele.**
+- ETL, pipelines, validação/qualidade de dados, SQL e Python são o **core** da vaga, e
+  você tem tudo isso de produção.
+- Você é **PCD** e a vaga é exclusiva PCD — você está no critério certo.
+
+**Como fechar o gap (rápido e honesto):**
+1. **Databricks Community Edition (grátis)** + um mini-projeto **PySpark + Delta** que
+   reproduz um ETL incremental (bronze/silver/gold). Vira uma linha "em progresso" no CV
+   e um assunto forte na entrevista.
+2. Um curso rápido de **Airflow** (conceito de DAG/orquestração) — você já faz automação;
+   é traduzir o vocabulário.
+
+**Roteiro para a entrevista:**
+1. **Abra pela força real:** "tenho 3 anos em pipelines e ETL em Python/SQL, com um foco
+   especial em preparar dados para IA — na Oi cheguei a treinar LLMs e tratar dados não
+   estruturados." (números primeiro).
+2. **Traga o vocabulário da vaga:** descreva seu ETL em camadas (bruto → limpo → pronto)
+   e ligue ao modelo bronze/silver/gold da XP.
+3. **Enderece o gap com proatividade:** "estou aprofundando Databricks e Spark agora —
+   montei um projeto em PySpark/Delta para praticar o mesmo racional que já domino em
+   Python/SQL." Honestidade + iniciativa vencem omissão.
+4. **Feche com o projeto autoral** como prova de profundidade: "e construí o Mente
+   Digital, um pipeline de dados-para-IA de ponta a ponta, com 624 testes em CI e
+   decisões validadas por A/B."
+
+> **Realismo:** a XP marca Databricks como essencial, então há chance de o filtro inicial
+> barrar sem ele. Vale aplicar mesmo assim (o ângulo dados-para-IA + PCD é forte), **e**
+> mirar em paralelo vagas da XP e do mercado que casam melhor com seu stack atual
+> (Analista de Dados, Analytics Engineer, BI com Qlik/SQL/Python).
