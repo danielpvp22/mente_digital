@@ -104,6 +104,9 @@ def _live(monkeypatch, confidencial):
             return _c()
 
     ctx.etl = _Etl()
+    # Carência 0 = idle imediato (síncrono), p/ este teste medir o guard confidencial
+    # (atomiza vs descarta), não o debounce — que tem teste próprio em test_idle_debounce.
+    monkeypatch.setattr(settings, "idle_grace_seconds", 0.0)
     monkeypatch.setattr(ctx, "track_task", lambda coro: coro.close())  # não agenda no loop
     return s, rodou
 

@@ -350,6 +350,13 @@ class TtsService:
     def ready(self) -> bool:
         return self._voice is not None
 
+    def cancel(self) -> None:
+        # NO-OP: o Piper sintetiza a frase inteira de uma vez na CPU (dezenas de ms),
+        # sem streaming em thread para abortar — não há síntese longa em voo como no XTTS.
+        # Existe só para UNIFICAR o contrato: o barge-in chama tts.cancel() sem checar o
+        # tipo do engine (ver XttsService.cancel).
+        pass
+
     def _normalizar(self, texto: str) -> str:
         texto = self._STRIP_MD.sub("", texto)
         # Números/símbolos → palavras faláveis ANTES do filtro _ALLOWED (que apagaria

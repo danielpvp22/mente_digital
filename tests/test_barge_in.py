@@ -4,6 +4,8 @@ fala dela. Guard anti-eco: só RMS ALTO (barge_rms_threshold) SUSTENTADO por
 barge_min_frames consecutivos derruba o pipeline — um pico curto (eco do próprio TTS)
 zera o contador sem cortar. Sem WebSocket/GPU: só a lógica pura do _on_audio.
 """
+import asyncio
+
 import numpy as np
 
 from mente_digital.config import settings
@@ -12,8 +14,14 @@ from mente_digital.ws import LiveSession
 
 
 class _Ws:
+    """WebSocket falso que REGISTRA o que foi enviado (p/ checar o flush do barge-in)."""
+    def __init__(self):
+        self.enviados: list[dict] = []
+
     async def accept(self): ...
-    async def send_json(self, _): ...
+
+    async def send_json(self, data):
+        self.enviados.append(data)
 
 
 class _Llama:
@@ -46,6 +54,11 @@ def _sessao(monkeypatch, min_frames=3):
     monkeypatch.setattr(settings, "barge_min_frames", min_frames)
     ctx = AppContext(settings=settings)
     ctx.llama = _Llama()
+    # `_on_audio` é SÍNCRONO, mas o flush do front vai por `ctx.track_task(safe_send(...))`,
+    # que em produção roda dentro do event loop do endpoint WS. No teste (sem loop) rodamos
+    # a corrotina agendada na hora — assim o send de flush realmente executa e o `_Ws` o
+    # registra, sem precisar reescrever os testes como async.
+    ctx.track_task = lambda coro: asyncio.run(coro)
     s = LiveSession(ctx, _Ws())
     return s
 
@@ -56,6 +69,29 @@ def test_fala_sustentada_corta_a_resposta(monkeypatch):
     for _ in range(3):
         s._on_audio(_ALTO)
     assert s.pipeline_task.cancelled is True      # 3 frames altos seguidos -> barge-in
+
+
+def test_barge_in_manda_flush_ao_front(monkeypatch):
+    # O bug ("não parava de falar"): o barge-in do SERVIDOR cortava o pipeline/síntese,
+    # mas NÃO avisava o front a esvaziar o áudio que ele já recebeu e enfileirou. O front
+    # seguia tocando o buffer. Correção: junto do _cancel_tts, envia {tipo:"barge_in"} p/
+    # o cliente descartar a fila local (mesmo tipo que o cliente ENVIA ao cortar do lado
+    # dele — no cliente esse tipo SÓ faz flush, não reenvia, então não há loop).
+    s = _sessao(monkeypatch, min_frames=3)
+    s.pipeline_task = _Task()
+    for _ in range(3):
+        s._on_audio(_ALTO)
+    assert s.pipeline_task.cancelled is True
+    assert {"tipo": "barge_in"} in s.ws.enviados        # front instruído a esvaziar a fila
+
+
+def test_fim_normal_de_fala_nao_manda_flush(monkeypatch):
+    # Sem barge-in (nada tocando), nenhum flush é enviado — o flush é SÓ interrupção.
+    s = _sessao(monkeypatch, min_frames=3)
+    s.pipeline_task = None
+    for _ in range(5):
+        s._on_audio(_ALTO)
+    assert {"tipo": "barge_in"} not in s.ws.enviados
 
 
 def test_pico_curto_de_eco_nao_corta(monkeypatch):

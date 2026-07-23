@@ -132,6 +132,7 @@ class Respostas:
         prefixo: str = "",
         max_tokens: int | None = None,
         instrucao_extra: str = "",
+        tracker: Optional[LatencyTracker] = None,
     ):
         """Responde por um contexto (RAM ou Banco) COM streaming, segurando o áudio até
         ter certeza de que não é o sentinela 'Não tenho informações suficientes'.
@@ -163,12 +164,13 @@ class Respostas:
                 await send({"tipo": "token", "texto": bloco})
             frases = chunker.push(pedaco)
             if frases:
-                await self._falar(send, frases)
+                await self._falar(send, frases, tracker)
 
         async for token in self.ctx.llama.stream(
             prompt_fn(contexto, texto_usuario),
             max_tokens=teto,
             system_prompt=sistema,
+            tracker=tracker,
         ):
             texto_final += token
             n_tokens += 1
@@ -220,7 +222,7 @@ class Respostas:
             texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         resto = chunker.flush()
         if resto and not truncado:
-            await self._falar(send, [resto])
+            await self._falar(send, [resto], tracker)
         return texto_final
 
     async def _falar_status(self, send: Sender, texto: str) -> None:
@@ -247,6 +249,7 @@ class Respostas:
         self, termos: str, texto_usuario: str, send: Sender, mem: SessionMemory,
         consulta_rank: str | None = None, efemero: bool = False,
         nivel: "verbosidade.Nivel | None" = None,
+        tracker: Optional[LatencyTracker] = None,
     ) -> str:
         # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
         # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
@@ -265,8 +268,28 @@ class Respostas:
             self.ctx.web.search(query_web, consulta=consulta_rank or termos)
         )
         try:
-            # Filler específico mascara a latência da busca web (diz o que está fazendo).
+            # FILLER CONTÍNUO: o deep-fetch leva 3-12s; uma ponte fixa de ~3s deixava
+            # silêncio. Fala a 1ª ponte na hora (o _msg_web dinâmico, que nomeia a query)
+            # e, ENQUANTO a busca não volta, emite pontes curtas adicionais a cada
+            # filler_intervalo_s até a busca terminar OU bater filler_max_pontes — o
+            # filler dura ~o tempo real do fetch. Não fala ponte inútil se a busca já
+            # voltou (o break abaixo). Barge-in corta: cada await é ponto de cancelamento
+            # e o except cancela a busca antes de propagar a CancelledError.
             await self._falar_status(send, self._msg_web(query_web))
+            pontes = 0
+            while not busca.done() and pontes < settings.filler_max_pontes:
+                try:
+                    # Espera o intervalo OU a busca terminar (o que vier antes). O shield
+                    # protege a busca do cancelamento que o wait_for faz ao dar timeout.
+                    await asyncio.wait_for(
+                        asyncio.shield(busca), timeout=settings.filler_intervalo_s
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                if busca.done():
+                    break               # busca voltou dentro do intervalo -> sem ponte
+                await self._falar_status(send, prompts.ponte_continuacao(pontes))
+                pontes += 1
             dados_web = await busca
         except BaseException:
             busca.cancel()   # barge-in/erro no filler: a busca não fica órfã viva
@@ -275,6 +298,10 @@ class Respostas:
         # Não faz sentido nenhum sobre um dado que expira em horas — e era ele que
         # engordava o vault com dezenas de notas por pergunta sobre o tempo. Em modo
         # confidencial (#5) também não: a curiosidade viraria átomo permanente.
+        # FORA DO HOT-PATH: é disparado em BACKGROUND (track_task, ref. forte retida) e
+        # NUNCA é awaited no caminho da resposta — a fala do usuário nunca espera pelo
+        # pre-fetch. Ele roda concorrente ao decode da resposta (web-only, sem GPU), então
+        # não soma ao TTFA/TTFT deste turno; o resultado só serve à PRÓXIMA pergunta.
         if not efemero and not mem.confidencial:
             self.ctx.track_task(self._prefetch(termos, mem))  # background, web-only (ref. retida)
 
@@ -309,6 +336,7 @@ class Respostas:
             prompt_fn=prompts.prompt_resposta_web, system=prompts.SYS_RESPOSTA_WEB,
             max_tokens=nivel.max_tokens if nivel else None,
             instrucao_extra=self._instrucao_com_perfil(nivel.instrucao if nivel else ""),
+            tracker=tracker,
         )
         if resposta is not None:
             # Proveniência ("fonte?"): domínios que o deep-fetch desta busca abriu;
@@ -365,7 +393,8 @@ class Respostas:
             telemetry.track("PROMOCAO", f"{promovidos} nota(s) consolidada(s) (tirado {tag}).")
 
     async def _responder_stream(
-        self, prompt_resposta: str, send: Sender, system: str = prompts.SYS_RESPOSTA
+        self, prompt_resposta: str, send: Sender, system: str = prompts.SYS_RESPOSTA,
+        tracker: Optional[LatencyTracker] = None,
     ) -> str:
         chunker = SentenceChunker()
         visivel = _SegurarFraseIncompleta()
@@ -375,6 +404,7 @@ class Respostas:
             prompt_resposta,
             max_tokens=settings.max_tokens_resposta,
             system_prompt=system,
+            tracker=tracker,
         ):
             texto_final += token
             n_tokens += 1
@@ -383,7 +413,7 @@ class Respostas:
                 await send({"tipo": "token", "texto": bloco})
             frases = chunker.push(token)
             if frases:
-                await self._falar(send, frases)
+                await self._falar(send, frases, tracker)
         truncado = n_tokens >= settings.max_tokens_resposta
         resto_visivel, descartado = visivel.flush(truncado)
         if resto_visivel:
@@ -397,7 +427,7 @@ class Respostas:
             texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         resto = chunker.flush()
         if resto and not truncado:
-            await self._falar(send, [resto])
+            await self._falar(send, [resto], tracker)
         return texto_final
 
     @staticmethod
@@ -449,7 +479,7 @@ class Respostas:
                 juntos = "\n\n".join(f"- {p}" for p in parciais)
                 texto_final = await self._responder_stream(
                     prompts.prompt_sintese_tema_reduce(tema, juntos), send,
-                    system=prompts.SYS_SINTESE_TEMA,
+                    system=prompts.SYS_SINTESE_TEMA, tracker=tracker,
                 )
 
         if texto_final:

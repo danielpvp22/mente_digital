@@ -329,8 +329,8 @@ class Settings(BaseSettings):
     # efêmero, nada é indexado). Desligue com MENTE_WEB_FETCH_ENABLED=false para
     # voltar ao comportamento antigo (só snippets).
     web_fetch_enabled: bool = True
-    web_fetch_pages: int = 6            # quantas URLs abrir (6, era 3: previne bloqueio parcial)
-    web_fetch_timeout: float = 6.0      # timeout por página (s) — não travar o TTFA
+    web_fetch_pages: int = 6            # LEGADO: supersebido por web_fetch_pool (o race dispara até pool)
+    web_fetch_timeout: float = 6.0      # timeout do client httpx (s) — não travar o TTFA
     web_fetch_max_chars: int = 20000    # teto de texto extraído por página (anti-lixo)
     # Fallback de SSL: se a página falhar por VERIFICAÇÃO de certificado (cert vencido,
     # cadeia inválida, hostname mismatch — comum em blogs BR), re-baixa SEM verificar o
@@ -342,6 +342,29 @@ class Settings(BaseSettings):
     web_rank_top_k: int = 12            # nº de trechos rankeados que entram no contexto
     # Orçamento de chars do contexto web montado (protege o n_ctx, como o do RAG local).
     web_context_char_budget: int = 6000
+    # --- RACE-FIRST-K no deep-fetch (aceleração web) ---------------------------
+    # PROBLEMA: o deep-fetch antigo esperava TODAS as top-N páginas (asyncio.gather) —
+    # a mais lenta ou morta segurava o turno inteiro (medido: 3-12s; turno 1 = 10,4s
+    # p/ 6 páginas). CORREÇÃO: dispara ATÉ `web_fetch_pool` fetches CONCORRENTES e
+    # aceita os PRIMEIROS `web_fetch_aceitar` que voltarem com corpo ÚTIL (texto não
+    # vazio após trafilatura), CANCELANDO o resto — não espera as lentas/mortas. O
+    # ranking (rankear_por_similaridade) roda só sobre os K aceitos, igual a antes; se
+    # menos que K vierem, usa o que veio; se NADA, cai nos snippets. Para o pool ter o
+    # que abrir, o DDG passa a pedir >= pool candidatos quando o fetch está ligado.
+    web_fetch_pool: int = 12            # nº MÁX de fetches web concorrentes disparados
+    web_fetch_aceitar: int = 3          # aceita os K 1ºs com corpo útil e cancela o resto
+    # Timeout POR PÁGINA no race (asyncio.wait_for): um site travado vira None (não
+    # contribui) em vez de segurar a coleta. Rede de segurança — como só esperamos os K
+    # mais rápidos, ele raramente dispara. Mais curto que o web_fetch_timeout do client.
+    web_fetch_timeout_s: float = 4.0
+    # --- Filler contínuo da web (aceleração da PERCEPÇÃO de latência) -----------
+    # O deep-fetch leva 3-12s; um filler fixo de ~3s (uma ponte só) deixava silêncio. Em
+    # vez de UMA ponte e esperar, o _responder_web fala a 1ª ponte na hora e, ENQUANTO a
+    # busca não volta, emite pontes curtas adicionais a cada `filler_intervalo_s`, até a
+    # busca terminar ou bater `filler_max_pontes`. O filler dura ~o tempo real do fetch,
+    # não um valor fixo. Barge-in corta (o pipeline é task cancelável). 0 = só a 1ª ponte.
+    filler_max_pontes: int = 3          # teto de pontes ADICIONAIS além da 1ª
+    filler_intervalo_s: float = 2.5     # intervalo entre pontes enquanto a busca roda
     # --- Guarda de Egressão (#6): anti-PII na query web ------------------------
     # A ÚNICA saída de rede é o WebSearcher. Antes de a query ir ao DDG, mascara
     # PII do dono (e-mail, CPF/CNPJ, cartão via Luhn, telefone) por um token
@@ -485,9 +508,14 @@ class Settings(BaseSettings):
     # inference_stream: nº de tokens GPT por chunk de áudio (menor = 1º som interno mais
     # cedo, mais overhead). Os chunks são juntados num WAV por frase.
     tts_xtts_stream_chunk_size: int = 20
-    # enable_text_splitting: OFF — o SentenceChunker do pipeline já entrega frase a frase;
-    # deixar o XTTS re-dividir dobraria o corte e pioraria o 1º áudio.
+    # enable_text_splitting: OFF — exige spacy[ja] (pesado) e o SentenceChunker do pipeline já
+    # entrega frase a frase. O corte de segurança é feito EM CASA (_dividir_para_xtts) abaixo.
     tts_xtts_enable_text_splitting: bool = False
+    # Teto de chars por frase mandada ao GPT-2 interno do XTTS. Frase acima disto é fatiada
+    # (em fronteira de sentença/palavra) ANTES de gerar — senão os audio-tokens passam de
+    # gpt_max_audio_tokens (~605/14s) e o índice de posição estoura (device-side assert que
+    # corrompe o contexto CUDA e derruba o LLM junto). 0 desliga o corte.
+    tts_xtts_max_chars_frase: int = 200
     # Cache LRU (reusa tts_cache_size): OFF porque o XTTS amostra (não-determinístico) —
     # cachear congelaria uma "tomada" aleatória. Ligue só se aceitar isso p/ frases fixas.
     tts_xtts_cache_enabled: bool = False
@@ -506,6 +534,13 @@ class Settings(BaseSettings):
     # é fim de INTERAÇÃO. Uma nova mensagem/fala rearma. Maior = idle mais preguiçoso
     # (menos reloads, VRAM presa por mais tempo); menor = libera a GPU mais cedo.
     idle_inatividade_seconds: float = 90.0
+    # Carência ANTES do idle de conhecimento pousar na GPU ao encerrar a conversa
+    # (debounce). O ETL não roda no instante em que o chat fecha — espera este tanto SEM
+    # nova atividade. Abrir outra conversa ou mandar um turno neste intervalo ADIA o idle
+    # (os itens ficam bufferados, nada se perde), então dá pra encadear conversas sem a
+    # GPU a 100% do ETL disputando o STT/decode do próximo turno. 0 = comportamento antigo
+    # (idle imediato). Não afeta o idle por inatividade (esse já espera 90s parado).
+    idle_grace_seconds: float = 20.0
     # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
     # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
     idle_descarregar_modelo: bool = True
@@ -651,6 +686,25 @@ class Settings(BaseSettings):
     # Defina um segredo (ex.: 48 hex aleatórios) para liberar outros aparelhos;
     # no aparelho, abra a página uma vez com ?token=SEGREDO (o front guarda).
     access_token: str = ""
+
+    # --- Instrumentação de latência (trace por turno + saneamento de outliers) --
+    # O dono pediu "coletar quanto tempo cada ação demorou (inferência ou espera),
+    # para testes futuros". Estes botões são ADITIVOS e best-effort: NÃO mudam nenhum
+    # comportamento de runtime (ordem, device, engine), só ligam a coleta e limpam a
+    # estatística de artefatos de relógio-de-parede.
+    # TRACE por turno: grava UMA linha JSONL por resposta (a timeline de marcos +
+    # todos os tempos por estágio) em trace_dir/AAAAMMDD.jsonl (rotacionado por dia).
+    # OFF por padrão — ligue com MENTE_TRACE_ENABLED=true numa sessão de medição; o
+    # dump roda em thread e um erro nele nunca afeta a resposta.
+    trace_enabled: bool = False
+    trace_dir: str = str(DIR_DADOS / "traces")
+    # Tetos de sanidade dos percentis/médias: uma resposta com TTFT ou tok/s acima
+    # destes é ARTEFATO (relógio de parede poluído por idle/reload frio — ex.: o id272
+    # com ttft=346800ms/tok_s=2142 envenenava p95/AVG) e é EXCLUÍDA da agregação. A
+    # linha crua PERMANECE no banco (nada é apagado); só não entra na estatística.
+    # Calibre se um caso legítimo lento passar a cair fora.
+    latencia_ttft_teto_ms: float = 120000.0
+    latencia_tok_s_teto: float = 300.0
 
     # --- Derivados -------------------------------------------------------------
     @property

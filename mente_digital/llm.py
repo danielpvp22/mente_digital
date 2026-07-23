@@ -41,8 +41,12 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import AsyncIterator, Optional, Set
+from typing import TYPE_CHECKING, AsyncIterator, Optional, Set
+
+if TYPE_CHECKING:
+    from mente_digital.telemetry import LatencyTracker
 
 from mente_digital import prompts
 from mente_digital.config import settings
@@ -180,6 +184,31 @@ class LlamaManager:
         if atingidos:
             telemetry.track("LLM", f"Preempção: {len(atingidos)} decode(s) de ETL cedendo a GPU.")
         return len(atingidos)
+
+    @staticmethod
+    def _reset_vram_peak() -> None:
+        """Zera o contador de pico da VRAM antes de um decode instrumentado. TARDIO e
+        best-effort: o módulo NÃO pode passar a exigir torch no import (CI leve). Sem
+        CUDA/torch, no-op silencioso — medição jamais derruba o decode."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:  # medição best-effort: torch ausente/erro CUDA é ignorado
+            pass
+
+    @staticmethod
+    def _ler_vram_peak() -> "Optional[float]":
+        """Pico de VRAM alocada (MB) desde o último reset, ou None sem CUDA/torch."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return torch.cuda.max_memory_allocated() / 1e6
+        except Exception:  # medição best-effort: nunca propaga
+            pass
+        return None
 
     def _build_llama_kwargs(self) -> dict:
         """Monta os kwargs do construtor Llama a partir do settings.
@@ -327,6 +356,7 @@ class LlamaManager:
         system_prompt: str = "Você é um assistente IA lógico e direto.",
         temperature: Optional[float] = None,
         preemptible: bool = False,
+        tracker: "Optional[LatencyTracker]" = None,
     ) -> AsyncIterator[str]:
         """Gera tokens em tempo real sem bloquear o event loop.
 
@@ -334,13 +364,26 @@ class LlamaManager:
         abortá-lo a qualquer token para liberar a GPU, e aí a stream levanta
         `InferenciaPreemptada`. Use só em trabalho de background (ETL) — nunca numa
         resposta ao usuário, que jamais deve ser interrompida por outra coisa.
+
+        `tracker` (opcional) recebe a INSTRUMENTAÇÃO produtor-side best-effort:
+        lock_wait/reload_frio/prefill (event loop) e decode_tok_s_gpu/vram_peak (na
+        thread do worker). None (default) = NADA muda — os fakes de teste e os decodes
+        de FUNDO (ETL/collect) não passam tracker, então seguem intactos. É o número de
+        tok/s imune ao event loop/TTS que a métrica atual (lado consumidor) confunde.
         """
         # Religa sob demanda: se o idle descarregou o Qwen, a 1ª inferência o traz de
         # volta em vez de falhar. Idempotente e barato quando já está na GPU. Só o
         # decode PREEMPTÍVEL (ETL) não religa — se o modelo saiu, é porque o idle
         # acabou; ressuscitá-lo para trabalho de fundo anularia o unload.
+        # reload_frio: separa o TTFT frio (pagou o reload pós-idle) do quente. Default 0;
+        # vira 1 só se ESTE stream de fato religou o modelo (era None e voltou).
+        if tracker is not None:
+            tracker.reload_frio = 0
         if self._model is None and not preemptible:
             await self.ensure_loaded()
+            if tracker is not None and self._model is not None:
+                tracker.reload_frio = 1
+                tracker.mark("reload")
         if self._model is None:
             if not preemptible:
                 telemetry.warn("LLM", "Inferência solicitada sem modelo carregado.")
@@ -352,12 +395,30 @@ class LlamaManager:
         # modelos que ignoram a diretiva) + preâmbulo comum (#10) quando ligado.
         sys_prompt = montar_system(system_prompt)
 
+        # lock_wait_ms: quanto o decode esperou pela GPU já ocupada (o outro suspeito
+        # do TTFT caixa-preta, junto do reload frio e do prefill). Monotônico, medido
+        # ANTES/DEPOIS de adquirir o _inference_lock — best-effort (só com tracker).
+        _t_call = time.monotonic() if tracker is not None else 0.0
         async with self._inference_lock:
+            if tracker is not None:
+                tracker.lock_wait_ms = (time.monotonic() - _t_call) * 1000
+                tracker.mark("lock")
+                self._reset_vram_peak()   # zera o pico p/ medir só ESTE decode
+            _t_lock = time.monotonic()
             loop = asyncio.get_running_loop()
             queue: asyncio.Queue = asyncio.Queue()
             stop_event = threading.Event()
 
             def _worker() -> None:
+                # decode_tok_s_gpu: cronometrado DENTRO da thread do worker (do 1º ao
+                # último chunk gerado), imune ao event loop e ao TTS — o número que a
+                # métrica atual (timestamps de envio, lado consumidor) confunde com
+                # decode+síntese+contenção. Agrega em locais e ATRIBUI só o escalar
+                # final no tracker (float é atômico no CPython — sem estrutura mutável
+                # compartilhada com a thread).
+                _t_first = None
+                _t_last = None
+                _n = 0
                 try:
                     for chunk in self._model.create_chat_completion(
                         messages=[
@@ -372,10 +433,21 @@ class LlamaManager:
                             break
                         token = chunk["choices"][0]["delta"].get("content", "")
                         if token:
+                            if tracker is not None:
+                                _agora = time.monotonic()
+                                if _t_first is None:
+                                    _t_first = _agora
+                                _t_last = _agora
+                                _n += 1
                             loop.call_soon_threadsafe(queue.put_nowait, token)
                 except Exception as exc:  # nunca engolir em silêncio
                     loop.call_soon_threadsafe(queue.put_nowait, _WorkerError(exc))
                 finally:
+                    if (tracker is not None and _n > 1
+                            and _t_first is not None and _t_last is not None):
+                        _dur = _t_last - _t_first
+                        if _dur > 0:
+                            tracker.decode_tok_s_gpu = round((_n - 1) / _dur, 1)
                     loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
 
             # Registrado ANTES do submit: assim uma pergunta que chegue no instante
@@ -385,6 +457,7 @@ class LlamaManager:
 
             future: Future = self._gpu_executor.submit(_worker)
             filtro = _FiltroThink() if settings.llm_strip_think else None
+            _prefill_medido = False
             try:
                 while True:
                     item = await queue.get()
@@ -393,6 +466,13 @@ class LlamaManager:
                     if isinstance(item, _WorkerError):
                         telemetry.error("LLM", "Erro no worker de inferência", item.exc)
                         break
+                    # prefill_ms: do lock ao 1º chunk produzido pelo worker (engolir o
+                    # prompt). Repartir isto do lock_wait/reload é o que abre a caixa-preta
+                    # do TTFT de 7-9s na rota 'banco'. Medido no 1º item real (pré-filtro).
+                    if tracker is not None and not _prefill_medido:
+                        tracker.prefill_ms = (time.monotonic() - _t_lock) * 1000
+                        tracker.mark("prefill")
+                        _prefill_medido = True
                     if filtro is not None:
                         item = filtro.push(item)
                         if not item:
@@ -415,6 +495,10 @@ class LlamaManager:
                     await asyncio.to_thread(future.result)
                 except Exception:
                     pass
+                # vram_peak_mb: pico alocado neste decode (a suspeita de oversubscrição
+                # ~9-10/10GB e spill WDDM). Lido AQUI, com a thread da GPU já livre.
+                if tracker is not None:
+                    tracker.vram_peak_mb = self._ler_vram_peak()
 
     async def collect(self, prompt: str, **kwargs) -> str:
         """Atalho: consome a stream inteira e devolve o texto concatenado."""

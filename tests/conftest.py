@@ -115,6 +115,10 @@ class FakeTts:
         self.chamadas.append(texto)
         return None
 
+    def cancel(self) -> None:
+        # Contrato do TTS (barge-in): existe em ambos os engines reais; no-op no fake.
+        pass
+
 
 # ==========================================================================
 # Documento / store falsos para a busca local (sem ChromaDB)

@@ -175,6 +175,13 @@ class AppContext:
     # Tradeoff aceito: a nota entra no ÍNDICE só no próximo idle — no disco/Obsidian ela
     # já está na hora. É um booleano no event loop -> mutação atômica, sem lock.
     vault_pendente_sync: bool = field(default=False, repr=False)
+    # Debounce do idle de conhecimento (2026-07-23): ao encerrar a conversa, os itens
+    # drenados NÃO vão pro ETL na hora — ficam aqui e um timer espera `idle_grace_seconds`
+    # SEM nova atividade. Abrir outra conversa ou mandar um turno re-adia (cancela o timer;
+    # os itens permanecem). Assim o ETL não pousa na GPU a 100% em cima do STT/decode do
+    # próximo turno. Ver agendar_idle_conhecimento / adiar_idle_conhecimento / _idle_apos_grace.
+    _idle_itens: list = field(default_factory=list, repr=False)
+    _idle_timer: Optional["asyncio.Task"] = field(default=None, repr=False)
 
     # Serviços (preenchidos no lifespan)
     llama: "LlamaManager" = None          # type: ignore[assignment]
@@ -214,12 +221,66 @@ class AppContext:
         """
         self._interativos += 1
         self.interactive_idle.clear()
+        # Interação nova = adia o idle de conhecimento pendente (debounce). Sem isto, o ETL
+        # agendado ao fim da conversa ANTERIOR pousaria na GPU durante ESTE turno.
+        self.adiar_idle_conhecimento()
         try:
             yield
         finally:
             self._interativos = max(0, self._interativos - 1)
             if self._interativos == 0:
                 self.interactive_idle.set()
+
+    def agendar_idle_conhecimento(self, itens: list) -> None:
+        """Enfileira os itens do fim de conversa e (re)arma o timer de carência (debounce).
+
+        Chamado pelo `_finalizar_sessao` no lugar de disparar o ETL na hora. O idle só roda
+        após `idle_grace_seconds` SEM nova atividade — reabrir/conversar adia (ver
+        `adiar_idle_conhecimento`). Se a carência for 0, roda de imediato (comportamento
+        antigo). Os itens ACUMULAM entre encerramentos até o idle efetivamente rodar."""
+        if itens:
+            self._idle_itens.extend(itens)
+        grace = self.settings.idle_grace_seconds
+        if grace <= 0:                       # sem carência: comportamento antigo (imediato)
+            self._disparar_idle_agora()
+            return
+        self._rearmar_idle_timer(grace)
+
+    def adiar_idle_conhecimento(self) -> None:
+        """Nova atividade (turno interativo OU abertura de conversa): adia o idle pendente.
+
+        Cancela o timer de carência SEM perder os itens bufferados — eles serão re-agendados
+        quando a sessão encerrar de novo (`agendar_idle_conhecimento`) ou pelo idle por
+        inatividade. É o que impede o ETL de atropelar o próximo turno do usuário."""
+        if self._idle_timer is not None and not self._idle_timer.done():
+            self._idle_timer.cancel()
+        self._idle_timer = None
+
+    def _rearmar_idle_timer(self, grace: float) -> None:
+        if self._idle_timer is not None and not self._idle_timer.done():
+            self._idle_timer.cancel()
+        self._idle_timer = self.track_task(self._idle_apos_grace(grace))
+
+    async def _idle_apos_grace(self, grace: float) -> None:
+        """Dorme a carência e então dispara o ETL — a menos que uma interação esteja em voo
+        (re-arma) ou o timer tenha sido cancelado por atividade nova (adiar)."""
+        try:
+            await asyncio.sleep(grace)
+        except asyncio.CancelledError:       # adiado por atividade nova: itens ficam pro próximo
+            return
+        # Decode interativo em voo? Não atropela: re-arma e tenta de novo após a carência.
+        if not self.interactive_idle.is_set():
+            self._rearmar_idle_timer(grace)
+            return
+        self._disparar_idle_agora()
+
+    def _disparar_idle_agora(self) -> None:
+        """Drena o buffer e roda o ETL idle (fora do timer). Nada pendente = no-op."""
+        itens = self._idle_itens
+        self._idle_itens = []
+        self._idle_timer = None
+        if self.etl is not None:
+            self.track_task(self.etl.run_idle(itens))
 
     def track_task(self, coro: Coroutine) -> "asyncio.Task":
         """Cria uma task de background SEGURANDO uma referência forte a ela.

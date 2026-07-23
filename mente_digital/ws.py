@@ -84,6 +84,18 @@ class LiveSession:
         if self.pipeline_task and not self.pipeline_task.done():
             self.pipeline_task.cancel()
 
+    def _cancel_tts(self) -> None:
+        """Aborta a síntese TTS em voo (barge-in/interrupção). SEPARADO do
+        _cancel_pipeline de propósito: cancelar a corrotina do pipeline NÃO para a thread
+        de síntese do XTTS (roda em asyncio.to_thread) — o áudio já enfileirado seguia
+        tocando mesmo após o barge-in ("não parava de falar"). Só o Event que a thread
+        checa a interrompe. Piper é no-op (síntese rápida na CPU). Guard p/ ctx.tts None
+        (testes/TTS que não subiu). NÃO chamar no fim NORMAL de fala — só em interrupção;
+        um turno que termina sozinho não deve cancelar nada (o clear() no synth protege o
+        próximo turno, mas não há por que setar o Event à toa)."""
+        if self.ctx.tts is not None:
+            self.ctx.tts.cancel()
+
     def _start_pipeline(
         self, texto: str, stt_ms: Optional[int] = None, vad_ms: Optional[int] = None
     ) -> None:
@@ -121,6 +133,9 @@ class LiveSession:
     async def run(self) -> None:
         await self.ws.accept()
         self.ctx.sessoes.add(self)
+        # Abrir uma conversa nova adia o idle de conhecimento da conversa ANTERIOR (debounce):
+        # a GPU fica livre pro começo desta em vez de disputar com o ETL recém-agendado.
+        self.ctx.adiar_idle_conhecimento()
         # Entrega já os avisos que dispararam enquanto ninguém estava conectado
         # (lembrete de ontem, watcher satisfeito de madrugada). Em background: não
         # atrasa o handshake, e o loop do scheduler também os reentregaria no tick.
@@ -160,6 +175,7 @@ class LiveSession:
             telemetry.error("WS", "Erro no loop do WebSocket", exc)
         finally:
             self.ctx.sessoes.discard(self)
+            self._cancel_tts()        # disconnect: corta qualquer síntese em voo no teardown
             self._cancel_pipeline()
             # Rede de segurança: se o cliente caiu SEM mandar end_session, a conversa
             # ainda é atomizada e a fila ETL sintetizada (senão o histórico se perdia).
@@ -185,8 +201,11 @@ class LiveSession:
         if self.memory.confidencial:
             telemetry.track("SERVER", "Sessão confidencial — idle de conhecimento pulado (nada atomizado).")
             return
-        telemetry.track("SERVER", "Sessão encerrada. Iniciando processamento IDLE...")
-        self.ctx.track_task(self.ctx.etl.run_idle(itens))
+        # Debounce (2026-07-23): NÃO dispara o ETL na hora. Agenda com carência — abrir outra
+        # conversa ou mandar um turno adia (ver AppContext.agendar/adiar_idle_conhecimento).
+        # Evita o ETL a 100% na GPU disputando o STT/decode do próximo turno ao encadear conversas.
+        telemetry.track("SERVER", "Sessão encerrada. IDLE agendado (carência).")
+        self.ctx.agendar_idle_conhecimento(itens)
 
     def _marcar_ativa(self) -> None:
         """Nova mensagem/fala do usuário = conversa ABERTA: sai do idle e rearma o
@@ -264,7 +283,15 @@ class LiveSession:
                 self._barge_frames += 1
                 if self._barge_frames >= settings.barge_min_frames:
                     telemetry.track("VAD", "Barge-in do servidor: dono falou por cima — cortando a resposta.")
+                    self._cancel_tts()        # ANTES: para a síntese XTTS em voo (thread); só cancelar a corrotina não a pararia
                     self._cancel_pipeline()
+                    # ...E manda o FRONT descartar o áudio que já recebeu e enfileirou. Sem
+                    # isso, cancelar a síntese no servidor não silenciava o navegador: os
+                    # chunks já entregues seguiam tocando no `audioQueue` local ("não parava
+                    # de falar"). Mesmo tipo "barge_in" que o cliente ENVIA ao cortar do lado
+                    # dele — no cliente esse tipo SÓ esvazia a fila (não reenvia nada), então
+                    # não há loop cliente↔servidor. track_task porque _on_audio é síncrono.
+                    self.ctx.track_task(self.safe_send({"tipo": "barge_in"}))
                     self._barge_frames = 0
             else:
                 self._barge_frames = 0
@@ -342,6 +369,7 @@ class LiveSession:
         if tipo == "barge_in":
             self.is_recording = False
             self.audio_buffer = []
+            self._cancel_tts()        # barge-in explícito do front: idem ao do servidor
             self._cancel_pipeline()
 
         elif tipo == "ack_proativo":
@@ -366,6 +394,7 @@ class LiveSession:
             # (end_session) pelo próprio front antes de trocar.
             cid = (payload.get("id") or "").strip()
             if cid:
+                self._cancel_tts()        # troca de conversa: corta a cauda de fala da anterior
                 self._cancel_pipeline()
                 self.memory.nova_conversa(cid)
                 self._marcar_ativa()
@@ -377,6 +406,7 @@ class LiveSession:
             # Reabre uma conversa do histórico: recarrega os turnos na RAM p/ continuar.
             cid = (payload.get("id") or "").strip()
             if cid:
+                self._cancel_tts()        # reabrir outra conversa: corta a cauda de fala da atual
                 self._cancel_pipeline()
                 turnos_raw = await asyncio.to_thread(db.get_conversation, cid, settings.max_chat_history)
                 turnos = [(t["q"], t["a"]) for t in turnos_raw]
