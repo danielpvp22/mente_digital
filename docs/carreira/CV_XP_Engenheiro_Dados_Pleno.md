@@ -37,11 +37,12 @@ perfil orientado a qualidade dos dados, confiabilidade e impacto no negócio.
 - **Analytics / BI:** Qlik Sense, QlikView (dashboards, extensões customizadas, indicadores em tempo real)
 - **Modelagem de dados:** modelagem de banco de dados, arquitetura relacional e não-relacional
 - **Infra & DataOps:** Docker, Cloud Computing, Git, versionamento, testes automatizados
-- **Em desenvolvimento (foco desta vaga):** Databricks (Spark, Delta), Airflow/ADF *(ver "Formação Contínua")*
+- **Conhecimento em evolução (foco desta vaga):** Databricks (Spark, Delta), Airflow — contato inicial, aprofundando com prática *(ver "Formação Contínua")*
 
-> **Honestidade estratégica:** Databricks/Spark/Airflow entram só em "Em
-> desenvolvimento" porque não constam da sua experiência real. Se você usou algum
-> deles no Grupo SC (mesmo sem citar no LinkedIn), me avise que eu movo para o topo.
+> **Honestidade estratégica:** Databricks/Spark/Airflow ficam como "conhecimento em
+> evolução" porque você tem contato inicial, mas não experiência de produção. Na
+> entrevista técnica, posicione como "estou aprofundando" — nunca como domínio. O peso
+> do CV está na sua experiência real de ETL/pipelines e no diferencial de dados-para-IA.
 
 ---
 
@@ -114,9 +115,9 @@ missão do time desta vaga:
 
 ### FORMAÇÃO CONTÍNUA / CERTIFICAÇÕES
 
-- **Fechando o gap com a vaga (recomendado — comece já):** Databricks Certified Data
-  Engineer Associate (Databricks Community Edition é grátis) + prática de **PySpark/Delta**.
-  Uma linha aqui como "em progresso" é honesta e mostra proatividade.
+- **Aprofundando Databricks/Spark (em progresso):** consolidando o conhecimento inicial
+  com prática em **PySpark/Delta** (Databricks Community Edition é grátis) rumo à
+  certificação **Databricks Data Engineer Associate**. Mostra proatividade e trajetória.
 - Excel: Formação Básica (365/2019); Excel: Como Criar um Dashboard Básico (365/2019).
 
 ---

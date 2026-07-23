@@ -121,8 +121,9 @@ DataOps. É isso que você conecta.
 Pelo seu LinkedIn, sua stack real é **Python, SQL, Qlik, Docker, Cloud, Web Scraping,
 LLMs** — e você tem **3+ anos** somando Grupo SC (Eng. de Dados) e Oi (dados para IA).
 A vaga da XP exige **Databricks (Spark, Delta)** e **Airflow/ADF** como *essenciais* —
-e esses **não** estão na sua experiência. Isso é um gap real; a estratégia é atacá-lo
-com honestidade, não escondê-lo.
+e desses você tem **contato inicial (estudo/POC), não experiência de produção**. Para
+uma vaga que os marca como essenciais, ainda é um gap; a estratégia é atacá-lo com
+honestidade ("estou aprofundando"), não escondê-lo nem inflá-lo.
 
 **O que joga a seu favor (e é genuíno):**
 - A vaga é *"modelar dados para consumo pelos times de IA"* — e você tem **experiência

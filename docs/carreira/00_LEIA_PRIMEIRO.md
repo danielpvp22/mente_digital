@@ -31,12 +31,9 @@ já estão preenchidos com isso.
    um `«...»` para você completar.
 
 ## Ponto de atenção honesto: a stack Databricks/Spark
-Seu LinkedIn mostra **Python, SQL, Qlik, Docker, Cloud, LLMs** — mas **não** Databricks,
-Spark, Airflow ou ADF, que são *essenciais* na vaga. Os documentos tratam essas
-ferramentas como **"em desenvolvimento"** (honesto), e não como experiência que você tem.
-Seu diferencial real e forte para esta vaga é **preparar dados para IA** (Oi + Mente
-Digital). Leia o `MAPA_PROJETO_PARA_VAGA.md` — ele tem a estratégia e o roteiro de
-entrevista para transformar isso a seu favor.
-
-> Se você **usou** Databricks/Spark/Airflow em algum momento (mesmo sem constar no
-> LinkedIn), me avise que eu movo para o topo das competências e ajusto a narrativa.
+Seu LinkedIn mostra **Python, SQL, Qlik, Docker, Cloud, LLMs** — de Databricks, Spark e
+Airflow (essenciais na vaga) você tem **contato inicial/estudo, não produção**. Os
+documentos tratam essas ferramentas como **"conhecimento em evolução"** (honesto) e
+orientam você a posicioná-las como "estou aprofundando" na entrevista. Seu diferencial
+real e forte é **preparar dados para IA** (Oi + Mente Digital). O
+`MAPA_PROJETO_PARA_VAGA.md` tem a estratégia e o roteiro de entrevista.
