@@ -39,6 +39,37 @@
 
 ---
 
+## 🎬 Demo — vendo funcionar
+
+> **100% local, sem nuvem.** Nos dois vídeos, o **Gerenciador de Tarefas** (VRAM/GPU da RTX 3080) e o **terminal** ficam à mostra de propósito: dá pra ver a **rota** de cada resposta (`rota=ram` / `banco` / `web`), a **latência** real (`TTFT`/`TTFA`) e a placa trabalhando ao vivo. É a prova de que roda de verdade na máquina — não é um _wrapper_ de API.
+
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+
+**🎙️ Voz em tempo real**
+
+[![Demo de voz — clique para abrir](docs/demo/poster_voz.jpg)](docs/demo/mente_digital_voz.mp4)
+
+Fala → Whisper (STT) → LLM local → voz clonada (XTTS-v2), com _barge-in_.<br>No print: `rota=banco`, resposta vinda do vault.
+
+</td>
+<td width="50%" align="center" valign="top">
+
+**💬 Modo texto**
+
+[![Demo de texto — clique para abrir](docs/demo/poster_texto.jpg)](docs/demo/mente_digital_texto.mp4)
+
+Cascata memória → notas → web, com anti-alucinação.<br>No print: _"o que é RAG?"_ respondido do próprio banco.
+
+</td>
+</tr>
+</table>
+
+<sub>▶️ Clique num pôster para abrir o vídeo (player nativo do GitHub). Métricas por resposta ao vivo em `/api/metrics`; a suíte inteira roda **sem GPU e sem rede**.</sub>
+
+---
+
 ## 🎯 O que é
 
 **Mente Digital** é um assistente de voz e texto que roda inteiramente na sua máquina. Você fala; ele ouve, pensa e responde falando — em GPU local, com o primeiro áudio saindo enquanto o modelo ainda decodifica o resto da frase. Nada sai do computador, exceto uma busca web quando (e somente quando) o conhecimento local não basta.
