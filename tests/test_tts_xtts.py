@@ -69,6 +69,16 @@ def test_preparar_tira_markdown_mas_preserva_acentos_e_simbolos():
     assert "cinquenta por cento" in out
 
 
+def test_preparar_remove_emoji_e_simbolos_sem_leitura():
+    # ANTI-CRASH: emoji/pictograma não são fala e podem estourar o índice do tokenizer do
+    # XTTS (device-side assert). Somem; o texto falável ao redor permanece intacto.
+    x = XttsService()
+    out = x._preparar("Fico feliz em ajudar 😊👍 até logo ➡️")
+    assert "😊" not in out and "👍" not in out and "➡" not in out
+    assert "Fico feliz em ajudar" in out
+    assert "até logo" in out
+
+
 # -- montagem do WAV a partir do streaming (modelo falso, sem torch) -----------
 async def test_synth_monta_wav_valido():
     x = XttsService()
@@ -155,7 +165,7 @@ async def test_synth_frase_longa_faz_varias_chamadas_e_concatena(monkeypatch):
         assert w.getnframes() == len(fake.textos)           # 1 amostra por chamada, concatenadas
 
 
-# -- barge-in: síntese XTTS cancelável (thread checa o Event) -------------------
+# -- barge-in: síntese XTTS cancelável (thread checa o token de geração) --------
 class _FakeXttsModelMuitosChunks:
     """Faz yield de `total` chunks. Se `service` for dado, aciona service.cancel() logo
     ANTES de emitir o chunk de índice `corta_apos` — simula o barge-in chegando NO MEIO
@@ -197,25 +207,26 @@ async def test_cancel_no_meio_para_cedo_e_gera_wav_valido():
 
 
 def test_cancel_no_topo_do_laco_gera_wav_vazio_valido():
-    """Cancel setado ANTES de sintetizar: o laço externo do _run quebra no topo e o WAV
-    sai vazio, porém válido (cabeçalho fechado pelo `with wave.open`, sem exceção).
-    Chama _run direto para pular o clear() do synth_base64 e exercitar o guard do laço."""
+    """Gen JÁ obsoleto ao entrar no _run: o laço externo quebra no topo e o WAV sai vazio,
+    porém válido (cabeçalho fechado pelo `with wave.open`, sem exceção). Chama _run direto
+    com um meu_gen antigo (< o gen atual) para exercitar o guard do laço."""
     x = XttsService()
     x._sample_rate = 24000
     x._model = _FakeXttsModelMuitosChunks(total=6)   # sem auto-cancel
-    x._cancelar.set()
-    data = x._run("olá")                              # nada escrito, mas WAV válido
+    x.cancel()                                        # _gen: 0 -> 1
+    data = x._run("olá", 0)                           # meu_gen=0 != _gen=1 -> aborta no topo
     assert _nframes_wav(data) == 0
 
 
-async def test_novo_synth_limpa_cancel_anterior():
-    """clear() no início do synth_base64: um cancel de um turno NÃO gruda no próximo —
-    após cancelar, uma nova síntese (sem barge-in) sintetiza TUDO normalmente."""
+async def test_novo_synth_apos_cancel_sintetiza_tudo():
+    """Token de geração: um cancel de um turno NÃO gruda no próximo — a nova síntese captura
+    o gen JÁ incrementado, então nasce válida e sintetiza TUDO (sem o clear() que ressuscitava
+    a thread órfã do turno anterior)."""
     x = XttsService()
     x._sample_rate = 24000
     x._model = _FakeXttsModel()                       # 3 + 2 = 5 frames
     x.cancel()                                        # cauda de cancel do "turno anterior"
-    b64 = await x.synth_base64("olá mundo")           # synth_base64 dá clear() no início
+    b64 = await x.synth_base64("olá mundo")           # captura o gen novo -> válida
     assert b64
     assert _nframes_b64(b64) == 5                     # não ficou grudado cancelado
 
