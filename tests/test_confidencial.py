@@ -16,7 +16,7 @@ class FakeWeb:
     def __init__(self):
         self.prefetches = 0
 
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         return "- FONTE WEB: conteúdo genérico sobre o tema."
 
     async def prefetch(self, tema):

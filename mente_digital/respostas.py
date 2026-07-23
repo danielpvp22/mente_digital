@@ -264,8 +264,18 @@ class Respostas:
         # `query_web` faz o DDG; `consulta_rank` (pergunta natural crua) guia o ranking
         # dos trechos do deep-fetch — o embedding é simétrico, então a frase inteira
         # casa melhor com os parágrafos das páginas que 5 keywords.
+        # COLHEITA (web_colheita): os perdedores do race que terminarem durante a fala
+        # viram #conhecimento_novo na fila do idle — de graça, sem nova busca. MESMOS
+        # guards do pre-fetch: nada de turno efêmero/confidencial vira átomo permanente.
+        # A dedup (URL já vista) e o lifecycle do client ficam no WebSearcher.
+        on_colheita = None
+        if not efemero and not mem.confidencial and settings.web_colheita_habilitada:
+            def on_colheita(_url: str, texto: str) -> None:
+                mem.enfileirar_etl(query_web, texto)
         busca = asyncio.ensure_future(
-            self.ctx.web.search(query_web, consulta=consulta_rank or termos)
+            self.ctx.web.search(
+                query_web, consulta=consulta_rank or termos, on_colheita=on_colheita
+            )
         )
         try:
             # FILLER CONTÍNUO: o deep-fetch leva 3-12s; uma ponte fixa de ~3s deixava

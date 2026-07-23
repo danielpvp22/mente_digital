@@ -357,6 +357,16 @@ class Settings(BaseSettings):
     # contribui) em vez de segurar a coleta. Rede de segurança — como só esperamos os K
     # mais rápidos, ele raramente dispara. Mais curto que o web_fetch_timeout do client.
     web_fetch_timeout_s: float = 4.0
+    # --- Colheita dos perdedores do race (aproveitamento + anti-ban) ------------
+    # O race dispara ~pool páginas e usa só os `aceitar` 1ºs — os perdedores eram
+    # CANCELADOS (conexão abortada no meio, que a sites anti-bot parece bot). Ligada, a
+    # colheita NÃO cancela: deixa os perdedores TERMINAREM em background durante a fala
+    # (web-only, sem GPU) e atomiza os corpos como #conhecimento_novo (mesma fila do idle,
+    # mesmos guards do pre-fetch: nada em turno efêmero/confidencial). Ganho duplo: a base
+    # cresce da própria curiosidade do usuário SEM nova busca, e as requisições completam
+    # naturalmente (menos padrão-de-bot). Dedup por LRU de URL já colhida (anti-refetch).
+    web_colheita_habilitada: bool = True
+    web_colheita_url_cache: int = 512   # tamanho da LRU de URLs já colhidas (dedup)
     # --- Filler contínuo da web (aceleração da PERCEPÇÃO de latência) -----------
     # O deep-fetch leva 3-12s; um filler fixo de ~3s (uma ponte só) deixava silêncio. Em
     # vez de UMA ponte e esperar, o _responder_web fala a 1ª ponte na hora e, ENQUANTO a

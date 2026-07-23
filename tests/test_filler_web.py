@@ -35,7 +35,7 @@ class WebLenta:
         self.prefetches = 0
         self.ultimos_dominios: list = []
 
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         await asyncio.sleep(self.atraso)
         return "- FONTE WEB: a resposta chegou."
 

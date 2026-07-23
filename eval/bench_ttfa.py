@@ -74,7 +74,7 @@ class FakeVS:
 
 
 class FakeWeb:
-    async def search(self, termo, consulta=None):
+    async def search(self, termo, consulta=None, on_colheita=None):
         await asyncio.sleep(0)
         return "- FONTE WEB: conteúdo encontrado."
 
