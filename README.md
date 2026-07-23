@@ -81,6 +81,26 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 
 ---
 
+## 🧭 O que este projeto demonstra de Engenharia de Dados
+
+> Por fora é um assistente de voz. Por dentro é o problema central de todo time de dados:
+> **transformar dado bruto e disperso em um dataset confiável, pronto para uma camada de IA consumir.**
+
+| Competência de Eng. de Dados | Onde vive neste repositório |
+|---|---|
+| **Pipeline de ETL incremental** (ingestão → transformação → carga) | `etl.py` — destila conversas e páginas web em unidades atômicas e as carrega em duas engines |
+| **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru (`chat_dump_bruto.md`, HTML) → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
+| **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
+| **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
+| **Qualidade de dados / DataOps** | **624 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
+| **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
+| **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
+
+*Mapa completo, na linguagem de uma vaga de Engenheiro de Dados, em [`docs/carreira/MAPA_PROJETO_PARA_VAGA.md`](docs/carreira/MAPA_PROJETO_PARA_VAGA.md).*
+
+---
+
 ## 📓 Patch Notes
 
 Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é uma feature real, com o comando de voz (`mestre, …`) ou o botão `.env` quando existe. As seções técnicas mais abaixo aprofundam o *como* e o *porquê*; aqui é o *o quê*.
