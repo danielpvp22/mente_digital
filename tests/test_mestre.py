@@ -27,6 +27,30 @@ def test_separar_nao_ativa_no_meio_nem_prefixo():
     assert mestre.separar("o mestre mandou", "mestre") is None        # não é a 1ª palavra
 
 
+# -- e_comando_parada (meia-duplex por voz: corta a fala por caminho leve) ------
+def test_parada_reconhece_variantes():
+    assert mestre.e_comando_parada("pare")
+    assert mestre.e_comando_parada("Para!")
+    assert mestre.e_comando_parada("pare de falar")
+    assert mestre.e_comando_parada("mestre, pare")
+    assert mestre.e_comando_parada("Mestre para")
+    assert mestre.e_comando_parada("chega")
+    assert mestre.e_comando_parada("silêncio")
+    assert mestre.e_comando_parada("quieta")
+    assert mestre.e_comando_parada("cala a boca")
+    assert mestre.e_comando_parada("psiu")
+    assert mestre.e_comando_parada("stop")
+
+
+def test_parada_nao_confunde_com_pergunta():
+    # "para" seguido de conteúdo NÃO é parada (tem cauda) — só o comando seco.
+    assert not mestre.e_comando_parada("para que serve o RAG?")
+    assert not mestre.e_comando_parada("pausa para o café")
+    assert not mestre.e_comando_parada("qual a capital da França?")
+    assert not mestre.e_comando_parada("")
+    assert not mestre.e_comando_parada("me explica isso")
+
+
 def test_separar_palavra_configuravel():
     assert mestre.separar("roberto, liste", "roberto") == "liste"
     assert mestre.separar("mestre, liste", "roberto") is None

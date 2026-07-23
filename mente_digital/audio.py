@@ -143,7 +143,7 @@ class SentenceChunker:
 # no_speech_prob separa o fantasma (prob alta) de um "obrigado" REALMENTE falado (baixa).
 _FILLER_ALUC = frozenset({
     "obrigado", "obrigada", "muito obrigado", "obrigado por assistir",
-    "tchau", "ate logo", "ate a proxima", "valeu",
+    "tchau", "ate logo", "ate a proxima", "valeu", "e ai", "e ae",
     "legendas pela comunidade amara org", "amara org",
     "inscreva se no canal", "compartilhe o video",
 })
@@ -151,16 +151,25 @@ _NO_SPEECH_ALUC = 0.6
 
 
 def parece_alucinacao(texto: str, no_speech_prob: float) -> bool:
-    """True se a transcrição é um filler de alucinação do Whisper em não-fala.
+    """True se a transcrição é um FANTASMA do Whisper em não-fala (eco/ruído/silêncio).
 
-    Puro/testável. Só descarta quando o no_speech_prob é alto (>= _NO_SPEECH_ALUC) —
-    assim um 'obrigado' de verdade (prob baixa) passa, mas o fantasma do mic abrindo
-    (silêncio/ruído -> prob alta) é barrado."""
+    Puro/testável. Só morde quando o no_speech_prob é alto (>= _NO_SPEECH_ALUC): fala REAL
+    tem no_speech baixo, então um 'obrigado' DITO de verdade (prob baixa) passa. Com prob
+    alta, descarta em dois casos: (a) um filler social conhecido (allowlist), ou (b) QUALQUER
+    enunciado muito CURTO (<= settings.whisper_fantasma_max_palavras) — generaliza o fantasma
+    sem listar cada lixo ("buponte", "e aí"), já que uma frase real de 1-2 palavras COM
+    no_speech alto é o mic captando o próprio TTS/ruído, não fala. Enunciado de 3+ palavras
+    (pergunta/explicação real) nunca cai em (b). 0 no teto desliga só a parte (b)."""
     if no_speech_prob < _NO_SPEECH_ALUC:
         return False
     from mente_digital import textutils
     norm = textutils.normaliza(texto).strip(" .!?,")
-    return norm in _FILLER_ALUC
+    if not norm:
+        return True
+    if norm in _FILLER_ALUC:
+        return True
+    teto = settings.whisper_fantasma_max_palavras
+    return teto > 0 and len(norm.split()) <= teto
 
 
 def transcricao_incerta(texto: str, avg_logprob: float, limiar: float, max_palavras: int) -> bool:

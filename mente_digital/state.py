@@ -275,7 +275,17 @@ class AppContext:
         self._disparar_idle_agora()
 
     def _disparar_idle_agora(self) -> None:
-        """Drena o buffer e roda o ETL idle (fora do timer). Nada pendente = no-op."""
+        """Drena o buffer e roda o ETL idle (fora do timer). Nada pendente = no-op.
+
+        GATE (2026-07-23): NÃO consolida enquanto houver sessão conectada — a atomização/
+        indexação/malha/unload não são preemptíveis e atropelavam a próxima pergunta no meio
+        da conversa. Com sessão viva, re-arma e espera a DESCONEXÃO (os itens ficam bufferados,
+        nada se perde); ao desconectar, `_finalizar_sessao` re-agenda e aí `ctx.sessoes` está
+        vazio -> dispara. É o ponto ÚNICO onde o ETL parte, então cobre a carência e o atalho
+        de grace<=0. Desligável por `idle_adiar_com_sessao_viva`."""
+        if self.settings.idle_adiar_com_sessao_viva and self.sessoes:
+            self._rearmar_idle_timer(self.settings.idle_grace_seconds or 5.0)
+            return
         itens = self._idle_itens
         self._idle_itens = []
         self._idle_timer = None

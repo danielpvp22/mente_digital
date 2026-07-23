@@ -39,6 +39,23 @@ _STRIP_MD = re.compile(r"[\[\]*#`]")
 # Fronteira de sentença: fim de frase (. ! ? …) OU ; — mantém o pontuador no pedaço.
 _FIM_SENTENCA = re.compile(r"(?<=[.!?…;])\s+")
 
+# ANTI-CRASH (device-side assert): emoji, pictogramas, dingbats e seletores de variação
+# NÃO são fala e podem mapear para um id fora do vocab do tokenizer do XTTS -> índice fora
+# do range no embedding do GPT-2 -> device-side assert que CORROMPE o contexto CUDA do
+# processo (derruba o LLM/Whisper junto). O Piper filtra tudo pelo _ALLOWED; o XTTS lê
+# texto rico (acento, pontuação, e $ % ° já viram palavra no verbalizar), mas estes blocos
+# não têm leitura — some com eles. Aplicado DEPOIS do verbalizar, então aqui só resta fala.
+_SANITIZAR = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # emoji, pictogramas e símbolos suplementares
+    "\U00002600-\U000027BF"   # dingbats & símbolos diversos
+    "\U00002B00-\U00002BFF"   # setas e símbolos diversos
+    "\U00002190-\U000021FF"   # setas
+    "\U0000FE00-\U0000FE0F"   # seletores de variação (VS1–VS16)
+    "\U0000200D"              # zero-width joiner (emoji ZWJ)
+    "]"
+)
+
 
 def dividir_para_xtts(texto: str, limite: int) -> list[str]:
     """Fatia o texto em pedaços com <= `limite` chars ANTES de mandar ao GPT-2 do XTTS.
@@ -116,19 +133,34 @@ class XttsService:
         self._sample_rate = 24000
         self._autocast_fp16 = False
         self._cache: "OrderedDict[str, str]" = OrderedDict()
-        # BARGE-IN cancelável: a síntese pesada roda em asyncio.to_thread (fora do loop),
-        # então cancelar a CORROTINA que a espera NÃO para a thread — ela segue gerando
-        # chunks (5-6s por frase) e o áudio já enfileirado continua tocando ("não parava
-        # de falar"). Este Event é o único canal que a thread CHECA para abortar; `cancel()`
-        # o seta do event loop e `_run` o consulta nos dois laços. threading.Event é
-        # thread-safe por construção (não precisa de lock).
-        self._cancelar = threading.Event()
+        # BARGE-IN + ANTI-CRASH. Duas peças moram aqui:
+        #
+        # (1) CANCELAMENTO por TOKEN DE GERAÇÃO (`_gen`, não um Event compartilhado): a
+        #     síntese pesada roda em asyncio.to_thread, então cancelar a CORROTINA que a
+        #     espera NÃO para a thread — ela segue gerando chunks (5-6s/frase). `cancel()`
+        #     INCREMENTA `_gen` do event loop; cada `_run` captura seu gen ao ser despachado
+        #     e ABORTA assim que `_gen` mudar. O Event antigo tinha um clear() no início de
+        #     synth_base64 que RESSUSCITAVA uma thread órfã (des-cancelava quem já devia
+        #     parar) — a corrida que deixava duas sínteses vivas. O contador só AVANÇA, então
+        #     a órfã morre e a nova nasce válida sem clear().
+        #
+        # (2) LOCK DE INFERÊNCIA (`_infer_lock`) serializando o modelo: duas inferências XTTS
+        #     concorrentes no MESMO contexto CUDA corrompem o estado do GPT-2 -> device-side
+        #     assert que ENVENENA a GPU do processo (derruba LLM + Whisper + app). Barge-in em
+        #     rajada (turno cortando turno) deixava a thread órfã e a nova rodando JUNTAS; o
+        #     lock garante ESTRUTURALMENTE uma de cada vez. O gen-token (1) faz a órfã largar
+        #     o lock rápido (aborta no próximo chunk), então a espera da nova é curta.
+        self._gen = 0
+        self._gen_lock = threading.Lock()      # protege o incremento de _gen
+        self._infer_lock = threading.Lock()    # 1 inferência XTTS por vez (anti-corrupção CUDA)
 
     def cancel(self) -> None:
-        """Sinaliza à síntese em voo (thread do _run) para abortar. Chamável do event
-        loop no barge-in — barato (só seta o Event); a thread vê o sinal e para nos
-        laços do _run. Não afeta o PRÓXIMO turno: synth_base64 dá clear() no início."""
-        self._cancelar.set()
+        """Sinaliza à síntese em voo (thread do _run) para abortar. Chamável do event loop
+        no barge-in — barato (só incrementa `_gen`); a thread vê a mudança e para nos laços
+        do _run. Não afeta o PRÓXIMO turno: a nova síntese captura o gen JÁ incrementado, logo
+        nasce válida — sem o clear() que ressuscitava a thread órfã do turno anterior."""
+        with self._gen_lock:
+            self._gen += 1
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup. NUNCA levanta (fail-soft)."""
@@ -200,6 +232,7 @@ class XttsService:
         do Piper — o XTTS foneiza acentos/símbolos nativamente. Puro/testável sem modelo."""
         texto = _STRIP_MD.sub("", texto)
         texto = verbalizar(texto)
+        texto = _SANITIZAR.sub(" ", texto)   # tira emoji/símbolo sem leitura (anti-assert)
         return re.sub(r"\s{2,}", " ", texto).strip()
 
     async def synth_base64(self, texto: str) -> Optional[str]:
@@ -215,14 +248,16 @@ class XttsService:
             if cached is not None:
                 self._cache.move_to_end(texto_voz)
                 return cached
-        # Cada síntese começa "não-cancelada": um cancel (barge-in) de um turno anterior
-        # não pode vazar e abortar este. Feito AQUI no event loop, antes de dispatch da
-        # thread (happens-before o _run começar a checar o Event).
-        self._cancelar.clear()
+        # Captura a geração CORRENTE (já refletindo qualquer cancel anterior). Se um cancel
+        # (barge-in) chegar DURANTE esta síntese, `_gen` muda e a thread do _run aborta; não
+        # há clear() para ressuscitar a thread de um turno passado — o contador só avança.
+        meu_gen = self._gen
         try:
-            data = await asyncio.to_thread(self._run, texto_voz)
+            data = await asyncio.to_thread(self._run, texto_voz, meu_gen)
             b64 = base64.b64encode(data).decode("utf-8")
-            if settings.tts_xtts_cache_enabled:
+            # Não cacheia o WAV PARCIAL de uma síntese cancelada (barge-in): congelaria uma
+            # "tomada" truncada para aquele texto. Só a síntese que terminou inteira entra.
+            if settings.tts_xtts_cache_enabled and self._gen == meu_gen:
                 self._cache[texto_voz] = b64
                 while len(self._cache) > settings.tts_cache_size:
                     self._cache.popitem(last=False)
@@ -231,7 +266,7 @@ class XttsService:
             telemetry.error("XTTS", "Erro ao sintetizar (XTTS)", exc)
             return None
 
-    def _run(self, texto_voz: str) -> bytes:
+    def _run(self, texto_voz: str, meu_gen: int) -> bytes:
         """Streaming interno do XTTS -> um WAV (mono, 16-bit, sample_rate no cabeçalho)."""
         import contextlib
 
@@ -263,23 +298,28 @@ class XttsService:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(self._sample_rate)
-            with ctx:
-                for parte in partes:                     # sub-frases já abaixo do limite
-                    # Checado no TOPO: após um break do laço interno, a próxima volta cai
-                    # aqui e sai sem iniciar nova frase (barge-in entre sub-frases).
-                    if self._cancelar.is_set():
-                        break
-                    chunks = self._model.inference_stream(
-                        parte, settings.tts_xtts_language,
-                        self._gpt_cond_latent, self._speaker_embedding, **kw,
-                    )
-                    for ch in chunks:                    # torch float @ sample_rate em [-1,1]
-                        # Checar SÓ entre partes não basta: o inference_stream de UMA frase
-                        # dura 5-6s. Checar por chunk aborta no meio da frase — é o que faz
-                        # a fala parar de fato no barge-in, não só após a frase corrente.
-                        if self._cancelar.is_set():
+            # SERIALIZAÇÃO ANTI-CRASH: uma inferência XTTS por vez no modelo/contexto CUDA.
+            # Sem isto, a thread órfã de um turno cortado e a nova rodavam JUNTAS -> estado
+            # do GPT-2 corrompido -> device-side assert que envenena a GPU. A órfã (gen
+            # mudou) aborta no laço abaixo e larga o lock rápido, então a nova espera pouco.
+            with self._infer_lock:
+                with ctx:
+                    for parte in partes:                 # sub-frases já abaixo do limite
+                        # Checado no TOPO: cancelado/substituído (gen mudou) sai sem iniciar
+                        # nova frase (barge-in entre sub-frases).
+                        if self._gen != meu_gen:
                             break
-                        w.writeframes(_to_int16(ch))
+                        chunks = self._model.inference_stream(
+                            parte, settings.tts_xtts_language,
+                            self._gpt_cond_latent, self._speaker_embedding, **kw,
+                        )
+                        for ch in chunks:                # torch float @ sample_rate em [-1,1]
+                            # Checar SÓ entre partes não basta: o inference_stream de UMA
+                            # frase dura 5-6s. Checar por chunk aborta no meio — é o que faz
+                            # a fala parar de fato no barge-in, não só após a frase corrente.
+                            if self._gen != meu_gen:
+                                break
+                            w.writeframes(_to_int16(ch))
         # Cancelado ou não, o `with wave.open` fecha e escreve o cabeçalho correto para os
         # frames JÁ gravados (WAV parcial válido) — só demos break, nunca retornamos de
         # dentro do `with`. Nada escrito = WAV vazio válido. O chamador trata normalmente.

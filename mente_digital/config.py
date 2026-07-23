@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     whisper_descartar_incerto: bool = False
     whisper_confianca_min_logprob: float = -1.0
     whisper_incerto_max_palavras: int = 2
+    # ANTI-RUÍDO/ECO (generaliza parece_alucinacao): com no_speech_prob ALTO (>= 0.6, i.e.
+    # NÃO-fala), um enunciado de até N palavras é FANTASMA (eco do próprio TTS/ruído virando
+    # "e aí"/"buponte" no Whisper) e é descartado — sem listar cada lixo. Fala real tem
+    # no_speech BAIXO, então uma pergunta curta de verdade passa (o gate é o no_speech, não
+    # só o tamanho); e 3+ palavras nunca cai aqui (protege "que horas são"). 0 = desliga esta
+    # parte (fica só a allowlist de fillers). Sobe/desce conforme os fantasmas no log [WHISPER].
+    whisper_fantasma_max_palavras: int = 2
     # BACKCHANNEL (teste real 2507): ignora "ok"/"aham"/"tchau"/"valeu" — acuse-recebido
     # que virava átomo de memória ("Entendido, registrei") e ativava o pipeline à toa.
     # Ignora em silêncio (nada dito, nada gravado). Lista em otimizador._BACKCHANNEL.
@@ -469,6 +476,20 @@ class Settings(BaseSettings):
     barge_in_servidor: bool = True
     barge_rms_threshold: float = 0.02
     barge_min_frames: int = 8
+    # MEIA-DUPLEX ANTI-ECO + PARADA POR PALAVRA (correção contaminação da sessão live): a
+    # abordagem clássica de meia-duplex MUTA o mic enquanto a IA fala — mas aí só um barge-in
+    # de volume interrompe, e ecoa repetitivo. Aqui o mic segue ligado, mas o que ele capta
+    # DURANTE a fala NÃO abre turno novo (mata o eco/ruído que virava "e aí"/"obrigado"
+    # fantasma); o ÚNICO efeito é o comando de PARAR ("pare"/"mestre, pare"), roteado por uma
+    # cadeia LEVE (regex mestre.e_comando_parada -> corta o TTS, sem LLM/agente). Uma palavra
+    # basta. Desligue com MENTE_PARADA_HABILITADA=false (volta a processar tudo, inclusive eco).
+    parada_habilitada: bool = True
+    # Janela de guarda (s) da cauda do TTS: o servidor não vê o fim do playback no browser,
+    # então considera "ainda tocando" por este tanto após enviar o ÚLTIMO chunk de áudio. Um
+    # valor MAIOR fecha mais eco (mas atrasa aceitar uma pergunta logo após a fala); MENOR
+    # deixa passar a cauda. O intervalo DURANTE a resposta já é coberto pelo pipeline em voo;
+    # isto é só o rabo. Ideal futuro: o front avisar "playback terminou" (aí a janela zera).
+    eco_guarda_seconds: float = 2.5
     # ENDPOINTING ADAPTATIVO (consultoria TTFT #3): fala CURTA (comando, pergunta seca)
     # encerra com `vad_silence_curta_seconds` de silêncio em vez do teto cheio — os 1,2s
     # fixos eram pagos por TODO turno de voz e são maiores que o próprio TTFT do RAG.
@@ -558,6 +579,15 @@ class Settings(BaseSettings):
     # GPU a 100% do ETL disputando o STT/decode do próximo turno. 0 = comportamento antigo
     # (idle imediato). Não afeta o idle por inatividade (esse já espera 90s parado).
     idle_grace_seconds: float = 20.0
+    # ADIAR o idle de conhecimento ENQUANTO houver sessão WebSocket conectada (correção
+    # 2026-07-23): a carência acima só olhava "há decode em voo?", então numa PAUSA entre
+    # turnos (conectado, nada decodificando) o ETL disparava NO MEIO da conversa — atomizar +
+    # indexar (~43s) + rebuild da malha + unload/reload do modelo envenenavam a próxima
+    # pergunta (medido: total 19,6s, TTS 18s por contenção de GPU). Ligado, a consolidação é
+    # SEMPRE "posteriormente": o idle re-arma enquanto `ctx.sessoes` não esvazia e só roda
+    # depois que você desconecta. Desligue (=false) para o comportamento antigo (consolida em
+    # pausas longas com a sessão aberta). Não afeta o crawler agendado (esse já tem guard).
+    idle_adiar_com_sessao_viva: bool = True
     # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
     # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
     idle_descarregar_modelo: bool = True

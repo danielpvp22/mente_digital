@@ -21,6 +21,19 @@ def test_fala_real_nunca_e_alucinacao():
     assert not parece_alucinacao("me explica o RAG", 0.9)
 
 
+def test_fantasma_curto_fora_da_allowlist_e_descartado():
+    # Generalização anti-ruído: com no_speech ALTO, enunciado de 1-2 palavras é fantasma
+    # (eco/ruído), mesmo NÃO estando na allowlist — pega o "Buponte"/"E aí" do teste real.
+    assert parece_alucinacao("Buponte.", 0.9)
+    assert parece_alucinacao("E aí", 0.8)
+
+
+def test_fantasma_curto_com_no_speech_baixo_passa():
+    # no_speech BAIXO = fala real curta ("sim"/"não" de verdade) -> NÃO descarta.
+    assert not parece_alucinacao("Buponte.", 0.2)
+    assert not parece_alucinacao("sim", 0.1)
+
+
 def test_limiar_do_no_speech():
     assert parece_alucinacao("obrigado", 0.6)        # no limiar: descarta
     assert not parece_alucinacao("obrigado", 0.59)   # logo abaixo: passa
