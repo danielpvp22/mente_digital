@@ -17,7 +17,7 @@ import numpy as np
 
 from mente_digital.audio import TtsService, build_tts
 from mente_digital.config import Settings, settings
-from mente_digital.tts_xtts import XttsService, _to_int16
+from mente_digital.tts_xtts import XttsService, _to_int16, dividir_para_xtts
 
 
 class _FakeXttsModel:
@@ -26,6 +26,17 @@ class _FakeXttsModel:
     def inference_stream(self, texto, lang, gpt, spk, **kw):
         yield np.array([0.0, 0.5, -0.5], dtype="float32")
         yield np.array([0.25, -0.25], dtype="float32")
+
+
+class _FakeXttsModelContador:
+    """Registra cada texto recebido; faz yield de 1 amostra por chamada (p/ contar frames)."""
+
+    def __init__(self) -> None:
+        self.textos: list[str] = []
+
+    def inference_stream(self, texto, lang, gpt, spk, **kw):
+        self.textos.append(texto)
+        yield np.array([0.1], dtype="float32")
 
 
 # -- degradação: sem load(), o engine não fala (mas não quebra) ----------------
@@ -92,6 +103,127 @@ def test_build_tts_xtts_nao_importa_coqui(monkeypatch):
     assert type(eng).__name__ == "XttsService"
     # Construir o engine NÃO pode ter importado o coqui (import é tardio, só no load()).
     assert "TTS" not in sys.modules
+
+
+# -- split de segurança contra o estouro do GPT-2 interno (device-side assert) -
+def test_dividir_texto_curto_fica_inteiro():
+    assert dividir_para_xtts("Oi, tudo bem?", 200) == ["Oi, tudo bem?"]
+
+
+def test_dividir_vazio_e_sem_corte():
+    assert dividir_para_xtts("   ", 200) == []
+    inteiro = "a " * 300                                   # 600 chars
+    assert dividir_para_xtts(inteiro, 0) == [inteiro.strip()]  # limite<=0 = sem corte
+
+
+def test_dividir_corta_em_fronteira_de_sentenca_respeitando_limite():
+    texto = "Primeira frase aqui. Segunda frase aqui. Terceira frase aqui aqui."
+    partes = dividir_para_xtts(texto, 25)
+    assert all(len(p) <= 25 for p in partes)
+    assert "".join(partes.copy())                          # não perde conteúdo
+    # cada pedaço é uma sentença (ou junção) — nenhuma foi partida no meio de palavra
+    assert partes[0] == "Primeira frase aqui."
+
+
+def test_dividir_sentenca_longa_quebra_por_palavra():
+    # Uma única sentença SEM pontuação, acima do limite -> quebra por palavra.
+    texto = "palavra " * 20                                 # 160 chars, sem fim de sentença
+    partes = dividir_para_xtts(texto.strip(), 30)
+    assert len(partes) > 1
+    assert all(len(p) <= 30 for p in partes)
+
+
+def test_dividir_palavra_gigante_e_cortada_no_limite():
+    partes = dividir_para_xtts("x" * 250, 100)
+    assert all(len(p) <= 100 for p in partes)
+    assert "".join(partes) == "x" * 250                     # nada some
+
+
+async def test_synth_frase_longa_faz_varias_chamadas_e_concatena(monkeypatch):
+    """Frase acima do teto vira N chamadas ao inference_stream, num único WAV — sem
+    isto o GPT-2 interno estouraria as posições e dispararia o device-side assert."""
+    monkeypatch.setattr(settings, "tts_xtts_max_chars_frase", 20)
+    fake = _FakeXttsModelContador()
+    x = XttsService()
+    x._model = fake
+    x._sample_rate = 24000
+    b64 = await x.synth_base64("Uma frase. Outra frase. Mais uma frase aqui.")
+    assert b64
+    assert len(fake.textos) >= 3                            # fatiou em >= 3 pedaços
+    assert all(len(t) <= 20 for t in fake.textos)
+    with wave.open(io.BytesIO(base64.b64decode(b64)), "rb") as w:
+        assert w.getnframes() == len(fake.textos)           # 1 amostra por chamada, concatenadas
+
+
+# -- barge-in: síntese XTTS cancelável (thread checa o Event) -------------------
+class _FakeXttsModelMuitosChunks:
+    """Faz yield de `total` chunks. Se `service` for dado, aciona service.cancel() logo
+    ANTES de emitir o chunk de índice `corta_apos` — simula o barge-in chegando NO MEIO
+    da síntese (a thread do _run ainda gerando chunks daquela frase)."""
+
+    def __init__(self, service=None, total=6, corta_apos=2):
+        self._service = service
+        self._total = total
+        self._corta_apos = corta_apos
+
+    def inference_stream(self, texto, lang, gpt, spk, **kw):
+        for i in range(self._total):
+            if self._service is not None and i == self._corta_apos:
+                self._service.cancel()               # barge-in chega agora
+            yield np.array([0.1], dtype="float32")
+
+
+def _nframes_wav(data: bytes) -> int:
+    with wave.open(io.BytesIO(data), "rb") as w:
+        return w.getnframes()
+
+
+def _nframes_b64(b64: str) -> int:
+    return _nframes_wav(base64.b64decode(b64))
+
+
+async def test_cancel_no_meio_para_cedo_e_gera_wav_valido():
+    """Barge-in durante a síntese: o _run vê o Event no laço interno e para — o WAV sai
+    válido com MENOS frames que o total (o áudio não gerado não continua tocando)."""
+    x = XttsService()
+    x._sample_rate = 24000
+    # corta_apos=2: chunks 0 e 1 entram; ao chegar no 2, o Event já está setado -> break.
+    x._model = _FakeXttsModelMuitosChunks(service=x, total=6, corta_apos=2)
+    b64 = await x.synth_base64("olá mundo")
+    assert b64                                        # WAV parcial ainda é válido/base64
+    n = _nframes_b64(b64)
+    assert 0 < n < 6                                  # parou cedo: nem todos os chunks entraram
+    assert n == 2
+
+
+def test_cancel_no_topo_do_laco_gera_wav_vazio_valido():
+    """Cancel setado ANTES de sintetizar: o laço externo do _run quebra no topo e o WAV
+    sai vazio, porém válido (cabeçalho fechado pelo `with wave.open`, sem exceção).
+    Chama _run direto para pular o clear() do synth_base64 e exercitar o guard do laço."""
+    x = XttsService()
+    x._sample_rate = 24000
+    x._model = _FakeXttsModelMuitosChunks(total=6)   # sem auto-cancel
+    x._cancelar.set()
+    data = x._run("olá")                              # nada escrito, mas WAV válido
+    assert _nframes_wav(data) == 0
+
+
+async def test_novo_synth_limpa_cancel_anterior():
+    """clear() no início do synth_base64: um cancel de um turno NÃO gruda no próximo —
+    após cancelar, uma nova síntese (sem barge-in) sintetiza TUDO normalmente."""
+    x = XttsService()
+    x._sample_rate = 24000
+    x._model = _FakeXttsModel()                       # 3 + 2 = 5 frames
+    x.cancel()                                        # cauda de cancel do "turno anterior"
+    b64 = await x.synth_base64("olá mundo")           # synth_base64 dá clear() no início
+    assert b64
+    assert _nframes_b64(b64) == 5                     # não ficou grudado cancelado
+
+
+def test_tts_piper_cancel_e_noop():
+    # Contrato unificado: o barge-in chama tts.cancel() sem checar o tipo do engine.
+    t = TtsService()
+    assert t.cancel() is None                         # Piper: no-op, não levanta
 
 
 # -- default seguro no código (ignora o .env local) ----------------------------

@@ -59,6 +59,22 @@ def prompt_hyde(pergunta: str) -> str:
 # O filler que mascara a latência da web agora é um TEMPLATE específico em
 # agent.Agent._msg_web ("procurando X na web…") — sem chamada extra ao LLM, então
 # não pesa no TTFA e diz de fato o que está sendo feito.
+#
+# FILLER CONTÍNUO: a 1ª ponte é o _msg_web (dinâmico, nomeia a query). Enquanto o
+# deep-fetch (3-12s) não volta, o _responder_web fala estas pontes curtas ADICIONAIS
+# a cada intervalo — todas templates, sem LLM, então não pesam no TTFA. Rotacionadas
+# pelo índice p/ não repetir a mesma frase num fetch longo.
+PONTES_WEB = [
+    "Só um instante, tô abrindo as fontes.",
+    "Ainda buscando, quase lá.",
+    "Deixa eu conferir mais uma fonte.",
+    "Um segundo, reunindo o material.",
+]
+
+
+def ponte_continuacao(i: int) -> str:
+    """i-ésima ponte de continuação do filler contínuo (rotaciona a lista)."""
+    return PONTES_WEB[i % len(PONTES_WEB)]
 
 
 # --- Resposta principal (anti-alucinação, brutalmente concisa) ---------------

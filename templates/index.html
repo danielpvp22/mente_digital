@@ -421,6 +421,16 @@
                     else if (data.acao === "ativar_live") { if (isLiveMode) atualizarEstadoOrb('listening'); toast("Acordei — pode falar."); }
                     else if (data.acao === "dormir_live") { if (isLiveMode) atualizarEstadoOrb('dormindo'); toast("Dormindo — diga 'mestre' para acordar."); }
                 }
+                else if (data.tipo === "barge_in") {
+                    // BARGE-IN DO SERVIDOR: o VAD do servidor detectou o dono falando por
+                    // cima e cortou o pipeline/síntese lá — aqui descartamos o áudio que já
+                    // recebemos e enfileiramos (o servidor parar de PRODUZIR não silencia o
+                    // que o navegador JÁ tem no buffer). MESMO flush do barge-in do cliente
+                    // (onaudioprocess). CRÍTICO: só esvazia a fila — NÃO reenvia {tipo:"barge_in"}
+                    // ao servidor (o cliente é quem inicia aquele), senão fecharia um loop.
+                    audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+                    iaFalando = false; if (isLiveMode) atualizarEstadoOrb('listening');
+                }
                 else if (data.tipo === "status") { toast(data.texto); }
                 else if (data.tipo === "erro") { toast("Erro: " + data.texto); }
             };

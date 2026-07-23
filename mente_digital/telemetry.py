@@ -129,6 +129,37 @@ class LatencyTracker:
         self.vad_ms: int | None = None       # janela de silêncio do endpoint (voz)
         self.extrator_ms: int | None = None  # interpretação (gate/LLM ± fase-b overlap)
         self.busca_ms: int | None = None     # estágio Banco (embedding + HNSW + gate)
+        # INSTRUMENTAÇÃO ADITIVA (2026-07): campos best-effort preenchidos DE FORA —
+        # o produtor (llm.stream, dentro da thread do worker/executor) e a síntese TTS
+        # (_falar). Default None = "não medido" (fake de teste, caminho de fundo), então
+        # quem não preenche nunca quebra. São o que reparte o TTFT caixa-preta da rota
+        # 'banco' (lock-wait vs reload frio vs prefill) e separa o decode do TTS/contenção.
+        self.lock_wait_ms: float | None = None    # espera pelo _inference_lock (GPU ocupada)
+        self.prefill_ms: float | None = None      # do lock ao 1º token (prefill do prompt)
+        self.decode_tok_s_gpu: float | None = None  # tok/s PRODUTOR (dentro do worker; imune ao event loop/TTS)
+        self.reload_frio: int | None = None       # 1 se este stream religou o modelo (unload do idle)
+        self.vram_peak_mb: float | None = None    # pico de VRAM alocada no decode (torch)
+        self.tts_synth_ms_total: float | None = None  # soma da síntese de todas as frases do turno
+        self.tts_synth_ms_max: float | None = None    # maior síntese de frase (o pior caso do TTFA/gap)
+        self.tts_frases: int | None = None            # nº de frases sintetizadas
+        # MODO TRACE: timeline de marcos (nome, ms desde t0). Só materializa quando mark
+        # é chamado; fica vazia no caminho comum (custo zero se ninguém instrumenta).
+        self.events: list = []
+
+    def mark(self, nome: str) -> None:
+        """Anexa um marco (nome, ms desde t0) à timeline do TRACE. USA O MESMO relógio
+        do tracker (self._clock) — coerente com ttft/ttfa. Baratíssimo (um append) e
+        best-effort: chamado só quando há um tracker real, então não precisa de guarda."""
+        self.events.append((nome, round((self._clock() - self.t0) * 1000, 1)))
+
+    def registrar_synth(self, ms: float) -> None:
+        """Acumula o tempo de síntese TTS de UMA frase: total, máximo e contagem. A
+        síntese XTTS inline era 100% cega — isto a mede sem tocar o fluxo (o _falar
+        cronometra cada synth_base64). None inicial vira 0 no 1º registro."""
+        self.tts_frases = (self.tts_frases or 0) + 1
+        self.tts_synth_ms_total = (self.tts_synth_ms_total or 0.0) + ms
+        if self.tts_synth_ms_max is None or ms > self.tts_synth_ms_max:
+            self.tts_synth_ms_max = ms
 
     def note(self, msg: dict) -> None:
         tipo = msg.get("tipo")
@@ -226,9 +257,16 @@ class Database:
             lat_cols = [r[1] for r in c.execute("PRAGMA table_info(metricas_latencia)").fetchall()]
             # vad/extrator/busca: o waterfall da consultoria TTFT (#1) — mesma migração
             # idempotente dos demais (banco antigo ganha as colunas, linhas velhas = NULL).
+            # As colunas lock_wait/prefill/decode_tok_s_gpu/reload_frio/vram_peak e as
+            # tts_synth_* são a instrumentação aditiva de 2026-07 — mesma migração
+            # idempotente (banco antigo ganha as colunas, linhas velhas = NULL).
             for _col, _tipo in (("stt_ms", "INTEGER"), ("decode_tok_s", "REAL"),
                                 ("n_tokens", "INTEGER"), ("vad_ms", "INTEGER"),
-                                ("extrator_ms", "INTEGER"), ("busca_ms", "INTEGER")):
+                                ("extrator_ms", "INTEGER"), ("busca_ms", "INTEGER"),
+                                ("lock_wait_ms", "REAL"), ("prefill_ms", "REAL"),
+                                ("decode_tok_s_gpu", "REAL"), ("reload_frio", "INTEGER"),
+                                ("vram_peak_mb", "REAL"), ("tts_synth_ms_total", "REAL"),
+                                ("tts_synth_ms_max", "REAL"), ("tts_frases", "INTEGER")):
                 if _col not in lat_cols:
                     c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
             # Métricas do ciclo do conhecimento (painel 2026-07): retrato DIÁRIO da
@@ -644,20 +682,53 @@ class Database:
         vad_ms: Optional[int] = None,
         extrator_ms: Optional[int] = None,
         busca_ms: Optional[int] = None,
+        lock_wait_ms: Optional[float] = None,
+        prefill_ms: Optional[float] = None,
+        decode_tok_s_gpu: Optional[float] = None,
+        reload_frio: Optional[int] = None,
+        vram_peak_mb: Optional[float] = None,
+        tts_synth_ms_total: Optional[float] = None,
+        tts_synth_ms_max: Optional[float] = None,
+        tts_frases: Optional[int] = None,
     ) -> None:
         try:
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO metricas_latencia "
                     "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, "
-                    "n_tokens, vad_ms, extrator_ms, busca_ms) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "n_tokens, vad_ms, extrator_ms, busca_ms, lock_wait_ms, prefill_ms, "
+                    "decode_tok_s_gpu, reload_frio, vram_peak_mb, tts_synth_ms_total, "
+                    "tts_synth_ms_max, tts_frases) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms,
-                     stt_ms, decode_tok_s, n_tokens, vad_ms, extrator_ms, busca_ms),
+                     stt_ms, decode_tok_s, n_tokens, vad_ms, extrator_ms, busca_ms,
+                     lock_wait_ms, prefill_ms, decode_tok_s_gpu, reload_frio, vram_peak_mb,
+                     tts_synth_ms_total, tts_synth_ms_max, tts_frases),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar latência", exc)
+
+    # FILTRO DE OUTLIER (instrumentação 2026-07): uma resposta com TTFT ou tok/s acima
+    # dos tetos de sanidade é artefato de relógio-de-parede (idle/reload frio) e envenena
+    # p95/AVG — o id272 (ttft=346800ms, tok_s=2142) sozinho distorcia tudo. Aqui a linha
+    # é EXCLUÍDA da agregação (mas permanece no banco). NULL nunca é filtrado: turno
+    # digitado sem tok/s, linha antiga sem a coluna — tratados como "dentro".
+    @staticmethod
+    def _clausula_saneamento() -> str:
+        return ("(ttft_ms IS NULL OR ttft_ms <= ?) "
+                "AND (decode_tok_s IS NULL OR decode_tok_s <= ?)")
+
+    def _contar_outliers(self, conn: sqlite3.Connection) -> int:
+        """Quantas linhas o saneamento descarta (para logar o que ficou de fora)."""
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM metricas_latencia "
+                "WHERE ttft_ms > ? OR decode_tok_s > ?",
+                (settings.latencia_ttft_teto_ms, settings.latencia_tok_s_teto),
+            ).fetchone()[0]
+        except Exception:
+            return 0
 
     @staticmethod
     def _percentil(ordenados: list, frac: float):
@@ -681,10 +752,19 @@ class Database:
         out: dict = {"amostras": 0, "estagios": {}}
         try:
             with self._conn() as conn:
+                filtrados = self._contar_outliers(conn)
+                if filtrados:
+                    telemetry.track(
+                        "LATENCIA",
+                        f"Percentis: {filtrados} linha(s) fora dos tetos de sanidade "
+                        f"(ttft>{settings.latencia_ttft_teto_ms}ms ou "
+                        f"tok/s>{settings.latencia_tok_s_teto}) — excluída(s) da agregação.",
+                    )
                 rows = conn.execute(
                     f"SELECT {', '.join(campos)} FROM metricas_latencia "
+                    f"WHERE {self._clausula_saneamento()} "
                     "ORDER BY id DESC LIMIT ?",
-                    (ultimas,),
+                    (settings.latencia_ttft_teto_ms, settings.latencia_tok_s_teto, ultimas),
                 ).fetchall()
             out["amostras"] = len(rows)
             for i, campo in enumerate(campos):
@@ -1164,9 +1244,13 @@ class Database:
                         "FROM log_etl ORDER BY id DESC LIMIT 10"
                     ).fetchall()
                 ]
+                # Mesmo saneamento dos percentis: a média não pode ser puxada pelo
+                # artefato wall-clock (id272). Linhas com NULL passam (não filtradas).
                 lat = conn.execute(
                     "SELECT COUNT(*), AVG(ttft_ms), AVG(ttfa_ms), AVG(total_ms), "
-                    "AVG(stt_ms), AVG(decode_tok_s) FROM metricas_latencia"
+                    "AVG(stt_ms), AVG(decode_tok_s) FROM metricas_latencia "
+                    f"WHERE {self._clausula_saneamento()}",
+                    (settings.latencia_ttft_teto_ms, settings.latencia_tok_s_teto),
                 ).fetchone()
                 latencia = {
                     "amostras": lat[0] or 0,

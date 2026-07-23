@@ -94,10 +94,20 @@ class Agent(ComandosMestre, Respostas):
         self._filler_i = 0  # rotaciona o texto do filler p/ não ficar repetitivo
         self._atalhos: Optional[dict] = None  # cache dos atalhos-mestre (#2), lazy do DB
 
-    async def _falar(self, send: Sender, frases: List[str]) -> None:
-        """Envia frases prontas para o TTS conforme o chunker fecha sentenças."""
+    async def _falar(
+        self, send: Sender, frases: List[str], tracker: Optional[LatencyTracker] = None
+    ) -> None:
+        """Envia frases prontas para o TTS conforme o chunker fecha sentenças.
+
+        `tracker` (opcional, hot-path interativo) cronometra CADA síntese — a síntese
+        XTTS inline era 100% cega e é justamente ela que a métrica atual de tok/s
+        (lado consumidor) confunde com o decode. None = sem medição (fundo/testes)."""
         for frase in frases:
+            _t = time.perf_counter() if tracker is not None else 0.0
             audio = await self.ctx.tts.synth_base64(frase)
+            if tracker is not None:
+                tracker.registrar_synth((time.perf_counter() - _t) * 1000)
+                tracker.mark("tts_frase")
             if audio:
                 await send({"tipo": "audio", "base64": audio})
 
@@ -221,7 +231,7 @@ class Agent(ComandosMestre, Respostas):
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
-                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial, mem=mem)
+                    texto_final = await self._pipeline_tools(texto_usuario, send_medido, decisao, auditar=not mem.confidencial, mem=mem, tracker=tracker)
                     if texto_final:
                         # Ações de AGENDA/LISTA (registra_conhecimento=False) não vão para o
                         # dump: "lembrete #3 criado" não é conhecimento a eternizar no vault.
@@ -277,6 +287,7 @@ class Agent(ComandosMestre, Respostas):
                     prefixo="\n\n" if paragrafos else "",
                     max_tokens=nivel.max_tokens,
                     instrucao_extra=self._instrucao_com_perfil(nivel.instrucao),
+                    tracker=tracker,
                 )
                 if p:
                     paragrafos.append(p)
@@ -302,6 +313,7 @@ class Agent(ComandosMestre, Respostas):
                 web = await self._responder_web(
                     termos, pergunta_resp, send_medido, mem,
                     consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
+                    tracker=tracker,
                 )
                 if web:
                     paragrafos.append(web)
@@ -411,6 +423,7 @@ class Agent(ComandosMestre, Respostas):
                     web = await self._responder_web(
                         termos, pergunta_resp, send_medido, mem,
                         consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
+                        tracker=tracker,
                     )
                     if web:
                         paragrafos.append(web)
@@ -487,12 +500,60 @@ class Agent(ComandosMestre, Respostas):
             "LATENCIA",
             f"rota={rota} vad={tracker.vad_ms}ms stt={tracker.stt_ms}ms "
             f"extrator={tracker.extrator_ms}ms busca={tracker.busca_ms}ms "
-            f"TTFT={ttft}ms tok/s={toks} TTFA={ttfa}ms total={total}ms n_tok={tracker.n_tokens}",
+            f"lock={tracker.lock_wait_ms}ms prefill={tracker.prefill_ms}ms frio={tracker.reload_frio} "
+            f"TTFT={ttft}ms tok/s={toks} tok/s_gpu={tracker.decode_tok_s_gpu} "
+            f"TTFA={ttfa}ms total={total}ms n_tok={tracker.n_tokens} "
+            f"tts_total={tracker.tts_synth_ms_total}ms tts_max={tracker.tts_synth_ms_max}ms "
+            f"vram_peak={tracker.vram_peak_mb}MB",
         )
         await asyncio.to_thread(
             db.save_latency, rota, ttft, ttfa, total, tracker.stt_ms, toks, tracker.n_tokens,
             vad_ms=tracker.vad_ms, extrator_ms=tracker.extrator_ms, busca_ms=tracker.busca_ms,
+            lock_wait_ms=tracker.lock_wait_ms, prefill_ms=tracker.prefill_ms,
+            decode_tok_s_gpu=tracker.decode_tok_s_gpu, reload_frio=tracker.reload_frio,
+            vram_peak_mb=tracker.vram_peak_mb, tts_synth_ms_total=tracker.tts_synth_ms_total,
+            tts_synth_ms_max=tracker.tts_synth_ms_max, tts_frases=tracker.tts_frases,
         )
+        # TRACE por turno (opt-in, MENTE_TRACE_ENABLED): a timeline de marcos + todos os
+        # tempos, uma linha JSONL por dia. É o dump que o dono pediu p/ testes futuros.
+        # Best-effort: um erro no dump NUNCA pode afetar a resposta já entregue.
+        if settings.trace_enabled:
+            await self._dump_trace(tracker, rota, ttft, ttfa, total, toks)
+
+    async def _dump_trace(
+        self, tracker: LatencyTracker, rota: str,
+        ttft: Optional[int], ttfa: Optional[int], total: Optional[int], toks: Optional[float],
+    ) -> None:
+        """Grava UMA linha JSON do turno em <trace_dir>/AAAAMMDD.jsonl (rotacionado por
+        dia). Roda em thread e engole o próprio erro via telemetry.error — instrumentação
+        não pode derrubar o pipeline."""
+        registro = {
+            "timestamp": datetime.now().isoformat(),
+            "rota": rota,
+            "ttft_ms": ttft, "ttfa_ms": ttfa, "total_ms": total,
+            "n_tokens": tracker.n_tokens,
+            "stt_ms": tracker.stt_ms, "vad_ms": tracker.vad_ms,
+            "extrator_ms": tracker.extrator_ms, "busca_ms": tracker.busca_ms,
+            "lock_wait_ms": tracker.lock_wait_ms, "prefill_ms": tracker.prefill_ms,
+            "decode_tok_s": toks, "decode_tok_s_gpu": tracker.decode_tok_s_gpu,
+            "reload_frio": tracker.reload_frio, "vram_peak_mb": tracker.vram_peak_mb,
+            "tts_synth_ms_total": tracker.tts_synth_ms_total,
+            "tts_synth_ms_max": tracker.tts_synth_ms_max, "tts_frases": tracker.tts_frases,
+            "events": tracker.events,
+        }
+
+        def _escrever() -> None:
+            try:
+                os.makedirs(settings.trace_dir, exist_ok=True)
+                caminho = os.path.join(
+                    settings.trace_dir, f"{datetime.now():%Y%m%d}.jsonl"
+                )
+                with open(caminho, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(registro, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                telemetry.error("TRACE", "Falha ao gravar linha de trace", exc)
+
+        await asyncio.to_thread(_escrever)
 
     async def _rotear(self, texto_usuario: str, observacoes: str = ""):
         """Pergunta ao LLM qual ferramenta usar; devolve uma `tools.Decisao` ou None."""
@@ -506,7 +567,7 @@ class Agent(ComandosMestre, Respostas):
 
     async def _pipeline_tools(
         self, texto_usuario: str, send: Sender, primeira, auditar: bool = True,
-        mem: Optional[SessionMemory] = None,
+        mem: Optional[SessionMemory] = None, tracker: Optional[LatencyTracker] = None,
     ) -> str:
         """Loop agêntico CAPADO: executa ferramentas e então fala a resposta final.
 
@@ -543,7 +604,8 @@ class Agent(ComandosMestre, Respostas):
 
         resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"
         resposta = await self._responder_stream(
-            prompts.prompt_resposta_ferramentas(resultados, texto_usuario), send
+            prompts.prompt_resposta_ferramentas(resultados, texto_usuario), send,
+            tracker=tracker,
         )
         if resposta.strip():
             return resposta

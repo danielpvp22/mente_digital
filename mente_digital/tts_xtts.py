@@ -23,6 +23,7 @@ import base64
 import io
 import os
 import re
+import threading
 import wave
 from collections import OrderedDict
 from typing import Optional
@@ -34,6 +35,61 @@ from mente_digital.verbalizar import verbalizar
 # Só tira a marcação Markdown (o XTTS lê pontuação/acentos nativamente — ao contrário do
 # Piper, não precisa do _ALLOWED que apagava $ % ° etc.). Números viram palavra via verbalizar.
 _STRIP_MD = re.compile(r"[\[\]*#`]")
+
+# Fronteira de sentença: fim de frase (. ! ? …) OU ; — mantém o pontuador no pedaço.
+_FIM_SENTENCA = re.compile(r"(?<=[.!?…;])\s+")
+
+
+def dividir_para_xtts(texto: str, limite: int) -> list[str]:
+    """Fatia o texto em pedaços com <= `limite` chars ANTES de mandar ao GPT-2 do XTTS.
+
+    PORQUÊ: o GPT-2 interno tem teto de posições (gpt_max_audio_tokens ~605/14s). Uma frase
+    longa gera audio-tokens além do teto e o índice de posição estoura -> device-side assert
+    que corrompe o contexto CUDA do processo (derruba o LLM junto). O corte é a rede de
+    segurança na fronteira do XTTS, independente do que o pipeline entregou. Puro/testável.
+
+    Corta primeiro em fronteira de SENTENÇA; sentença que ainda passe do limite é quebrada em
+    fronteira de PALAVRA; palavra única gigante (URL etc.) é cortada no limite. limite<=0 = sem
+    corte (devolve o texto inteiro num pedaço)."""
+    texto = texto.strip()
+    if not texto or limite <= 0 or len(texto) <= limite:
+        return [texto] if texto else []
+    pedacos: list[str] = []
+    atual = ""
+    for sentenca in _FIM_SENTENCA.split(texto):
+        if not sentenca:
+            continue
+        # Cabe junto do que já acumulou? Junta (menos passes = melhor).
+        candidato = f"{atual} {sentenca}".strip() if atual else sentenca
+        if len(candidato) <= limite:
+            atual = candidato
+            continue
+        if atual:
+            pedacos.append(atual)
+            atual = ""
+        if len(sentenca) <= limite:
+            atual = sentenca
+            continue
+        # Sentença sozinha estoura o limite -> quebra por palavra.
+        for palavra in sentenca.split():
+            if len(palavra) > limite:                # palavra única > limite (URL etc.)
+                if atual:
+                    pedacos.append(atual)
+                    atual = ""
+                while len(palavra) > limite:         # fatia até caber (não sobra resto grande)
+                    pedacos.append(palavra[:limite])
+                    palavra = palavra[limite:]
+                atual = palavra
+                continue
+            cand = f"{atual} {palavra}".strip() if atual else palavra
+            if len(cand) <= limite:
+                atual = cand
+            else:
+                pedacos.append(atual)
+                atual = palavra
+    if atual:
+        pedacos.append(atual)
+    return pedacos
 
 
 def _to_int16(chunk) -> bytes:
@@ -60,6 +116,19 @@ class XttsService:
         self._sample_rate = 24000
         self._autocast_fp16 = False
         self._cache: "OrderedDict[str, str]" = OrderedDict()
+        # BARGE-IN cancelável: a síntese pesada roda em asyncio.to_thread (fora do loop),
+        # então cancelar a CORROTINA que a espera NÃO para a thread — ela segue gerando
+        # chunks (5-6s por frase) e o áudio já enfileirado continua tocando ("não parava
+        # de falar"). Este Event é o único canal que a thread CHECA para abortar; `cancel()`
+        # o seta do event loop e `_run` o consulta nos dois laços. threading.Event é
+        # thread-safe por construção (não precisa de lock).
+        self._cancelar = threading.Event()
+
+    def cancel(self) -> None:
+        """Sinaliza à síntese em voo (thread do _run) para abortar. Chamável do event
+        loop no barge-in — barato (só seta o Event); a thread vê o sinal e para nos
+        laços do _run. Não afeta o PRÓXIMO turno: synth_base64 dá clear() no início."""
+        self._cancelar.set()
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup. NUNCA levanta (fail-soft)."""
@@ -146,6 +215,10 @@ class XttsService:
             if cached is not None:
                 self._cache.move_to_end(texto_voz)
                 return cached
+        # Cada síntese começa "não-cancelada": um cancel (barge-in) de um turno anterior
+        # não pode vazar e abortar este. Feito AQUI no event loop, antes de dispatch da
+        # thread (happens-before o _run começar a checar o Event).
+        self._cancelar.clear()
         try:
             data = await asyncio.to_thread(self._run, texto_voz)
             b64 = base64.b64encode(data).decode("utf-8")
@@ -183,16 +256,31 @@ class XttsService:
             ctx = torch.autocast("cuda", dtype=torch.float16)
         else:
             ctx = contextlib.nullcontext()
+        # Corte de segurança: nenhum pedaço passa do teto do GPT-2 interno (ver dividir_para_xtts).
+        partes = dividir_para_xtts(texto_voz, settings.tts_xtts_max_chars_frase)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(self._sample_rate)
             with ctx:
-                chunks = self._model.inference_stream(
-                    texto_voz, settings.tts_xtts_language,
-                    self._gpt_cond_latent, self._speaker_embedding, **kw,
-                )
-                for ch in chunks:                        # torch float @ sample_rate em [-1,1]
-                    w.writeframes(_to_int16(ch))
+                for parte in partes:                     # sub-frases já abaixo do limite
+                    # Checado no TOPO: após um break do laço interno, a próxima volta cai
+                    # aqui e sai sem iniciar nova frase (barge-in entre sub-frases).
+                    if self._cancelar.is_set():
+                        break
+                    chunks = self._model.inference_stream(
+                        parte, settings.tts_xtts_language,
+                        self._gpt_cond_latent, self._speaker_embedding, **kw,
+                    )
+                    for ch in chunks:                    # torch float @ sample_rate em [-1,1]
+                        # Checar SÓ entre partes não basta: o inference_stream de UMA frase
+                        # dura 5-6s. Checar por chunk aborta no meio da frase — é o que faz
+                        # a fala parar de fato no barge-in, não só após a frase corrente.
+                        if self._cancelar.is_set():
+                            break
+                        w.writeframes(_to_int16(ch))
+        # Cancelado ou não, o `with wave.open` fecha e escreve o cabeçalho correto para os
+        # frames JÁ gravados (WAV parcial válido) — só demos break, nunca retornamos de
+        # dentro do `with`. Nada escrito = WAV vazio válido. O chamador trata normalmente.
         return buf.getvalue()

@@ -22,7 +22,7 @@ import shutil
 import ssl
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Awaitable, List, Optional, Tuple
 
 from mente_digital import antiinjecao
 from mente_digital import disjuntor as _disjuntor
@@ -1047,6 +1047,53 @@ def rankear_por_similaridade(
     return out
 
 
+async def coletar_uteis(
+    coros: List[Awaitable], aceitar: int, timeout: Optional[float] = None
+) -> Tuple[list, int]:
+    """RACE-FIRST-K: dispara todas as `coros` como tasks, itera conforme COMPLETAM e
+    coleta os resultados ÚTEIS (truthy) até `aceitar`; então CANCELA as restantes.
+
+    É a "consulta ~15 sites ao mesmo tempo, aceita os 3 primeiros que responderem":
+    não espera as fontes lentas/mortas. Puro do ponto de vista de REDE (as coros é que
+    fazem o IO), então é testável com fakes que dormem tempos diferentes.
+
+    `timeout` (s) é aplicado POR tarefa (asyncio.wait_for): um item travado vira None
+    (não contribui) em vez de segurar a coleta — rede de segurança, já que só esperamos
+    os `aceitar` mais rápidos. Uma coro que FALHA ou estoura o timeout conta como
+    'não-útil' e é ignorada; NUNCA derruba a coleta. CancelledError do chamador
+    (barge-in) propaga: as tarefas pendentes são canceladas no finally e o erro sobe.
+
+    Devolve (uteis, n_cancelados) — os úteis em ordem de CONCLUSÃO (os mais rápidos).
+    """
+    async def _guardado(coro):
+        try:
+            if timeout is not None:
+                return await asyncio.wait_for(coro, timeout)
+            return await coro
+        except asyncio.CancelledError:
+            raise                       # cancelamento externo (barge-in) tem que subir
+        except Exception:
+            return None                 # falha/timeout desta fonte -> não contribui
+
+    tarefas = [asyncio.ensure_future(_guardado(c)) for c in coros]
+    uteis: list = []
+    pendentes: list = []
+    try:
+        for fut in asyncio.as_completed(tarefas):
+            r = await fut
+            if r:
+                uteis.append(r)
+                if len(uteis) >= aceitar:
+                    break               # já temos os K mais rápidos — cancela o resto
+    finally:
+        pendentes = [t for t in tarefas if not t.done()]
+        for t in pendentes:
+            t.cancel()
+        if pendentes:
+            await asyncio.gather(*pendentes, return_exceptions=True)
+    return uteis, len(pendentes)
+
+
 # User-Agent de navegador reusado nos DOIS clients do deep-fetch (o normal e o de
 # fallback sem verificação de cert) — muitos sites 403-am requisições sem um UA real.
 _HEADERS_FETCH = {
@@ -1200,7 +1247,7 @@ class WebSearcher:
             return None  # sem embedding não há como rankear -> usa snippets
 
         urls = [r.get("href") or r.get("url") or "" for r in res]
-        urls = [u for u in urls if u][: settings.web_fetch_pages]
+        urls = [u for u in urls if u][: settings.web_fetch_pool]
         if not urls:
             return None
 
@@ -1210,20 +1257,39 @@ class WebSearcher:
             telemetry.warn("WEB_FETCH", "httpx ausente — usando só snippets.")
             return None
 
+        from urllib.parse import urlparse
+
         async with httpx.AsyncClient(
             timeout=settings.web_fetch_timeout, follow_redirects=True, headers=_HEADERS_FETCH
         ) as client:
-            paginas = await asyncio.gather(*(self._baixar_pagina(client, u) for u in urls))
+            # RACE-FIRST-K: dispara até web_fetch_pool fetches concorrentes e aceita os
+            # web_fetch_aceitar mais rápidos com corpo útil, cancelando o resto — não
+            # espera as fontes lentas/mortas. Cada coro devolve (url, texto) só se a
+            # página teve corpo. O cancelamento/gather acontece DENTRO do `async with`
+            # (coletar_uteis só retorna com as tarefas resolvidas), então o client nunca
+            # fecha sob uma requisição viva.
+            async def _fetch_um(u):
+                texto = await self._baixar_pagina(client, u)
+                return (u, texto) if texto else None
 
-        # Proveniência ("fonte?"): domínios das páginas que BAIXARAM — são as que
-        # podem ter contribuído com trechos. Falado como domínio (URL é inaudível).
-        from urllib.parse import urlparse
+            aceitos, n_cancelados = await coletar_uteis(
+                [_fetch_um(u) for u in urls],
+                settings.web_fetch_aceitar,
+                settings.web_fetch_timeout_s,
+            )
 
+        # Proveniência ("fonte?"): domínios das páginas ACEITAS — as que contribuíram
+        # com trechos. Falado como domínio (URL é inaudível).
         self.ultimos_dominios = [
-            urlparse(u).netloc for u, t in zip(urls, paginas) if t and urlparse(u).netloc
+            urlparse(u).netloc for u, _t in aceitos if urlparse(u).netloc
         ]
 
-        textos = [t for t in paginas if t]
+        textos = [t for _u, t in aceitos]
+        telemetry.track(
+            "WEB_FETCH",
+            f"race: {len(urls)} disparados, {len(aceitos)}/{settings.web_fetch_aceitar} "
+            f"aceitos, {n_cancelados} cancelados.",
+        )
         if not textos:
             return None
 
@@ -1292,7 +1358,15 @@ class WebSearcher:
         self._talvez_retomar_pendentes()  # cooldown passou? drena a fila em background
         telemetry.track("DDG_API", f"Disparando pesquisa web para: '{termo}'")
         try:
-            res = await self._ddg(termo, settings.web_max_results)
+            # Com o deep-fetch ligado, o race abre até web_fetch_pool páginas — então o
+            # DDG precisa devolver >= pool candidatos (senão o pool fica ocioso). Sem o
+            # fetch, mantém o web_max_results de sempre (só snippets).
+            n_res = (
+                max(settings.web_max_results, settings.web_fetch_pool)
+                if settings.web_fetch_enabled
+                else settings.web_max_results
+            )
+            res = await self._ddg(termo, n_res)
             self._disjuntor.registrar_sucesso()  # canal respondeu (mesmo que vazio)
             if not res:
                 return NENHUM
