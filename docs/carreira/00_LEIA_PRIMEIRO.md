@@ -29,9 +29,8 @@ Trabalhe nos arquivos nesta ordem:
 Me passe isso e eu finalizo o CV e o "Sobre" do LinkedIn com os números reais no lugar
 dos `«...»`.
 
-## Sobre o gap com a stack da XP (honestidade estratégica)
-A vaga é Databricks/Spark-first. Se você ainda não tem essa stack de produção, o
-caminho mais rápido e honesto está no fim do `MAPA_PROJETO_PARA_VAGA.md`: um
-mini-projeto **PySpark + Delta Lake** (Databricks Community Edition é grátis) fecha o
-gap e vira uma linha forte no CV. Não invente experiência que não tem — a XP entrevista
-fundo.
+## Você já atende os requisitos essenciais
+Você confirmou experiência prática em **Databricks/Spark** e enquadramento **PCD** —
+ou seja, atende os requisitos essenciais e o critério da vaga. Os documentos já
+tratam a stack como afirmada (não como "em progresso"). O roteiro de como apresentar
+isso em entrevista está no fim do `MAPA_PROJETO_PARA_VAGA.md`.

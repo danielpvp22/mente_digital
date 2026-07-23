@@ -20,34 +20,35 @@
 
 ### RESUMO PROFISSIONAL
 
-Engenheiro de Dados com «X» anos de experiência em construção de pipelines de
-dados, modelagem e preparação de datasets confiáveis para consumo analítico e por
-modelos de IA. Sólido em **SQL avançado**, **Python** e **arquitetura de dados
-(relacional e não-relacional)**, com prática em **ETL incremental, controle de
-qualidade e otimização de performance/custo**. Cultura forte de **DataOps**:
-versionamento, testes automatizados e decisões orientadas por métrica. Buscando
-atuar na construção de camadas analíticas (medallion) e no fornecimento de dados
-consistentes para times de dados e IA.
+Engenheiro de Dados com «X» anos de experiência construindo pipelines em
+**Databricks (Spark/PySpark, Delta)**, modelando camadas analíticas e preparando
+datasets confiáveis para consumo analítico e por modelos de IA. Sólido em **SQL
+avançado**, **Python** e **arquitetura de dados (relacional e não-relacional)**, com
+prática em **ETL incremental, controle de qualidade e otimização de
+performance/custo**. Cultura forte de **DataOps**: versionamento, testes
+automatizados e decisões orientadas por métrica. Atuo na construção de camadas
+medallion (Bronze/Silver/Gold) e no fornecimento de dados consistentes para times de
+dados e IA.
 
-> Ajuste os anos e, se você já usou Spark/Databricks/Airflow no Grupo SC, troque a
-> frase para citar isso explicitamente — é o que mais pontua nesta vaga.
+> Ajuste só o número de anos. A frase já afirma Databricks/Spark — mantenha, pois é
+> o que mais pontua nesta vaga.
 
 ---
 
 ### COMPETÊNCIAS TÉCNICAS
 
-- **Linguagens:** Python (engenharia de dados), SQL avançado, «Scala/Java se aplicável»
-- **Big Data / Processamento:** «Spark / PySpark», «Databricks / Delta Lake», processamento em lote e streaming
-- **Orquestração:** «Airflow», «Azure Data Factory (ADF)», agendamento e pipelines resilientes
+- **Big Data / Processamento:** Databricks, Apache Spark, PySpark, Delta Lake, processamento em lote e streaming
+- **Linguagens:** Python (engenharia de dados), SQL avançado«, Scala/Java se aplicável»
+- **Orquestração:** «Apache Airflow e/ou Azure Data Factory (ADF) — cite o que usou», agendamento e pipelines resilientes
 - **Bancos de dados:** «PostgreSQL / SQL Server / Oracle», modelagem dimensional e relacional; NoSQL/vetorial (ChromaDB)
 - **Cloud:** «Azure / AWS / GCP — cite as que usou»
 - **DataOps & Qualidade:** Git, CI, testes automatizados, migrações de schema idempotentes, data quality, observabilidade/telemetria
 - **Modelagem:** arquitetura medallion (Bronze/Silver/Gold), ingestão incremental (CDC/watermark), deduplicação, proveniência/linhagem
 - **Ferramentas de dados para IA:** embeddings, pipelines de RAG, indexação vetorial
 
-> **Regra de ouro:** só liste o que você sabe defender em entrevista. Onde estiver
-> `«...»`, coloque a sua realidade. Se ainda não tem Spark/Databricks de produção,
-> veja a seção "Formação Contínua" abaixo — declare como "em progresso", não invente.
+> **Regra de ouro:** Databricks/Spark/Delta já entram afirmados (você confirmou a
+> experiência). Nos `«...»` restantes (orquestração, cloud, banco), coloque só o que
+> usou de fato — o resto, apague.
 
 ---
 
@@ -60,9 +61,9 @@ consistentes para times de dados e IA.
 > mensurável**. Abaixo, bullets-modelo já na linguagem da vaga XP — **substitua os
 > `«...»` pelos seus números e ferramentas reais**:
 
-- Construí e mantive pipelines de ETL/ELT em «ferramenta» processando «volume, ex.: X GB/milhões de registros por dia» de múltiplas fontes, entregando dados confiáveis para «times de analytics/BI/ciência de dados».
-- Modelei camadas analíticas «Bronze/Silver/Gold ou staging/DW» em «SQL/Spark», padronizando «X» fontes heterogêneas em datasets conformados e reutilizáveis.
-- Otimizei performance e custo de «queries/jobs», reduzindo «tempo de execução/custo» em «X%» através de «particionamento / reescrita de SQL / cache / ajuste de cluster».
+- Construí e mantive pipelines de ETL/ELT em Databricks (Spark/PySpark), processando «volume, ex.: X GB/milhões de registros por dia» de múltiplas fontes, entregando dados confiáveis para «times de analytics/BI/ciência de dados».
+- Modelei camadas analíticas «Bronze/Silver/Gold ou staging/DW» em Spark/SQL sobre Delta Lake, padronizando «X» fontes heterogêneas em datasets conformados e reutilizáveis.
+- Otimizei performance e custo de jobs Spark/queries, reduzindo «tempo de execução/custo» em «X%» através de «particionamento / reescrita de SQL / cache / ajuste de cluster».
 - Implementei controles de **data quality** e testes automatizados que reduziram «incidentes/retrabalho» em «X%».
 - Apliquei boas práticas de **DataOps**: versionamento em Git, «CI/CD», documentação e migrações de schema versionadas.
 - Dei suporte a «cientistas de dados / analistas» disponibilizando datasets consistentes e documentados para «modelos/relatórios».
@@ -109,12 +110,11 @@ de IA** — a mesma disciplina de engenharia de dados que sustenta um time de IA
 
 ### FORMAÇÃO CONTÍNUA / CERTIFICAÇÕES
 
-> Esta seção é onde você fecha o gap com a stack da XP de forma honesta e proativa.
-> Sugestões de alto valor para esta vaga (cite as que estiver fazendo/tiver):
+> Você já tem a experiência prática de Databricks/Spark. Uma certificação aqui
+> apenas *carimba* isso e ajuda no filtro ATS. Cite as que tiver ou estiver fazendo:
 
-- «Databricks — Data Engineer Associate (em progresso)»
-- «Formação PySpark / Delta Lake — em progresso»
-- «Azure Data Fundamentals (DP-900) / Azure Data Engineer (DP-203)»
+- «Databricks Certified Data Engineer Associate»
+- «Azure Data Engineer Associate (DP-203) / Azure Data Fundamentals (DP-900)»
 - «Apache Airflow — curso/prática»
 
 ---

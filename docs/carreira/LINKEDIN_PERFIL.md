@@ -51,10 +51,11 @@ consistentes — sempre com cultura de DataOps: versionamento, testes automatiza
 decisões baseadas em métrica, não em achismo.
 
 O que trago:
+• Databricks (Spark/PySpark, Delta) e modelagem em camadas medallion (bronze/silver/gold)
 • SQL avançado e modelagem de dados (relacional e não-relacional)
 • Python para engenharia de dados e automação de pipelines
 • ETL/ELT incremental, deduplicação, proveniência e otimização de performance/custo
-• «Spark/Databricks/Delta, Airflow/ADF — cite o que já usou; o resto, "aprofundando"»
+• «Airflow/ADF, cloud — cite o que já usou»
 
 Recentemente construí o Mente Digital, um projeto autoral que faz a engenharia de
 dados que alimenta um modelo de IA (pipeline RAG de ponta a ponta): ingestão →

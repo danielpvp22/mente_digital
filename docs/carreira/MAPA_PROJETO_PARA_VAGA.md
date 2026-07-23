@@ -116,11 +116,19 @@ DataOps. É isso que você conecta.
 - *"Trabalhei com orçamento de recursos apertado, então otimização de custo e
   profiling por estágio (p50/p95) fazem parte do meu default, não do meu extra."*
 
-## O gap honesto (e como fechar antes da entrevista)
+## Como usar isto na entrevista (você já tem a stack)
 
-O projeto **não** usa Spark/Databricks/Airflow/cloud. A XP é Databricks-first.
-Recomendação: some ao seu portfólio um mini-projeto que use **PySpark + Delta Lake**
-(pode ser local com `pyspark` + `delta-spark`, ou Databricks Community Edition, de
-graça) reproduzindo o mesmo racional de ETL incremental. Aí a ponte deixa de ser
-analogia e vira experiência direta. No CV, isso vira uma linha em "Estudando/Em
-progresso" — honesto e proativo.
+Você já tem experiência prática de **Databricks/Spark** (no Grupo SC), então a stack
+essencial da vaga está coberta pela sua **experiência profissional** — é ela que
+lidera o CV e a conversa. O Mente Digital entra como **reforço**: mostra que você
+pensa engenharia de dados por princípios (ETL incremental, qualidade, DataOps,
+otimização por métrica) mesmo fora do Databricks, e que sabe **preparar dado para
+uma camada de IA consumir** — exatamente a missão do time desta vaga.
+
+Roteiro sugerido para a entrevista:
+1. **Abra pela experiência real:** "no Grupo SC eu construí pipelines em Databricks/Spark
+   que faziam «...»" — números primeiro.
+2. **Traga o vocabulário da vaga:** descreva suas camadas como Bronze/Silver/Gold.
+3. **Feche com o projeto autoral** como prova de profundidade e iniciativa: "e para
+   entender o problema de dados-para-IA de ponta a ponta, construí o Mente Digital,
+   onde levei DataOps ao extremo — 624 testes em CI, decisões por A/B."
