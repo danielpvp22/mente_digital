@@ -26,6 +26,7 @@ from typing import Awaitable, List, Optional, Tuple
 
 from mente_digital import antiinjecao
 from mente_digital import disjuntor as _disjuntor
+from mente_digital import vram
 from mente_digital import egressao
 from mente_digital import grafo
 from mente_digital import textutils
@@ -417,6 +418,14 @@ def _com_prefixos(inner, q_prefix: str, p_prefix: str):
 class EmbeddingProvider:
     def __init__(self) -> None:
         self._embeddings = None
+
+    def unload(self) -> None:
+        """Solta o e5 da VRAM (Fase 3: GPU limpa p/ o OCR em outro processo). O
+        `load` é idempotente, então restaurar é só chamá-lo de novo."""
+        if self._embeddings is None:
+            return
+        self._embeddings = None
+        vram.liberar_cache_gpu()
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup."""

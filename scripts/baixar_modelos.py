@@ -31,6 +31,11 @@ PIPER_ARQS = (
     "pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx.json",
 )
 XTTS_REPO = "coqui/XTTS-v2"
+# OCR de livro escaneado (Fase 3): GGUF quantizado + o projetor de visão (mmproj é
+# OBRIGATÓRIO — sem ele o modelo não vê a imagem). Q4_K_M por caber com folga na
+# 3080 quando o LLM está descarregado. Ver o aviso da PR #17400 no config.py.
+OCR_REPO = "sahilchachra/Unlimited-OCR-GGUF"
+OCR_ARQS = ("Unlimited-OCR-Q4_K_M.gguf", "mmproj-Unlimited-OCR-F16.gguf")
 
 
 def _baixar_para(repo: str, arquivo: str, destino: Path) -> None:
@@ -51,11 +56,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--xtts", action="store_true",
                         help="baixa também o XTTS-v2 (voz clonada; opt-in como no .env)")
+    parser.add_argument("--ocr", action="store_true",
+                        help="baixa o OCR de livro escaneado (GGUF Q4_K_M + mmproj, ~2,7 GB)")
     args = parser.parse_args()
 
     _baixar_para(LLM_REPO, LLM_ARQ, DIR_MODELOS / LLM_ARQ)
     for arq in PIPER_ARQS:
         _baixar_para(PIPER_REPO, arq, DIR_MODELOS / Path(arq).name)
+
+    if args.ocr:
+        for arq in OCR_ARQS:
+            _baixar_para(OCR_REPO, arq, DIR_MODELOS / arq)
+        print("\nOCR baixado. Falta o binário: compile o llama.cpp COM a PR #17400 "
+              "e aponte MENTE_OCR_BIN para o llama-mtmd-cli.")
 
     if args.xtts:
         from huggingface_hub import snapshot_download
