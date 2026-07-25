@@ -11,8 +11,11 @@ POR QUE SUBPROCESSO, e não import: o modelo (baidu/Unlimited-OCR) exige Python
 do llama.cpp com o GGUF quantizado (Q4_K_M ~1,95 GB + mmproj ~774 MB): processo
 separado, VRAM devolvida ao fim de cada página, zero contaminação de dependência.
 
-ATENÇÃO (verificado no card do modelo em 2026-07-25): o GGUF exige um llama.cpp
-compilado com a PR #17400 — não funciona com o release padrão. Por isso
+BINÁRIO (verificado em 2026-07-25): o card do modelo pede "a build da PR #17400",
+mas ela — "mtmd: Add DeepSeekOCR Support" — foi MERGEADA no llama.cpp em
+2026-03-25; o Unlimited-OCR é dessa família (daí o `<|grounding|>`). Ou seja,
+qualquer llama.cpp posterior a essa data serve, incluindo os binários prontos das
+releases oficiais — não é preciso compilar branch de PR. Ainda assim
 `disponibilidade()` checa tudo ANTES de tentar e o worker é NO-OP silencioso
 enquanto `MENTE_OCR_BIN` não apontar para um binário que existe: quem não
 configurou não sofre nada, e o livro fica esperando na fila sem se perder.
@@ -50,7 +53,7 @@ def disponibilidade(bin_path: str, modelo: str, mmproj: str) -> Tuple[bool, str]
     uma vez, para o dono saber exatamente o que falta configurar."""
     if not bin_path:
         return False, ("MENTE_OCR_BIN não configurado (aponte para o llama-mtmd-cli "
-                       "de um llama.cpp com a PR #17400)")
+                       "de um llama.cpp >= 2026-03-25, quando o suporte entrou)")
     if not Path(bin_path).is_file():
         return False, f"binário não encontrado: {bin_path}"
     if not Path(modelo).is_file():

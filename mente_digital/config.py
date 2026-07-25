@@ -113,8 +113,9 @@ class Settings(BaseSettings):
     # Livro que é só IMAGEM vira texto aqui e volta pra MESMA fila de jobs. Roda em
     # SUBPROCESSO (o modelo exige Python 3.12/torch 2.10/CUDA 12.9 — incompatível
     # com esta env), via o binário llama-mtmd-cli do llama.cpp com o GGUF
-    # quantizado. ATENÇÃO: o card do modelo exige um llama.cpp compilado com a PR
-    # #17400; o release padrão NÃO roda este GGUF. Sem MENTE_OCR_BIN apontando p/
+    # quantizado. BINÁRIO: serve qualquer llama.cpp >= 2026-03-25 (a PR #17400,
+    # "mtmd: Add DeepSeekOCR Support", já está no master desde então — inclusive
+    # nos binários prontos das releases). Sem MENTE_OCR_BIN apontando p/
     # um binário existente, o worker é NO-OP (loga o motivo 1x e o livro espera na
     # fila) — quem não configurou não sofre nada.
     # VRAM: o scheduler DESCARREGA o LLM antes (exigência do dono: nada do projeto
