@@ -215,6 +215,21 @@ async def test_ocr_roda_com_a_vram_limpa_e_restaura_os_servicos(monkeypatch, tmp
     assert len(chamadas) == 1              # e transcreveu de fato
 
 
+async def test_acionamento_manual_transcreve_o_livro_apontado(monkeypatch, tmp_path):
+    """scripts/ocr_agora.py: o MESMO caminho do worker idle, só que o dono escolhe a
+    hora e o alvo. Aqui trava-se o wrapper público que o script chama."""
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=2)
+    assert await etl.ocr_livro(pdf) == 2
+    assert not pdf.exists()                     # concluído: saiu da fila
+    assert len(list((tmp_path / "ingestao" / "pendentes").glob("ocr-*.json"))) == 1
+
+
+async def test_acionamento_manual_recusa_sem_ocr_configurado(monkeypatch, tmp_path):
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=2, configurado=False)
+    assert await etl.ocr_livro(pdf) == 0        # motivo vai pro log, nada é tentado
+    assert chamadas == [] and pdf.exists()
+
+
 async def test_scheduler_gates_do_ocr(monkeypatch, tmp_path):
     etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=1)
     sched = SchedulerService(ctx)

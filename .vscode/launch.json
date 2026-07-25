@@ -1,0 +1,57 @@
+{
+  // Atalhos da aba "Run and Debug" (F5). O `python` abaixo aponta para a env do
+  // projeto — no Windows, o `python` do PATH costuma ser o atalho falso da
+  // Microsoft Store, e é o tropeço nº 1 ao rodar os scripts. Ajuste o caminho se
+  // a sua env estiver em outro lugar (ou apague a linha p/ usar o interpretador
+  // selecionado no VS Code).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "OCR agora (fila aguardando_ocr)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/ocr_agora.py",
+      "python": "C:\\ProgramData\\miniconda3\\envs\\llama-omni\\python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "OCR agora (forçar, servidor no ar)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/ocr_agora.py",
+      "args": ["--forcar"],
+      "python": "C:\\ProgramData\\miniconda3\\envs\\llama-omni\\python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Ingerir livro (PDF digital, escolher arquivo)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/ingerir_livro.py",
+      "args": ["${input:caminhoPdf}"],
+      "python": "C:\\ProgramData\\miniconda3\\envs\\llama-omni\\python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Servidor (main.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "python": "C:\\ProgramData\\miniconda3\\envs\\llama-omni\\python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "caminhoPdf",
+      "type": "promptString",
+      "description": "Caminho do PDF digital a ingerir"
+    }
+  ]
+}

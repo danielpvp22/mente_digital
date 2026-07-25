@@ -368,6 +368,19 @@ class EtlProcessor:
             return 0
         return await self._ocr_um_livro(pdfs[0])
 
+    async def ocr_livro(self, pdf: Path) -> int:
+        """Transcreve UM livro específico (acionamento MANUAL, scripts/ocr_agora.py).
+
+        Mesmo caminho do worker idle — só a escolha do alvo muda: aqui o dono aponta
+        o arquivo, lá a fila decide. Devolve páginas feitas nesta chamada; 0 se o OCR
+        não estiver configurado (com o motivo logado)."""
+        ok, motivo = ocr_mod.disponibilidade(
+            settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr)
+        if not ok:
+            telemetry.warn("OCR", f"OCR não está pronto: {motivo}")
+            return 0
+        return await self._ocr_um_livro(pdf)
+
     def _ocr_estado_path(self, pdf: Path) -> Path:
         return Path(settings.dir_livros) / "_ocr_estado" / f"{livro_mod.slug(pdf.stem)}.json"
 
