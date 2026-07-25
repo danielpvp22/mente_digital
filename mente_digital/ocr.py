@@ -19,11 +19,12 @@ modelo+mmproj em 2s e transcreve uma página em ~3,5s. Além de funcionar, o
 servidor é melhor: o modelo carrega UMA vez para o livro inteiro, em vez de a
 cada página (o custo dominante do CLI seria recarregar 3 GB 600 vezes).
 
-BINÁRIO (verificado em 2026-07-25): o card do modelo pede "a build da PR #17400",
-mas ela — "mtmd: Add DeepSeekOCR Support" — foi MERGEADA no llama.cpp em
-2026-03-25; o Unlimited-OCR é dessa família (daí o `<|grounding|>`). Ou seja,
-qualquer llama.cpp posterior a essa data serve, incluindo os binários prontos das
-releases oficiais — não é preciso compilar branch de PR. Ainda assim
+MODELO (verificado em 2026-07-25): usar o `ggml-org/DeepSeek-OCR-GGUF` OFICIAL,
+publicado junto com o suporte no llama.cpp (PR "mtmd: Add DeepSeekOCR Support",
+mergeada em 2026-03-25 — qualquer release posterior serve, sem compilar nada). O
+`baidu/Unlimited-OCR-GGUF` NÃO serve: ele até carrega no servidor, mas devolve
+conteúdo VAZIO (1 token, finish_reason=stop) porque depende da PR 24975, que
+segue fora do master — o card dele avisa, apesar de citar o número errado. Ainda assim
 `disponibilidade()` checa tudo ANTES de tentar e o worker é NO-OP silencioso
 enquanto `MENTE_OCR_BIN` não apontar para um binário que existe: quem não
 configurou não sofre nada, e o livro fica esperando na fila sem se perder.
@@ -200,7 +201,7 @@ class ServidorOcr:
                 raise RuntimeError(
                     f"llama-server morreu no boot (exit={self._proc.returncode})")
             try:
-                with urllib.request.urlopen(self._base + "/health", timeout=2):
+                with urllib.request.urlopen(self._base + "/health", timeout=2):  # nosec B310
                     return self
             except Exception:
                 time.sleep(1.0)
@@ -231,7 +232,7 @@ class ServidorOcr:
             req = urllib.request.Request(
                 self._base + "/v1/chat/completions", data=corpo,
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=self._timeout) as r:
+            with urllib.request.urlopen(req, timeout=self._timeout) as r:  # nosec B310
                 dados = json.loads(r.read())
             return extrair_markdown(dados["choices"][0]["message"]["content"])
         except Exception:
