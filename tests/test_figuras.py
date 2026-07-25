@@ -63,6 +63,15 @@ def test_figuras_do_intervalo_respeita_o_capitulo():
     assert figuras.figuras_do_intervalo(todas, 40, 50) == []
 
 
+def test_wikilink_separa_por_livro():
+    """Uma pasta por livro no vault (pedido do dono): o Obsidian não vira um
+    depósito único com milhares de imagens misturadas."""
+    md = figuras.bloco_markdown(
+        [{"arquivo": "raven/raven_p0059_f1.webp", "pagina": 59, "legenda": "Ciclo"}],
+        "Figuras")
+    assert "![[Figuras/raven/raven_p0059_f1.webp]]" in md
+
+
 def test_bloco_markdown_usa_wikilink_e_legenda_como_texto():
     md = figuras.bloco_markdown(
         [{"arquivo": "raven_p0059_f1.webp", "pagina": 59, "legenda": "Ciclo de Calvin"}],

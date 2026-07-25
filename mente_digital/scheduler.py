@@ -250,7 +250,17 @@ class SchedulerService:
             # jobs dele já entrem na fila que a atomização abaixo consome.
             await self.ctx.etl.ingerir_pasta_livros()
             await self.ctx.llama.ensure_loaded()
-            n = await self.ctx.etl.ingestao_livros()
+            # DRENA a fila numa passada só, em vez de um capítulo por tick. Medido
+            # 2026-07-25: o capítulo levava ~2s e o tick seguinte só vinha 18s depois
+            # — 90% de GPU ociosa com 82 capítulos enfileirados. O gate de conversa
+            # continua a cada capítulo (aqui) e a cada lote (o _esperar_idle do ETL),
+            # então a fala do dono ainda passa na frente em segundos.
+            n = 0
+            while self.ctx.interactive_idle.is_set() and not self._ha_sessoes():
+                feitos = await self.ctx.etl.ingestao_livros()
+                if not feitos:
+                    break
+                n += feitos
             if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
                     and not self._ha_sessoes()):
                 await self.ctx.llama.unload()
