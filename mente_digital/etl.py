@@ -257,23 +257,38 @@ class EtlProcessor:
             telemetry.track("INGESTAO", f"'{cap}': só aparato editorial, nada a atomizar.")
             return True   # capítulo vazio/inútil: não bloqueia a fila
         corpos: List[str] = []
-        for lote in lotes:
-            await self._esperar_idle()
-            try:
-                conteudo = await self.ctx.llama.collect(
-                    prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
-                    max_tokens=self._max_fundo(settings.max_tokens_sintese),
-                    system_prompt=prompts.SYS_SINTESE,
-                    preemptible=True,
-                )
-            except InferenciaPreemptada:
-                telemetry.track("INGESTAO", f"'{cap}' cedeu a GPU — retoma no próximo idle.")
-                return False
-            except Exception as exc:
-                telemetry.error("INGESTAO", f"Falha ao atomizar lote de '{cap}'", exc)
-                return False
-            corpos.append(conteudo)
-            await self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem)
+        # SALVAMENTO SOBREPOSTO (2026-07-25): o gráfico da GPU do dono mostrava
+        # decode → VALE → decode dentro do mesmo capítulo. O vale era este salvamento:
+        # para cada um dos ~57 átomos ele faz embedding, busca no Chroma e escreve em
+        # disco — trabalho de CPU/disco que rodava DEPOIS do decode, com a GPU parada.
+        # Agora o save do lote N corre enquanto o lote N+1 decodifica: o `await` do
+        # collect libera o event loop, e a task pendente avança ali dentro.
+        salvamento = None
+        try:
+            for lote in lotes:
+                await self._esperar_idle()
+                try:
+                    conteudo = await self.ctx.llama.collect(
+                        prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
+                        max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                        system_prompt=prompts.SYS_SINTESE,
+                        preemptible=True,
+                    )
+                except InferenciaPreemptada:
+                    telemetry.track("INGESTAO", f"'{cap}' cedeu a GPU — retoma no próximo idle.")
+                    return False
+                except Exception as exc:
+                    telemetry.error("INGESTAO", f"Falha ao atomizar lote de '{cap}'", exc)
+                    return False
+                corpos.append(conteudo)
+                if salvamento is not None:
+                    await salvamento      # o do lote anterior já correu sob o decode
+                salvamento = asyncio.ensure_future(
+                    self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem))
+        finally:
+            # Nenhum átomo fica pendurado, nem quando o capítulo aborta acima.
+            if salvamento is not None:
+                await salvamento
         await self._sintese_capitulo(titulo_livro, cap, origem, corpos,
                                      job.get("figuras") or [])
         return True

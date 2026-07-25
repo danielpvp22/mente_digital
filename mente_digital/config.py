@@ -86,7 +86,11 @@ class Settings(BaseSettings):
     # triagem.py. Medido no Amabis: 6% do livro, incluindo um capítulo inteiro de
     # índice. False = atomiza tudo (útil para comparar).
     triagem_habilitada: bool = True
-    ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
+    # Capítulos por chamada de `ingestao_livros`. Era 1, e cada chamada termina com
+    # `vectorstore.sync()` + reconstrução da MALHA sobre 13k+ átomos (~1,5s medido) —
+    # com o idle drenando a fila, isso era um segundo e meio de GPU parada a cada
+    # capítulo. Em blocos de 8, a reindexação passa a custar 1/8 por capítulo.
+    ingestao_caps_por_ciclo: int = 8
     # FIGURAS (Fase 5a): as imagens do livro viram WebP no vault e wikilinks nas
     # notas. WebP q80 medido como o ponto ótimo (2,2x menor que o JPEG que já está
     # dentro do PDF, perda imperceptível). min_lado corta ícone/ornamento — sem ele
