@@ -817,8 +817,11 @@ class ComandosMestre:
                     )
                     rota = f"mestre:tool:{decisao.tool}"
             else:
-                # Não é ação reconhecida: recusa + registra para revisão.
-                await asyncio.to_thread(db.registrar_comando_desconhecido, comando)
+                # Não é ação reconhecida: recusa + registra para revisão. Em modo
+                # sigiloso NEM o texto do comando persiste — era o único vizinho do
+                # fluxo sem o gate de confidencial (painel 2026-07-24).
+                if not mem.confidencial:
+                    await asyncio.to_thread(db.registrar_comando_desconhecido, comando)
                 fala = (
                     "Não reconheci um comando de agente aí. Posso, por exemplo, adicionar "
                     "itens a uma lista, criar um lembrete ou avisar quando algo acontecer."

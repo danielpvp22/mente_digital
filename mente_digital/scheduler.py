@@ -27,12 +27,15 @@ import json
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
+from pathlib import Path
+
 from mente_digital import agenda
+from mente_digital import backup
 from mente_digital import calendario
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import vram
-from mente_digital.config import settings
+from mente_digital.config import BASE_DIR, settings
 from mente_digital.rag import NENHUM
 from mente_digital.telemetry import db, telemetry
 
@@ -60,6 +63,9 @@ class SchedulerService:
         # voo. Só RAM — um restart apenas adia a 1ª passada em um intervalo, sem perda.
         self._ultima_pesquisa_idle: Optional[datetime] = None
         self._pesquisa_em_andamento = False
+        # Backup diário (ops-backup-01): flag anti-sobreposição; a idempotência
+        # entre restarts é o NOME do arquivo (mente_AAAA-MM-DD.zip existir = já rodou).
+        self._backup_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -98,6 +104,36 @@ class SchedulerService:
             self._ultima_pesquisa_idle = agora
             self._pesquisa_em_andamento = True
             self.ctx.track_task(self._executar_pesquisa_idle())
+        # Backup diário (painel 2026-07-24, ops-backup-01): o vault é a ÚNICA cópia
+        # do conhecimento destilado. Em background (zip não pode atrasar um alarme).
+        if self._backup_devido(agora):
+            self._backup_em_andamento = True
+            self.ctx.track_task(self._executar_backup(agora))
+
+    # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
+    def _backup_devido(self, agora: datetime) -> bool:
+        if not settings.backup_habilitado or self._backup_em_andamento:
+            return False
+        return not backup.caminho_do_dia(Path(settings.backup_dir), agora).exists()
+
+    async def _executar_backup(self, agora: datetime) -> None:
+        """Zipa vault + SQLite + .env em to_thread. NUNCA propaga (trabalho de fundo
+        não pode derrubar o scheduler — mesmo contrato da pesquisa agendada)."""
+        try:
+            alvo = await asyncio.to_thread(
+                backup.executar,
+                Path(settings.caminho_obsidian),
+                Path(settings.db_telemetria),
+                BASE_DIR / ".env",
+                Path(settings.backup_dir),
+                agora,
+                settings.backup_retencao,
+            )
+            telemetry.track("BACKUP", f"Backup diário salvo: {alvo.name}")
+        except Exception as exc:
+            telemetry.error("BACKUP", "Falha no backup diário", exc)
+        finally:
+            self._backup_em_andamento = False
 
     # -- pesquisa proativa AGENDADA (#1): o "cresce a noite toda" ---------------
     def _pesquisa_idle_devida(self, agora: datetime) -> bool:

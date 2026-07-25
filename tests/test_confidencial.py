@@ -80,6 +80,26 @@ async def test_desligar_volta_a_persistir(monkeypatch, tmp_path):
     assert len(salvos) == 1                    # voltou a gravar no SQLite
 
 
+async def test_comando_desconhecido_nao_registra_em_sigilo(monkeypatch, tmp_path):
+    """Painel 2026-07-24: `mestre_nao_reconhecido` era o ÚNICO vizinho do fluxo-mestre
+    sem o gate de confidencial — o texto do comando persistia íntegro em sigilo."""
+    agent, mem, dump, salvos = _agent(monkeypatch, tmp_path)
+    send, _ = make_send()
+    registrados = []
+    monkeypatch.setattr(
+        "mente_digital.comandos_mestre.db.registrar_comando_desconhecido",
+        lambda c: registrados.append(c),
+    )
+
+    await agent.pipeline_resposta("mestre, modo sigiloso", send, mem)
+    await agent.pipeline_resposta("mestre, dança para mim agora", send, mem)
+    assert registrados == []          # em sigilo, nem o texto do comando persiste
+
+    await agent.pipeline_resposta("mestre, modo normal", send, mem)
+    await agent.pipeline_resposta("mestre, dança para mim agora", send, mem)
+    assert len(registrados) == 1      # fora do sigilo, a revisão continua alimentada
+
+
 # --- Disconnect NÃO atomiza sob confidencial (#34, privacidade) --------------
 # Os guards por-turno já mantêm o sigiloso fora de dump/fila/SQLite; o FURO era o
 # disconnect: LiveSession._finalizar_sessao chamava etl.run_idle() sem checar o modo,

@@ -447,6 +447,19 @@ class Agent(ComandosMestre, Respostas):
             raise  # barge-in: propaga para o LlamaManager parar o decode
         except Exception as exc:
             telemetry.error("PIPELINE", "Erro no pipeline de resposta", exc)
+            # UX-01 (painel 2026-07-24): exceção aqui era SILÊNCIO absoluto — o orbe
+            # do live ficava preso em "Processando…" e o handler {"tipo":"erro"} do
+            # front era código morto (nenhum emissor no servidor). Falha vira
+            # feedback: um "erro" (reseta o orbe) + UMA frase de template falada —
+            # sem LLM (o pipeline acabou de morrer; template fixo cai no cache do
+            # TTS). Best-effort: se nem o send funciona (WS caído), só loga.
+            try:
+                await send_medido({"tipo": "erro", "texto": "Falha interna ao responder."})
+                await self._emitir_falado(
+                    send_medido, "Opa, deu um erro aqui do meu lado. Pode repetir?"
+                )
+            except Exception as exc2:
+                telemetry.error("PIPELINE", "Falha ao avisar o erro ao cliente", exc2)
         # Sem `finally` liberando o idle: quem faz isso é o `interativo()` do chamador,
         # e só quando o ÚLTIMO pipeline em voo sair (ver AppContext.interativo).
 
