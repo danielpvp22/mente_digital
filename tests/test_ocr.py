@@ -28,6 +28,37 @@ def test_montar_comando_do_servidor_sem_shell():
         assert cmd[cmd.index(flag) + 1] == valor
     # Servidor EFÊMERO de uso interno: nunca pode escutar na LAN.
     assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
+    # Slots concorrentes (1,63x medido); nunca menos de 1.
+    assert cmd[cmd.index("--parallel") + 1] == "4"
+    assert ocr.montar_comando("b", "m", "mm", 1, paralelo=0)[-1] == "1"
+
+
+async def test_paralelismo_preserva_a_ORDEM_das_paginas(monkeypatch, tmp_path):
+    """As páginas vão em blocos concorrentes; se a ordem escorregar, o livro fica
+    embaralhado no vault. O fake devolve um texto por página e o teste exige que o
+    estado saia na sequência certa mesmo com a conclusão fora de ordem."""
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=6)
+    monkeypatch.setattr(settings, "ocr_paralelo", 3)
+    monkeypatch.setattr(settings, "ocr_paginas_por_ciclo", 6)
+
+    import time as _t
+
+    class ForaDeOrdem:
+        """Termina as páginas ao CONTRÁRIO dentro do bloco (pior caso da corrida)."""
+        def __enter__(self): return self
+        def __exit__(self, *e): pass
+
+        def transcrever(self, imagem, *a, **k):
+            n = int(imagem.stem[1:])
+            _t.sleep(0.02 * (3 - n % 3))   # a última do bloco responde primeiro
+            return f"pagina-{n}"
+
+    monkeypatch.setattr("mente_digital.etl.ocr_mod.abrir_servidor",
+                        lambda *a, **k: ForaDeOrdem())
+    vistas = []
+    assert await etl.ocr_livro(pdf, on_pagina=lambda n, t: vistas.append((n, t))) == 6
+    assert [n for n, _ in vistas] == [1, 2, 3, 4, 5, 6]
+    assert [t for _, t in vistas] == [f"pagina-{i}" for i in range(6)]
 
 
 def test_payload_leva_imagem_e_prompt_sem_grounding():

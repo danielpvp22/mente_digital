@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     ocr_dpi: int = 150
     ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
     ocr_porta: int = 8099                 # servidor EFÊMERO do OCR (só 127.0.0.1)
+    # PARALELISMO medido no livro real (2026-07-25), s/página: sequencial 3,26 |
+    # 4 slots em blocos 1,99 | 4 slots com fila CHEIA 1,61 (2,02x) | 8 slots 1,56.
+    # Ou seja: 4 é o ponto ótimo — 8 slots rendem só 3% a mais e dobram o KV cache.
+    # Slots compartilham os pesos, então o custo é só KV; DUAS INSTÂNCIAS seriam a
+    # escolha errada (duplicariam 3,6 GB de VRAM pelo mesmo efeito). n_ctx é do
+    # servidor e DIVIDIDO entre os slots — daí 16384 p/ 4 (4096 por página, folgado).
+    ocr_paralelo: int = 4
+    ocr_n_ctx: int = 16384
     ocr_timeout_pagina: int = 180
     ocr_min_chars_pagina: int = 40        # menos que isso: capa/ilustração/branco
     ocr_n_gpu_layers: int = -1

@@ -438,19 +438,34 @@ class EtlProcessor:
                     settings.ocr_bin, settings.caminho_modelo_ocr,
                     settings.caminho_mmproj_ocr, settings.ocr_porta,
                     settings.ocr_timeout_pagina, settings.ocr_n_gpu_layers,
-                    settings.n_ctx).__enter__())
+                    settings.ocr_n_ctx, settings.ocr_paralelo).__enter__())
         except Exception as exc:
             telemetry.error("OCR", "Não consegui subir o llama-server do OCR", exc)
             return 0
-        try:
-            for img in imagens:
-                # Cede a vez ANTES de cada página: a transcrição leva segundos e a GPU
-                # tem de voltar pra conversa se o dono aparecer. `interactive_idle` é a
-                # mesma porta que o resto do ETL respeita.
+        # FILA CONTÍNUA (não blocos): um semáforo mantém `ocr_paralelo` páginas SEMPRE
+        # em voo — assim que uma termina, a próxima entra. Em blocos, a barreira no fim
+        # de cada bloco deixava slots ociosos esperando a página mais lenta (medido:
+        # 1,99s/pág em blocos de 4 contra 1,61s/pág com a fila cheia; 2,02x contra o
+        # sequencial de 3,26s). `gather` PRESERVA A ORDEM, obrigatório aqui — página
+        # fora de ordem viraria um livro embaralhado no vault.
+        passo = max(1, settings.ocr_paralelo)
+        sem = asyncio.Semaphore(passo)
+        PAUSADA = object()   # distingue "conversa começou" de "página falhou"
+
+        async def _uma(img: Path):
+            async with sem:
+                # Cede a vez a CADA página (não a cada bloco): a GPU volta pra conversa
+                # em ~2s se o dono aparecer. Mesma porta que o resto do ETL respeita.
                 if not self.ctx.interactive_idle.is_set():
+                    return PAUSADA
+                return await asyncio.to_thread(servidor.transcrever, img)
+
+        try:
+            resultados = await asyncio.gather(*(_uma(img) for img in imagens))
+            for img, texto in zip(imagens, resultados):
+                if texto is PAUSADA:
                     telemetry.track("OCR", "Conversa começou — OCR pausado, retoma no próximo idle.")
-                    break
-                texto = await asyncio.to_thread(servidor.transcrever, img)
+                    break        # e as seguintes também param: a ordem é contígua
                 if texto is None:
                     telemetry.warn("OCR", f"Página {inicio + feitas + 1} falhou; segue para a próxima.")
                     texto = ""
@@ -463,8 +478,12 @@ class EtlProcessor:
                         on_pagina(estado["proxima"], texto)
                     except Exception as exc:
                         telemetry.error("OCR", "Falha no callback de progresso", exc)
-                await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
                 await asyncio.to_thread(img.unlink, True)
+                if feitas % passo == 0:
+                    # Estado a cada `passo` páginas: um crash custa no máximo isso,
+                    # sem reescrever o JSON a cada página.
+                    await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
+            await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
         finally:
             await asyncio.to_thread(servidor.__exit__, None, None, None)
         telemetry.track("OCR", f"'{pdf.stem}': {estado['proxima']}/{total} páginas transcritas.")
