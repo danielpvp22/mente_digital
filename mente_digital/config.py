@@ -85,6 +85,20 @@ class Settings(BaseSettings):
     ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
     max_tokens_sintese_capitulo: int = 700
 
+    # --- Consolidação de átomos — Fase 2 (2026-07-25) --------------------------
+    # "3000 relatórios de um assunto": grupos de átomos QUASE-idênticos do
+    # Conhecimento_Novo são fundidos num canônico, NO IDLE. Ressalvas do dono como
+    # invariantes: limiar ALTO (escala e5 — recalibrar junto com o embedding, como
+    # o dedup 0.08→0.01), originais ARQUIVADOS em dados/_arquivo_consolidacao/
+    # (reversível: mover de volta + sync), cap por ciclo, e nota manual NUNCA é
+    # tocada (só o subdir auto-colhido). 1 passada por dia, sem sessão viva.
+    consolidacao_habilitada: bool = True
+    consolidacao_dist_max: float = 0.03   # entre o dedup (0.01) e o desastre (0.08)
+    consolidacao_min_grupo: int = 3       # 2 quase-iguais o dedup do ingest já pega
+    consolidacao_grupos_por_ciclo: int = 2
+    consolidacao_intervalo_horas: int = 24
+    dir_arquivo_consolidacao: str = str(DIR_DADOS / "_arquivo_consolidacao")
+
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
     n_ctx: int = 8192

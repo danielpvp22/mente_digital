@@ -65,6 +65,9 @@ def _isola_do_env(monkeypatch):
     # scheduler dentro da suíte zipar o vault REAL seria efeito colateral em disco.
     # Off aqui; o módulo backup é testado direto (test_backup.py) com tmp_path.
     monkeypatch.setattr(_settings, "backup_habilitado", False, raising=False)
+    # Consolidação (Fase 2): mesmo motivo — um tick de teste não pode disparar a
+    # passada de fundo num ctx fake. Testada direto em test_consolidacao.py.
+    monkeypatch.setattr(_settings, "consolidacao_habilitada", False, raising=False)
     yield
 
 

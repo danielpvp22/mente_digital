@@ -40,6 +40,10 @@ dados/amostra_*.wav
 # livros do dono — conteúdo pessoal e possivelmente com direitos autorais.
 dados/ingestao/
 
+# Arquivo morto da consolidação (Fase 2): originais fundidos, preservados p/
+# reversão — conteúdo do vault do dono, nunca versionado.
+dados/_arquivo_consolidacao/
+
 # Saídas do A/B de modelos: carregam perguntas reais e trechos do VAULT (mesma regra
 # do Cerebro_Digital acima). São regeneráveis com `ab_modelos.py --preparar`, então
 # versiona-se a ferramenta, não o dado do usuário.
