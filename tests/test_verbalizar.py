@@ -9,7 +9,6 @@ GPU/rede; só num2words para o cardinal PT-BR.
 """
 from __future__ import annotations
 
-import pytest
 
 from mente_digital.verbalizar import verbalizar
 

@@ -21,3 +21,9 @@ langchain-text-splitters>=0.2
 pytest>=8.0
 pytest-asyncio>=0.23
 hypothesis>=6.100
+# Qualidade no CI (painel 2026-07-24): lint + cobertura com piso + seguranca.
+# Todos leves e pure-Python — o job continua em ~1 minuto.
+pytest-cov>=5.0
+ruff>=0.5
+bandit>=1.7
+pip-audit>=2.7

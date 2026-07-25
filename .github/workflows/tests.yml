@@ -1,7 +1,10 @@
-# Roda a suíte inteira (sem GPU, sem rede — os testes usam fakes) a cada PR e
-# a cada push no master. Instala só o requirements-ci.txt: os imports pesados do
-# projeto são tardios, então llama-cpp-python/torch/chromadb ficam de fora e o
-# job inteiro fecha em ~1 minuto.
+# Qualidade a cada PR/push no master, em ~1 minuto (requirements-ci.txt leve: os
+# imports pesados do projeto sao tardios, entao llama-cpp-python/torch/chromadb
+# ficam de fora e a suite roda com fakes, sem GPU e sem rede).
+#
+# Painel 2026-07-24: alem do pytest, o CI agora roda ruff (lint), cobertura com
+# PISO (ratchet: medido 79%, piso 77% — sobe conforme a cobertura real subir) e um
+# job de seguranca (bandit MEDIUM+ e pip-audit sobre as deps instaladas do CI).
 name: tests
 
 on:
@@ -21,4 +24,27 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-ci.txt
       - run: pip install -r requirements-ci.txt
-      - run: pytest -q
+      - run: ruff check .
+      - run: pytest -q --cov=mente_digital --cov-fail-under=77
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: pip install -r requirements-ci.txt
+      # O runner vem com setuptools antigo (79.x, PYSEC-2026-3447) — sem este
+      # upgrade o pip-audit reprova a FERRAMENTA do ambiente, nao o projeto.
+      - run: python -m pip install -U pip setuptools
+      # MEDIUM+ bloqueia; os LOW ruidosos (try/except best-effort que loga antes)
+      # e o B608 (identificadores SQL de constantes) estao justificados no pyproject.
+      - run: bandit -c pyproject.toml -r mente_digital main.py -q --severity-level medium
+      # Audita as deps INSTALADAS deste job (as leves do CI). O stack pesado
+      # (torch/coqui/llama-cpp) fica fora por design — auditar local com
+      # `pip-audit` na env llama-omni quando quiser o retrato completo.
+      - run: pip-audit --skip-editable

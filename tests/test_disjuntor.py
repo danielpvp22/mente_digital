@@ -3,7 +3,6 @@ Fila Offline / Disjuntor da web (#31): circuit breaker anti-shadowban.
 - A máquina pura (disjuntor.py) com clock injetado.
 - A integração no WebSearcher: cooldown pula o DDG, enfileira, e drena ao reabrir.
 """
-import asyncio
 
 import pytest
 

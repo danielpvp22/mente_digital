@@ -18,7 +18,7 @@ from mente_digital import textutils
 from mente_digital.agent import Agent, EtlProcessor, dividir_atomos, normalizar_atomo, normalizar_malha
 from mente_digital.config import Settings, settings
 from mente_digital.rag import NENHUM, VectorStore, strip_frontmatter
-from mente_digital.state import AppContext, SessionMemory
+from mente_digital.state import AppContext
 
 from conftest import FakeDoc, FakeLlama, FakeStore, FakeTts
 

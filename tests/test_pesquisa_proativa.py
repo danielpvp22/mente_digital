@@ -4,7 +4,6 @@ atomizar e inserir SEM duplicar. Sem GPU nem rede — fakes de LLM/web/store.
 """
 import asyncio
 
-import pytest
 
 from mente_digital.agent import EtlProcessor
 from mente_digital.config import settings
@@ -67,7 +66,6 @@ class _Llama:
 
 
 def _etl(tmp_path, monkeypatch, *, cobre, dados="corpo web real com fatos"):
-    from mente_digital.telemetry import db as db_global
     d = _db(tmp_path)
     # aponta o db global (que o EtlProcessor usa) para o de teste
     monkeypatch.setattr("mente_digital.etl.db", d)

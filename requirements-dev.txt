@@ -7,3 +7,8 @@ pytest-asyncio>=0.23
 # Testes de propriedade (painel 2026-07): varre partições de tokens aleatórias nas
 # máquinas de estado de streaming (_FiltroThink, SentenceChunker). Pure-Python, dev-only.
 hypothesis>=6.100
+# Qualidade local = a mesma do CI (painel 2026-07-24): ruff/cov/bandit/pip-audit.
+pytest-cov>=5.0
+ruff>=0.5
+bandit>=1.7
+pip-audit>=2.7

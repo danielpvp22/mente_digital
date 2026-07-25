@@ -55,7 +55,7 @@ from mente_digital.agent import SENTINELA_INSUF, Agent, dividir_atomos  # noqa: 
 from mente_digital.config import settings  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
-from mente_digital.telemetry import db, telemetry  # noqa: E402
+from mente_digital.telemetry import db  # noqa: E402
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 CASOS = os.path.join(DIR, "casos.json")

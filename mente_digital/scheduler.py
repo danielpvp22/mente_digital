@@ -320,10 +320,6 @@ class SchedulerService:
     # -- watcher ("me avise quando X") ------------------------------------------
     async def _checar_watcher(self, ag: dict, agora: datetime) -> None:
         # Expira sozinho: não fica batendo na web para sempre.
-        try:
-            criado = datetime.fromisoformat(ag.get("proximo_disparo"))
-        except (ValueError, TypeError):
-            criado = agora
         payload = self._payload(ag)
         termos = payload.get("termos", "")
         condicao = payload.get("condicao", ag["mensagem"])

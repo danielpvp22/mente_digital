@@ -7,7 +7,6 @@ Sem GPU nem rede — fakes de LLM/web/store.
 """
 import asyncio
 
-import pytest
 
 from mente_digital.agent import EtlProcessor
 from mente_digital.config import settings

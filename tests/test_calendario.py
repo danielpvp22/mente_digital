@@ -6,7 +6,6 @@ from datetime import date, datetime
 
 from mente_digital import calendario
 from mente_digital import mestre
-from mente_digital import telemetry
 from mente_digital.agent import Agent
 from mente_digital.config import settings
 from mente_digital.state import AppContext, SessionMemory

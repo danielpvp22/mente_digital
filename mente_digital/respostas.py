@@ -14,8 +14,7 @@ continuam sendo o MESMO objeto Agent em runtime. Nada aqui roda sem um Agent.
 from __future__ import annotations
 
 import asyncio
-import os
-from typing import Awaitable, Callable, List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional
 
 from mente_digital import prompts
 from mente_digital import textutils
@@ -25,7 +24,6 @@ import re
 from mente_digital.audio import SentenceChunker
 from mente_digital.config import settings
 from mente_digital.otimizador import frase_citada
-from mente_digital.prompts import SENTINELA_INSUF
 from mente_digital.rag import NENHUM
 from mente_digital.state import SessionMemory
 from mente_digital.telemetry import LatencyTracker, db, telemetry
@@ -251,6 +249,18 @@ class Respostas:
         nivel: "verbosidade.Nivel | None" = None,
         tracker: Optional[LatencyTracker] = None,
     ) -> str:
+        # priv-01 (painel 2026-07-24): a promessa falada do sigilo é "fica só nesta
+        # sessão" — mas a escalada mandava a pergunta pro DuckDuckGo e abria páginas
+        # de terceiros. Choke point único (TODA escalada passa aqui): em sigilo, não
+        # sai nada da máquina; a frase vira o "parágrafo" da vez (RAM segue coerente,
+        # e a persistência já é bloqueada pelos guards de confidencial).
+        if mem.confidencial and settings.sigilo_bloqueia_web:
+            fala = (
+                "Não achei isso localmente e, em modo sigiloso, eu não busco na web. "
+                "Diga 'mestre, modo normal' se quiser que eu pesquise."
+            )
+            await self._emitir_falado(send, fala)
+            return fala
         # Query da WEB: se a pergunta CITA uma expressão/ditado, busca a frase citada —
         # ela é o alvo, e o extrator de 5 palavras a descartava ('saiu expressão pega
         # prato' em vez de 'pega um prato faz a linha dá um tiro na farinha'). Senão, a

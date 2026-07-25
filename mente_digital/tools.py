@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 from mente_digital import agenda
 from mente_digital import textutils
 from mente_digital.config import settings
-from mente_digital.telemetry import db, telemetry
+from mente_digital.telemetry import db
 
 if TYPE_CHECKING:  # evita import circular em runtime
     from mente_digital.state import AppContext

@@ -21,7 +21,7 @@ import time
 import pytest
 
 from mente_digital.agent import Agent, EtlProcessor
-from mente_digital.config import Settings, settings
+from mente_digital.config import Settings
 from mente_digital.llm import InferenciaPreemptada, LlamaManager
 from mente_digital.state import AppContext, SessionMemory
 

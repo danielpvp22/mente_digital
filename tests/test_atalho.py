@@ -5,7 +5,6 @@ hábito, OFERECE um atalho (uma vez). "mestre, atalho X" nomeia o último comand
 
 DB testado num arquivo temporário; o fluxo com LLM/TTS/vault fakes.
 """
-import os
 
 from mente_digital import tools
 from mente_digital.agent import Agent

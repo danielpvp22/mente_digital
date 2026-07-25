@@ -425,6 +425,10 @@ class LiveSession:
             cid = (payload.get("id") or "").strip()
             if cid:
                 self.memory.conversa_id = cid
+                # priv-02: reconexão não pode derrubar o sigilo em silêncio — a
+                # memory nova nasce confidencial=False; restaura do set do ctx.
+                if cid in self.ctx.sigilosas:
+                    self.memory.confidencial = True
 
         elif tipo == "nova_conversa":
             # "Novo chat": id novo e contexto limpo. A conversa anterior já foi encerrada

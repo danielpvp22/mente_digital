@@ -9,7 +9,7 @@
 📐 **[Arquitetura completa / deep-dive técnico →](ARQUITETURA.md)**  ·  🇺🇸 [English overview](README.en.md)
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-803_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-824_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
@@ -28,7 +28,7 @@
 
 | | |
 |---:|:---|
-| **803 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
+| **824 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real |
@@ -99,7 +99,7 @@ O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o códi
 | **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **803 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Qualidade de dados / DataOps** | **824 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
 | **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -175,7 +175,7 @@ Nenhuma escolha é "a lib popular" — cada uma resolve a restrição do alvo: *
 | Persistência | **SQLite** | Turnos, latências, agendamentos, estado dos agentes; migrações idempotentes |
 | Servidor | **FastAPI** + **WebSocket** | Full-duplex (pré-condição de barge-in e do push proativo) |
 
-> ~12.900 linhas de Python em 34 módulos + **803 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
+> ~12.900 linhas de Python em 34 módulos + **824 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
 
 ---
 
@@ -187,18 +187,27 @@ cd mente_digital
 
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (Linux/macOS: source .venv/bin/activate)
-pip install -r requirements.txt
+
+:: llama-cpp-python PRECISA ser compilado com CUDA — sem isto o pip instala a
+:: versão CPU em silêncio e o TTFT vai de ~1s para ~1min (exige VS Build Tools
+:: + CUDA Toolkit; alternativa: wheel pré-compilada cu12x do repositório oficial).
+set CMAKE_ARGS=-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86
+set FORCE_CMAKE=1
+pip install -r requirements.txt   # reprodutível: pip install -c requirements.lock.txt -r requirements.txt
+
+python scripts/baixar_modelos.py  # baixa o LLM (GGUF) e a voz Piper (--xtts p/ voz clonada)
+copy .env.example .env            # e ajuste (vault, token da LAN, calibração)
 
 python main.py                    # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar.
 
-**Modelos** (não vêm no repo, ficam em `dados/modelos/`): o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos. Configuração 100% por `.env` (prefixo `MENTE_`) — **calibrar nunca exige editar código**.
+**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, modelo comentado em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                            # 803 testes, sem GPU e sem rede (~10 s)
+pytest                            # 824 testes, sem GPU e sem rede (~10 s)
 ```
 
 **→ Setup detalhado (CUDA, Docker, `.env`, download dos modelos) em [`ARQUITETURA.md`](ARQUITETURA.md#-setup--instalação).**

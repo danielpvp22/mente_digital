@@ -10,7 +10,7 @@ Exercitado com um LLM falso (tokens controlados) e um TTS no-op: sem GPU, sem re
 """
 from mente_digital.agent import Agent
 from mente_digital.config import settings
-from mente_digital.state import AppContext, SessionMemory
+from mente_digital.state import AppContext
 
 from conftest import FakeLlama, FakeTts, make_send, textos_de_tokens
 

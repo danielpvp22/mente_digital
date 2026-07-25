@@ -1,0 +1,38 @@
+# Qualidade estática (painel 2026-07-24, vitrine-05/qa-ci-quality-01). O CI rodava
+# só pytest — o check mais barato da indústria (lint) não existia, e o .ruff_cache
+# órfão provava que a ferramenta já rodava ad hoc sem nunca ser institucionalizada.
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["graphify-out", "backups", "dados"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# E501: o estilo do repo usa comentários longos de "porquê" — largura não é gate.
+# E741: `l` (de "linha") em comprehensions é idioma corrente aqui; renomear em massa
+# só para o lint seria churn sem ganho de leitura em PT-BR.
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest precisa importar DEPOIS do redirect do DB (documentado no próprio arquivo);
+# scripts fazem sys.path.insert antes do import do pacote (rodam soltos, sem install).
+# Nos testes/eval o estilo compacto é escolha (semicolon em linha de arrange,
+# nomes curtos tipo `l`, variável de fixture não-lida) — não é gate de qualidade.
+"tests/conftest.py" = ["E402"]
+"tests/*.py" = ["E702", "E741", "F841", "E731"]
+"scripts/*.py" = ["E402"]
+"eval/*.py" = ["E402", "E702", "E741", "F841", "E731"]
+
+[tool.bandit]
+# seg-03: bandit roda no CI. Excluídos os diretórios de teste/ferramenta (assert e
+# fakes são o mecanismo, não risco). B110/B112 (try-except-pass/continue): o padrão
+# best-effort do projeto SEMPRE loga via telemetry antes — os poucos pass legítimos
+# têm comentário no local. O verify=False do deep-fetch (B501) fica VISÍVEL de
+# propósito via # nosec pontual com justificativa, não via skip global.
+exclude_dirs = ["tests", "eval", "scripts", "graphify-out", "backups", ".hypothesis"]
+# B608 (SQL por f-string): TODOS os hits são identificadores (nome de tabela/coluna
+# das migrações idempotentes) vindos de CONSTANTES do código — valores de usuário
+# sempre entram parametrizados (?). B110/B112: o padrão best-effort do projeto loga
+# via telemetry antes de engolir; os poucos pass silenciosos têm comentário local.
+skips = ["B110", "B112", "B608"]
