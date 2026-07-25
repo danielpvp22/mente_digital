@@ -7,16 +7,21 @@ EtlProcessor.ingestao_livros — átomos com proveniência livro/capítulo/pági
 UMA nota-síntese por capítulo (hierárquico: a atomização pura fragmenta o
 argumento longo; a síntese preserva a tese).
 
-Este módulo segue o padrão de agenda.py/verbalizar.py: puro, sem IO, sem settings
-— tudo injetado, tudo testável sem GPU. Livro ESCANEADO (só imagem) é detectado e
-recusado aqui; ele espera o worker OCR da Fase 3 (Unlimited-OCR GGUF em venv
-própria), que vai desembocar NESTES MESMOS jobs — o pipeline não muda.
+Este módulo segue o padrão de agenda.py/verbalizar.py: as funções de decisão são
+puras, sem settings — tudo injetado, tudo testável sem GPU. A ÚNICA exceção é
+`extrair_pdf` no fim do arquivo (IO + import tardio do PyMuPDF): ela existe aqui
+porque TRÊS chamadores precisam da mesma extração (o script manual, a pasta
+vigiada e a colheita acadêmica da Fase 4) e duplicá-la seria pior.
+
+Livro ESCANEADO (só imagem) é detectado e recusado; ele espera o worker OCR da
+Fase 3 (Unlimited-OCR GGUF em venv própria), que vai desembocar NESTES MESMOS
+jobs — o pipeline a jusante não muda.
 """
 from __future__ import annotations
 
 import re
 import statistics
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Abaixo disto de texto por página (mediana), o PDF é imagem escaneada — não há o
 # que extrair sem OCR. 200 chars ≈ um parágrafo curto; página digital real tem >1k.
@@ -101,3 +106,17 @@ def montar_jobs(titulo: str, paginas: List[str],
             jobs.append(_job(titulo, len(jobs) + 1,
                              f"páginas {ini + 1}-{fim}", ini, fim, paginas))
     return [j for j in jobs if j["texto"]]
+
+
+# --- a ÚNICA função com IO (ver docstring do módulo) -------------------------
+def extrair_pdf(caminho, fonte: Optional[bytes] = None) -> Tuple[List[str], List[Tuple[int, str, int]]]:
+    """Devolve (páginas de texto, TOC) de um PDF. `fonte` (bytes) permite extrair
+    um PDF baixado sem gravá-lo antes (colheita acadêmica). Import TARDIO do
+    PyMuPDF: o servidor sobe sem ele, e só quem ingere paga o import."""
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(stream=fonte, filetype="pdf") if fonte else fitz.open(str(caminho))
+    try:
+        return [p.get_text("text") for p in doc], (doc.get_toc() or [])
+    finally:
+        doc.close()

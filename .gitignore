@@ -44,6 +44,9 @@ dados/ingestao/
 # reversão — conteúdo do vault do dono, nunca versionado.
 dados/_arquivo_consolidacao/
 
+# Pasta vigiada de livros: os PDFs do dono (pessoais e com direitos autorais).
+dados/livros/
+
 # Saídas do A/B de modelos: carregam perguntas reais e trechos do VAULT (mesma regra
 # do Cerebro_Digital acima). São regeneráveis com `ab_modelos.py --preparar`, então
 # versiona-se a ferramenta, não o dado do usuário.

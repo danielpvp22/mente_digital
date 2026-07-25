@@ -292,6 +292,12 @@ class Database:
             # rota agregada sobrevivia — cada erro real de roteamento era evidência
             # perdida, e o eval seguia com 9 casos. Cada linha é um caso candidato;
             # a taxa de parse_ok em produção é o critério do constrained-decoding.
+            # Colheita acadêmica (Fase 4): URLs de PDF já vistas — dedup DURÁVEL
+            # (o cache de URL do WebSearcher é só de RAM, e o crawler roda todo dia).
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS academico_pdfs
+                   (url TEXT PRIMARY KEY, data_hora TEXT)"""
+            )
             c.execute(
                 """CREATE TABLE IF NOT EXISTS router_log
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, origem TEXT,
@@ -689,6 +695,30 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao remover rotina", exc)
             return False
+
+    def pdf_academico_visto(self, url: str) -> bool:
+        """True se este PDF já foi colhido (ou tentado) — Fase 4. Em erro devolve
+        True: na dúvida NÃO baixar de novo é o lado seguro (evita loop de download)."""
+        try:
+            with self._conn() as conn:
+                return conn.execute(
+                    "SELECT 1 FROM academico_pdfs WHERE url = ?", (url,)
+                ).fetchone() is not None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao checar PDF acadêmico", exc)
+            return True
+
+    def marcar_pdf_academico(self, url: str) -> None:
+        """Carimba a URL como vista (idempotente)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO academico_pdfs (url, data_hora) VALUES (?, ?)",
+                    (url, datetime.now().isoformat()),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar PDF acadêmico", exc)
 
     def save_router_log(self, origem: str, texto: str, bruto: str,
                         tool: Optional[str], parse_ok: bool) -> None:

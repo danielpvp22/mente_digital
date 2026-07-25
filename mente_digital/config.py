@@ -99,6 +99,31 @@ class Settings(BaseSettings):
     consolidacao_intervalo_horas: int = 24
     dir_arquivo_consolidacao: str = str(DIR_DADOS / "_arquivo_consolidacao")
 
+    # --- Pasta VIGIADA de livros (2026-07-25) ---------------------------------
+    # "Onde deixo os PDFs?": aqui. Largue o arquivo em dados/livros/entrada/ e o
+    # scheduler o ingere NO IDLE (sem rodar script nenhum): extrai → jobs de
+    # capítulo → atomização hierárquica. O PDF sai da entrada ao ser enfileirado:
+    # digital vai p/ processados/, ESCANEADO vai p/ aguardando_ocr/ (Fase 3) —
+    # nunca fica em loop nem é apagado.
+    livros_entrada_habilitada: bool = True
+    dir_livros: str = str(DIR_DADOS / "livros")
+    livros_por_ciclo: int = 1             # PDFs extraídos por passada (extração é rápida)
+
+    # --- Colheita ACADÊMICA — Fase 4 (2026-07-25) -----------------------------
+    # Busca PDFs acadêmicos (DDGS com filetype:pdf) sobre o que o usuário mais
+    # REUSA (temas quentes) e o que ficou SEM resposta (lacunas) — as duas tabelas
+    # que já existem. Papers baixados entram na MESMA fila de jobs dos livros, então
+    # herdam proveniência + síntese. Egressão de fundo => OPT-IN (default off):
+    # ligar significa que a máquina busca e baixa PDFs sozinha, sem pergunta em
+    # curso. Isolada do caminho vivo: nada aqui toca a atomização web em tempo real.
+    academico_habilitado: bool = False
+    academico_intervalo_horas: int = 24
+    academico_alvos_por_ciclo: int = 1    # temas pesquisados por passada
+    academico_pdfs_por_alvo: int = 2      # PDFs aceitos por tema
+    academico_resultados_busca: int = 8   # candidatos pedidos ao DDGS
+    academico_max_mb: int = 25            # PDF maior que isso é descartado (tese/livro inteiro)
+    academico_min_chars: int = 3000       # menos texto que isso = scan/capa/paywall
+
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
     n_ctx: int = 8192
@@ -825,6 +850,10 @@ class Settings(BaseSettings):
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
         os.makedirs(self.dir_listas, exist_ok=True)
         os.makedirs(self.dir_agenda, exist_ok=True)
+        # Pasta VIGIADA de livros: tem de EXISTIR para o dono largar o PDF nela sem
+        # criar nada na mão — é a resposta a "onde deixo os livros?".
+        if self.livros_entrada_habilitada:
+            os.makedirs(Path(self.dir_livros) / "entrada", exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)
