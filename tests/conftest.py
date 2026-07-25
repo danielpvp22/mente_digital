@@ -61,6 +61,10 @@ def _isola_do_env(monkeypatch):
     for campo in ("rag_score_confident", "embedding_query_prefix", "embedding_passage_prefix",
                   "llm_no_think", "llm_strip_think"):
         monkeypatch.setattr(_settings, campo, getattr(_DEFAULTS_LIMPOS, campo), raising=False)
+    # Backup diário (ops-backup-01): default LIGADO em produção, mas um tick de
+    # scheduler dentro da suíte zipar o vault REAL seria efeito colateral em disco.
+    # Off aqui; o módulo backup é testado direto (test_backup.py) com tmp_path.
+    monkeypatch.setattr(_settings, "backup_habilitado", False, raising=False)
     yield
 
 

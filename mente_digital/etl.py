@@ -22,6 +22,7 @@ from mente_digital import contradicao
 from mente_digital import diapasao
 from mente_digital import prompts
 from mente_digital import textutils
+from mente_digital import antiinjecao
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
 from mente_digital.llm import InferenciaPreemptada
@@ -206,6 +207,23 @@ class EtlProcessor:
             # que impede o retry de virar spin — só reacorda quando a GPU está livre.
             await self._esperar_idle()
             tema, dados = pendentes[0]
+            # Anti-injeção na PERSISTÊNCIA (painel 2026-07-24, seg-01): o filtro do
+            # caminho VIVO (rag._deep_fetch) não cobre esta fila — a colheita dos
+            # perdedores do race enfileira texto CRU de página (respostas.on_colheita),
+            # e um payload que chegasse aqui viraria átomo PERMANENTE do vault,
+            # aterrando respostas futuras. Choke point único da rota web→átomo: dropa
+            # só o bloco envenenado; página inteiramente suja morre sem virar nota.
+            blocos = [b for b in dados.split("\n\n") if b.strip()]
+            limpos, removidos = antiinjecao.filtrar_chunks(blocos)
+            if removidos:
+                telemetry.track(
+                    "ETL_POST_CHAT",
+                    f"Anti-injeção: {removidos} trecho(s) descartado(s) de '{tema}'.",
+                )
+            if not limpos:
+                pendentes.pop(0)
+                continue
+            dados = "\n\n".join(limpos)
             try:
                 conteudo = await self.ctx.llama.collect(
                     prompts.prompt_sintese(tema, dados),

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     db_telemetria: str = str(DIR_DADOS / "telemetria_etl.db")
     subpasta_conhecimento_novo: str = "Conhecimento_Novo"
 
+    # --- Backup diário (painel 2026-07-24, ops-backup-01) ----------------------
+    # O vault é a ÚNICA cópia do conhecimento destilado (o dump bruto é APAGADO após
+    # a atomização) — sem backup, disco morto = base morta. O scheduler zipa 1x/dia
+    # vault + SQLite (via API sqlite3.backup: snapshot consistente mesmo em WAL) +
+    # .env (a calibração real vive nele, não nos defaults). O Chroma NÃO entra: é
+    # derivado, scripts/reindexar.py o reconstrói do vault. ATENÇÃO: backups/ no
+    # MESMO disco protege de bug/deleção, não de disco morto — aponte
+    # MENTE_BACKUP_DIR para OUTRO volume quando puder.
+    backup_habilitado: bool = True
+    backup_dir: str = str(BASE_DIR / "backups")
+    backup_retencao: int = 14  # zips diários mantidos; os mais antigos são apagados
+
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
     n_ctx: int = 8192
