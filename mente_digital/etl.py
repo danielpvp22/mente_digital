@@ -27,6 +27,7 @@ from mente_digital import textutils
 from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
+from mente_digital import figuras as figuras_mod
 from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
@@ -261,11 +262,12 @@ class EtlProcessor:
                 return False
             corpos.append(conteudo)
             await self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem)
-        await self._sintese_capitulo(titulo_livro, cap, origem, corpos)
+        await self._sintese_capitulo(titulo_livro, cap, origem, corpos,
+                                     job.get("figuras") or [])
         return True
 
     async def _sintese_capitulo(self, titulo_livro: str, cap: str, origem: str,
-                                corpos: List[str]) -> None:
+                                corpos: List[str], figuras: List[dict] = ()) -> None:
         """O 'reduce' do capítulo. Best-effort: falha aqui não invalida os átomos
         já salvos (o capítulo conta como concluído — a síntese é o bônus da tese)."""
         base = "\n\n".join(corpos)[: settings.ingestao_lote_chars * 2]
@@ -285,7 +287,11 @@ class EtlProcessor:
         if not sintese.strip():
             return
         # Nota única via _salvar_atomos: formato/tags garantidos, dedup incluso.
+        # As FIGURAS do capítulo entram aqui (Fase 5a) e não em cada átomo: a
+        # síntese É o capítulo, então o link fica preciso em vez de repetido; e a
+        # legenda vai como texto, que é o que faz o RAG achar "o diagrama de X".
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
+        corpo += figuras_mod.bloco_markdown(list(figuras), settings.subpasta_figuras)
         await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
 
     # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
@@ -330,11 +336,35 @@ class EtlProcessor:
             if not jobs:
                 await self._mover_livro(pdf, "falhou")
                 continue
+            await self._anexar_figuras(pdf, titulo, jobs)
             n = await asyncio.to_thread(self._enfileirar_jobs, jobs, livro_mod.slug(titulo))
             await self._mover_livro(pdf, "processados")
             telemetry.track("INGESTAO", f"'{titulo}': {n} capítulo(s) enfileirados da pasta vigiada.")
             feitos += 1
         return feitos
+
+    async def _anexar_figuras(self, pdf: Path, titulo: str, jobs: List[dict]) -> None:
+        """Extrai as figuras do PDF (WebP no vault) e distribui cada uma para o job
+        do capítulo cuja faixa de páginas a contém. Best-effort: falhar aqui não pode
+        custar a ingestão do TEXTO, que é o que importa."""
+        if not settings.figuras_habilitadas:
+            return
+        try:
+            achadas = await asyncio.to_thread(
+                figuras_mod.extrair_de_pdf, pdf, settings.dir_figuras,
+                livro_mod.slug(titulo), settings.figuras_min_lado,
+                settings.figuras_qualidade, settings.figuras_max_lado,
+                settings.figuras_max_por_livro,
+            )
+        except Exception as exc:
+            telemetry.error("FIGURAS", f"Falha ao extrair figuras de '{titulo}'", exc)
+            return
+        if not achadas:
+            return
+        for j in jobs:
+            j["figuras"] = figuras_mod.figuras_do_intervalo(
+                achadas, j["pagina_inicio"], j["pagina_fim"])
+        telemetry.track("FIGURAS", f"'{titulo}': {len(achadas)} figura(s) em WebP no vault.")
 
     async def _mover_livro(self, pdf: Path, sub: str) -> None:
         destino = Path(settings.dir_livros) / sub

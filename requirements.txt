@@ -21,6 +21,7 @@ piper-tts>=1.2.0
 coqui-tts>=0.27.5    # XTTS-v2 (fork Idiap). Baixe o modelo p/ dados/modelos/xtts_v2/
 transformers>=4.57,<5   # travado <5 por causa do coqui/XTTS (ver acima)
 num2words>=0.5.13    # verbalização de números PT-BR p/ o TTS (decimal/hora/moeda)
+pillow>=10.0        # figuras dos livros -> WebP (Fase 5a); import tardio
 pymupdf>=1.24        # extração de texto/TOC de PDF digital (scripts/ingerir_livro.py);
                      # import tardio — só o script de ingestão o carrega
 numpy>=1.26

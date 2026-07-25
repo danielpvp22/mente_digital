@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
     ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
+    # FIGURAS (Fase 5a): as imagens do livro viram WebP no vault e wikilinks nas
+    # notas. WebP q80 medido como o ponto ótimo (2,2x menor que o JPEG que já está
+    # dentro do PDF, perda imperceptível). min_lado corta ícone/ornamento — sem ele
+    # um livro didático traria centenas de bulletpoints decorativos.
+    figuras_habilitadas: bool = True
+    subpasta_figuras: str = "Figuras"
+    figuras_qualidade: int = 80
+    figuras_min_lado: int = 200           # px; abaixo disso é decoração
+    figuras_max_lado: int = 1600          # reamostra só o que passa disso
+    figuras_max_por_livro: int = 2000     # teto de sanidade p/ não encher o vault
     max_tokens_sintese_capitulo: int = 700
 
     # --- Consolidação de átomos — Fase 2 (2026-07-25) --------------------------
@@ -857,6 +867,10 @@ class Settings(BaseSettings):
     @property
     def dir_conhecimento_novo(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_conhecimento_novo
+
+    @property
+    def dir_figuras(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_figuras
 
     @property
     def dir_listas(self) -> Path:

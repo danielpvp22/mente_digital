@@ -12,6 +12,7 @@ import asyncio
 import gc
 import os
 import time
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
@@ -133,6 +134,25 @@ async def exigir_acesso(request: Request) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
+
+
+@app.get("/api/imagem/{caminho:path}", dependencies=[Depends(exigir_acesso)])
+async def imagem_do_vault(caminho: str):
+    """Serve uma figura do vault para o chat (Fase 5b). SÓ imagem, SÓ dentro do
+    vault: `resolve()` + `is_relative_to` fecham path traversal (um `..%2f..` no
+    caminho resolveria para fora e vazaria arquivo do disco), e a allowlist de
+    extensão impede servir .md/.db por esta rota. O gate de acesso é o mesmo das
+    demais /api — e como <img> não manda header, o token vai por query string,
+    o mesmo tradeoff já aceito no WebSocket."""
+    from fastapi.responses import FileResponse
+
+    raiz = Path(settings.caminho_obsidian).resolve()
+    alvo = (raiz / caminho).resolve()
+    if not alvo.is_relative_to(raiz) or not alvo.is_file():
+        raise HTTPException(status_code=404, detail="não encontrado")
+    if alvo.suffix.lower() not in {".webp", ".png", ".jpg", ".jpeg", ".gif", ".svg"}:
+        raise HTTPException(status_code=404, detail="não encontrado")
+    return FileResponse(alvo, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/historico", dependencies=[Depends(exigir_acesso)])
