@@ -29,6 +29,7 @@ from mente_digital import disjuntor as _disjuntor
 from mente_digital import egressao
 from mente_digital import grafo
 from mente_digital import textutils
+from mente_digital import academico
 from mente_digital.config import settings
 from mente_digital.state import LruCache
 from mente_digital.telemetry import db, telemetry
@@ -1247,6 +1248,41 @@ class WebSearcher:
             return await asyncio.to_thread(_extrair)
         except Exception as exc:
             telemetry.warn("WEB_FETCH", f"Falha ao extrair {url[:60]}: {exc}")
+            return None
+
+    async def buscar_pdfs(self, termos: str, max_results: int) -> List[dict]:
+        """Busca PDFs (Fase 4, colheita acadêmica): a MESMA saída de rede do `_ddg`
+        — logo, a Guarda de Egressão continua mascarando PII —, só com o operador
+        `filetype:pdf` e um viés acadêmico na query. ISOLADA do caminho vivo: o
+        `search` de sempre não passa por aqui. Devolve [{url, titulo}]."""
+        brutos = await self._ddg(academico.montar_query(termos), max_results)
+        return academico.filtrar_pdfs(brutos)
+
+    async def baixar_pdf(self, url: str, max_mb: int) -> Optional[bytes]:
+        """Baixa um PDF com teto de tamanho, sem nunca levantar. Streaming: aborta
+        no meio se passar do teto (um livro inteiro de 300 MB não pode virar RAM).
+        Não há fallback de cert aqui — PDF de fonte com TLS quebrado não entra."""
+        import httpx
+
+        limite = max_mb * 1024 * 1024
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.web_fetch_timeout, follow_redirects=True,
+                headers=_HEADERS_FETCH,
+            ) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    buf = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        buf.extend(chunk)
+                        if len(buf) > limite:
+                            telemetry.warn("ACADEMICO", f"PDF acima de {max_mb}MB, descartado: {url[:60]}")
+                            return None
+            if not bytes(buf[:5]).startswith(b"%PDF"):
+                return None      # HTML de paywall servido como .pdf
+            return bytes(buf)
+        except Exception as exc:
+            telemetry.warn("ACADEMICO", f"Falha ao baixar PDF {url[:60]}: {exc}")
             return None
 
     async def _baixar_html(self, client, url: str) -> Optional[str]:

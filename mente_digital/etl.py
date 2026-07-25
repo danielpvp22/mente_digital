@@ -24,6 +24,7 @@ from mente_digital import contradicao
 from mente_digital import diapasao
 from mente_digital import prompts
 from mente_digital import textutils
+from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
 from mente_digital import livro as livro_mod
@@ -285,6 +286,133 @@ class EtlProcessor:
         # Nota única via _salvar_atomos: formato/tags garantidos, dedup incluso.
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
         await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
+
+    # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
+    def _enfileirar_jobs(self, jobs: List[dict], base_nome: str) -> int:
+        """Grava jobs na fila DURÁVEL da ingestão (dados/ingestao/pendentes). Nome
+        com prefixo do documento + índice: dois documentos nunca se sobrescrevem."""
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        pend.mkdir(parents=True, exist_ok=True)
+        for j in jobs:
+            alvo = pend / f"{base_nome}__{j['capitulo']:03d}.json"
+            alvo.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+        return len(jobs)
+
+    async def ingerir_pasta_livros(self) -> int:
+        """Pasta VIGIADA: PDFs largados em dados/livros/entrada/ são extraídos e
+        enfileirados no idle — sem rodar script. Só a EXTRAÇÃO acontece aqui (rápida,
+        sem GPU); a atomização é a passada de `ingestao_livros`.
+
+        O PDF sempre SAI da entrada: digital vai p/ processados/, ESCANEADO vai p/
+        aguardando_ocr/ (o worker OCR da Fase 3 pega de lá). Nada é apagado, e nada
+        fica em loop sendo re-lido a cada tick."""
+        if not settings.livros_entrada_habilitada:
+            return 0
+        entrada = Path(settings.dir_livros) / "entrada"
+        if not entrada.is_dir():
+            return 0
+        pdfs = sorted(p for p in entrada.glob("*.pdf") if p.is_file())[: settings.livros_por_ciclo]
+        feitos = 0
+        for pdf in pdfs:
+            try:
+                paginas, toc = await asyncio.to_thread(livro_mod.extrair_pdf, pdf)
+            except Exception as exc:
+                telemetry.error("INGESTAO", f"Falha ao ler {pdf.name}", exc)
+                await self._mover_livro(pdf, "falhou")
+                continue
+            titulo = pdf.stem
+            if livro_mod.parece_escaneado([len(t) for t in paginas]):
+                telemetry.track("INGESTAO", f"'{titulo}' é ESCANEADO — vai p/ aguardando_ocr (Fase 3).")
+                await self._mover_livro(pdf, "aguardando_ocr")
+                continue
+            jobs = livro_mod.montar_jobs(titulo, paginas, toc)
+            if not jobs:
+                await self._mover_livro(pdf, "falhou")
+                continue
+            n = await asyncio.to_thread(self._enfileirar_jobs, jobs, livro_mod.slug(titulo))
+            await self._mover_livro(pdf, "processados")
+            telemetry.track("INGESTAO", f"'{titulo}': {n} capítulo(s) enfileirados da pasta vigiada.")
+            feitos += 1
+        return feitos
+
+    async def _mover_livro(self, pdf: Path, sub: str) -> None:
+        destino = Path(settings.dir_livros) / sub
+        destino.mkdir(parents=True, exist_ok=True)
+        try:
+            await asyncio.to_thread(lambda: pdf.replace(destino / pdf.name))
+        except OSError as exc:
+            telemetry.error("INGESTAO", f"Falha ao mover {pdf.name} p/ {sub}", exc)
+
+    async def colheita_academica(self) -> int:
+        """Fase 4: busca PDFs acadêmicos sobre os temas quentes/lacunas do dono e os
+        enfileira como jobs (herdando proveniência + síntese da ingestão). SEM LLM
+        aqui — é rede e extração; a atomização é a passada de `ingestao_livros`.
+
+        Isolada do caminho vivo: nada nesta função toca a atomização web em tempo
+        real. Alvos vêm das tabelas que já existem (temas_quentes, lacunas) e são
+        CARIMBADOS como pesquisados para não repetir no próximo ciclo."""
+        if not settings.academico_habilitado:
+            return 0
+        alvos = await self._alvos_academicos()
+        if not alvos:
+            return 0
+        total = 0
+        for termos, marcar in alvos:
+            try:
+                candidatos = await self.ctx.web.buscar_pdfs(termos, settings.academico_resultados_busca)
+            except Exception as exc:
+                telemetry.error("ACADEMICO", f"Falha na busca de PDFs para '{termos}'", exc)
+                continue
+            aceitos = 0
+            for cand in candidatos:
+                if aceitos >= settings.academico_pdfs_por_alvo:
+                    break
+                if await asyncio.to_thread(db.pdf_academico_visto, cand["url"]):
+                    continue
+                total += await self._colher_pdf(cand, termos)
+                aceitos += 1 if total else 0
+            await asyncio.to_thread(marcar, textutils.normaliza(termos))
+        if total:
+            telemetry.track("ACADEMICO", f"{total} paper(s) enfileirados p/ atomização no idle.")
+        return total
+
+    async def _alvos_academicos(self) -> List[Tuple[str, object]]:
+        """Temas QUENTES primeiro (o que o dono mais reusa), depois LACUNAS (o que
+        ficou sem resposta) — os dois sinais que o projeto já coleta."""
+        quentes = await asyncio.to_thread(
+            db.get_temas_quentes, settings.academico_alvos_por_ciclo,
+            settings.idle_temas_min_reuso, settings.academico_intervalo_horas // 24 or 1,
+        )
+        alvos: List[Tuple[str, object]] = [(t["termos"], db.marcar_tema_pesquisado) for t in quentes]
+        if len(alvos) < settings.academico_alvos_por_ciclo:
+            lacunas = await asyncio.to_thread(db.get_lacunas, settings.academico_alvos_por_ciclo)
+            alvos += [(l["termos"], db.marcar_lacuna_pesquisada) for l in lacunas]
+        return alvos[: settings.academico_alvos_por_ciclo]
+
+    async def _colher_pdf(self, cand: dict, termos: str) -> int:
+        """Baixa, extrai e enfileira UM paper. 0 = descartado (motivo logado)."""
+        url = cand["url"]
+        dados = await self.ctx.web.baixar_pdf(url, settings.academico_max_mb)
+        await asyncio.to_thread(db.marcar_pdf_academico, url)  # visto: não retenta
+        if not dados:
+            return 0
+        try:
+            paginas, _ = await asyncio.to_thread(livro_mod.extrair_pdf, None, dados)
+        except Exception as exc:
+            telemetry.warn("ACADEMICO", f"PDF ilegível ({url[:60]}): {exc}")
+            return 0
+        titulo = academico.titulo_do_paper(cand.get("titulo", ""), url)
+        job = academico.job_de_paper(titulo, url, paginas, settings.academico_min_chars)
+        if job is None:
+            telemetry.track("ACADEMICO", f"Texto raso (paywall/scan), descartado: {url[:60]}")
+            return 0
+        job["texto"] = "\n\n".join(antiinjecao.filtrar_chunks(
+            [b for b in job["texto"].split("\n\n") if b.strip()])[0])
+        if not job["texto"].strip():
+            return 0
+        await asyncio.to_thread(self._enfileirar_jobs, [job],
+                                f"paper-{livro_mod.slug(termos)}-{livro_mod.slug(titulo, 24)}")
+        return 1
 
     # -- Consolidação de átomos — Fase 2 (2026-07-25) ---------------------------
     async def consolidar_atomos(self) -> int:

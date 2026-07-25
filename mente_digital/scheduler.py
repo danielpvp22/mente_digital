@@ -73,6 +73,10 @@ class SchedulerService:
         # restart apenas adia a 1ª passada, e a operação é idempotente/arquivada.
         self._ultima_consolidacao: Optional[datetime] = None
         self._consolidacao_em_andamento = False
+        # Colheita acadêmica (Fase 4): 1x/dia, sem sessão viva, OPT-IN. O dedup
+        # durável de URL vive no SQLite, então restart não re-baixa nada.
+        self._ultima_academico: Optional[datetime] = None
+        self._academico_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -127,6 +131,12 @@ class SchedulerService:
             self._ultima_consolidacao = agora
             self._consolidacao_em_andamento = True
             self.ctx.track_task(self._executar_consolidacao())
+        # Colheita acadêmica (Fase 4): busca/baixa PDFs sobre os temas do dono. Só
+        # em idle e opt-in — é egressão de fundo, sem pergunta em curso.
+        if self._academico_devido(agora):
+            self._ultima_academico = agora
+            self._academico_em_andamento = True
+            self.ctx.track_task(self._executar_academico())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -159,7 +169,33 @@ class SchedulerService:
                 or self._ha_sessoes()):
             return False
         pend = Path(settings.dir_ingestao) / "pendentes"
-        return pend.is_dir() and any(pend.glob("*.json"))
+        if pend.is_dir() and any(pend.glob("*.json")):
+            return True
+        # Pasta vigiada: PDF novo largado em dados/livros/entrada também dispara a
+        # passada (a extração acontece dentro dela, antes da atomização).
+        entrada = Path(settings.dir_livros) / "entrada"
+        return (settings.livros_entrada_habilitada and entrada.is_dir()
+                and any(entrada.glob("*.pdf")))
+
+    def _academico_devido(self, agora: datetime) -> bool:
+        if (not settings.academico_habilitado or self._academico_em_andamento
+                or self._ha_sessoes()):
+            return False
+        ult = self._ultima_academico
+        return ult is None or (agora - ult).total_seconds() >= settings.academico_intervalo_horas * 3600
+
+    async def _executar_academico(self) -> None:
+        """Uma passada de colheita acadêmica: rede + extração, SEM LLM (a atomização
+        é a passada de ingestão, que roda no idle seguinte). Por isso NÃO religa o
+        modelo — se ele está descarregado, continua descarregado. Nunca propaga."""
+        try:
+            telemetry.track("ACADEMICO", "Passada de colheita acadêmica iniciada (sem sessão).")
+            n = await self.ctx.etl.colheita_academica()
+            telemetry.track("ACADEMICO", f"Passada concluída ({n} paper(s) enfileirados).")
+        except Exception as exc:
+            telemetry.error("ACADEMICO", "Falha na colheita acadêmica", exc)
+        finally:
+            self._academico_em_andamento = False
 
     async def _executar_ingestao(self) -> None:
         """Atomiza capítulos pendentes SEM sessão aberta. Mesmo contrato da
@@ -167,6 +203,9 @@ class SchedulerService:
         dentro do ETL) e devolve a VRAM ao fim. NUNCA propaga."""
         try:
             telemetry.track("INGESTAO", "Passada de ingestão de livro iniciada (sem sessão).")
+            # Pasta vigiada primeiro: extrai o PDF novo (rápido, sem GPU) para que os
+            # jobs dele já entrem na fila que a atomização abaixo consome.
+            await self.ctx.etl.ingerir_pasta_livros()
             await self.ctx.llama.ensure_loaded()
             n = await self.ctx.etl.ingestao_livros()
             if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
