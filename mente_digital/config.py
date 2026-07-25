@@ -122,8 +122,8 @@ class Settings(BaseSettings):
     # na GPU) — é o que faz ~3 GB de OCR (Q4_K_M 1,95 + mmproj 0,77) caberem na 3080.
     ocr_habilitado: bool = True
     ocr_bin: str = ""                     # caminho do llama-mtmd-cli (vazio = desligado)
-    caminho_modelo_ocr: str = str(DIR_MODELOS / "Unlimited-OCR-Q4_K_M.gguf")
-    caminho_mmproj_ocr: str = str(DIR_MODELOS / "mmproj-Unlimited-OCR-F16.gguf")
+    caminho_modelo_ocr: str = str(DIR_MODELOS / "DeepSeek-OCR-Q8_0.gguf")
+    caminho_mmproj_ocr: str = str(DIR_MODELOS / "mmproj-DeepSeek-OCR-Q8_0.gguf")
     ocr_dpi: int = 200                    # 200 dpi: legível sem estourar o encoder
     ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
     ocr_timeout_pagina: int = 180
