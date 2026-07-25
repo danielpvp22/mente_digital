@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     # (+ deep-fetch de páginas) contradiz isso. False = comportamento antigo (escala).
     sigilo_bloqueia_web: bool = True
 
+    # --- Ingestão de livros — Fase 1 (2026-07-25) ------------------------------
+    # scripts/ingerir_livro.py extrai um PDF DIGITAL em jobs de capítulo (disco,
+    # sobrevive a restart); o scheduler os atomiza NO IDLE, nunca com sessão viva
+    # (restrição do dono). Capado por ciclo: um livro grande atravessa vários
+    # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
+    ingestao_habilitada: bool = True
+    dir_ingestao: str = str(DIR_DADOS / "ingestao")
+    ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
+    ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
+    max_tokens_sintese_capitulo: int = 700
+
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
     n_ctx: int = 8192

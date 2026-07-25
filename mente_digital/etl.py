@@ -13,16 +13,19 @@ normalizar) mora em atomos.py; este módulo decide QUANDO e O QUE atomizar.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from mente_digital import contradicao
 from mente_digital import diapasao
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import antiinjecao
+from mente_digital import livro as livro_mod
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
 from mente_digital.llm import InferenciaPreemptada
@@ -62,7 +65,8 @@ class EtlProcessor:
         cap = getattr(self.ctx, "orcamento_fundo", None)
         return min(base, cap) if cap else base
 
-    async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str) -> int:
+    async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str,
+                             origem: Optional[str] = None) -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
@@ -82,7 +86,10 @@ class EtlProcessor:
         duplicados = 0
         salvos_info: List[Tuple[str, str]] = []  # (caminho, corpo sem frontmatter) p/ #24
         for i, bloco in enumerate(blocos):
-            bloco = normalizar_atomo(bloco, prefixo, agora)
+            # `origem` (opcional) é a proveniência RICA do frontmatter (ex.: livro/
+            # capítulo/página) — separada do `prefixo` porque este também vira nome
+            # de arquivo, e "p. 12-30" tem caracteres inválidos no Windows.
+            bloco = normalizar_atomo(bloco, origem or prefixo, agora)
             if not bloco.strip():
                 continue
             # DEDUP contra o banco (pedido: "impeça a duplicação"). Um átomo quase
@@ -191,6 +198,92 @@ class EtlProcessor:
             return False
         _doc, dist = res[0]
         return dist < settings.dedup_dist_max
+
+    # -- Ingestão de livros — Fase 1 (2026-07-25) -------------------------------
+    async def ingestao_livros(self) -> int:
+        """Consome os jobs de capítulo de dados/ingestao/pendentes — SEMPRE em idle
+        (o chamador é o scheduler, que só dispara sem sessão viva; aqui cada lote
+        ainda cede a GPU via _esperar_idle + preemptible). Capado por ciclo.
+
+        Crash-safe: o job só sai de pendentes/ após o capítulo INTEIRO ser salvo;
+        reprocessar um job interrompido é idempotente (o dedup por átomo descarta
+        o que já entrou). Devolve quantos capítulos concluiu."""
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        if not pend.is_dir():
+            return 0
+        jobs = sorted(pend.glob("*.json"))[: settings.ingestao_caps_por_ciclo]
+        concluidos = 0
+        for job_path in jobs:
+            try:
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                telemetry.error("INGESTAO", f"Job ilegível: {job_path.name}", exc)
+                continue
+            if await self._processar_capitulo(job):
+                destino = pend.parent / "processados" / job_path.name
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(lambda a=job_path, b=destino: a.replace(b))
+                concluidos += 1
+        if concluidos:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("INGESTAO", f"{concluidos} capítulo(s) atomizados e indexados.")
+        return concluidos
+
+    async def _processar_capitulo(self, job: dict) -> bool:
+        """Um capítulo → átomos com proveniência + UMA nota-síntese (hierárquico:
+        a atomização fragmenta o argumento; a síntese preserva a tese do capítulo).
+        False = não terminou (preempção/erro) e o job PERMANECE pendente."""
+        titulo_livro = job.get("livro", "?")
+        cap = job.get("titulo_cap") or f"cap. {job.get('capitulo', '?')}"
+        origem = (f"Livro '{titulo_livro}' — {cap} "
+                  f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
+        lotes = livro_mod.fatiar_lotes(job.get("texto", ""), settings.ingestao_lote_chars)
+        if not lotes:
+            return True   # capítulo vazio: nada a fazer, não bloqueia a fila
+        corpos: List[str] = []
+        for lote in lotes:
+            await self._esperar_idle()
+            try:
+                conteudo = await self.ctx.llama.collect(
+                    prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
+                    max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                    system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,
+                )
+            except InferenciaPreemptada:
+                telemetry.track("INGESTAO", f"'{cap}' cedeu a GPU — retoma no próximo idle.")
+                return False
+            except Exception as exc:
+                telemetry.error("INGESTAO", f"Falha ao atomizar lote de '{cap}'", exc)
+                return False
+            corpos.append(conteudo)
+            await self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem)
+        await self._sintese_capitulo(titulo_livro, cap, origem, corpos)
+        return True
+
+    async def _sintese_capitulo(self, titulo_livro: str, cap: str, origem: str,
+                                corpos: List[str]) -> None:
+        """O 'reduce' do capítulo. Best-effort: falha aqui não invalida os átomos
+        já salvos (o capítulo conta como concluído — a síntese é o bônus da tese)."""
+        base = "\n\n".join(corpos)[: settings.ingestao_lote_chars * 2]
+        if not base.strip():
+            return
+        await self._esperar_idle()
+        try:
+            sintese = await self.ctx.llama.collect(
+                prompts.prompt_sintese_capitulo(titulo_livro, cap, base),
+                max_tokens=self._max_fundo(settings.max_tokens_sintese_capitulo),
+                system_prompt=prompts.SYS_SINTESE,
+                preemptible=True,
+            )
+        except Exception as exc:
+            telemetry.error("INGESTAO", f"Falha na síntese de '{cap}'", exc)
+            return
+        if not sintese.strip():
+            return
+        # Nota única via _salvar_atomos: formato/tags garantidos, dedup incluso.
+        corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
+        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
 
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:
