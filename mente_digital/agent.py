@@ -21,25 +21,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import time
-from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Deque, List, Optional, Tuple
+from datetime import datetime
+from typing import Awaitable, Callable, List, Optional, Tuple
 
-from mente_digital import calendario
-from mente_digital import contradicao
-from mente_digital import diapasao
-from mente_digital import fio
-from mente_digital import habitos
 from mente_digital import mestre
 from mente_digital import prompts
-from mente_digital import srs
 from mente_digital import textutils
 from mente_digital import tools
 from mente_digital import verbosidade
 # A atomização (um .md por ideia — Zettelkasten puro) mora em atomos.py; os nomes
 # seguem re-exportados por aqui porque scripts/, eval/ e testes importam de `agent`.
-from mente_digital.atomos import (
+from mente_digital.atomos import (  # noqa: F401  (re-export histórico)
     _e_titulo,
     _parece_atomo,
     _slug_titulo,
@@ -52,12 +45,13 @@ from mente_digital.comandos_mestre import ComandosMestre
 from mente_digital.config import settings
 # O ETL idle (EtlProcessor) e o dump da conversa (a fila que ele consome) moram em
 # etl.py; re-exportados por aqui (main.py, ws.py e testes importam de `agent`).
-from mente_digital.etl import EtlProcessor, append_chat_dump
-from mente_digital.llm import InferenciaPreemptada, LlamaManager
+from mente_digital.etl import EtlProcessor, append_chat_dump  # noqa: F401  (re-export)
+from mente_digital.llm import InferenciaPreemptada, LlamaManager  # noqa: F401  (re-export)
+from mente_digital.prompts import SENTINELA_INSUF  # noqa: F401  (re-export p/ eval/)
 # A interpretação da pergunta (QueryOptimizer + heurísticas puras: referência ao
 # turno anterior, tema de síntese, frase citada, lacuna pesquisável) mora em
 # otimizador.py; re-exportada por aqui pelos mesmos motivos de atomos.py.
-from mente_digital.otimizador import (
+from mente_digital.otimizador import (  # noqa: F401  (re-export histórico)
     QueryOptimizer,
     e_backchannel,
     e_declarativa,
@@ -67,8 +61,7 @@ from mente_digital.otimizador import (
     referencia_contexto,
 )
 # O sentinela mudou-se para prompts.py (é camada de linguagem); eval/ importa daqui.
-from mente_digital.prompts import SENTINELA_INSUF
-from mente_digital.rag import NENHUM, LocalResult, strip_frontmatter
+from mente_digital.rag import NENHUM, LocalResult, strip_frontmatter  # noqa: F401  (re-export)
 from mente_digital.respostas import Respostas
 from mente_digital.state import AppContext, SessionMemory
 # LatencyTracker mudou-se para telemetry.py (instrumentação mora com o save_latency).
@@ -227,7 +220,7 @@ class Agent(ComandosMestre, Respostas):
             # lembra', 'adiciona', 'salva nota') começa por imperativo → e_declarativa=False
             # → segue roteando; só a afirmação é poupada e cai no pipeline como memória.
             if tools.talvez_acao(texto_usuario) and not e_declarativa(texto_usuario):
-                decisao = await self._rotear(texto_usuario)
+                decisao = await self._rotear(texto_usuario, mem=mem, origem="pipeline")
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
                     tool = self.tools.get(decisao.tool)
@@ -351,6 +344,11 @@ class Agent(ComandosMestre, Respostas):
                         "LOCAL",
                         f"melhor_dist={local.melhor_dist} relevante={local.relevante} ram={len(ram)}",
                     )
+                    # obs-01 (painel 2026-07-24): o veredito do retrieval vai pro
+                    # registro PERSISTENTE do turno (metricas_latencia) — antes só
+                    # existia neste log volátil, que a doc manda desligar em produção.
+                    tracker.melhor_dist = local.melhor_dist
+                    tracker.relevante = int(local.relevante)
                     # LEVER B: numa pergunta definicional, o Banco só é aceito se o vault
                     # cobre o tema com FORÇA (>= definicional_min_atomos átomos DISTINTOS
                     # em `fontes`). O Tarkov era 1 átomo-piada → abaixo do mínimo → o Banco
@@ -370,6 +368,11 @@ class Agent(ComandosMestre, Respostas):
                         telemetry.track("AGENT", "Fusão: passada Banco.")
                         antes = len(paragrafos)
                         await passada(self._montar_contexto(local, []), "banco")
+                        if len(paragrafos) == antes:
+                            # obs-01: Banco RELEVANTE que não contribuiu = o decode
+                            # morreu no sentinela (ou veio vazio). É o proxy do custo
+                            # real do anti-alucinação — agora persistido por turno.
+                            tracker.sentinela = 1
                         # PROMOÇÃO: se o Banco de fato contribuiu (passada não-sentinela),
                         # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
                         # Em background: não pesa no TTFA da resposta atual.
@@ -425,6 +428,7 @@ class Agent(ComandosMestre, Respostas):
                         consulta_rank=texto_usuario, efemero=efemero, nivel=nivel,
                         tracker=tracker,
                     )
+                    tracker.escalou_web = 1  # obs-01: a cascata local falhou
                     if web:
                         paragrafos.append(web)
                         fontes.append("web")
@@ -503,6 +507,10 @@ class Agent(ComandosMestre, Respostas):
         return termos, recuperados
 
     async def _registrar_latencia(self, tracker: LatencyTracker, rota: str) -> None:
+        # obs-01: se o Banco RODOU (busca_ms medido) e ninguém marcou escalada, o
+        # turno resolveu local — 0 explícito distingue de None ("estágio nem rodou").
+        if tracker.escalou_web is None and tracker.busca_ms is not None:
+            tracker.escalou_web = 0
         ttft, ttfa, total = (
             LatencyTracker._ms(tracker.ttft),
             LatencyTracker._ms(tracker.ttfa),
@@ -526,6 +534,8 @@ class Agent(ComandosMestre, Respostas):
             decode_tok_s_gpu=tracker.decode_tok_s_gpu, reload_frio=tracker.reload_frio,
             vram_peak_mb=tracker.vram_peak_mb, tts_synth_ms_total=tracker.tts_synth_ms_total,
             tts_synth_ms_max=tracker.tts_synth_ms_max, tts_frases=tracker.tts_frases,
+            melhor_dist=tracker.melhor_dist, relevante=tracker.relevante,
+            sentinela=tracker.sentinela, escalou_web=tracker.escalou_web,
         )
         # TRACE por turno (opt-in, MENTE_TRACE_ENABLED): a timeline de marcos + todos os
         # tempos, uma linha JSONL por dia. É o dump que o dono pediu p/ testes futuros.
@@ -568,15 +578,27 @@ class Agent(ComandosMestre, Respostas):
 
         await asyncio.to_thread(_escrever)
 
-    async def _rotear(self, texto_usuario: str, observacoes: str = ""):
-        """Pergunta ao LLM qual ferramenta usar; devolve uma `tools.Decisao` ou None."""
+    async def _rotear(self, texto_usuario: str, observacoes: str = "",
+                      mem: Optional[SessionMemory] = None, origem: str = "pipeline"):
+        """Pergunta ao LLM qual ferramenta usar; devolve uma `tools.Decisao` ou None.
+
+        rot-03 (painel 2026-07-24): cada decisão CRUA vira linha em `router_log` —
+        antes só a rota agregada sobrevivia, então cada erro real de roteamento era
+        evidência perdida e o eval seguia com 9 casos. Gate de sigilo igual aos
+        vizinhos; best-effort (o save engole erro — falha de log nunca muda a rota)."""
         bruto = await self.ctx.llama.collect(
             prompts.prompt_router(self.tools.menu(), texto_usuario, observacoes),
             max_tokens=settings.max_tokens_router,
             system_prompt=prompts.SYS_ROUTER,
             temperature=0.0,
         )
-        return tools.parse_decisao(bruto)
+        decisao = tools.parse_decisao(bruto)
+        if mem is None or not mem.confidencial:
+            await asyncio.to_thread(
+                db.save_router_log, origem, texto_usuario, bruto,
+                decisao.tool if decisao else None, decisao is not None,
+            )
+        return decisao
 
     async def _pipeline_tools(
         self, texto_usuario: str, send: Sender, primeira, auditar: bool = True,
@@ -612,7 +634,8 @@ class Agent(ComandosMestre, Respostas):
             passos += 1
             if tool.terminal:
                 break
-            decisao = await self._rotear(texto_usuario, "\n".join(observacoes))
+            decisao = await self._rotear(texto_usuario, "\n".join(observacoes),
+                                         mem=mem, origem="tools_loop")
         self._lembrar_reversao(mem, executadas)
 
         resultados = "\n".join(observacoes) if observacoes else "nenhum resultado"

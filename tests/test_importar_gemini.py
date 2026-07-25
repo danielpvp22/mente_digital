@@ -485,7 +485,6 @@ def test_garantir_assunto_sem_entidade_cai_na_regra_antiga():
 def test_backup_do_limpar_vault_fica_fora_do_vault():
     # REGRESSÃO: o backup dentro de Importado_Gemini/ era re-indexado pelo sync (glob
     # recursivo **/*.md), anulando a limpeza — os 38 átomos de lixo voltaram ao Chroma.
-    import importar_gemini  # garante o sys.path do scripts/
     import limpar_vault
     from mente_digital.config import settings
     vault = os.path.abspath(settings.caminho_obsidian)

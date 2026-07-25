@@ -4,7 +4,6 @@ Usa uma voz Piper falsa que conta as sínteses reais.
 """
 from __future__ import annotations
 
-import pytest
 
 from mente_digital.audio import TtsService
 from mente_digital.config import settings

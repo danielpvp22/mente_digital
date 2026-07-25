@@ -539,7 +539,7 @@ class Relogio:
     def tok_s(self) -> float:
         """tok/s do DECODE puro — o número comparável com o baseline de 110 do projeto."""
         return self.tokens_out / self.decode_s if self.decode_s else 0.0
-        
+
     def add_metricas(self, pref_s: float, dec_s: float, tok: int, dd_s: float, io_s: float, ass_s: float = 0.0):
         with self._lock:
             self.prefill_s += pref_s
@@ -739,7 +739,7 @@ async def processar_janela(llama, dedup, rel: Relogio, tema: str, trecho: str,
     bruto, n_tok, ttft, dec = await _gerar_medido(
         llama, prompts.prompt_sintese_import(assunto, trecho),
         prompts.SYS_SINTESE_IMPORT, settings.max_tokens_resumo)
-    
+
     bruto = bruto.strip()
     if not bruto or bruto.upper().strip(".!\n ") == "NADA":
         rel.add_metricas(ttft, dec, n_tok, 0.0, 0.0)
@@ -796,7 +796,7 @@ async def processar_janela(llama, dedup, rel: Relogio, tema: str, trecho: str,
             salvos += 1
         except OSError as exc:
             telemetry.error("IMPORT", f"Falha ao salvar {os.path.basename(caminho)}", exc)
-            
+
     io_s = time.perf_counter() - t_io
     rel.add_metricas(ttft, dec, n_tok, dd_s, io_s)
     return salvos
@@ -853,22 +853,22 @@ async def importar(filtro: str | None, limite_janelas: int | None) -> None:
     vigia.ancorar()      # DEPOIS do load: o baseline não pode conter a subida do modelo
 
     rel = Relogio()
-    
+
     # Semáforo de concorrência restrita: permite CPU overlap sem explodir o _inference_lock
     semaforo = asyncio.Semaphore(2)
-    
+
     t0 = time.time()
     feitas_agora = 0
     parou: Optional[str] = None
-    
+
     for arq, janelas in plano:
         tema = tema_do_arquivo(os.path.join(DIR_JSON, arq))
-        
+
         janelas_pendentes = []
         for seq, trecho in enumerate(janelas):
             if f"{arq}#{seq}" not in feitos:
                 janelas_pendentes.append((seq, trecho))
-                
+
         if not janelas_pendentes:
             continue
 
@@ -885,7 +885,7 @@ async def importar(filtro: str | None, limite_janelas: int | None) -> None:
         for tarefa in asyncio.as_completed(tarefas):
             seq_finalizada, n, clones, dt = await tarefa
             chave = f"{arq}#{seq_finalizada}"
-            
+
             rel.add_atomos(n)
             feitas_agora += 1
             estado["atomos"] += n
@@ -900,7 +900,7 @@ async def importar(filtro: str | None, limite_janelas: int | None) -> None:
                 f"{f' ({clones}c)' if clones else '':5} "
                 f"| {rel.tok_s:5.1f} tok/s decode  ETA {_eta(feitas_agora, pendentes, time.time()-t0)}",
             )
-            
+
             # A cada 25 janelas, ONDE o tempo está indo. É este bloco que responde
             # "vale a pena otimizar o quê?" — sem ele, otimiza-se no escuro.
             if rel.janelas % 25 == 0:

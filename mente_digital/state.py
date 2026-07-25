@@ -159,6 +159,12 @@ class AppContext:
     # `chat_history` global ainda vazava o contexto de uma conversa no prompt da outra.
     # Sessões vivas, para o /api/metrics agregar (não é dono do estado, só observa).
     sessoes: Set["object"] = field(default_factory=set, repr=False)
+    # priv-02 (painel 2026-07-24): conversas em MODO SIGILOSO, por conversa_id. A
+    # SessionMemory é por CONEXÃO, então um wifi piscando + reconexão automática
+    # derrubava o sigilo EM SILÊNCIO (a memory nova nasce confidencial=False). O id
+    # fica neste set RAM-only (nada persiste — coerente com a própria promessa) e o
+    # `set_conversa` do ws restaura o modo na reconexão.
+    sigilosas: Set[str] = field(default_factory=set, repr=False)
     # Sinaliza que NÃO há inferência interativa rodando -> ETL idle pode usar a GPU.
     # Começa "setado" (livre). Manipulado SÓ pelo context manager `interativo()`.
     interactive_idle: asyncio.Event = field(default_factory=asyncio.Event)

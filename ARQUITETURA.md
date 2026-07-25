@@ -9,7 +9,7 @@
 🇺🇸 *Prefer English? There's a [condensed overview](README.en.md).*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-803_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-824_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
@@ -36,7 +36,7 @@
 
 | | |
 |---:|:---|
-| **803 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
+| **824 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** (`eval/ab_modelos.py`) |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real (`eval/calibrar_gate.py`) |
@@ -94,7 +94,7 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 | **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru (`chat_dump_bruto.md`, HTML) → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **803 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Qualidade de dados / DataOps** | **824 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
 | **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -410,7 +410,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 | **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
 | **Pydantic Settings** | Configuração | **189 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
 | **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (529 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
-| **pytest** | Testes | **803 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
+| **pytest** | Testes | **824 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
@@ -463,7 +463,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 │   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
 │   └── chat_dump_bruto.md      # fila do ETL de conversa
 ├── templates/           # index.html — a SPA inteira (529 linhas)
-├── tests/               # 803 testes em 91 arquivos, sem GPU, sem rede
+├── tests/               # 824 testes em 91 arquivos, sem GPU, sem rede
 ├── eval/                # benches e A/B (TTFA, embeddings, modelos)
 ├── scripts/             # utilitários (import de histórico, reindex, certs, bench de STT)
 └── docs/                # CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
@@ -491,7 +491,7 @@ Uma classe `Settings` (Pydantic) com **189 campos**. **Todos os caminhos derivam
 `EmbeddingProvider` (singleton — hoje o **e5-base**, com os prefixos `query:`/`passage:` aplicados num **ponto só** (`_com_prefixos`), de onde Chroma, Malha e RAG efêmero herdam), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source` **e near-dup por Jaccard**), o **`MalhaIndex`** (o grafo do vault por conceito compartilhado — ver seção própria) e `WebSearcher` (DDG com fallback, cache, pre-fetch, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, rankeia por cosseno e **não indexa nada**). Detalhes: `strip_frontmatter`, `split_markdown`, `resolve_device`.
 
 ### `agent.py` — o núcleo do cérebro (662 linhas; era um deus-módulo de 2.472)
-`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 803 testes verdes em cada passo.
+`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 824 testes verdes em cada passo.
 
 ### `comandos_mestre.py` / `respostas.py` — as duas metades do Agent
 `comandos_mestre.py` (847): o **plano de comando** — `_fluxo_mestre` orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor. `respostas.py` (353): os **geradores falados** — `_responder_contexto` (segura o áudio até provar que não é o sentinela), `_responder_web` (filler + escalada), `_responder_stream` (token→frase→TTS), `_sintese_sob_demanda` (map-reduce) e `_consolidar_fontes` (a promoção do `#conhecimento_novo`).
@@ -841,7 +841,7 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ### Testabilidade sem GPU
 
-**803 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
+**824 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
 
 > **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
@@ -1019,10 +1019,10 @@ GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale 
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 803 testes, sem GPU e sem rede
+pytest                    # 824 testes, sem GPU e sem rede
 ```
 
-O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **803 passed**.
+O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **824 passed**.
 
 > **Ambiente:** o projeto roda na env conda `llama-omni`. O `python` no PATH do Windows costuma ser o atalho falso da Microsoft Store — use o caminho absoluto:
 > `C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pytest`
@@ -1175,7 +1175,7 @@ O `EtlProcessor` **já é um worker de background completo** e o `SchedulerServi
 
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 803 testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 824 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 
@@ -1199,7 +1199,7 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 |---|---|
 | **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
-| **CI** | ✅ **Resolvido.** GitHub Actions roda os 803 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
+| **CI** | ✅ **Resolvido.** GitHub Actions roda os 824 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
 | **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |
 | **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `docs/TESTE_MANUAL.md` |
 | **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |

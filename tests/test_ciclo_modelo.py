@@ -2,7 +2,6 @@
 Ciclo de vida do modelo na GPU: descarregar no idle (liberar VRAM) e religar sob
 demanda. Sem GPU nem .gguf — o FakeModel imita o contrato de fechamento e decode.
 """
-import asyncio
 
 import pytest
 

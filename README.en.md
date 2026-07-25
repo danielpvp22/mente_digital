@@ -7,14 +7,16 @@
 *A second brain that talks: converses by voice, answers from **your** Obsidian notes, falls back to the web only when it must — **acts** on spoken commands (reminders, lists, routines), **takes care** of things on its own (alarms, briefings, pomodoro), and, while you're not looking, distills what it learned into new atomic notes.*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Tests](https://img.shields.io/badge/tests-624_no_GPU_no_network-success)
+![Tests](https://img.shields.io/badge/tests-824_no_GPU_no_network-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
 ![Cloud](https://img.shields.io/badge/cloud-zero-critical)
 
 **Target hardware:** RTX 3080 (10 GB) · Ryzen 9 7950X3D · Windows
 
-**This is the condensed English overview.** The full deep-dive — 1,100+ lines covering every design decision — is the [Portuguese README](README.md).
+**This is the condensed English overview.** The full deep-dive — covering every design decision, with war stories and measured trade-offs — is [ARQUITETURA.md](ARQUITETURA.md) (in Portuguese).
+
+**🎬 Demo (Portuguese audio):** [voice mode](docs/demo/mente_digital_voz.mp4) · [text mode](docs/demo/mente_digital_texto.mp4) — Task Manager (GPU/VRAM) and the terminal are visible on purpose: real local inference with per-answer route and latency, not an API wrapper.
 
 </div>
 
@@ -26,7 +28,7 @@ Six numbers, all measured in this repository:
 
 | | |
 |---:|:---|
-| **624 tests** | the whole suite runs with **no GPU and no network**, in ~6 s — it is literally the CI job |
+| **824 tests** | the whole suite runs with **no GPU and no network**, in ~10 s — it is literally the CI job |
 | **33% → 8%** | rate of "I don't know" *with the context in hand*, switching `Qwen2.5-7B` → `Qwen3-8B` — decided by an **in-repo A/B harness** (`eval/ab_modelos.py`) |
 | **~2×** | RAG ranking quality from the embedding swap (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | relevance gate **recalibrated from data** against the real knowledge base (`eval/calibrar_gate.py`) |
@@ -86,13 +88,13 @@ Thin wiring in `main.py` (lifespan builds the services and injects an `AppContex
 - **Subtle streaming state machines.** The `<think>`-stripper holds a prefix only while it could still *become* `<think>`, decides on the first byte that proves otherwise, and its flush guarantees user text is never swallowed. The anti-hallucination guard applies the same pattern to the sentinel phrase. Property-based tests (Hypothesis) sweep both with random token partitions.
 - **Decisions by measurement, not fashion.** Model, embedding and quantization choices each came from an in-repo A/B harness — and features get turned *off* with numbers too (speculative decoding: no win on short prompts, shape crash on long context → disabled by flag, documented).
 - **Security awareness at the edges.** PII masking on outbound web queries, prompt-injection stripping on inbound web content, a confidential mode that keeps a turn RAM-only, an audit trail for mutating actions, and fallback paths for practically every failure.
-- **Testability as a design constraint.** 624 tests with no GPU and no network: lazy heavy imports, pure modules with injected clocks, fakes that honor the real contracts (including preemption).
+- **Testability as a design constraint.** 824 tests with no GPU and no network: lazy heavy imports, pure modules with injected clocks, fakes that honor the real contracts (including preemption).
 
 ---
 
 ## War stories (condensed)
 
-The full versions — with root-cause analyses — are in the [Portuguese README](README.md#-war-stories-os-bugs-que-moldaram-a-arquitetura).
+The full versions — with root-cause analyses — are in [ARQUITETURA.md](ARQUITETURA.md) (in Portuguese).
 
 1. **The false Cache Hit.** The gate treated *"found any context"* as a hit; with a big vault every question matched something vaguely similar, so the web was never consulted. Fix: relevance = lexical grounding **or** high semantic confidence — later hardened with IDF so matching a *generic* keyword no longer counts.
 2. **The tasks the garbage collector ate.** The event loop holds only weak references to tasks; fire-and-forget background work died silently mid-flight. The insight wasn't "keep a strong reference" — it was *scope*: the reference set lives on the app context, not the WebSocket session, because prefetch/ETL/scheduler must outlive the connection.
@@ -125,7 +127,7 @@ Configuration is `.env`-driven (`MENTE_*` prefix) — every knob is documented i
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                # 624 tests, no GPU, no network — CI installs requirements-ci.txt only
+pytest                # 824 tests, no GPU, no network — CI installs requirements-ci.txt only
 ```
 
 ---

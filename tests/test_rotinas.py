@@ -3,7 +3,6 @@ Rotinas compostas (#10, Onda 3): macro NOMEADA de comandos. "cria a rotina X: <c
 salva; "rotina X" expande para o composto e o parse_composto executa os passos.
 """
 import os
-from datetime import datetime
 
 from mente_digital import mestre
 from mente_digital import telemetry

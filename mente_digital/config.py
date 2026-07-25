@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Raiz do projeto = a pasta que CONTÉM o pacote mente_digital/. Este arquivo mora em
@@ -69,6 +68,11 @@ class Settings(BaseSettings):
     backup_habilitado: bool = True
     backup_dir: str = str(BASE_DIR / "backups")
     backup_retencao: int = 14  # zips diários mantidos; os mais antigos são apagados
+
+    # priv-01 (painel 2026-07-24): em modo sigiloso, a escalada pra web fica BLOQUEADA
+    # — a promessa falada é "fica só nesta sessão", e mandar a pergunta pro DuckDuckGo
+    # (+ deep-fetch de páginas) contradiz isso. False = comportamento antigo (escala).
+    sigilo_bloqueia_web: bool = True
 
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
@@ -730,7 +734,7 @@ class Settings(BaseSettings):
     max_web_cache: int = 128
 
     # --- Servidor --------------------------------------------------------------
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # nosec B104
     port: int = 8000
     # TLS opcional (painel 2026-07): com AMBOS os caminhos, o servidor sobe em HTTPS/
     # WSS. Destrava a VOZ no celular pela LAN — getUserMedia (microfone) exige

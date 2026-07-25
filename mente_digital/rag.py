@@ -1240,7 +1240,7 @@ class WebSearcher:
 
             async with httpx.AsyncClient(
                 timeout=settings.web_fetch_timeout, follow_redirects=True,
-                headers=_HEADERS_FETCH, verify=False,
+                headers=_HEADERS_FETCH, verify=False,  # nosec B501
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()

@@ -6,11 +6,10 @@ inatividade) e do descarregamento (agent.EtlProcessor.run_idle) com fakes.
 """
 import asyncio
 
-import pytest
 
 from mente_digital.agent import EtlProcessor
 from mente_digital.config import settings
-from mente_digital.state import AppContext, SessionMemory
+from mente_digital.state import AppContext
 
 
 # --- timer de inatividade (ws.LiveSession._check_inatividade) ---------------

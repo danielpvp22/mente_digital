@@ -27,7 +27,6 @@ import argparse
 import glob
 import hashlib
 import os
-import re
 import shutil
 import sys
 

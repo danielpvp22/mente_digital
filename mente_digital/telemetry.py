@@ -142,6 +142,14 @@ class LatencyTracker:
         self.tts_synth_ms_total: float | None = None  # soma da síntese de todas as frases do turno
         self.tts_synth_ms_max: float | None = None    # maior síntese de frase (o pior caso do TTFA/gap)
         self.tts_frases: int | None = None            # nº de frases sintetizadas
+        # obs-01 (painel 2026-07-24): o VEREDITO do retrieval por turno. A qualidade
+        # da recuperação era INVISÍVEL em produção — o trace só tinha latência, e o
+        # único diagnóstico (RAG_DEBUG) fica desligado. Preenchidos pelo pipeline;
+        # None = o estágio Banco nem rodou (rota mestre/tools/time-sensitive).
+        self.melhor_dist: float | None = None   # menor distância no estágio Banco
+        self.relevante: int | None = None       # 1 = passou no gate (léxico OU confiante)
+        self.sentinela: int | None = None       # 1 = Banco relevante que contribuiu NADA (proxy: decode morreu no sentinela)
+        self.escalou_web: int | None = None     # 1 = cascata local falhou e escalou pra web
         # MODO TRACE: timeline de marcos (nome, ms desde t0). Só materializa quando mark
         # é chamado; fica vazia no caminho comum (custo zero se ninguém instrumenta).
         self.events: list = []
@@ -266,7 +274,10 @@ class Database:
                                 ("lock_wait_ms", "REAL"), ("prefill_ms", "REAL"),
                                 ("decode_tok_s_gpu", "REAL"), ("reload_frio", "INTEGER"),
                                 ("vram_peak_mb", "REAL"), ("tts_synth_ms_total", "REAL"),
-                                ("tts_synth_ms_max", "REAL"), ("tts_frases", "INTEGER")):
+                                ("tts_synth_ms_max", "REAL"), ("tts_frases", "INTEGER"),
+                                # obs-01: o veredito do retrieval por turno (painel 2026-07-24)
+                                ("melhor_dist", "REAL"), ("relevante", "INTEGER"),
+                                ("sentinela", "INTEGER"), ("escalou_web", "INTEGER")):
                 if _col not in lat_cols:
                     c.execute(f"ALTER TABLE metricas_latencia ADD COLUMN {_col} {_tipo}")
             # Métricas do ciclo do conhecimento (painel 2026-07): retrato DIÁRIO da
@@ -276,6 +287,15 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS base_snapshot
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
                     total INTEGER, por_origem TEXT, novos INTEGER)"""
+            )
+            # rot-03 (painel 2026-07-24): decisões CRUAS do roteador LLM. Antes só a
+            # rota agregada sobrevivia — cada erro real de roteamento era evidência
+            # perdida, e o eval seguia com 9 casos. Cada linha é um caso candidato;
+            # a taxa de parse_ok em produção é o critério do constrained-decoding.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS router_log
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, origem TEXT,
+                    texto TEXT, bruto TEXT, tool TEXT, parse_ok INTEGER)"""
             )
             # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
             # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
@@ -670,6 +690,23 @@ class Database:
             telemetry.error("SQLITE", "Erro ao remover rotina", exc)
             return False
 
+    def save_router_log(self, origem: str, texto: str, bruto: str,
+                        tool: Optional[str], parse_ok: bool) -> None:
+        """rot-03: log best-effort de cada decisão do roteador LLM (o flywheel que
+        alimenta o eval de roteamento com casos REAIS). Truncado: o valor está no
+        par pergunta→decisão, não em páginas de texto."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO router_log (data_hora, origem, texto, bruto, tool, parse_ok) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (datetime.now().isoformat(), origem, texto[:500], (bruto or "")[:800],
+                     tool, int(parse_ok)),
+                )
+                conn.commit()
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao gravar router_log", exc)
+
     def save_latency(
         self,
         rota: str,
@@ -690,6 +727,10 @@ class Database:
         tts_synth_ms_total: Optional[float] = None,
         tts_synth_ms_max: Optional[float] = None,
         tts_frases: Optional[int] = None,
+        melhor_dist: Optional[float] = None,
+        relevante: Optional[int] = None,
+        sentinela: Optional[int] = None,
+        escalou_web: Optional[int] = None,
     ) -> None:
         try:
             with self._conn() as conn:
@@ -698,12 +739,15 @@ class Database:
                     "(data_hora, rota, ttft_ms, ttfa_ms, total_ms, stt_ms, decode_tok_s, "
                     "n_tokens, vad_ms, extrator_ms, busca_ms, lock_wait_ms, prefill_ms, "
                     "decode_tok_s_gpu, reload_frio, vram_peak_mb, tts_synth_ms_total, "
-                    "tts_synth_ms_max, tts_frases) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tts_synth_ms_max, tts_frases, melhor_dist, relevante, sentinela, "
+                    "escalou_web) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?)",
                     (datetime.now().isoformat(), rota, ttft_ms, ttfa_ms, total_ms,
                      stt_ms, decode_tok_s, n_tokens, vad_ms, extrator_ms, busca_ms,
                      lock_wait_ms, prefill_ms, decode_tok_s_gpu, reload_frio, vram_peak_mb,
-                     tts_synth_ms_total, tts_synth_ms_max, tts_frases),
+                     tts_synth_ms_total, tts_synth_ms_max, tts_frases,
+                     melhor_dist, relevante, sentinela, escalou_web),
                 )
                 conn.commit()
         except Exception as exc:

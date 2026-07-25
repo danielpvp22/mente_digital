@@ -10,7 +10,7 @@ from collections import deque
 
 from mente_digital.agent import Agent
 from mente_digital.config import settings
-from mente_digital.rag import NENHUM, LocalResult
+from mente_digital.rag import LocalResult
 from mente_digital.state import AppContext, SessionMemory
 
 from conftest import FakeLlama, FakeTts, make_send

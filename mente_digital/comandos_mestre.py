@@ -17,21 +17,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional
 
-from mente_digital import agenda
 from mente_digital import calendario
 from mente_digital import diapasao
 from mente_digital import fio
-from mente_digital import grafo
 from mente_digital import habitos
 from mente_digital import mestre
 from mente_digital import srs
 from mente_digital import textutils
 from mente_digital import tools
-from mente_digital import verbosidade
 from mente_digital.config import settings
 from mente_digital.state import SessionMemory
 from mente_digital.telemetry import LatencyTracker, db, telemetry
@@ -520,7 +516,7 @@ class ComandosMestre:
         ou roteador LLM) e ARMAZENADA como JSON de Decisões, para reexecutar no disparo."""
         decisoes = mestre.parse_composto(acao_txt, datetime.now())
         if not decisoes:
-            decisao = await self._rotear(acao_txt)
+            decisao = await self._rotear(acao_txt, mem=mem, origem="mestre")
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                 decisoes = [decisao]
         if not decisoes:
@@ -649,6 +645,14 @@ class ComandosMestre:
         modo = mestre.modo_confidencial(comando)
         if modo is not None:
             mem.confidencial = modo
+            # priv-02: o sigilo é rastreado por conversa_id no AppContext (RAM-only)
+            # para SOBREVIVER à reconexão do WS — sem isto, wifi piscando resetava o
+            # modo em silêncio e a conversa "sigilosa" voltava a persistir.
+            if mem.conversa_id:
+                if modo:
+                    self.ctx.sigilosas.add(mem.conversa_id)
+                else:
+                    self.ctx.sigilosas.discard(mem.conversa_id)
             fala = (
                 "Modo confidencial ativado. O que falarmos agora fica só nesta sessão — "
                 "não salvo nada nem transformo em conhecimento."
@@ -803,7 +807,7 @@ class ComandosMestre:
             # pra os comandos estruturados ganharem de um "me ajuda a adicionar na lista".
             texto_final, rota = await self._ajuda(send)
         else:
-            decisao = await self._rotear(comando)
+            decisao = await self._rotear(comando, mem=mem, origem="mestre")
             if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                 tool = self.tools.get(decisao.tool)
                 if settings.confirmacao_habilitada and tool.confirmavel:

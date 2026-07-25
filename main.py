@@ -24,7 +24,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital import acesso  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
-from mente_digital.audio import SttService, TtsService, build_tts  # noqa: E402
+from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402

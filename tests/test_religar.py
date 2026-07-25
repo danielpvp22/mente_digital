@@ -6,7 +6,6 @@ LiveSession com WS/ctx falsos, no padrão do test_wake_mestre.
 """
 from __future__ import annotations
 
-import asyncio
 
 import numpy as np
 

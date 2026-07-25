@@ -5,7 +5,6 @@ persistidos em log_etl, snapshot diário da base (total/origem/#novo) e o bloco
 """
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 

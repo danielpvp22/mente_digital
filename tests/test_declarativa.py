@@ -106,7 +106,7 @@ async def test_declarativa_com_tempo_nao_roteia_ferramenta(monkeypatch, tmp_path
     agent, mem = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
     roteou = []
-    async def _spy_rotear(texto):
+    async def _spy_rotear(texto, *a, **k):
         roteou.append(texto)
         return None
     monkeypatch.setattr(agent, "_rotear", _spy_rotear)
@@ -121,7 +121,7 @@ async def test_backchannel_ignorado_no_pipeline(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
     send, capturado = make_send()
     roteou = []
-    async def _spy_rotear(texto):
+    async def _spy_rotear(texto, *a, **k):
         roteou.append(texto)
         return None
     monkeypatch.setattr(agent, "_rotear", _spy_rotear)
@@ -137,7 +137,7 @@ async def test_comando_explicito_ainda_roteia(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
     roteou = []
-    async def _spy_rotear(texto):
+    async def _spy_rotear(texto, *a, **k):
         roteou.append(texto)
         return None                             # devolve None: cai no pipeline normal
     monkeypatch.setattr(agent, "_rotear", _spy_rotear)

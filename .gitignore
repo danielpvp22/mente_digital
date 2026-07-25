@@ -65,3 +65,6 @@ _lixo_purgado/
 # Grafo do Graphify: ~220 MB (cache + backups datados), GERADO localmente com
 # `graphify update .`. Versiona-se a ferramenta e as regras no CLAUDE.md, não a saída.
 graphify-out/
+
+# Artefato do pytest-cov local
+.coverage
