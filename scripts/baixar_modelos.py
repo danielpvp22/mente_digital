@@ -31,11 +31,14 @@ PIPER_ARQS = (
     "pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx.json",
 )
 XTTS_REPO = "coqui/XTTS-v2"
-# OCR de livro escaneado (Fase 3): GGUF quantizado + o projetor de visão (mmproj é
-# OBRIGATÓRIO — sem ele o modelo não vê a imagem). Q4_K_M por caber com folga na
-# 3080 quando o LLM está descarregado. O binário vem do llama.cpp (ver config.py).
-OCR_REPO = "sahilchachra/Unlimited-OCR-GGUF"
-OCR_ARQS = ("Unlimited-OCR-Q4_K_M.gguf", "mmproj-Unlimited-OCR-F16.gguf")
+# OCR de livro escaneado (Fase 3): GGUF + projetor de visão (mmproj é OBRIGATÓRIO —
+# sem ele o modelo não vê a página). ~3,6 GB, cabe com folga na 3080 com o LLM
+# descarregado. É o repo OFICIAL do ggml-org, publicado junto com o suporte no
+# llama.cpp: o baidu/Unlimited-OCR-GGUF (conversão de terceiro) NÃO carrega —
+# o card dele manda compilar a PR 24975, que segue fora do master (testado
+# 2026-07-25: crash instantâneo). O binário vem do llama.cpp (ver config.py).
+OCR_REPO = "ggml-org/DeepSeek-OCR-GGUF"
+OCR_ARQS = ("DeepSeek-OCR-Q8_0.gguf", "mmproj-DeepSeek-OCR-Q8_0.gguf")
 
 
 def _baixar_para(repo: str, arquivo: str, destino: Path) -> bool:
@@ -80,7 +83,7 @@ def main() -> int:
         if all(okes):
             print("\nOCR baixado (GGUF + mmproj). Falta o binário: pegue um llama.cpp "
                   ">= 2026-03-25 (release pronta serve) e aponte MENTE_OCR_BIN para "
-                  "o llama-mtmd-cli.")
+                  "o llama-server.exe.")
         else:
             faltando = [a for a, ok in zip(OCR_ARQS, okes) if not ok]
             print(f"\n[ATENÇÃO] OCR INCOMPLETO — faltou: {', '.join(faltando)}. "

@@ -19,14 +19,32 @@ from mente_digital.state import AppContext
 
 
 # ---------- puro ---------------------------------------------------------------
-def test_montar_comando_passa_mmproj_e_imagem_sem_shell():
-    cmd = ocr.montar_comando(r"C:\meu path\llama-mtmd-cli.exe", "m.gguf", "mm.gguf",
-                             r"C:\tmp\p0001.png", n_gpu_layers=-1, n_ctx=4096)
-    assert cmd[0] == r"C:\meu path\llama-mtmd-cli.exe"      # lista de args, não string
+def test_montar_comando_do_servidor_sem_shell():
+    cmd = ocr.montar_comando(r"C:\meu path\llama-server.exe", "m.gguf", "mm.gguf",
+                             8099, n_gpu_layers=-1, n_ctx=4096)
+    assert cmd[0] == r"C:\meu path\llama-server.exe"        # lista de args, não string
     for flag, valor in (("-m", "m.gguf"), ("--mmproj", "mm.gguf"),
-                        ("--image", r"C:\tmp\p0001.png"), ("-c", "4096")):
+                        ("--port", "8099"), ("-c", "4096")):
         assert cmd[cmd.index(flag) + 1] == valor
-    assert "--temp" in cmd and cmd[cmd.index("--temp") + 1] == "0"
+    # Servidor EFÊMERO de uso interno: nunca pode escutar na LAN.
+    assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
+
+
+def test_payload_leva_imagem_e_prompt_sem_grounding():
+    p = ocr.montar_payload("QUJD", max_tokens=64)
+    partes = p["messages"][0]["content"]
+    assert partes[0]["image_url"]["url"].startswith("data:image/png;base64,QUJD")
+    assert partes[1]["text"] == ocr.PROMPT_PADRAO
+    assert "<|grounding|>" not in ocr.PROMPT_PADRAO   # senão a saída vem com coordenadas
+    assert p["temperature"] == 0 and p["max_tokens"] == 64
+
+
+def test_extrair_markdown_remove_anotacoes_de_grounding():
+    # Medido ao vivo: com <|grounding|> a saída vem como `text[[112, 145, 483, 292]]`.
+    bruto = "sub_title[[113, 99, 379, 131]]\n## Classificação\ntext[[112, 145, 483, 292]]\nA ideia de ancestralidade."
+    limpo = ocr.extrair_markdown(bruto)
+    assert "[[" not in limpo
+    assert "## Classificação" in limpo and "A ideia de ancestralidade." in limpo
 
 
 def test_extrair_markdown_tira_ruido_e_preserva_texto():
@@ -93,13 +111,23 @@ def _ambiente(monkeypatch, tmp_path, n_paginas=3, configurado=True, saida="texto
 
     chamadas = []
 
-    def _rodar(comando, timeout):
-        chamadas.append(comando)
-        return saida
+    class FakeServidor:
+        """Contrato do ServidorOcr: context manager + transcrever(imagem)."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.fechado = True
+
+        def transcrever(self, imagem, *a, **k):
+            chamadas.append(imagem)
+            return saida
 
     monkeypatch.setattr("mente_digital.etl.ocr_mod.total_paginas", lambda p: n_paginas)
     monkeypatch.setattr("mente_digital.etl.ocr_mod.render_paginas", _render)
-    monkeypatch.setattr("mente_digital.etl.ocr_mod.rodar_ocr", _rodar)
+    monkeypatch.setattr("mente_digital.etl.ocr_mod.abrir_servidor",
+                        lambda *a, **k: FakeServidor())
     ctx = AppContext(settings=settings)
     ctx.interactive_idle.set()
     return EtlProcessor(ctx), ctx, pdf, chamadas
@@ -145,7 +173,12 @@ async def test_conversa_pausa_o_ocr(monkeypatch, tmp_path):
 
 async def test_pagina_sem_texto_nao_derruba_o_livro(monkeypatch, tmp_path):
     etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=2)
-    monkeypatch.setattr("mente_digital.etl.ocr_mod.rodar_ocr", lambda c, t: None)
+    class SoFalha:
+        def __enter__(self): return self
+        def __exit__(self, *e): pass
+        def transcrever(self, imagem, *a, **k): return None
+
+    monkeypatch.setattr("mente_digital.etl.ocr_mod.abrir_servidor", lambda *a, **k: SoFalha())
     assert await etl.ocr_livros() == 2                  # seguiu nas duas
     # Nada aproveitável -> vai p/ falhou, não fica em loop na fila.
     assert (Path(settings.dir_livros) / "falhou" / pdf.name).exists()

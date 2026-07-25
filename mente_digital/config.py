@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # --- OCR de livros escaneados — Fase 3 (2026-07-25) -----------------------
     # Livro que é só IMAGEM vira texto aqui e volta pra MESMA fila de jobs. Roda em
     # SUBPROCESSO (o modelo exige Python 3.12/torch 2.10/CUDA 12.9 — incompatível
-    # com esta env), via o binário llama-mtmd-cli do llama.cpp com o GGUF
+    # com esta env), via o llama-server do llama.cpp com o GGUF
     # quantizado. BINÁRIO: serve qualquer llama.cpp >= 2026-03-25 (a PR #17400,
     # "mtmd: Add DeepSeekOCR Support", já está no master desde então — inclusive
     # nos binários prontos das releases). Sem MENTE_OCR_BIN apontando p/
@@ -121,11 +121,16 @@ class Settings(BaseSettings):
     # VRAM: o scheduler DESCARREGA o LLM antes (exigência do dono: nada do projeto
     # na GPU) — é o que faz ~3 GB de OCR (Q4_K_M 1,95 + mmproj 0,77) caberem na 3080.
     ocr_habilitado: bool = True
-    ocr_bin: str = ""                     # caminho do llama-mtmd-cli (vazio = desligado)
+    ocr_bin: str = ""                     # caminho do llama-server.exe (vazio = desligado)
     caminho_modelo_ocr: str = str(DIR_MODELOS / "DeepSeek-OCR-Q8_0.gguf")
     caminho_mmproj_ocr: str = str(DIR_MODELOS / "mmproj-DeepSeek-OCR-Q8_0.gguf")
-    ocr_dpi: int = 200                    # 200 dpi: legível sem estourar o encoder
+    # DPI medido (2026-07-25, mesma página densa com tabela): 110/150/200 dpi dão o
+    # MESMO tempo (2,7-2,8s) e a mesma qualidade (~3.050 chars) — o modelo
+    # redimensiona para a resolução fixa dele, então DPI alto só gasta render e
+    # disco. 150 é o meio seguro: PNG 40% menor que 200, zero perda medida.
+    ocr_dpi: int = 150
     ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
+    ocr_porta: int = 8099                 # servidor EFÊMERO do OCR (só 127.0.0.1)
     ocr_timeout_pagina: int = 180
     ocr_min_chars_pagina: int = 40        # menos que isso: capa/ilustração/branco
     ocr_n_gpu_layers: int = -1

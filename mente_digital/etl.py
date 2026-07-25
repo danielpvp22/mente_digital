@@ -429,31 +429,44 @@ class EtlProcessor:
             telemetry.error("OCR", f"Falha ao rasterizar {pdf.name}", exc)
             return 0
         feitas = 0
-        for img in imagens:
-            # Cede a vez ANTES de cada página: o subprocesso é longo (segundos) e a
-            # GPU tem de voltar pra conversa se o dono aparecer. O `interactive_idle`
-            # é a mesma porta que o resto do ETL respeita.
-            if not self.ctx.interactive_idle.is_set():
-                telemetry.track("OCR", "Conversa começou — OCR pausado, retoma no próximo idle.")
-                break
-            comando = ocr_mod.montar_comando(
-                settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr,
-                str(img), n_gpu_layers=settings.ocr_n_gpu_layers, n_ctx=settings.n_ctx)
-            texto = await asyncio.to_thread(ocr_mod.rodar_ocr, comando, settings.ocr_timeout_pagina)
-            if texto is None:
-                telemetry.warn("OCR", f"Página {inicio + feitas + 1} falhou; segue para a próxima.")
-                texto = ""
-            estado["paginas"].append(texto)
-            estado["proxima"] = inicio + feitas + 1
-            feitas += 1
-            if on_pagina is not None:
-                # Acompanhamento ao vivo (manual): custo zero — o texto já existe.
-                try:
-                    on_pagina(estado["proxima"], texto)
-                except Exception as exc:
-                    telemetry.error("OCR", "Falha no callback de progresso", exc)
-            await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
-            await asyncio.to_thread(img.unlink, True)
+        # UM servidor para o lote inteiro: o modelo (3 GB) carrega uma vez, não a
+        # cada página. O `with` garante que o processo morre — e a VRAM volta —
+        # mesmo se a conversa interromper no meio ou algo explodir.
+        try:
+            servidor = await asyncio.to_thread(
+                lambda: ocr_mod.abrir_servidor(
+                    settings.ocr_bin, settings.caminho_modelo_ocr,
+                    settings.caminho_mmproj_ocr, settings.ocr_porta,
+                    settings.ocr_timeout_pagina, settings.ocr_n_gpu_layers,
+                    settings.n_ctx).__enter__())
+        except Exception as exc:
+            telemetry.error("OCR", "Não consegui subir o llama-server do OCR", exc)
+            return 0
+        try:
+            for img in imagens:
+                # Cede a vez ANTES de cada página: a transcrição leva segundos e a GPU
+                # tem de voltar pra conversa se o dono aparecer. `interactive_idle` é a
+                # mesma porta que o resto do ETL respeita.
+                if not self.ctx.interactive_idle.is_set():
+                    telemetry.track("OCR", "Conversa começou — OCR pausado, retoma no próximo idle.")
+                    break
+                texto = await asyncio.to_thread(servidor.transcrever, img)
+                if texto is None:
+                    telemetry.warn("OCR", f"Página {inicio + feitas + 1} falhou; segue para a próxima.")
+                    texto = ""
+                estado["paginas"].append(texto)
+                estado["proxima"] = inicio + feitas + 1
+                feitas += 1
+                if on_pagina is not None:
+                    # Acompanhamento ao vivo (manual): custo zero — o texto já existe.
+                    try:
+                        on_pagina(estado["proxima"], texto)
+                    except Exception as exc:
+                        telemetry.error("OCR", "Falha no callback de progresso", exc)
+                await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
+                await asyncio.to_thread(img.unlink, True)
+        finally:
+            await asyncio.to_thread(servidor.__exit__, None, None, None)
         telemetry.track("OCR", f"'{pdf.stem}': {estado['proxima']}/{total} páginas transcritas.")
         if estado["proxima"] >= total:
             await self._finalizar_ocr(pdf, estado, estado_path)
