@@ -246,8 +246,17 @@ def prompt_atomizar_livro(livro: str, capitulo: str, trecho: str) -> str:
     return (
         f"O trecho abaixo é do livro '{livro}' ({capitulo}). Extraia as ideias-chave "
         "como NOTAS ATÔMICAS FIÉIS AO TEXTO — registre o que o autor afirma, sem "
-        "opinião sua e sem conhecimento externo. Use EXATAMENTE este formato para "
-        "cada nota, uma ideia por nota, sem repetir:\n\n"
+        "opinião sua e sem conhecimento externo.\n"
+        # FONTE EM OUTRO IDIOMA: o átomo SEMPRE sai em PT-BR. Não é preferência de
+        # estilo — o gate de relevância exige aterramento LÉXICO (interseção exata de
+        # tokens entre pergunta e chunk, textutils.contem_alguma). Um átomo em inglês
+        # não casa NENHUM token de uma pergunta em português, então perderia metade
+        # do critério e dependeria só do limiar semântico (0.16, rígido). Manter o
+        # termo técnico original entre parênteses dá aterramento nos DOIS idiomas.
+        "Escreva as notas SEMPRE em português do Brasil, mesmo que o trecho esteja em "
+        "outro idioma; ao traduzir um termo técnico, mantenha o original entre "
+        "parênteses na primeira menção — ex.: 'fotossíntese (photosynthesis)'.\n"
+        "Use EXATAMENTE este formato para cada nota, uma ideia por nota, sem repetir:\n\n"
         "## <título curto da ideia>\n"
         "<a ideia em 1-2 frases afirmativas>\n"
         "**Malha Neural:** [[Conceito relacionado]]\n"

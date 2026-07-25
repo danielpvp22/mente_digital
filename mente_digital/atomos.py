@@ -104,6 +104,13 @@ def _slug_titulo(bloco: str, max_len: int = 40) -> str:
 # ' e ' fica de FORA de propósito: aparece dentro de nomes ("Pesquisa e Ranking") e
 # quebraria conceitos legítimos em dois. Vírgula/ponto-e-vírgula/' ou ' bastam.
 _MALHA_RE = re.compile(r"^\s*\*\*Malha Neural:\*\*\s*(.*)$", re.IGNORECASE)
+# RÓTULO IMPROVISADO (medido 2026-07-25 na ingestão do Amabis): em 33% dos 2.038
+# átomos o modelo trocou o rótulo canônico por um inventado — '**Divisão binária:**
+# [[Reprodução asexuada]]'. A linha não casava o _MALHA_RE, caía como corpo comum, e
+# o átomo ficava fora da Malha. Mesma lição de sempre: o LLM entrega o CONCEITO, o
+# Python impõe a FORMA. Só casa quando o conteúdo TEM colchete — assim
+# '**Importante:** o ciclo depende de luz' segue sendo prosa, não vira link.
+_MALHA_IMPROVISADA_RE = re.compile(r"^\s*\*\*[^*\n]{2,40}:\*\*\s*(.*\[.*)$")
 _MALHA_SEP = re.compile(r"\s*(?:,|;|\bou\b)\s*", re.IGNORECASE)
 _PARENTESE = re.compile(r"\([^)]*\)")
 
@@ -209,7 +216,7 @@ def normalizar_atomo(
                 continue
         # Malha Neural: a SINTAXE é imposta aqui, não pedida ao modelo (58% dos átomos
         # reais saíam com colchete simples, que o Obsidian não resolve). Ver normalizar_malha.
-        m = _MALHA_RE.match(ln)
+        m = _MALHA_RE.match(ln) or _MALHA_IMPROVISADA_RE.match(ln)
         if m:
             links = normalizar_malha(m.group(1))
             if links:

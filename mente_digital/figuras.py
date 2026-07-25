@@ -131,8 +131,12 @@ def para_webp(dados: bytes, qualidade: int, max_lado: int) -> Optional[bytes]:
 
 def extrair_de_pdf(pdf: Path, destino: Path, livro_slug: str, min_lado: int,
                    qualidade: int, max_lado: int, limite: int = 2000) -> List[dict]:
-    """Extrai as figuras do PDF para `destino` em WebP. Devolve
-    [{arquivo, pagina, legenda}] — a lista que os jobs carregam.
+    """Extrai as figuras do PDF em WebP para `destino/<livro_slug>/` — UMA PASTA POR
+    LIVRO dentro do vault, para o Obsidian não virar um depósito único de milhares
+    de imagens misturadas. O `arquivo` devolvido já vem com a subpasta
+    ("raven/raven_p0059_f1.webp"), então o wikilink aponta certo sozinho.
+
+    Devolve [{arquivo, pagina, legenda}] — a lista que os jobs carregam.
 
     `limite` é um teto de sanidade: um livro com milhares de imagens não pode
     encher o vault num descuido (o dono é avisado no log de quem chamou)."""
@@ -140,7 +144,8 @@ def extrair_de_pdf(pdf: Path, destino: Path, livro_slug: str, min_lado: int,
 
     import fitz
 
-    destino.mkdir(parents=True, exist_ok=True)
+    pasta_livro = Path(destino) / livro_slug
+    pasta_livro.mkdir(parents=True, exist_ok=True)
     # Stream mode (bytes), NÃO o caminho: no Windows o PyMuPDF segura o handle
     # quando falha em PDF inválido, e o `move` posterior do arquivo bate em
     # "em uso" — o livro ficaria preso na fila. Mesma lição do livro.extrair_pdf.
@@ -167,9 +172,19 @@ def extrair_de_pdf(pdf: Path, destino: Path, livro_slug: str, min_lado: int,
                     validas.append(webp)
             for i, webp in enumerate(validas, start=1):
                 nome = nome_arquivo(livro_slug, pno + 1, i)
-                (destino / nome).write_bytes(webp)
-                achadas.append({"arquivo": nome, "pagina": pno + 1,
+                (pasta_livro / nome).write_bytes(webp)
+                achadas.append({"arquivo": f"{livro_slug}/{nome}", "pagina": pno + 1,
                                 "legenda": legenda_para(legendas, i - 1, len(validas))})
+        # GUARDA DO LIVRO ESCANEADO (medido 2026-07-25): num PDF de imagem, a
+        # "imagem embutida" é a PÁGINA inteira fotografada. Sinal inequívoco: ~1
+        # imagem por página, e pesada. Amabis deu 627 "figuras" para 628 páginas a
+        # 268 KB cada (168 MB de páginas escaneadas!); o Raven, digital de verdade,
+        # deu 1008 para 1637 páginas a 47 KB. Sem esta guarda o vault engordaria
+        # centenas de MB com retratos de página que não ilustram nada.
+        if doc.page_count and len(achadas) >= 0.8 * doc.page_count:
+            for f in achadas:
+                (pasta_livro / Path(f["arquivo"]).name).unlink(missing_ok=True)
+            achadas = []
     finally:
         doc.close()
         gc.collect()

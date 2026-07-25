@@ -402,3 +402,28 @@ def test_normalizar_mantem_atomo_com_fato_e_malha():
         "x.json", datetime(2026, 7, 17))
     assert "Stratum conecta" in out
     assert out.strip() != ""
+
+
+# --- Rótulo improvisado da Malha (medido 2026-07-25 na ingestão do Amabis) -----
+def test_rotulo_improvisado_da_malha_e_canonizado():
+    """33% dos 2.038 átomos do livro trocaram '**Malha Neural:**' por um rótulo
+    inventado; a linha caía como corpo e o átomo ficava fora do grafo."""
+    bloco = ("## Divisão binária em euglenóides\n"
+             "Euglenóides e diatomáceas se reproduzem por divisão binária.\n"
+             "**Divisão binária:** [[Reprodução assexuada]]\n"
+             "#zettelkasten_atomico")
+    out = normalizar_atomo(bloco, "Livro 'X'", datetime(2026, 7, 25))
+    assert "**Malha Neural:** [[Reprodução assexuada]]" in out
+    assert "**Divisão binária:**" not in out
+
+
+def test_prosa_com_negrito_NAO_vira_malha():
+    """A guarda que impede o conserto de comer conteúdo: só canoniza a linha que
+    TEM colchete. Um destaque em negrito no meio da ideia continua sendo prosa."""
+    bloco = ("## Fotossíntese depende de luz\n"
+             "**Importante:** o ciclo de Calvin não roda sem ATP do fotossistema.\n"
+             "**Malha Neural:** [[Ciclo de Calvin]]\n"
+             "#zettelkasten_atomico")
+    out = normalizar_atomo(bloco, "Livro 'X'", datetime(2026, 7, 25))
+    assert "**Importante:** o ciclo de Calvin não roda sem ATP" in out
+    assert out.count("**Malha Neural:**") == 1
