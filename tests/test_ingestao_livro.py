@@ -70,6 +70,17 @@ class FakeVS:
         pass
 
 
+_PROSA_DE_CAPITULO = 3 * (
+    "A célula eucariótica distingue-se da procariótica pela presença de um núcleo "
+    "delimitado por membrana, onde o material genético fica separado do citoplasma "
+    "por um envoltório nuclear com poros que regulam o trânsito de moléculas.\n\n"
+    "As mitocôndrias, organelas responsáveis pela respiração celular, possuem DNA "
+    "próprio e ribossomos semelhantes aos bacterianos, evidência central da teoria "
+    "endossimbiótica formulada por Lynn Margulis para explicar a origem dessas "
+    "estruturas a partir de bactérias ancestrais englobadas por células maiores.\n\n"
+)
+
+
 def _monta_ambiente(monkeypatch, tmp_path, n_jobs=2):
     vault = tmp_path / "vault"
     (vault / settings.subpasta_conhecimento_novo).mkdir(parents=True)
@@ -80,7 +91,11 @@ def _monta_ambiente(monkeypatch, tmp_path, n_jobs=2):
     for i in range(n_jobs):
         job = {"livro": "Meu Livro", "capitulo": i + 1, "titulo_cap": f"Cap {i + 1}",
                "pagina_inicio": 1 + 10 * i, "pagina_fim": 10 * (i + 1),
-               "texto": "Um parágrafo do capítulo.\n\nOutro parágrafo."}
+               # Prosa de tamanho REALISTA: um capítulo de verdade tem dezenas de
+               # milhares de chars, e a triagem (que descarta aparato editorial)
+               # barra texto curto demais para render ideia — com o fixture de duas
+               # linhas de antes, este teste passava por um caminho que não existe.
+               "texto": _PROSA_DE_CAPITULO}
         (pend / f"meu-livro__{i + 1:03d}.json").write_text(
             json.dumps(job, ensure_ascii=False), encoding="utf-8")
     ctx = AppContext(settings=settings)
