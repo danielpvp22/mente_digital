@@ -49,7 +49,7 @@
 
 **🎙️ Voz em tempo real**
 
-[![Demo de voz — clique para abrir](docs/demo/poster_voz.jpg)](docs/demo/mente_digital_voz.mp4)
+[![Demo de voz — clique para abrir](docs/demo/poster_voz.jpg)](https://github.com/user-attachments/assets/4ed48485-06b8-4fe9-907e-7395d9cd4f7c)
 
 Fala → Whisper (STT) → LLM local → voz clonada (XTTS-v2), com _barge-in_.<br>No print: `rota=banco`, resposta vinda do vault.
 
@@ -58,7 +58,7 @@ Fala → Whisper (STT) → LLM local → voz clonada (XTTS-v2), com _barge-in_.<
 
 **💬 Modo texto**
 
-[![Demo de texto — clique para abrir](docs/demo/poster_texto.jpg)](docs/demo/mente_digital_texto.mp4)
+[![Demo de texto — clique para abrir](docs/demo/poster_texto.jpg)](https://github.com/user-attachments/assets/334cfa14-0896-4a83-a743-1c8c9fa684de)
 
 Cascata memória → notas → web, com anti-alucinação.<br>No print: _"o que é RAG?"_ respondido do próprio banco.
 
