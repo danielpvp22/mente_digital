@@ -30,6 +30,7 @@ from mente_digital import consolidacao
 from mente_digital import figuras as figuras_mod
 from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
+from mente_digital import triagem
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
 from mente_digital.llm import InferenciaPreemptada
@@ -242,8 +243,19 @@ class EtlProcessor:
         origem = (f"Livro '{titulo_livro}' — {cap} "
                   f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
         lotes = livro_mod.fatiar_lotes(job.get("texto", ""), settings.ingestao_lote_chars)
+        # TRIAGEM (2026-07-25): capa, ficha catalográfica, índice remissivo e créditos
+        # de fotos NÃO viram átomo. Medido no Amabis: 6% do livro é aparato editorial
+        # — incluindo um capítulo inteiro de índice remissivo (53k chars). Filtrar
+        # ANTES do LLM economiza a GPU e, sobretudo, evita ruído permanente no vault.
+        if settings.triagem_habilitada:
+            lotes, descartados = triagem.filtrar_lotes(lotes)
+            if descartados:
+                telemetry.track(
+                    "INGESTAO",
+                    f"'{cap}': {len(descartados)} trecho(s) fora da atomização — {descartados[0]}")
         if not lotes:
-            return True   # capítulo vazio: nada a fazer, não bloqueia a fila
+            telemetry.track("INGESTAO", f"'{cap}': só aparato editorial, nada a atomizar.")
+            return True   # capítulo vazio/inútil: não bloqueia a fila
         corpos: List[str] = []
         for lote in lotes:
             await self._esperar_idle()

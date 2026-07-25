@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
+    # Triagem do aparato editorial (capa/ficha/índice remissivo/créditos): ver
+    # triagem.py. Medido no Amabis: 6% do livro, incluindo um capítulo inteiro de
+    # índice. False = atomiza tudo (útil para comparar).
+    triagem_habilitada: bool = True
     ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
     # FIGURAS (Fase 5a): as imagens do livro viram WebP no vault e wikilinks nas
     # notas. WebP q80 medido como o ponto ótimo (2,2x menor que o JPEG que já está
