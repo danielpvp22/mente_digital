@@ -726,6 +726,41 @@ class VectorStore:
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
 
+    async def corpus_com_embeddings(self) -> List[tuple]:
+        """Dump (source, texto, embedding) por chunk — p/ a consolidação (Fase 2).
+        Fail-open: sem store/erro devolve [] (a consolidação simplesmente não roda).
+        Cuidado com o numpy: `embeddings` do Chroma pode vir ndarray — truthiness
+        de array levanta, então o teste é `is None`, nunca `or []`."""
+        if not self.ready:
+            return []
+        try:
+            dump = await asyncio.to_thread(
+                lambda: self._store.get(include=["documents", "metadatas", "embeddings"])
+            )
+        except Exception as exc:
+            telemetry.error("RAG", "Falha no dump p/ consolidação", exc)
+            return []
+        embs = dump.get("embeddings")
+        embs = [] if embs is None else embs
+        out: List[tuple] = []
+        for doc, md, emb in zip(dump.get("documents") or [],
+                                dump.get("metadatas") or [], embs):
+            src = str((md or {}).get("source") or "")
+            if src and emb is not None:
+                out.append((src, doc, [float(x) for x in emb]))
+        return out
+
+    async def remover_fontes(self, fontes: List[str]) -> None:
+        """Remove chunks por `source` (consolidação: o .md foi ARQUIVADO fora do
+        vault — sem isto o índice seguiria citando arquivos-fantasma)."""
+        if not self.ready:
+            return
+        for s in fontes:
+            try:
+                await asyncio.to_thread(lambda s=s: self._store.delete(where={"source": s}))
+            except Exception as exc:
+                telemetry.error("RAG", f"Falha ao remover do índice: {s}", exc)
+
     async def buscar_conteudos(self, query: str, k: int) -> List[str]:
         """Recuperação CRUA para a Síntese sob Demanda (#23): conteúdo (sem frontmatter)
         dos top-k átomos, deduplicado — SEM gate nem orçamento. O chamador fatia em lotes

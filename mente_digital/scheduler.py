@@ -69,6 +69,10 @@ class SchedulerService:
         # Ingestão de livros (Fase 1, 2026-07-25): uma passada por vez; a fila
         # durável são os próprios arquivos em dados/ingestao/pendentes.
         self._ingestao_em_andamento = False
+        # Consolidação de átomos (Fase 2): 1x/dia, nunca com sessão viva. Só RAM —
+        # restart apenas adia a 1ª passada, e a operação é idempotente/arquivada.
+        self._ultima_consolidacao: Optional[datetime] = None
+        self._consolidacao_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -117,6 +121,12 @@ class SchedulerService:
         if self._ingestao_devida(agora):
             self._ingestao_em_andamento = True
             self.ctx.track_task(self._executar_ingestao())
+        # Consolidação de átomos (Fase 2): funde os acúmulos quase-idênticos, com
+        # originais arquivados. 1x/dia e só em idle total, como a ingestão.
+        if self._consolidacao_devida(agora):
+            self._ultima_consolidacao = agora
+            self._consolidacao_em_andamento = True
+            self.ctx.track_task(self._executar_consolidacao())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -167,6 +177,31 @@ class SchedulerService:
             telemetry.error("INGESTAO", "Falha na ingestão de livro", exc)
         finally:
             self._ingestao_em_andamento = False
+
+    # -- consolidação de átomos — Fase 2 (2026-07-25) ---------------------------
+    def _consolidacao_devida(self, agora: datetime) -> bool:
+        if (not settings.consolidacao_habilitada or self._consolidacao_em_andamento
+                or self._ha_sessoes()):
+            return False
+        ult = self._ultima_consolidacao
+        return ult is None or (agora - ult).total_seconds() >= settings.consolidacao_intervalo_horas * 3600
+
+    async def _executar_consolidacao(self) -> None:
+        """Uma passada de consolidação SEM sessão aberta. Mesmo contrato dos
+        vizinhos de idle: religa o modelo, cede a GPU a quem chegar (preemptible
+        dentro do ETL), devolve a VRAM ao fim e NUNCA propaga."""
+        try:
+            telemetry.track("CONSOLIDACAO", "Passada de consolidação iniciada (sem sessão).")
+            await self.ctx.llama.ensure_loaded()
+            n = await self.ctx.etl.consolidar_atomos()
+            if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
+                    and not self._ha_sessoes()):
+                await self.ctx.llama.unload()
+            telemetry.track("CONSOLIDACAO", f"Passada concluída ({n} grupo(s)).")
+        except Exception as exc:
+            telemetry.error("CONSOLIDACAO", "Falha na consolidação", exc)
+        finally:
+            self._consolidacao_em_andamento = False
 
     # -- pesquisa proativa AGENDADA (#1): o "cresce a noite toda" ---------------
     def _pesquisa_idle_devida(self, agora: datetime) -> bool:

@@ -25,6 +25,7 @@ from mente_digital import diapasao
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import antiinjecao
+from mente_digital import consolidacao
 from mente_digital import livro as livro_mod
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
@@ -284,6 +285,93 @@ class EtlProcessor:
         # Nota única via _salvar_atomos: formato/tags garantidos, dedup incluso.
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
         await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
+
+    # -- Consolidação de átomos — Fase 2 (2026-07-25) ---------------------------
+    async def consolidar_atomos(self) -> int:
+        """Funde grupos de átomos quase-idênticos num canônico ("3000 relatórios de
+        um assunto"). Só o subdir AUTO-COLHIDO (Conhecimento_Novo) — nota escrita à
+        mão nunca é tocada. Ordem à prova de falha: a fusão via LLM acontece ANTES
+        de qualquer mexida em arquivo; originais são ARQUIVADOS (nunca deletados) e
+        removidos do índice; só então o canônico é salvo. Devolve grupos fundidos."""
+        vs = self.ctx.vectorstore
+        if not hasattr(vs, "corpus_com_embeddings"):
+            return 0   # fail-open: fakes antigos/índice frio
+        corpus = await vs.corpus_com_embeddings()
+        if not corpus:
+            return 0
+        raiz = os.path.normpath(str(settings.dir_conhecimento_novo))
+        por_fonte: dict = {}
+        for src, texto, emb in corpus:
+            # 1 chunk representa o átomo (átomo é curto; chunk extra ~ quase-cópia)
+            src_n = os.path.normpath(src)
+            if src_n.startswith(raiz) and src_n not in por_fonte:
+                por_fonte[src_n] = emb
+        fontes = list(por_fonte)
+        if len(fontes) < settings.consolidacao_min_grupo:
+            return 0
+        grupos = await asyncio.to_thread(
+            consolidacao.agrupar_redundantes,
+            [por_fonte[s] for s in fontes],
+            settings.consolidacao_dist_max, settings.consolidacao_min_grupo,
+        )
+        fundidos = 0
+        for grupo in grupos[: settings.consolidacao_grupos_por_ciclo]:
+            if await self._consolidar_grupo([fontes[i] for i in grupo]):
+                fundidos += 1
+        if fundidos:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("CONSOLIDACAO", f"{fundidos} grupo(s) fundido(s) em canônicos.")
+        return fundidos
+
+    async def _consolidar_grupo(self, caminhos: List[str]) -> bool:
+        """Um grupo → um átomo canônico. False = grupo fica para o próximo ciclo."""
+        textos: List[str] = []
+        for c in caminhos:
+            try:
+                textos.append(strip_frontmatter(
+                    await asyncio.to_thread(lambda p=c: Path(p).read_text(encoding="utf-8"))))
+            except OSError:
+                return False   # arquivo mexido por fora: não arrisca, tenta depois
+        await self._esperar_idle()
+        try:
+            fundido = await self.ctx.llama.collect(
+                prompts.prompt_fundir_atomos("\n\n---\n\n".join(textos)[:settings.ingestao_lote_chars]),
+                max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                system_prompt=prompts.SYS_SINTESE,
+                preemptible=True,
+            )
+        except InferenciaPreemptada:
+            telemetry.track("CONSOLIDACAO", "Fusão cedeu a GPU — retoma no próximo idle.")
+            return False
+        except Exception as exc:
+            telemetry.error("CONSOLIDACAO", "Falha na fusão do grupo", exc)
+            return False
+        if not fundido.strip():
+            return False
+        # ARQUIVA (nunca deleta) ANTES de salvar o canônico — os originais ainda
+        # indexados fariam o dedup do save matar o próprio canônico.
+        destino = Path(settings.dir_arquivo_consolidacao) / datetime.now().strftime("%Y%m%d_%H%M%S")
+        destino.mkdir(parents=True, exist_ok=True)
+
+        def _mover() -> None:
+            for c in caminhos:
+                Path(c).replace(destino / Path(c).name)
+
+        await asyncio.to_thread(_mover)
+        if hasattr(self.ctx.vectorstore, "remover_fontes"):
+            await self.ctx.vectorstore.remover_fontes(caminhos)
+        nomes = ", ".join(Path(c).name for c in caminhos[:5]) + ("…" if len(caminhos) > 5 else "")
+        origem = (f"Consolidação de {len(caminhos)} átomos ({nomes}) — "
+                  f"originais em _arquivo_consolidacao/{destino.name}/")
+        salvos = await self._salvar_atomos(fundido, "Consolidado", "CONSOLIDACAO", origem=origem)
+        if not salvos:
+            # Pior caso do design: canônico não entrou, mas NADA se perdeu — os
+            # originais estão íntegros no arquivo morto; restaurar = mover de volta.
+            telemetry.warn("CONSOLIDACAO", f"Canônico não salvo; originais preservados em {destino}")
+            return False
+        await asyncio.to_thread(db.log_etl, "CONSOLIDACAO",
+                                f"{len(caminhos)} -> 1 ({destino.name})", "CONCLUIDO")
+        return True
 
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:

@@ -257,6 +257,22 @@ def prompt_atomizar_livro(livro: str, capitulo: str, trecho: str) -> str:
     )
 
 
+def prompt_fundir_atomos(textos: str) -> str:
+    """Consolidação (Fase 2): N átomos quase-idênticos viram UM canônico. A ordem
+    dura é PRESERVAR os fatos distintos — fundir não é resumir; nuance descartada
+    aqui seria perda permanente (por isso os originais vão pro arquivo, não pro lixo)."""
+    return (
+        "As notas abaixo tratam da MESMA ideia, com variações. Funda-as em UMA única "
+        "nota canônica que preserve TODOS os fatos e nuances distintos (datas, números, "
+        "condições, exceções) — sem inventar nada e sem opinar. Use EXATAMENTE o formato:\n\n"
+        "## <título curto da ideia>\n"
+        "<a ideia consolidada em até 4 frases afirmativas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        f"{TAG_ATOMO}\n\n"
+        f"NOTAS A FUNDIR:\n{textos}"
+    )
+
+
 def prompt_sintese_capitulo(livro: str, capitulo: str, atomos: str) -> str:
     """O 'reduce' da ingestão hierárquica: a atomização fragmenta o argumento longo;
     esta síntese preserva a TESE do capítulo numa nota única."""
