@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     ocr_dpi: int = 150
     ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
     ocr_porta: int = 8099                 # servidor EFÊMERO do OCR (só 127.0.0.1)
+    # Onde rasterizar as páginas antes de mandar pro OCR. Vazio = dados/livros/_ocr_tmp.
+    # É O ÚNICO ponto da ingestão que combina com RAMDISK: PNGs de 1-4 MB escritos e
+    # apagados na hora, ~10 em voo por lote (cabe folgado em 500 MB). O resto NÃO
+    # serve: os .md são o produto (têm de persistir) e o Chroma é grande demais.
+    # Ex.: MENTE_OCR_TMP_DIR=R:\ocr
+    ocr_tmp_dir: str = ""
     # PARALELISMO medido no livro real (2026-07-25), s/página: sequencial 3,26 |
     # 4 slots em blocos 1,99 | 4 slots com fila CHEIA 1,61 (2,02x) | 8 slots 1,56.
     # Ou seja: 4 é o ponto ótimo — 8 slots rendem só 3% a mais e dobram o KV cache.

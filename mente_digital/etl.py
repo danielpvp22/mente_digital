@@ -477,7 +477,7 @@ class EtlProcessor:
             await self._mover_livro(pdf, "falhou")
             return 0
         inicio = int(estado.get("proxima", 0))
-        tmp = Path(settings.dir_livros) / "_ocr_tmp"
+        tmp = Path(settings.ocr_tmp_dir or (Path(settings.dir_livros) / "_ocr_tmp"))
         try:
             imagens = await asyncio.to_thread(
                 ocr_mod.render_paginas, pdf, tmp, settings.ocr_dpi,
