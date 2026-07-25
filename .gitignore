@@ -36,6 +36,10 @@ dados/traces/
 dados/amostras_vozes/
 dados/amostra_*.wav
 
+# Fila de ingestão de livros (Fase 1): os jobs carregam o TEXTO INTEGRAL dos
+# livros do dono — conteúdo pessoal e possivelmente com direitos autorais.
+dados/ingestao/
+
 # Saídas do A/B de modelos: carregam perguntas reais e trechos do VAULT (mesma regra
 # do Cerebro_Digital acima). São regeneráveis com `ab_modelos.py --preparar`, então
 # versiona-se a ferramenta, não o dado do usuário.

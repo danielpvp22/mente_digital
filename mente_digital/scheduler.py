@@ -66,6 +66,9 @@ class SchedulerService:
         # Backup diário (ops-backup-01): flag anti-sobreposição; a idempotência
         # entre restarts é o NOME do arquivo (mente_AAAA-MM-DD.zip existir = já rodou).
         self._backup_em_andamento = False
+        # Ingestão de livros (Fase 1, 2026-07-25): uma passada por vez; a fila
+        # durável são os próprios arquivos em dados/ingestao/pendentes.
+        self._ingestao_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -109,6 +112,11 @@ class SchedulerService:
         if self._backup_devido(agora):
             self._backup_em_andamento = True
             self.ctx.track_task(self._executar_backup(agora))
+        # Ingestão de livros (Fase 1): consome jobs de capítulo SÓ no idle total —
+        # nunca com sessão viva (restrição do dono: atomização não compete com a fala).
+        if self._ingestao_devida(agora):
+            self._ingestao_em_andamento = True
+            self.ctx.track_task(self._executar_ingestao())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -134,6 +142,31 @@ class SchedulerService:
             telemetry.error("BACKUP", "Falha no backup diário", exc)
         finally:
             self._backup_em_andamento = False
+
+    # -- ingestão de livros — Fase 1 (2026-07-25) -------------------------------
+    def _ingestao_devida(self, agora: datetime) -> bool:
+        if (not settings.ingestao_habilitada or self._ingestao_em_andamento
+                or self._ha_sessoes()):
+            return False
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        return pend.is_dir() and any(pend.glob("*.json"))
+
+    async def _executar_ingestao(self) -> None:
+        """Atomiza capítulos pendentes SEM sessão aberta. Mesmo contrato da
+        pesquisa agendada: religa o modelo, cede a GPU a quem chegar (preemptible
+        dentro do ETL) e devolve a VRAM ao fim. NUNCA propaga."""
+        try:
+            telemetry.track("INGESTAO", "Passada de ingestão de livro iniciada (sem sessão).")
+            await self.ctx.llama.ensure_loaded()
+            n = await self.ctx.etl.ingestao_livros()
+            if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
+                    and not self._ha_sessoes()):
+                await self.ctx.llama.unload()
+            telemetry.track("INGESTAO", f"Passada concluída ({n} capítulo(s)).")
+        except Exception as exc:
+            telemetry.error("INGESTAO", "Falha na ingestão de livro", exc)
+        finally:
+            self._ingestao_em_andamento = False
 
     # -- pesquisa proativa AGENDADA (#1): o "cresce a noite toda" ---------------
     def _pesquisa_idle_devida(self, agora: datetime) -> bool:
