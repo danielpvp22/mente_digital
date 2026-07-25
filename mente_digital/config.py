@@ -109,6 +109,26 @@ class Settings(BaseSettings):
     dir_livros: str = str(DIR_DADOS / "livros")
     livros_por_ciclo: int = 1             # PDFs extraídos por passada (extração é rápida)
 
+    # --- OCR de livros escaneados — Fase 3 (2026-07-25) -----------------------
+    # Livro que é só IMAGEM vira texto aqui e volta pra MESMA fila de jobs. Roda em
+    # SUBPROCESSO (o modelo exige Python 3.12/torch 2.10/CUDA 12.9 — incompatível
+    # com esta env), via o binário llama-mtmd-cli do llama.cpp com o GGUF
+    # quantizado. ATENÇÃO: o card do modelo exige um llama.cpp compilado com a PR
+    # #17400; o release padrão NÃO roda este GGUF. Sem MENTE_OCR_BIN apontando p/
+    # um binário existente, o worker é NO-OP (loga o motivo 1x e o livro espera na
+    # fila) — quem não configurou não sofre nada.
+    # VRAM: o scheduler DESCARREGA o LLM antes (exigência do dono: nada do projeto
+    # na GPU) — é o que faz ~3 GB de OCR (Q4_K_M 1,95 + mmproj 0,77) caberem na 3080.
+    ocr_habilitado: bool = True
+    ocr_bin: str = ""                     # caminho do llama-mtmd-cli (vazio = desligado)
+    caminho_modelo_ocr: str = str(DIR_MODELOS / "Unlimited-OCR-Q4_K_M.gguf")
+    caminho_mmproj_ocr: str = str(DIR_MODELOS / "mmproj-Unlimited-OCR-F16.gguf")
+    ocr_dpi: int = 200                    # 200 dpi: legível sem estourar o encoder
+    ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
+    ocr_timeout_pagina: int = 180
+    ocr_min_chars_pagina: int = 40        # menos que isso: capa/ilustração/branco
+    ocr_n_gpu_layers: int = -1
+
     # --- Colheita ACADÊMICA — Fase 4 (2026-07-25) -----------------------------
     # Busca PDFs acadêmicos (DDGS com filetype:pdf) sobre o que o usuário mais
     # REUSA (temas quentes) e o que ficou SEM resposta (lacunas) — as duas tabelas

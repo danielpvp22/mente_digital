@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, List, Optional, Union
 
 import numpy as np
 
+from mente_digital import vram
 from mente_digital.config import DICIONARIO_FONETICO, settings
 from mente_digital.telemetry import telemetry
 from mente_digital.verbalizar import verbalizar
@@ -251,6 +252,15 @@ class SttService:
     @property
     def ready(self) -> bool:
         return self._model is not None
+
+    def unload(self) -> None:
+        """Solta o Whisper da VRAM (Fase 3: o OCR roda em OUTRO processo/venv e precisa
+        da GPU limpa). Simétrico ao `load` — quem descarrega é responsável por
+        recarregar, porque o `transcribe` NÃO auto-carrega (devolve "" sem modelo)."""
+        if self._model is None:
+            return
+        self._model = None
+        vram.liberar_cache_gpu()
 
     async def transcribe(self, audio_numpy: "np.ndarray") -> str:
         if self._model is None:

@@ -49,7 +49,7 @@ _db_teste.init()
 
 
 @pytest.fixture(autouse=True)
-def _isola_do_env(monkeypatch):
+def _isola_do_env(monkeypatch, tmp_path):
     """Isola a suíte do .env de PRODUÇÃO.
 
     Os testes de gate/malha assumem os DEFAULTS do código (ver
@@ -68,6 +68,15 @@ def _isola_do_env(monkeypatch):
     # Consolidação (Fase 2): mesmo motivo — um tick de teste não pode disparar a
     # passada de fundo num ctx fake. Testada direto em test_consolidacao.py.
     monkeypatch.setattr(_settings, "consolidacao_habilitada", False, raising=False)
+    # DIRETÓRIOS DE DADOS -> tmp (mesma lição do redirect do DB acima): os gates de
+    # fundo das fases de ingestão (livros/OCR/jobs/backup/arquivo) DECIDEM olhando o
+    # disco, então sem isto um teste leria (e escreveria) o dados/ REAL do dono — e o
+    # resultado dependeria de haver um PDF na pasta vigiada da máquina. Cada teste
+    # que precisa de conteúdo aponta seus próprios diretórios depois deste fixture.
+    for campo, sub in (("dir_ingestao", "ingestao"), ("dir_livros", "livros"),
+                       ("dir_arquivo_consolidacao", "_arq_cons"), ("backup_dir", "backups"),
+                       ("trace_dir", "traces")):
+        monkeypatch.setattr(_settings, campo, str(tmp_path / sub), raising=False)
     yield
 
 

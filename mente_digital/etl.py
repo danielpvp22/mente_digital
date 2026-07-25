@@ -28,6 +28,7 @@ from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
 from mente_digital import livro as livro_mod
+from mente_digital import ocr as ocr_mod
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
 from mente_digital.llm import InferenciaPreemptada
@@ -342,6 +343,104 @@ class EtlProcessor:
             await asyncio.to_thread(lambda: pdf.replace(destino / pdf.name))
         except OSError as exc:
             telemetry.error("INGESTAO", f"Falha ao mover {pdf.name} p/ {sub}", exc)
+
+    # -- OCR de livro escaneado — Fase 3 (2026-07-25) ---------------------------
+    async def ocr_livros(self) -> int:
+        """Transcreve UM livro escaneado da fila `aguardando_ocr/`, N páginas por
+        passada, retomando de onde parou (estado em `_ocr_estado/<slug>.json`).
+
+        Só a TRANSCRIÇÃO acontece aqui; ao terminar o livro, os jobs entram na fila
+        da Fase 1 e a atomização é a passada de ingestão seguinte. Devolve as páginas
+        transcritas nesta passada (0 = nada a fazer, ou OCR não configurado).
+
+        Pré-condição de VRAM: o chamador (scheduler) já descarregou o LLM."""
+        if not settings.ocr_habilitado:
+            return 0
+        fila = Path(settings.dir_livros) / "aguardando_ocr"
+        pdfs = sorted(p for p in fila.glob("*.pdf") if p.is_file()) if fila.is_dir() else []
+        if not pdfs:
+            return 0
+        ok, motivo = ocr_mod.disponibilidade(
+            settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr)
+        if not ok:
+            # 1x por passada, não por página/livro: informa sem virar spam de log.
+            telemetry.warn("OCR", f"{len(pdfs)} livro(s) esperando, mas o OCR não está pronto: {motivo}")
+            return 0
+        return await self._ocr_um_livro(pdfs[0])
+
+    def _ocr_estado_path(self, pdf: Path) -> Path:
+        return Path(settings.dir_livros) / "_ocr_estado" / f"{livro_mod.slug(pdf.stem)}.json"
+
+    async def _ocr_um_livro(self, pdf: Path) -> int:
+        estado_path = self._ocr_estado_path(pdf)
+        estado = {"paginas": [], "proxima": 0}
+        if estado_path.is_file():
+            try:
+                estado = json.loads(estado_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                telemetry.warn("OCR", f"Estado ilegível de {pdf.name}; recomeçando o livro.")
+        try:
+            total = await asyncio.to_thread(ocr_mod.total_paginas, pdf)
+        except Exception as exc:
+            telemetry.error("OCR", f"PDF ilegível: {pdf.name}", exc)
+            await self._mover_livro(pdf, "falhou")
+            return 0
+        inicio = int(estado.get("proxima", 0))
+        tmp = Path(settings.dir_livros) / "_ocr_tmp"
+        try:
+            imagens = await asyncio.to_thread(
+                ocr_mod.render_paginas, pdf, tmp, settings.ocr_dpi,
+                inicio, settings.ocr_paginas_por_ciclo)
+        except Exception as exc:
+            telemetry.error("OCR", f"Falha ao rasterizar {pdf.name}", exc)
+            return 0
+        feitas = 0
+        for img in imagens:
+            # Cede a vez ANTES de cada página: o subprocesso é longo (segundos) e a
+            # GPU tem de voltar pra conversa se o dono aparecer. O `interactive_idle`
+            # é a mesma porta que o resto do ETL respeita.
+            if not self.ctx.interactive_idle.is_set():
+                telemetry.track("OCR", "Conversa começou — OCR pausado, retoma no próximo idle.")
+                break
+            comando = ocr_mod.montar_comando(
+                settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr,
+                str(img), n_gpu_layers=settings.ocr_n_gpu_layers, n_ctx=settings.n_ctx)
+            texto = await asyncio.to_thread(ocr_mod.rodar_ocr, comando, settings.ocr_timeout_pagina)
+            if texto is None:
+                telemetry.warn("OCR", f"Página {inicio + feitas + 1} falhou; segue para a próxima.")
+                texto = ""
+            estado["paginas"].append(texto)
+            estado["proxima"] = inicio + feitas + 1
+            feitas += 1
+            await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
+            await asyncio.to_thread(img.unlink, True)
+        telemetry.track("OCR", f"'{pdf.stem}': {estado['proxima']}/{total} páginas transcritas.")
+        if estado["proxima"] >= total:
+            await self._finalizar_ocr(pdf, estado, estado_path)
+        return feitas
+
+    def _salvar_estado_ocr(self, path: Path, estado: dict) -> None:
+        """Grava o progresso a CADA página (OCR é caro: um crash não pode custar o
+        livro inteiro). Escreve em .tmp e renomeia — nunca deixa JSON pela metade."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(estado, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    async def _finalizar_ocr(self, pdf: Path, estado: dict, estado_path: Path) -> None:
+        """Livro transcrito: vira jobs de capítulo (sem TOC — PDF de imagem não tem),
+        o PDF sai da fila e o estado é limpo."""
+        paginas = [p for p in estado.get("paginas", [])]
+        uteis = [p for p in paginas if ocr_mod.pagina_util(p, settings.ocr_min_chars_pagina)]
+        if not uteis:
+            telemetry.warn("OCR", f"'{pdf.stem}': nenhuma página com texto aproveitável.")
+            await self._mover_livro(pdf, "falhou")
+            return
+        jobs = livro_mod.montar_jobs(pdf.stem, paginas, [])
+        n = await asyncio.to_thread(self._enfileirar_jobs, jobs, f"ocr-{livro_mod.slug(pdf.stem)}")
+        await self._mover_livro(pdf, "processados")
+        await asyncio.to_thread(estado_path.unlink, True)
+        telemetry.track("OCR", f"'{pdf.stem}' transcrito: {n} capítulo(s) na fila de atomização.")
 
     async def colheita_academica(self) -> int:
         """Fase 4: busca PDFs acadêmicos sobre os temas quentes/lacunas do dono e os

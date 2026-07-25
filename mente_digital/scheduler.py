@@ -77,6 +77,9 @@ class SchedulerService:
         # durável de URL vive no SQLite, então restart não re-baixa nada.
         self._ultima_academico: Optional[datetime] = None
         self._academico_em_andamento = False
+        # OCR de livro escaneado (Fase 3): a fila são os PDFs em aguardando_ocr/; o
+        # progresso por página vive em disco, então restart não perde transcrição.
+        self._ocr_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -137,6 +140,11 @@ class SchedulerService:
             self._ultima_academico = agora
             self._academico_em_andamento = True
             self.ctx.track_task(self._executar_academico())
+        # OCR (Fase 3): só com a GPU LIMPA — o LLM é descarregado antes (exigência
+        # do dono). Sem sessão viva, como todo trabalho de fundo.
+        if self._ocr_devido(agora):
+            self._ocr_em_andamento = True
+            self.ctx.track_task(self._executar_ocr())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -176,6 +184,41 @@ class SchedulerService:
         entrada = Path(settings.dir_livros) / "entrada"
         return (settings.livros_entrada_habilitada and entrada.is_dir()
                 and any(entrada.glob("*.pdf")))
+
+    def _ocr_devido(self, agora: datetime) -> bool:
+        """Devido enquanto houver livro escaneado na fila. Sem intervalo de tempo: o
+        trabalho é finito (acaba quando o livro acaba) e cada passada é capada por
+        páginas — diferente do crawler, que é infinito e por isso é 1x/dia."""
+        if (not settings.ocr_habilitado or self._ocr_em_andamento
+                or self._ha_sessoes() or not self.ctx.interactive_idle.is_set()):
+            return False
+        fila = Path(settings.dir_livros) / "aguardando_ocr"
+        return fila.is_dir() and any(fila.glob("*.pdf"))
+
+    async def _executar_ocr(self) -> None:
+        """DESCARREGA o LLM e transcreve N páginas em subprocesso.
+
+        A GPU limpa é pré-condição do dono ("só quando nada do projeto estiver na
+        VRAM, pra não misturar duas venvs"): `ctx.liberar_vram()` descarrega LLM,
+        XTTS, Whisper e embeddings — o OCR sobe ~3 GB próprios e não caberia junto
+        na 3080. O `restaurar_vram` no finally é OBRIGATÓRIO: STT/TTS não
+        auto-carregam, então sem ele a voz voltaria muda em silêncio. O LLM fica de
+        fora da restauração (é lazy: religa no próximo turno). Nunca propaga."""
+        try:
+            if not self.ctx.interactive_idle.is_set() or self._ha_sessoes():
+                return
+            await self.ctx.liberar_vram()
+            n = await self.ctx.etl.ocr_livros()
+            if n:
+                telemetry.track("OCR", f"Passada de OCR concluída ({n} página(s)).")
+        except Exception as exc:
+            telemetry.error("OCR", "Falha na passada de OCR", exc)
+        finally:
+            try:
+                await self.ctx.restaurar_vram()
+            except Exception as exc:
+                telemetry.error("OCR", "Falha ao restaurar serviços após o OCR", exc)
+            self._ocr_em_andamento = False
 
     def _academico_devido(self, agora: datetime) -> bool:
         if (not settings.academico_habilitado or self._academico_em_andamento

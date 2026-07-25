@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
 
 from mente_digital.config import Settings
+from mente_digital.telemetry import telemetry
 
 if TYPE_CHECKING:  # evita imports circulares em runtime
     from mente_digital.agent import Agent, EtlProcessor
@@ -159,6 +160,10 @@ class AppContext:
     # `chat_history` global ainda vazava o contexto de uma conversa no prompt da outra.
     # Sessões vivas, para o /api/metrics agregar (não é dono do estado, só observa).
     sessoes: Set["object"] = field(default_factory=set, repr=False)
+    # Fase 3 (OCR): serviços do projeto que foram descarregados da VRAM para o OCR
+    # rodar em outro processo/venv — guardados para RESTAURAR depois (nenhum deles
+    # auto-carrega: STT devolveria "" e o TTS ficaria mudo em silêncio).
+    _vram_liberada: Set[str] = field(default_factory=set, repr=False)
     # priv-02 (painel 2026-07-24): conversas em MODO SIGILOSO, por conversa_id. A
     # SessionMemory é por CONEXÃO, então um wifi piscando + reconexão automática
     # derrubava o sigilo EM SILÊNCIO (a memory nova nasce confidencial=False). O id
@@ -297,6 +302,57 @@ class AppContext:
         self._idle_timer = None
         if self.etl is not None:
             self.track_task(self.etl.run_idle(itens))
+
+    async def liberar_vram(self) -> Set[str]:
+        """Descarrega TUDO do projeto que ocupa VRAM — Fase 3 (OCR).
+
+        Por que o LLM não basta: o OCR sobe ~3 GB num processo/venv SEPARADO, e do
+        lado do app ainda ficariam o XTTS (~2 GB), o Whisper em cuda (~1,5 GB) e o
+        e5 (~0,5 GB). Numa 3080 de 10 GB, misturar os dois lados é o caminho para
+        OOM (ou pior: o device-side assert de 2026-07-23). Aqui a GPU fica limpa.
+
+        Devolve o conjunto do que foi descarregado, para `restaurar_vram` religar
+        exatamente isso — nenhum destes serviços auto-carrega (o STT devolveria ""
+        e o TTS ficaria mudo, ambos em silêncio). Duck-typed e fail-soft: serviço
+        sem `unload` (fake de teste, engine Piper que é CPU) é simplesmente pulado.
+        """
+        liberados: Set[str] = set()
+        llama = getattr(self, "llama", None)
+        if llama is not None and getattr(llama, "ready", False):
+            await llama.unload()
+            liberados.add("llama")     # religa sozinho (ensure_loaded) — não restauramos
+        for nome, alvo in (("stt", getattr(self, "stt", None)),
+                           ("tts", getattr(self, "tts", None)),
+                           ("embeddings", getattr(getattr(self, "vectorstore", None),
+                                                  "embeddings", None))):
+            if alvo is None or not hasattr(alvo, "unload") or not getattr(alvo, "ready", True):
+                continue
+            try:
+                await asyncio.to_thread(alvo.unload)
+                liberados.add(nome)
+            except Exception as exc:
+                telemetry.error("VRAM", f"Falha ao descarregar {nome}", exc)
+        self._vram_liberada = liberados - {"llama"}
+        if liberados:
+            telemetry.track("VRAM", f"VRAM liberada para o OCR: {', '.join(sorted(liberados))}")
+        return liberados
+
+    async def restaurar_vram(self) -> None:
+        """Religa o que `liberar_vram` descarregou (menos o LLM, que já é lazy).
+        Sem isto a voz voltaria MUDA depois de um OCR — o pior tipo de defeito:
+        silencioso. Cada `load` é síncrono, então vai por to_thread."""
+        pendentes, self._vram_liberada = set(self._vram_liberada), set()
+        for nome in sorted(pendentes):
+            alvo = (getattr(getattr(self, "vectorstore", None), "embeddings", None)
+                    if nome == "embeddings" else getattr(self, nome, None))
+            if alvo is None:
+                continue
+            try:
+                await asyncio.to_thread(alvo.load)
+            except Exception as exc:
+                telemetry.error("VRAM", f"Falha ao restaurar {nome} após o OCR", exc)
+        if pendentes:
+            telemetry.track("VRAM", f"Serviços restaurados: {', '.join(sorted(pendentes))}")
 
     def track_task(self, coro: Coroutine) -> "asyncio.Task":
         """Cria uma task de background SEGURANDO uma referência forte a ela.
