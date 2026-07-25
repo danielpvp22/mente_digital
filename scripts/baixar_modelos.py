@@ -31,31 +31,63 @@ PIPER_ARQS = (
     "pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx.json",
 )
 XTTS_REPO = "coqui/XTTS-v2"
+# OCR de livro escaneado (Fase 3): GGUF + projetor de visão (mmproj é OBRIGATÓRIO —
+# sem ele o modelo não vê a página). ~3,6 GB, cabe com folga na 3080 com o LLM
+# descarregado. É o repo OFICIAL do ggml-org, publicado junto com o suporte no
+# llama.cpp: o baidu/Unlimited-OCR-GGUF (conversão de terceiro) NÃO carrega —
+# o card dele manda compilar a PR 24975, que segue fora do master (testado
+# 2026-07-25: crash instantâneo). O binário vem do llama.cpp (ver config.py).
+OCR_REPO = "ggml-org/DeepSeek-OCR-GGUF"
+OCR_ARQS = ("DeepSeek-OCR-Q8_0.gguf", "mmproj-DeepSeek-OCR-Q8_0.gguf")
 
 
-def _baixar_para(repo: str, arquivo: str, destino: Path) -> None:
+def _baixar_para(repo: str, arquivo: str, destino: Path) -> bool:
+    """Baixa UM arquivo. Devolve False em falha, sem levantar: um arquivo que falha
+    NÃO pode abortar os outros — era o defeito visto ao vivo (2026-07-25), em que o
+    GGUF de 1,9 GB baixou, o passo seguinte morreu e o mmproj OBRIGATÓRIO ficou
+    faltando, com o usuário achando que estava tudo certo."""
     from huggingface_hub import hf_hub_download
 
     if destino.exists():
         print(f"[ok] já existe: {destino.name}")
-        return
+        return True
     print(f"[..] baixando {arquivo} de {repo} …")
-    baixado = hf_hub_download(repo_id=repo, filename=arquivo)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    # copy2 (não move): o cache do hub segue válido p/ retomadas/reinstalações.
-    shutil.copy2(baixado, destino)
+    try:
+        baixado = hf_hub_download(repo_id=repo, filename=arquivo)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        # copy2 (não move): o cache do hub segue válido p/ retomadas/reinstalações.
+        shutil.copy2(baixado, destino)
+    except Exception as exc:
+        print(f"[ERRO] {arquivo}: {type(exc).__name__}: {exc}")
+        return False
     print(f"[ok] {destino}")
+    return True
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--xtts", action="store_true",
                         help="baixa também o XTTS-v2 (voz clonada; opt-in como no .env)")
+    parser.add_argument("--ocr", action="store_true",
+                        help="baixa o OCR de livro escaneado (GGUF Q4_K_M + mmproj, ~2,7 GB)")
     args = parser.parse_args()
 
     _baixar_para(LLM_REPO, LLM_ARQ, DIR_MODELOS / LLM_ARQ)
     for arq in PIPER_ARQS:
         _baixar_para(PIPER_REPO, arq, DIR_MODELOS / Path(arq).name)
+
+    if args.ocr:
+        # Os DOIS são obrigatórios: sem o mmproj (o projetor de visão) o modelo não
+        # enxerga a página — por isso o resultado é conferido explicitamente.
+        okes = [_baixar_para(OCR_REPO, arq, DIR_MODELOS / arq) for arq in OCR_ARQS]
+        if all(okes):
+            print("\nOCR baixado (GGUF + mmproj). Falta o binário: pegue um llama.cpp "
+                  ">= 2026-03-25 (release pronta serve) e aponte MENTE_OCR_BIN para "
+                  "o llama-server.exe.")
+        else:
+            faltando = [a for a, ok in zip(OCR_ARQS, okes) if not ok]
+            print(f"\n[ATENÇÃO] OCR INCOMPLETO — faltou: {', '.join(faltando)}. "
+                  "Rode de novo (o que já baixou é reusado do cache).")
 
     if args.xtts:
         from huggingface_hub import snapshot_download

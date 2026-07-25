@@ -66,6 +66,20 @@ class SchedulerService:
         # Backup diário (ops-backup-01): flag anti-sobreposição; a idempotência
         # entre restarts é o NOME do arquivo (mente_AAAA-MM-DD.zip existir = já rodou).
         self._backup_em_andamento = False
+        # Ingestão de livros (Fase 1, 2026-07-25): uma passada por vez; a fila
+        # durável são os próprios arquivos em dados/ingestao/pendentes.
+        self._ingestao_em_andamento = False
+        # Consolidação de átomos (Fase 2): 1x/dia, nunca com sessão viva. Só RAM —
+        # restart apenas adia a 1ª passada, e a operação é idempotente/arquivada.
+        self._ultima_consolidacao: Optional[datetime] = None
+        self._consolidacao_em_andamento = False
+        # Colheita acadêmica (Fase 4): 1x/dia, sem sessão viva, OPT-IN. O dedup
+        # durável de URL vive no SQLite, então restart não re-baixa nada.
+        self._ultima_academico: Optional[datetime] = None
+        self._academico_em_andamento = False
+        # OCR de livro escaneado (Fase 3): a fila são os PDFs em aguardando_ocr/; o
+        # progresso por página vive em disco, então restart não perde transcrição.
+        self._ocr_em_andamento = False
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -109,6 +123,28 @@ class SchedulerService:
         if self._backup_devido(agora):
             self._backup_em_andamento = True
             self.ctx.track_task(self._executar_backup(agora))
+        # Ingestão de livros (Fase 1): consome jobs de capítulo SÓ no idle total —
+        # nunca com sessão viva (restrição do dono: atomização não compete com a fala).
+        if self._ingestao_devida(agora):
+            self._ingestao_em_andamento = True
+            self.ctx.track_task(self._executar_ingestao())
+        # Consolidação de átomos (Fase 2): funde os acúmulos quase-idênticos, com
+        # originais arquivados. 1x/dia e só em idle total, como a ingestão.
+        if self._consolidacao_devida(agora):
+            self._ultima_consolidacao = agora
+            self._consolidacao_em_andamento = True
+            self.ctx.track_task(self._executar_consolidacao())
+        # Colheita acadêmica (Fase 4): busca/baixa PDFs sobre os temas do dono. Só
+        # em idle e opt-in — é egressão de fundo, sem pergunta em curso.
+        if self._academico_devido(agora):
+            self._ultima_academico = agora
+            self._academico_em_andamento = True
+            self.ctx.track_task(self._executar_academico())
+        # OCR (Fase 3): só com a GPU LIMPA — o LLM é descarregado antes (exigência
+        # do dono). Sem sessão viva, como todo trabalho de fundo.
+        if self._ocr_devido(agora):
+            self._ocr_em_andamento = True
+            self.ctx.track_task(self._executar_ocr())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -134,6 +170,120 @@ class SchedulerService:
             telemetry.error("BACKUP", "Falha no backup diário", exc)
         finally:
             self._backup_em_andamento = False
+
+    # -- ingestão de livros — Fase 1 (2026-07-25) -------------------------------
+    def _ingestao_devida(self, agora: datetime) -> bool:
+        if (not settings.ingestao_habilitada or self._ingestao_em_andamento
+                or self._ha_sessoes()):
+            return False
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        if pend.is_dir() and any(pend.glob("*.json")):
+            return True
+        # Pasta vigiada: PDF novo largado em dados/livros/entrada também dispara a
+        # passada (a extração acontece dentro dela, antes da atomização).
+        entrada = Path(settings.dir_livros) / "entrada"
+        return (settings.livros_entrada_habilitada and entrada.is_dir()
+                and any(entrada.glob("*.pdf")))
+
+    def _ocr_devido(self, agora: datetime) -> bool:
+        """Devido enquanto houver livro escaneado na fila. Sem intervalo de tempo: o
+        trabalho é finito (acaba quando o livro acaba) e cada passada é capada por
+        páginas — diferente do crawler, que é infinito e por isso é 1x/dia."""
+        if (not settings.ocr_habilitado or self._ocr_em_andamento
+                or self._ha_sessoes() or not self.ctx.interactive_idle.is_set()):
+            return False
+        fila = Path(settings.dir_livros) / "aguardando_ocr"
+        return fila.is_dir() and any(fila.glob("*.pdf"))
+
+    async def _executar_ocr(self) -> None:
+        """DESCARREGA o LLM e transcreve N páginas em subprocesso.
+
+        A GPU limpa é pré-condição do dono ("só quando nada do projeto estiver na
+        VRAM, pra não misturar duas venvs"): `ctx.liberar_vram()` descarrega LLM,
+        XTTS, Whisper e embeddings — o OCR sobe ~3 GB próprios e não caberia junto
+        na 3080. O `restaurar_vram` no finally é OBRIGATÓRIO: STT/TTS não
+        auto-carregam, então sem ele a voz voltaria muda em silêncio. O LLM fica de
+        fora da restauração (é lazy: religa no próximo turno). Nunca propaga."""
+        try:
+            if not self.ctx.interactive_idle.is_set() or self._ha_sessoes():
+                return
+            await self.ctx.liberar_vram()
+            n = await self.ctx.etl.ocr_livros()
+            if n:
+                telemetry.track("OCR", f"Passada de OCR concluída ({n} página(s)).")
+        except Exception as exc:
+            telemetry.error("OCR", "Falha na passada de OCR", exc)
+        finally:
+            try:
+                await self.ctx.restaurar_vram()
+            except Exception as exc:
+                telemetry.error("OCR", "Falha ao restaurar serviços após o OCR", exc)
+            self._ocr_em_andamento = False
+
+    def _academico_devido(self, agora: datetime) -> bool:
+        if (not settings.academico_habilitado or self._academico_em_andamento
+                or self._ha_sessoes()):
+            return False
+        ult = self._ultima_academico
+        return ult is None or (agora - ult).total_seconds() >= settings.academico_intervalo_horas * 3600
+
+    async def _executar_academico(self) -> None:
+        """Uma passada de colheita acadêmica: rede + extração, SEM LLM (a atomização
+        é a passada de ingestão, que roda no idle seguinte). Por isso NÃO religa o
+        modelo — se ele está descarregado, continua descarregado. Nunca propaga."""
+        try:
+            telemetry.track("ACADEMICO", "Passada de colheita acadêmica iniciada (sem sessão).")
+            n = await self.ctx.etl.colheita_academica()
+            telemetry.track("ACADEMICO", f"Passada concluída ({n} paper(s) enfileirados).")
+        except Exception as exc:
+            telemetry.error("ACADEMICO", "Falha na colheita acadêmica", exc)
+        finally:
+            self._academico_em_andamento = False
+
+    async def _executar_ingestao(self) -> None:
+        """Atomiza capítulos pendentes SEM sessão aberta. Mesmo contrato da
+        pesquisa agendada: religa o modelo, cede a GPU a quem chegar (preemptible
+        dentro do ETL) e devolve a VRAM ao fim. NUNCA propaga."""
+        try:
+            telemetry.track("INGESTAO", "Passada de ingestão de livro iniciada (sem sessão).")
+            # Pasta vigiada primeiro: extrai o PDF novo (rápido, sem GPU) para que os
+            # jobs dele já entrem na fila que a atomização abaixo consome.
+            await self.ctx.etl.ingerir_pasta_livros()
+            await self.ctx.llama.ensure_loaded()
+            n = await self.ctx.etl.ingestao_livros()
+            if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
+                    and not self._ha_sessoes()):
+                await self.ctx.llama.unload()
+            telemetry.track("INGESTAO", f"Passada concluída ({n} capítulo(s)).")
+        except Exception as exc:
+            telemetry.error("INGESTAO", "Falha na ingestão de livro", exc)
+        finally:
+            self._ingestao_em_andamento = False
+
+    # -- consolidação de átomos — Fase 2 (2026-07-25) ---------------------------
+    def _consolidacao_devida(self, agora: datetime) -> bool:
+        if (not settings.consolidacao_habilitada or self._consolidacao_em_andamento
+                or self._ha_sessoes()):
+            return False
+        ult = self._ultima_consolidacao
+        return ult is None or (agora - ult).total_seconds() >= settings.consolidacao_intervalo_horas * 3600
+
+    async def _executar_consolidacao(self) -> None:
+        """Uma passada de consolidação SEM sessão aberta. Mesmo contrato dos
+        vizinhos de idle: religa o modelo, cede a GPU a quem chegar (preemptible
+        dentro do ETL), devolve a VRAM ao fim e NUNCA propaga."""
+        try:
+            telemetry.track("CONSOLIDACAO", "Passada de consolidação iniciada (sem sessão).")
+            await self.ctx.llama.ensure_loaded()
+            n = await self.ctx.etl.consolidar_atomos()
+            if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
+                    and not self._ha_sessoes()):
+                await self.ctx.llama.unload()
+            telemetry.track("CONSOLIDACAO", f"Passada concluída ({n} grupo(s)).")
+        except Exception as exc:
+            telemetry.error("CONSOLIDACAO", "Falha na consolidação", exc)
+        finally:
+            self._consolidacao_em_andamento = False
 
     # -- pesquisa proativa AGENDADA (#1): o "cresce a noite toda" ---------------
     def _pesquisa_idle_devida(self, agora: datetime) -> bool:

@@ -81,6 +81,9 @@
         .bubble pre.code { background: #0d0f11; border: 1px solid var(--border); padding: 12px 14px; border-radius: 12px; overflow-x: auto; margin: 8px 0; }
         .bubble pre.code code { background: none; padding: 0; display: block; white-space: pre; }
         .bubble a { color: var(--accent); }
+        /* Figuras dos livros (Fase 5b): o vault guarda WebP e o átomo traz o
+           wikilink; aqui elas aparecem na resposta sem estourar a bolha. */
+        .bubble img.fig { max-width: 100%; height: auto; border-radius: 10px; margin: 8px 0; display: block; background: var(--surface-2); }
 
         #toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); background: var(--surface-2); color: var(--text-primary); padding: 10px 18px; border-radius: 22px; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 0.85rem; opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 3000; max-width: 90vw; text-align: center; }
         #toast.show { opacity: 1; }
@@ -298,6 +301,17 @@
                 return '%%MDCODE' + (blocks.length - 1) + 'ENDCODE%%';
             });
             text = escapeHtml(text);
+            // FIGURAS (Fase 5b): `![[Figuras/x.webp]]` do Obsidian vira <img>. Roda
+            // DEPOIS do escapeHtml e monta o src com encodeURIComponent por segmento,
+            // então nada vindo do LLM/vault escapa para dentro do HTML. Só o formato
+            // wikilink é aceito — markdown de imagem com URL externa NÃO, senão uma
+            // nota envenenada pela web faria o navegador buscar um servidor de fora
+            // (o pilar é 100% local).
+            text = text.replace(/!\[\[([^\]|]+?\.(?:webp|png|jpe?g|gif|svg))(?:\|[^\]]*)?\]\]/gi, (m, caminho) => {
+                const src = caminho.trim().split('/').map(encodeURIComponent).join('/');
+                const nome = escapeHtml(caminho.split('/').pop());
+                return `<img class="fig" loading="lazy" alt="${nome}" src="/api/imagem/${src}${imgToken()}">`;
+            });
             text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
             text = text.replace(/^### (.*)$/gm, '<h4>$1</h4>')
                        .replace(/^## (.*)$/gm, '<h3>$1</h3>')
@@ -361,6 +375,9 @@
         const _tokenUrl = new URLSearchParams(location.search).get('token');
         if (_tokenUrl) localStorage.setItem('mente_token', _tokenUrl);
         const TOKEN_ACESSO = localStorage.getItem('mente_token') || '';
+        // <img> não manda header, então a figura leva o token por query — mesmo
+        // tradeoff já aceito no WebSocket (o gate /api aceita header OU query).
+        function imgToken() { return TOKEN_ACESSO ? '?token=' + encodeURIComponent(TOKEN_ACESSO) : ''; }
         function apiHeaders(extra) {
             const h = Object.assign({}, extra || {});
             if (TOKEN_ACESSO) h['X-Mente-Token'] = TOKEN_ACESSO;

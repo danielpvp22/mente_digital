@@ -26,9 +26,11 @@ from typing import Awaitable, List, Optional, Tuple
 
 from mente_digital import antiinjecao
 from mente_digital import disjuntor as _disjuntor
+from mente_digital import vram
 from mente_digital import egressao
 from mente_digital import grafo
 from mente_digital import textutils
+from mente_digital import academico
 from mente_digital.config import settings
 from mente_digital.state import LruCache
 from mente_digital.telemetry import db, telemetry
@@ -417,6 +419,14 @@ class EmbeddingProvider:
     def __init__(self) -> None:
         self._embeddings = None
 
+    def unload(self) -> None:
+        """Solta o e5 da VRAM (Fase 3: GPU limpa p/ o OCR em outro processo). O
+        `load` é idempotente, então restaurar é só chamá-lo de novo."""
+        if self._embeddings is None:
+            return
+        self._embeddings = None
+        vram.liberar_cache_gpu()
+
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup."""
         if self._embeddings is not None:
@@ -725,6 +735,41 @@ class VectorStore:
             await self._reconstruir_malha()
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
+
+    async def corpus_com_embeddings(self) -> List[tuple]:
+        """Dump (source, texto, embedding) por chunk — p/ a consolidação (Fase 2).
+        Fail-open: sem store/erro devolve [] (a consolidação simplesmente não roda).
+        Cuidado com o numpy: `embeddings` do Chroma pode vir ndarray — truthiness
+        de array levanta, então o teste é `is None`, nunca `or []`."""
+        if not self.ready:
+            return []
+        try:
+            dump = await asyncio.to_thread(
+                lambda: self._store.get(include=["documents", "metadatas", "embeddings"])
+            )
+        except Exception as exc:
+            telemetry.error("RAG", "Falha no dump p/ consolidação", exc)
+            return []
+        embs = dump.get("embeddings")
+        embs = [] if embs is None else embs
+        out: List[tuple] = []
+        for doc, md, emb in zip(dump.get("documents") or [],
+                                dump.get("metadatas") or [], embs):
+            src = str((md or {}).get("source") or "")
+            if src and emb is not None:
+                out.append((src, doc, [float(x) for x in emb]))
+        return out
+
+    async def remover_fontes(self, fontes: List[str]) -> None:
+        """Remove chunks por `source` (consolidação: o .md foi ARQUIVADO fora do
+        vault — sem isto o índice seguiria citando arquivos-fantasma)."""
+        if not self.ready:
+            return
+        for s in fontes:
+            try:
+                await asyncio.to_thread(lambda s=s: self._store.delete(where={"source": s}))
+            except Exception as exc:
+                telemetry.error("RAG", f"Falha ao remover do índice: {s}", exc)
 
     async def buscar_conteudos(self, query: str, k: int) -> List[str]:
         """Recuperação CRUA para a Síntese sob Demanda (#23): conteúdo (sem frontmatter)
@@ -1212,6 +1257,41 @@ class WebSearcher:
             return await asyncio.to_thread(_extrair)
         except Exception as exc:
             telemetry.warn("WEB_FETCH", f"Falha ao extrair {url[:60]}: {exc}")
+            return None
+
+    async def buscar_pdfs(self, termos: str, max_results: int) -> List[dict]:
+        """Busca PDFs (Fase 4, colheita acadêmica): a MESMA saída de rede do `_ddg`
+        — logo, a Guarda de Egressão continua mascarando PII —, só com o operador
+        `filetype:pdf` e um viés acadêmico na query. ISOLADA do caminho vivo: o
+        `search` de sempre não passa por aqui. Devolve [{url, titulo}]."""
+        brutos = await self._ddg(academico.montar_query(termos), max_results)
+        return academico.filtrar_pdfs(brutos)
+
+    async def baixar_pdf(self, url: str, max_mb: int) -> Optional[bytes]:
+        """Baixa um PDF com teto de tamanho, sem nunca levantar. Streaming: aborta
+        no meio se passar do teto (um livro inteiro de 300 MB não pode virar RAM).
+        Não há fallback de cert aqui — PDF de fonte com TLS quebrado não entra."""
+        import httpx
+
+        limite = max_mb * 1024 * 1024
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.web_fetch_timeout, follow_redirects=True,
+                headers=_HEADERS_FETCH,
+            ) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    buf = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        buf.extend(chunk)
+                        if len(buf) > limite:
+                            telemetry.warn("ACADEMICO", f"PDF acima de {max_mb}MB, descartado: {url[:60]}")
+                            return None
+            if not bytes(buf[:5]).startswith(b"%PDF"):
+                return None      # HTML de paywall servido como .pdf
+            return bytes(buf)
+        except Exception as exc:
+            telemetry.warn("ACADEMICO", f"Falha ao baixar PDF {url[:60]}: {exc}")
             return None
 
     async def _baixar_html(self, client, url: str) -> Optional[str]:

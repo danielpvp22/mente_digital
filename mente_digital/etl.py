@@ -13,16 +13,23 @@ normalizar) mora em atomos.py; este módulo decide QUANDO e O QUE atomizar.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from datetime import datetime
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from mente_digital import contradicao
 from mente_digital import diapasao
 from mente_digital import prompts
 from mente_digital import textutils
+from mente_digital import academico
 from mente_digital import antiinjecao
+from mente_digital import consolidacao
+from mente_digital import figuras as figuras_mod
+from mente_digital import livro as livro_mod
+from mente_digital import ocr as ocr_mod
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
 from mente_digital.config import settings
 from mente_digital.llm import InferenciaPreemptada
@@ -62,7 +69,8 @@ class EtlProcessor:
         cap = getattr(self.ctx, "orcamento_fundo", None)
         return min(base, cap) if cap else base
 
-    async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str) -> int:
+    async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str,
+                             origem: Optional[str] = None) -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
@@ -82,7 +90,10 @@ class EtlProcessor:
         duplicados = 0
         salvos_info: List[Tuple[str, str]] = []  # (caminho, corpo sem frontmatter) p/ #24
         for i, bloco in enumerate(blocos):
-            bloco = normalizar_atomo(bloco, prefixo, agora)
+            # `origem` (opcional) é a proveniência RICA do frontmatter (ex.: livro/
+            # capítulo/página) — separada do `prefixo` porque este também vira nome
+            # de arquivo, e "p. 12-30" tem caracteres inválidos no Windows.
+            bloco = normalizar_atomo(bloco, origem or prefixo, agora)
             if not bloco.strip():
                 continue
             # DEDUP contra o banco (pedido: "impeça a duplicação"). Um átomo quase
@@ -191,6 +202,505 @@ class EtlProcessor:
             return False
         _doc, dist = res[0]
         return dist < settings.dedup_dist_max
+
+    # -- Ingestão de livros — Fase 1 (2026-07-25) -------------------------------
+    async def ingestao_livros(self) -> int:
+        """Consome os jobs de capítulo de dados/ingestao/pendentes — SEMPRE em idle
+        (o chamador é o scheduler, que só dispara sem sessão viva; aqui cada lote
+        ainda cede a GPU via _esperar_idle + preemptible). Capado por ciclo.
+
+        Crash-safe: o job só sai de pendentes/ após o capítulo INTEIRO ser salvo;
+        reprocessar um job interrompido é idempotente (o dedup por átomo descarta
+        o que já entrou). Devolve quantos capítulos concluiu."""
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        if not pend.is_dir():
+            return 0
+        jobs = sorted(pend.glob("*.json"))[: settings.ingestao_caps_por_ciclo]
+        concluidos = 0
+        for job_path in jobs:
+            try:
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                telemetry.error("INGESTAO", f"Job ilegível: {job_path.name}", exc)
+                continue
+            if await self._processar_capitulo(job):
+                destino = pend.parent / "processados" / job_path.name
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(lambda a=job_path, b=destino: a.replace(b))
+                concluidos += 1
+        if concluidos:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("INGESTAO", f"{concluidos} capítulo(s) atomizados e indexados.")
+        return concluidos
+
+    async def _processar_capitulo(self, job: dict) -> bool:
+        """Um capítulo → átomos com proveniência + UMA nota-síntese (hierárquico:
+        a atomização fragmenta o argumento; a síntese preserva a tese do capítulo).
+        False = não terminou (preempção/erro) e o job PERMANECE pendente."""
+        titulo_livro = job.get("livro", "?")
+        cap = job.get("titulo_cap") or f"cap. {job.get('capitulo', '?')}"
+        origem = (f"Livro '{titulo_livro}' — {cap} "
+                  f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
+        lotes = livro_mod.fatiar_lotes(job.get("texto", ""), settings.ingestao_lote_chars)
+        if not lotes:
+            return True   # capítulo vazio: nada a fazer, não bloqueia a fila
+        corpos: List[str] = []
+        for lote in lotes:
+            await self._esperar_idle()
+            try:
+                conteudo = await self.ctx.llama.collect(
+                    prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
+                    max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                    system_prompt=prompts.SYS_SINTESE,
+                    preemptible=True,
+                )
+            except InferenciaPreemptada:
+                telemetry.track("INGESTAO", f"'{cap}' cedeu a GPU — retoma no próximo idle.")
+                return False
+            except Exception as exc:
+                telemetry.error("INGESTAO", f"Falha ao atomizar lote de '{cap}'", exc)
+                return False
+            corpos.append(conteudo)
+            await self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem)
+        await self._sintese_capitulo(titulo_livro, cap, origem, corpos,
+                                     job.get("figuras") or [])
+        return True
+
+    async def _sintese_capitulo(self, titulo_livro: str, cap: str, origem: str,
+                                corpos: List[str], figuras: List[dict] = ()) -> None:
+        """O 'reduce' do capítulo. Best-effort: falha aqui não invalida os átomos
+        já salvos (o capítulo conta como concluído — a síntese é o bônus da tese)."""
+        base = "\n\n".join(corpos)[: settings.ingestao_lote_chars * 2]
+        if not base.strip():
+            return
+        await self._esperar_idle()
+        try:
+            sintese = await self.ctx.llama.collect(
+                prompts.prompt_sintese_capitulo(titulo_livro, cap, base),
+                max_tokens=self._max_fundo(settings.max_tokens_sintese_capitulo),
+                system_prompt=prompts.SYS_SINTESE,
+                preemptible=True,
+            )
+        except Exception as exc:
+            telemetry.error("INGESTAO", f"Falha na síntese de '{cap}'", exc)
+            return
+        if not sintese.strip():
+            return
+        # Nota única via _salvar_atomos: formato/tags garantidos, dedup incluso.
+        # As FIGURAS do capítulo entram aqui (Fase 5a) e não em cada átomo: a
+        # síntese É o capítulo, então o link fica preciso em vez de repetido; e a
+        # legenda vai como texto, que é o que faz o RAG achar "o diagrama de X".
+        corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
+        corpo += figuras_mod.bloco_markdown(list(figuras), settings.subpasta_figuras)
+        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
+
+    # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
+    def _enfileirar_jobs(self, jobs: List[dict], base_nome: str) -> int:
+        """Grava jobs na fila DURÁVEL da ingestão (dados/ingestao/pendentes). Nome
+        com prefixo do documento + índice: dois documentos nunca se sobrescrevem."""
+        pend = Path(settings.dir_ingestao) / "pendentes"
+        pend.mkdir(parents=True, exist_ok=True)
+        for j in jobs:
+            alvo = pend / f"{base_nome}__{j['capitulo']:03d}.json"
+            alvo.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+        return len(jobs)
+
+    async def ingerir_pasta_livros(self) -> int:
+        """Pasta VIGIADA: PDFs largados em dados/livros/entrada/ são extraídos e
+        enfileirados no idle — sem rodar script. Só a EXTRAÇÃO acontece aqui (rápida,
+        sem GPU); a atomização é a passada de `ingestao_livros`.
+
+        O PDF sempre SAI da entrada: digital vai p/ processados/, ESCANEADO vai p/
+        aguardando_ocr/ (o worker OCR da Fase 3 pega de lá). Nada é apagado, e nada
+        fica em loop sendo re-lido a cada tick."""
+        if not settings.livros_entrada_habilitada:
+            return 0
+        entrada = Path(settings.dir_livros) / "entrada"
+        if not entrada.is_dir():
+            return 0
+        pdfs = sorted(p for p in entrada.glob("*.pdf") if p.is_file())[: settings.livros_por_ciclo]
+        feitos = 0
+        for pdf in pdfs:
+            try:
+                paginas, toc = await asyncio.to_thread(livro_mod.extrair_pdf, pdf)
+            except Exception as exc:
+                telemetry.error("INGESTAO", f"Falha ao ler {pdf.name}", exc)
+                await self._mover_livro(pdf, "falhou")
+                continue
+            titulo = pdf.stem
+            if livro_mod.parece_escaneado([len(t) for t in paginas]):
+                telemetry.track("INGESTAO", f"'{titulo}' é ESCANEADO — vai p/ aguardando_ocr (Fase 3).")
+                await self._mover_livro(pdf, "aguardando_ocr")
+                continue
+            jobs = livro_mod.montar_jobs(titulo, paginas, toc)
+            if not jobs:
+                await self._mover_livro(pdf, "falhou")
+                continue
+            await self._anexar_figuras(pdf, titulo, jobs)
+            n = await asyncio.to_thread(self._enfileirar_jobs, jobs, livro_mod.slug(titulo))
+            await self._mover_livro(pdf, "processados")
+            telemetry.track("INGESTAO", f"'{titulo}': {n} capítulo(s) enfileirados da pasta vigiada.")
+            feitos += 1
+        return feitos
+
+    async def _anexar_figuras(self, pdf: Path, titulo: str, jobs: List[dict]) -> None:
+        """Extrai as figuras do PDF (WebP no vault) e distribui cada uma para o job
+        do capítulo cuja faixa de páginas a contém. Best-effort: falhar aqui não pode
+        custar a ingestão do TEXTO, que é o que importa."""
+        if not settings.figuras_habilitadas:
+            return
+        try:
+            achadas = await asyncio.to_thread(
+                figuras_mod.extrair_de_pdf, pdf, settings.dir_figuras,
+                livro_mod.slug(titulo), settings.figuras_min_lado,
+                settings.figuras_qualidade, settings.figuras_max_lado,
+                settings.figuras_max_por_livro,
+            )
+        except Exception as exc:
+            telemetry.error("FIGURAS", f"Falha ao extrair figuras de '{titulo}'", exc)
+            return
+        if not achadas:
+            return
+        for j in jobs:
+            j["figuras"] = figuras_mod.figuras_do_intervalo(
+                achadas, j["pagina_inicio"], j["pagina_fim"])
+        telemetry.track("FIGURAS", f"'{titulo}': {len(achadas)} figura(s) em WebP no vault.")
+
+    async def _mover_livro(self, pdf: Path, sub: str) -> None:
+        destino = Path(settings.dir_livros) / sub
+        destino.mkdir(parents=True, exist_ok=True)
+        try:
+            await asyncio.to_thread(lambda: pdf.replace(destino / pdf.name))
+        except OSError as exc:
+            telemetry.error("INGESTAO", f"Falha ao mover {pdf.name} p/ {sub}", exc)
+
+    # -- OCR de livro escaneado — Fase 3 (2026-07-25) ---------------------------
+    async def ocr_livros(self) -> int:
+        """Transcreve UM livro escaneado da fila `aguardando_ocr/`, N páginas por
+        passada, retomando de onde parou (estado em `_ocr_estado/<slug>.json`).
+
+        Só a TRANSCRIÇÃO acontece aqui; ao terminar o livro, os jobs entram na fila
+        da Fase 1 e a atomização é a passada de ingestão seguinte. Devolve as páginas
+        transcritas nesta passada (0 = nada a fazer, ou OCR não configurado).
+
+        Pré-condição de VRAM: o chamador (scheduler) já descarregou o LLM."""
+        if not settings.ocr_habilitado:
+            return 0
+        fila = Path(settings.dir_livros) / "aguardando_ocr"
+        pdfs = sorted(p for p in fila.glob("*.pdf") if p.is_file()) if fila.is_dir() else []
+        if not pdfs:
+            return 0
+        ok, motivo = ocr_mod.disponibilidade(
+            settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr)
+        if not ok:
+            # 1x por passada, não por página/livro: informa sem virar spam de log.
+            telemetry.warn("OCR", f"{len(pdfs)} livro(s) esperando, mas o OCR não está pronto: {motivo}")
+            return 0
+        return await self._ocr_um_livro(pdfs[0])
+
+    async def ocr_livro(self, pdf: Path, on_pagina=None) -> int:
+        """Transcreve UM livro específico (acionamento MANUAL, scripts/ocr_agora.py).
+
+        Mesmo caminho do worker idle — só a escolha do alvo muda: aqui o dono aponta
+        o arquivo, lá a fila decide. `on_pagina(numero, texto)` (opcional) recebe cada
+        página assim que sai, para acompanhar a transcrição ao vivo: custo ZERO de GPU
+        (o texto já está em memória; sem callback ele seria só descartado). Devolve
+        páginas feitas nesta chamada; 0 se o OCR não estiver configurado."""
+        ok, motivo = ocr_mod.disponibilidade(
+            settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr)
+        if not ok:
+            telemetry.warn("OCR", f"OCR não está pronto: {motivo}")
+            return 0
+        return await self._ocr_um_livro(pdf, on_pagina=on_pagina)
+
+    def _ocr_estado_path(self, pdf: Path) -> Path:
+        return Path(settings.dir_livros) / "_ocr_estado" / f"{livro_mod.slug(pdf.stem)}.json"
+
+    async def _ocr_um_livro(self, pdf: Path, on_pagina=None) -> int:
+        # GUARDA ANTI-DESPERDÍCIO (visto ao vivo em 2026-07-25): PDF colocado na fila
+        # à mão pode JÁ ter camada de texto — dois dos três livros do dono estavam
+        # assim, e o OCR gastaria ~4h de GPU para produzir texto PIOR que o embutido.
+        # Aqui ele é desviado para a entrada digital, que é rápida e mais fiel.
+        # Aberto a partir dos BYTES, não do caminho: no Windows o PyMuPDF segura o
+        # handle do arquivo quando falha em PDF inválido, e aí o `move` para falhou/
+        # bate em "arquivo em uso" — o PDF ficaria preso na fila para sempre, retentado
+        # a cada ciclo. Em stream mode nenhum handle toca o path (medido 2026-07-25).
+        try:
+            dados = await asyncio.to_thread(pdf.read_bytes)
+            paginas_txt, _ = await asyncio.to_thread(livro_mod.extrair_pdf, None, dados)
+        except Exception:
+            paginas_txt = []
+        if paginas_txt and not livro_mod.parece_escaneado([len(t) for t in paginas_txt]):
+            telemetry.track(
+                "OCR", f"'{pdf.stem}' JÁ tem texto selecionável — sem OCR; "
+                       "mandando para a ingestão digital (mais rápida e mais fiel).")
+            await self._mover_livro(pdf, "entrada")
+            return 0
+        estado_path = self._ocr_estado_path(pdf)
+        estado = {"paginas": [], "proxima": 0}
+        if estado_path.is_file():
+            try:
+                estado = json.loads(estado_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                telemetry.warn("OCR", f"Estado ilegível de {pdf.name}; recomeçando o livro.")
+        try:
+            total = await asyncio.to_thread(ocr_mod.total_paginas, pdf)
+        except Exception as exc:
+            telemetry.error("OCR", f"PDF ilegível: {pdf.name}", exc)
+            await self._mover_livro(pdf, "falhou")
+            return 0
+        inicio = int(estado.get("proxima", 0))
+        tmp = Path(settings.dir_livros) / "_ocr_tmp"
+        try:
+            imagens = await asyncio.to_thread(
+                ocr_mod.render_paginas, pdf, tmp, settings.ocr_dpi,
+                inicio, settings.ocr_paginas_por_ciclo)
+        except Exception as exc:
+            telemetry.error("OCR", f"Falha ao rasterizar {pdf.name}", exc)
+            return 0
+        feitas = 0
+        # UM servidor para o lote inteiro: o modelo (3 GB) carrega uma vez, não a
+        # cada página. O `with` garante que o processo morre — e a VRAM volta —
+        # mesmo se a conversa interromper no meio ou algo explodir.
+        try:
+            servidor = await asyncio.to_thread(
+                lambda: ocr_mod.abrir_servidor(
+                    settings.ocr_bin, settings.caminho_modelo_ocr,
+                    settings.caminho_mmproj_ocr, settings.ocr_porta,
+                    settings.ocr_timeout_pagina, settings.ocr_n_gpu_layers,
+                    settings.ocr_n_ctx, settings.ocr_paralelo).__enter__())
+        except Exception as exc:
+            telemetry.error("OCR", "Não consegui subir o llama-server do OCR", exc)
+            return 0
+        # FILA CONTÍNUA (não blocos): um semáforo mantém `ocr_paralelo` páginas SEMPRE
+        # em voo — assim que uma termina, a próxima entra. Em blocos, a barreira no fim
+        # de cada bloco deixava slots ociosos esperando a página mais lenta (medido:
+        # 1,99s/pág em blocos de 4 contra 1,61s/pág com a fila cheia; 2,02x contra o
+        # sequencial de 3,26s). `gather` PRESERVA A ORDEM, obrigatório aqui — página
+        # fora de ordem viraria um livro embaralhado no vault.
+        passo = max(1, settings.ocr_paralelo)
+        sem = asyncio.Semaphore(passo)
+        PAUSADA = object()   # distingue "conversa começou" de "página falhou"
+
+        async def _uma(img: Path):
+            async with sem:
+                # Cede a vez a CADA página (não a cada bloco): a GPU volta pra conversa
+                # em ~2s se o dono aparecer. Mesma porta que o resto do ETL respeita.
+                if not self.ctx.interactive_idle.is_set():
+                    return PAUSADA
+                return await asyncio.to_thread(servidor.transcrever, img)
+
+        try:
+            resultados = await asyncio.gather(*(_uma(img) for img in imagens))
+            for img, texto in zip(imagens, resultados):
+                if texto is PAUSADA:
+                    telemetry.track("OCR", "Conversa começou — OCR pausado, retoma no próximo idle.")
+                    break        # e as seguintes também param: a ordem é contígua
+                if texto is None:
+                    telemetry.warn("OCR", f"Página {inicio + feitas + 1} falhou; segue para a próxima.")
+                    texto = ""
+                estado["paginas"].append(texto)
+                estado["proxima"] = inicio + feitas + 1
+                feitas += 1
+                if on_pagina is not None:
+                    # Acompanhamento ao vivo (manual): custo zero — o texto já existe.
+                    try:
+                        on_pagina(estado["proxima"], texto)
+                    except Exception as exc:
+                        telemetry.error("OCR", "Falha no callback de progresso", exc)
+                await asyncio.to_thread(img.unlink, True)
+                if feitas % passo == 0:
+                    # Estado a cada `passo` páginas: um crash custa no máximo isso,
+                    # sem reescrever o JSON a cada página.
+                    await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
+            await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
+        finally:
+            await asyncio.to_thread(servidor.__exit__, None, None, None)
+        telemetry.track("OCR", f"'{pdf.stem}': {estado['proxima']}/{total} páginas transcritas.")
+        if estado["proxima"] >= total:
+            await self._finalizar_ocr(pdf, estado, estado_path)
+        return feitas
+
+    def _salvar_estado_ocr(self, path: Path, estado: dict) -> None:
+        """Grava o progresso a CADA página (OCR é caro: um crash não pode custar o
+        livro inteiro). Escreve em .tmp e renomeia — nunca deixa JSON pela metade."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(estado, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    async def _finalizar_ocr(self, pdf: Path, estado: dict, estado_path: Path) -> None:
+        """Livro transcrito: vira jobs de capítulo (sem TOC — PDF de imagem não tem),
+        o PDF sai da fila e o estado é limpo."""
+        paginas = [p for p in estado.get("paginas", [])]
+        uteis = [p for p in paginas if ocr_mod.pagina_util(p, settings.ocr_min_chars_pagina)]
+        if not uteis:
+            telemetry.warn("OCR", f"'{pdf.stem}': nenhuma página com texto aproveitável.")
+            await self._mover_livro(pdf, "falhou")
+            return
+        jobs = livro_mod.montar_jobs(pdf.stem, paginas, [])
+        n = await asyncio.to_thread(self._enfileirar_jobs, jobs, f"ocr-{livro_mod.slug(pdf.stem)}")
+        await self._mover_livro(pdf, "processados")
+        await asyncio.to_thread(estado_path.unlink, True)
+        telemetry.track("OCR", f"'{pdf.stem}' transcrito: {n} capítulo(s) na fila de atomização.")
+
+    async def colheita_academica(self) -> int:
+        """Fase 4: busca PDFs acadêmicos sobre os temas quentes/lacunas do dono e os
+        enfileira como jobs (herdando proveniência + síntese da ingestão). SEM LLM
+        aqui — é rede e extração; a atomização é a passada de `ingestao_livros`.
+
+        Isolada do caminho vivo: nada nesta função toca a atomização web em tempo
+        real. Alvos vêm das tabelas que já existem (temas_quentes, lacunas) e são
+        CARIMBADOS como pesquisados para não repetir no próximo ciclo."""
+        if not settings.academico_habilitado:
+            return 0
+        alvos = await self._alvos_academicos()
+        if not alvos:
+            return 0
+        total = 0
+        for termos, marcar in alvos:
+            try:
+                candidatos = await self.ctx.web.buscar_pdfs(termos, settings.academico_resultados_busca)
+            except Exception as exc:
+                telemetry.error("ACADEMICO", f"Falha na busca de PDFs para '{termos}'", exc)
+                continue
+            aceitos = 0
+            for cand in candidatos:
+                if aceitos >= settings.academico_pdfs_por_alvo:
+                    break
+                if await asyncio.to_thread(db.pdf_academico_visto, cand["url"]):
+                    continue
+                total += await self._colher_pdf(cand, termos)
+                aceitos += 1 if total else 0
+            await asyncio.to_thread(marcar, textutils.normaliza(termos))
+        if total:
+            telemetry.track("ACADEMICO", f"{total} paper(s) enfileirados p/ atomização no idle.")
+        return total
+
+    async def _alvos_academicos(self) -> List[Tuple[str, object]]:
+        """Temas QUENTES primeiro (o que o dono mais reusa), depois LACUNAS (o que
+        ficou sem resposta) — os dois sinais que o projeto já coleta."""
+        quentes = await asyncio.to_thread(
+            db.get_temas_quentes, settings.academico_alvos_por_ciclo,
+            settings.idle_temas_min_reuso, settings.academico_intervalo_horas // 24 or 1,
+        )
+        alvos: List[Tuple[str, object]] = [(t["termos"], db.marcar_tema_pesquisado) for t in quentes]
+        if len(alvos) < settings.academico_alvos_por_ciclo:
+            lacunas = await asyncio.to_thread(db.get_lacunas, settings.academico_alvos_por_ciclo)
+            alvos += [(l["termos"], db.marcar_lacuna_pesquisada) for l in lacunas]
+        return alvos[: settings.academico_alvos_por_ciclo]
+
+    async def _colher_pdf(self, cand: dict, termos: str) -> int:
+        """Baixa, extrai e enfileira UM paper. 0 = descartado (motivo logado)."""
+        url = cand["url"]
+        dados = await self.ctx.web.baixar_pdf(url, settings.academico_max_mb)
+        await asyncio.to_thread(db.marcar_pdf_academico, url)  # visto: não retenta
+        if not dados:
+            return 0
+        try:
+            paginas, _ = await asyncio.to_thread(livro_mod.extrair_pdf, None, dados)
+        except Exception as exc:
+            telemetry.warn("ACADEMICO", f"PDF ilegível ({url[:60]}): {exc}")
+            return 0
+        titulo = academico.titulo_do_paper(cand.get("titulo", ""), url)
+        job = academico.job_de_paper(titulo, url, paginas, settings.academico_min_chars)
+        if job is None:
+            telemetry.track("ACADEMICO", f"Texto raso (paywall/scan), descartado: {url[:60]}")
+            return 0
+        job["texto"] = "\n\n".join(antiinjecao.filtrar_chunks(
+            [b for b in job["texto"].split("\n\n") if b.strip()])[0])
+        if not job["texto"].strip():
+            return 0
+        await asyncio.to_thread(self._enfileirar_jobs, [job],
+                                f"paper-{livro_mod.slug(termos)}-{livro_mod.slug(titulo, 24)}")
+        return 1
+
+    # -- Consolidação de átomos — Fase 2 (2026-07-25) ---------------------------
+    async def consolidar_atomos(self) -> int:
+        """Funde grupos de átomos quase-idênticos num canônico ("3000 relatórios de
+        um assunto"). Só o subdir AUTO-COLHIDO (Conhecimento_Novo) — nota escrita à
+        mão nunca é tocada. Ordem à prova de falha: a fusão via LLM acontece ANTES
+        de qualquer mexida em arquivo; originais são ARQUIVADOS (nunca deletados) e
+        removidos do índice; só então o canônico é salvo. Devolve grupos fundidos."""
+        vs = self.ctx.vectorstore
+        if not hasattr(vs, "corpus_com_embeddings"):
+            return 0   # fail-open: fakes antigos/índice frio
+        corpus = await vs.corpus_com_embeddings()
+        if not corpus:
+            return 0
+        raiz = os.path.normpath(str(settings.dir_conhecimento_novo))
+        por_fonte: dict = {}
+        for src, texto, emb in corpus:
+            # 1 chunk representa o átomo (átomo é curto; chunk extra ~ quase-cópia)
+            src_n = os.path.normpath(src)
+            if src_n.startswith(raiz) and src_n not in por_fonte:
+                por_fonte[src_n] = emb
+        fontes = list(por_fonte)
+        if len(fontes) < settings.consolidacao_min_grupo:
+            return 0
+        grupos = await asyncio.to_thread(
+            consolidacao.agrupar_redundantes,
+            [por_fonte[s] for s in fontes],
+            settings.consolidacao_dist_max, settings.consolidacao_min_grupo,
+        )
+        fundidos = 0
+        for grupo in grupos[: settings.consolidacao_grupos_por_ciclo]:
+            if await self._consolidar_grupo([fontes[i] for i in grupo]):
+                fundidos += 1
+        if fundidos:
+            await self.ctx.vectorstore.sync()
+            telemetry.track("CONSOLIDACAO", f"{fundidos} grupo(s) fundido(s) em canônicos.")
+        return fundidos
+
+    async def _consolidar_grupo(self, caminhos: List[str]) -> bool:
+        """Um grupo → um átomo canônico. False = grupo fica para o próximo ciclo."""
+        textos: List[str] = []
+        for c in caminhos:
+            try:
+                textos.append(strip_frontmatter(
+                    await asyncio.to_thread(lambda p=c: Path(p).read_text(encoding="utf-8"))))
+            except OSError:
+                return False   # arquivo mexido por fora: não arrisca, tenta depois
+        await self._esperar_idle()
+        try:
+            fundido = await self.ctx.llama.collect(
+                prompts.prompt_fundir_atomos("\n\n---\n\n".join(textos)[:settings.ingestao_lote_chars]),
+                max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                system_prompt=prompts.SYS_SINTESE,
+                preemptible=True,
+            )
+        except InferenciaPreemptada:
+            telemetry.track("CONSOLIDACAO", "Fusão cedeu a GPU — retoma no próximo idle.")
+            return False
+        except Exception as exc:
+            telemetry.error("CONSOLIDACAO", "Falha na fusão do grupo", exc)
+            return False
+        if not fundido.strip():
+            return False
+        # ARQUIVA (nunca deleta) ANTES de salvar o canônico — os originais ainda
+        # indexados fariam o dedup do save matar o próprio canônico.
+        destino = Path(settings.dir_arquivo_consolidacao) / datetime.now().strftime("%Y%m%d_%H%M%S")
+        destino.mkdir(parents=True, exist_ok=True)
+
+        def _mover() -> None:
+            for c in caminhos:
+                Path(c).replace(destino / Path(c).name)
+
+        await asyncio.to_thread(_mover)
+        if hasattr(self.ctx.vectorstore, "remover_fontes"):
+            await self.ctx.vectorstore.remover_fontes(caminhos)
+        nomes = ", ".join(Path(c).name for c in caminhos[:5]) + ("…" if len(caminhos) > 5 else "")
+        origem = (f"Consolidação de {len(caminhos)} átomos ({nomes}) — "
+                  f"originais em _arquivo_consolidacao/{destino.name}/")
+        salvos = await self._salvar_atomos(fundido, "Consolidado", "CONSOLIDACAO", origem=origem)
+        if not salvos:
+            # Pior caso do design: canônico não entrou, mas NADA se perdeu — os
+            # originais estão íntegros no arquivo morto; restaurar = mover de volta.
+            telemetry.warn("CONSOLIDACAO", f"Canônico não salvo; originais preservados em {destino}")
+            return False
+        await asyncio.to_thread(db.log_etl, "CONSOLIDACAO",
+                                f"{len(caminhos)} -> 1 ({destino.name})", "CONCLUIDO")
+        return True
 
     async def process_queue(self, itens: List[Tuple[str, str]]) -> None:
         if not itens:

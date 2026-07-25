@@ -239,6 +239,52 @@ def prompt_sintese(tema: str, dados: str) -> str:
     )
 
 
+def prompt_atomizar_livro(livro: str, capitulo: str, trecho: str) -> str:
+    """Ingestão de livro (Fase 1): mesma gramática do prompt_sintese, mas com a
+    ordem de FIDELIDADE — o átomo de livro registra o que o AUTOR diz, não o que o
+    modelo acha; é o que evita o vault 'opinar' por cima da fonte."""
+    return (
+        f"O trecho abaixo é do livro '{livro}' ({capitulo}). Extraia as ideias-chave "
+        "como NOTAS ATÔMICAS FIÉIS AO TEXTO — registre o que o autor afirma, sem "
+        "opinião sua e sem conhecimento externo. Use EXATAMENTE este formato para "
+        "cada nota, uma ideia por nota, sem repetir:\n\n"
+        "## <título curto da ideia>\n"
+        "<a ideia em 1-2 frases afirmativas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        f"{TAG_ATOMO} {TAG_NOVO}\n\n"
+        "Separe as notas por uma linha em branco. Nada de introdução ou conclusão.\n\n"
+        f"TRECHO DO LIVRO:\n{trecho}"
+    )
+
+
+def prompt_fundir_atomos(textos: str) -> str:
+    """Consolidação (Fase 2): N átomos quase-idênticos viram UM canônico. A ordem
+    dura é PRESERVAR os fatos distintos — fundir não é resumir; nuance descartada
+    aqui seria perda permanente (por isso os originais vão pro arquivo, não pro lixo)."""
+    return (
+        "As notas abaixo tratam da MESMA ideia, com variações. Funda-as em UMA única "
+        "nota canônica que preserve TODOS os fatos e nuances distintos (datas, números, "
+        "condições, exceções) — sem inventar nada e sem opinar. Use EXATAMENTE o formato:\n\n"
+        "## <título curto da ideia>\n"
+        "<a ideia consolidada em até 4 frases afirmativas>\n"
+        "**Malha Neural:** [[Conceito relacionado]]\n"
+        f"{TAG_ATOMO}\n\n"
+        f"NOTAS A FUNDIR:\n{textos}"
+    )
+
+
+def prompt_sintese_capitulo(livro: str, capitulo: str, atomos: str) -> str:
+    """O 'reduce' da ingestão hierárquica: a atomização fragmenta o argumento longo;
+    esta síntese preserva a TESE do capítulo numa nota única."""
+    return (
+        f"Abaixo estão notas atômicas extraídas de '{capitulo}' do livro '{livro}'. "
+        "Escreva UMA síntese corrida (um parágrafo, 4 a 7 frases) que capture a TESE "
+        "do capítulo — o argumento que LIGA as notas, não uma lista delas. Seja fiel "
+        "ao material; sem opinião externa.\n\n"
+        f"NOTAS:\n{atomos}"
+    )
+
+
 # --- Síntese ATÔMICA da conversa (histórico de chat vira Zettelkasten) --------
 # Antes o idle gerava um 'Resumo_Sessao' estruturado (H1 + bullets + conclusão) — o
 # OPOSTO de Zettelkasten. Agora o histórico (texto OU voz) é destilado em NOTAS

@@ -28,6 +28,7 @@ import wave
 from collections import OrderedDict
 from typing import Optional
 
+from mente_digital import vram
 from mente_digital.config import settings
 from mente_digital.telemetry import telemetry
 from mente_digital.verbalizar import verbalizar
@@ -226,6 +227,18 @@ class XttsService:
     @property
     def ready(self) -> bool:
         return self._model is not None
+
+    def unload(self) -> None:
+        """Solta o XTTS da VRAM (Fase 3: GPU limpa para o OCR em outro processo).
+        Cancela a geração em voo antes — descarregar por baixo de uma síntese foi
+        exatamente o que causou o device-side assert de 2026-07-23."""
+        if self._model is None:
+            return
+        self.cancel()
+        with self._infer_lock:
+            self._model = None
+            self._latentes = None
+        vram.liberar_cache_gpu()
 
     def _preparar(self, texto: str) -> str:
         """Modelagem de texto: verbaliza números e tira Markdown. SEM o filtro _ALLOWED

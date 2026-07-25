@@ -71,6 +71,23 @@ class MonitorVram:
         self._janela.clear()
 
 
+def liberar_cache_gpu() -> None:
+    """Devolve ao driver o cache do alocador do torch (empty_cache) após soltar a
+    referência de um modelo. Sem isto, `ready=False` mas a VRAM segue "reservada"
+    pelo processo — e o OCR da Fase 3, que roda em OUTRO processo/venv, não veria a
+    memória livre. No-op sem torch/CUDA (CI, máquina sem GPU)."""
+    try:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass   # best-effort puro: liberar cache nunca pode derrubar quem chamou
+
+
 def orcamento_tokens(
     livre_frac: Optional[float],
     base: int,

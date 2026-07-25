@@ -74,6 +74,100 @@ class Settings(BaseSettings):
     # (+ deep-fetch de páginas) contradiz isso. False = comportamento antigo (escala).
     sigilo_bloqueia_web: bool = True
 
+    # --- Ingestão de livros — Fase 1 (2026-07-25) ------------------------------
+    # scripts/ingerir_livro.py extrai um PDF DIGITAL em jobs de capítulo (disco,
+    # sobrevive a restart); o scheduler os atomiza NO IDLE, nunca com sessão viva
+    # (restrição do dono). Capado por ciclo: um livro grande atravessa vários
+    # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
+    ingestao_habilitada: bool = True
+    dir_ingestao: str = str(DIR_DADOS / "ingestao")
+    ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
+    ingestao_caps_por_ciclo: int = 1      # capítulos por passada de idle
+    # FIGURAS (Fase 5a): as imagens do livro viram WebP no vault e wikilinks nas
+    # notas. WebP q80 medido como o ponto ótimo (2,2x menor que o JPEG que já está
+    # dentro do PDF, perda imperceptível). min_lado corta ícone/ornamento — sem ele
+    # um livro didático traria centenas de bulletpoints decorativos.
+    figuras_habilitadas: bool = True
+    subpasta_figuras: str = "Figuras"
+    figuras_qualidade: int = 80
+    figuras_min_lado: int = 200           # px; abaixo disso é decoração
+    figuras_max_lado: int = 1600          # reamostra só o que passa disso
+    figuras_max_por_livro: int = 2000     # teto de sanidade p/ não encher o vault
+    max_tokens_sintese_capitulo: int = 700
+
+    # --- Consolidação de átomos — Fase 2 (2026-07-25) --------------------------
+    # "3000 relatórios de um assunto": grupos de átomos QUASE-idênticos do
+    # Conhecimento_Novo são fundidos num canônico, NO IDLE. Ressalvas do dono como
+    # invariantes: limiar ALTO (escala e5 — recalibrar junto com o embedding, como
+    # o dedup 0.08→0.01), originais ARQUIVADOS em dados/_arquivo_consolidacao/
+    # (reversível: mover de volta + sync), cap por ciclo, e nota manual NUNCA é
+    # tocada (só o subdir auto-colhido). 1 passada por dia, sem sessão viva.
+    consolidacao_habilitada: bool = True
+    consolidacao_dist_max: float = 0.03   # entre o dedup (0.01) e o desastre (0.08)
+    consolidacao_min_grupo: int = 3       # 2 quase-iguais o dedup do ingest já pega
+    consolidacao_grupos_por_ciclo: int = 2
+    consolidacao_intervalo_horas: int = 24
+    dir_arquivo_consolidacao: str = str(DIR_DADOS / "_arquivo_consolidacao")
+
+    # --- Pasta VIGIADA de livros (2026-07-25) ---------------------------------
+    # "Onde deixo os PDFs?": aqui. Largue o arquivo em dados/livros/entrada/ e o
+    # scheduler o ingere NO IDLE (sem rodar script nenhum): extrai → jobs de
+    # capítulo → atomização hierárquica. O PDF sai da entrada ao ser enfileirado:
+    # digital vai p/ processados/, ESCANEADO vai p/ aguardando_ocr/ (Fase 3) —
+    # nunca fica em loop nem é apagado.
+    livros_entrada_habilitada: bool = True
+    dir_livros: str = str(DIR_DADOS / "livros")
+    livros_por_ciclo: int = 1             # PDFs extraídos por passada (extração é rápida)
+
+    # --- OCR de livros escaneados — Fase 3 (2026-07-25) -----------------------
+    # Livro que é só IMAGEM vira texto aqui e volta pra MESMA fila de jobs. Roda em
+    # SUBPROCESSO (o modelo exige Python 3.12/torch 2.10/CUDA 12.9 — incompatível
+    # com esta env), via o llama-server do llama.cpp com o GGUF
+    # quantizado. BINÁRIO: serve qualquer llama.cpp >= 2026-03-25 (a PR #17400,
+    # "mtmd: Add DeepSeekOCR Support", já está no master desde então — inclusive
+    # nos binários prontos das releases). Sem MENTE_OCR_BIN apontando p/
+    # um binário existente, o worker é NO-OP (loga o motivo 1x e o livro espera na
+    # fila) — quem não configurou não sofre nada.
+    # VRAM: o scheduler DESCARREGA o LLM antes (exigência do dono: nada do projeto
+    # na GPU) — é o que faz ~3 GB de OCR (Q4_K_M 1,95 + mmproj 0,77) caberem na 3080.
+    ocr_habilitado: bool = True
+    ocr_bin: str = ""                     # caminho do llama-server.exe (vazio = desligado)
+    caminho_modelo_ocr: str = str(DIR_MODELOS / "DeepSeek-OCR-Q8_0.gguf")
+    caminho_mmproj_ocr: str = str(DIR_MODELOS / "mmproj-DeepSeek-OCR-Q8_0.gguf")
+    # DPI medido (2026-07-25, mesma página densa com tabela): 110/150/200 dpi dão o
+    # MESMO tempo (2,7-2,8s) e a mesma qualidade (~3.050 chars) — o modelo
+    # redimensiona para a resolução fixa dele, então DPI alto só gasta render e
+    # disco. 150 é o meio seguro: PNG 40% menor que 200, zero perda medida.
+    ocr_dpi: int = 150
+    ocr_paginas_por_ciclo: int = 10       # livro grande atravessa vários idles
+    ocr_porta: int = 8099                 # servidor EFÊMERO do OCR (só 127.0.0.1)
+    # PARALELISMO medido no livro real (2026-07-25), s/página: sequencial 3,26 |
+    # 4 slots em blocos 1,99 | 4 slots com fila CHEIA 1,61 (2,02x) | 8 slots 1,56.
+    # Ou seja: 4 é o ponto ótimo — 8 slots rendem só 3% a mais e dobram o KV cache.
+    # Slots compartilham os pesos, então o custo é só KV; DUAS INSTÂNCIAS seriam a
+    # escolha errada (duplicariam 3,6 GB de VRAM pelo mesmo efeito). n_ctx é do
+    # servidor e DIVIDIDO entre os slots — daí 16384 p/ 4 (4096 por página, folgado).
+    ocr_paralelo: int = 4
+    ocr_n_ctx: int = 16384
+    ocr_timeout_pagina: int = 180
+    ocr_min_chars_pagina: int = 40        # menos que isso: capa/ilustração/branco
+    ocr_n_gpu_layers: int = -1
+
+    # --- Colheita ACADÊMICA — Fase 4 (2026-07-25) -----------------------------
+    # Busca PDFs acadêmicos (DDGS com filetype:pdf) sobre o que o usuário mais
+    # REUSA (temas quentes) e o que ficou SEM resposta (lacunas) — as duas tabelas
+    # que já existem. Papers baixados entram na MESMA fila de jobs dos livros, então
+    # herdam proveniência + síntese. Egressão de fundo => OPT-IN (default off):
+    # ligar significa que a máquina busca e baixa PDFs sozinha, sem pergunta em
+    # curso. Isolada do caminho vivo: nada aqui toca a atomização web em tempo real.
+    academico_habilitado: bool = False
+    academico_intervalo_horas: int = 24
+    academico_alvos_por_ciclo: int = 1    # temas pesquisados por passada
+    academico_pdfs_por_alvo: int = 2      # PDFs aceitos por tema
+    academico_resultados_busca: int = 8   # candidatos pedidos ao DDGS
+    academico_max_mb: int = 25            # PDF maior que isso é descartado (tese/livro inteiro)
+    academico_min_chars: int = 3000       # menos texto que isso = scan/capa/paywall
+
     # --- LLM (GPU) -------------------------------------------------------------
     n_gpu_layers: int = -1
     n_ctx: int = 8192
@@ -775,6 +869,10 @@ class Settings(BaseSettings):
         return Path(self.caminho_obsidian) / self.subpasta_conhecimento_novo
 
     @property
+    def dir_figuras(self) -> Path:
+        return Path(self.caminho_obsidian) / self.subpasta_figuras
+
+    @property
     def dir_listas(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_listas
 
@@ -800,6 +898,10 @@ class Settings(BaseSettings):
         os.makedirs(self.dir_conhecimento_novo, exist_ok=True)
         os.makedirs(self.dir_listas, exist_ok=True)
         os.makedirs(self.dir_agenda, exist_ok=True)
+        # Pasta VIGIADA de livros: tem de EXISTIR para o dono largar o PDF nela sem
+        # criar nada na mão — é a resposta a "onde deixo os livros?".
+        if self.livros_entrada_habilitada:
+            os.makedirs(Path(self.dir_livros) / "entrada", exist_ok=True)
         # Pastas dos modelos: garantem que o local de download do Whisper e o
         # destino esperado do LLM/voz existam mesmo num clone recém-feito.
         os.makedirs(DIR_MODELOS, exist_ok=True)
