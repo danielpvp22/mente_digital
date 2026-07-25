@@ -113,10 +113,20 @@ def extrair_pdf(caminho, fonte: Optional[bytes] = None) -> Tuple[List[str], List
     """Devolve (páginas de texto, TOC) de um PDF. `fonte` (bytes) permite extrair
     um PDF baixado sem gravá-lo antes (colheita acadêmica). Import TARDIO do
     PyMuPDF: o servidor sobe sem ele, e só quem ingere paga o import."""
+    import gc
+
     import fitz  # PyMuPDF
 
-    doc = fitz.open(stream=fonte, filetype="pdf") if fonte else fitz.open(str(caminho))
+    doc = None
     try:
+        doc = fitz.open(stream=fonte, filetype="pdf") if fonte else fitz.open(str(caminho))
         return [p.get_text("text") for p in doc], (doc.get_toc() or [])
     finally:
-        doc.close()
+        # No Windows, um PDF inválido faz o `open` levantar SEGURANDO o handle do
+        # arquivo — e aí o `replace()` que move o PDF para falhou/ bate em "arquivo
+        # em uso" e ele fica preso na fila PARA SEMPRE, re-tentado a cada ciclo
+        # (visto na suíte em 2026-07-25). Fechar o que abriu + coletar o que ficou
+        # pendurado é o que garante que o arquivo possa ser movido depois.
+        if doc is not None:
+            doc.close()
+        gc.collect()

@@ -75,7 +75,23 @@ def _preparar_alvo(caminho: Path) -> Path:
     return destino
 
 
-async def _rodar(alvos: list, lote: int) -> int:
+def _fazer_impressor(silencioso: bool, previa: int):
+    """Mostra a transcrição saindo, página a página. Custo de GPU: ZERO — o texto já
+    está em memória (sem isto ele seria só guardado). `previa=0` imprime a página
+    inteira; >0 corta em N caracteres para o terminal não virar cachoeira."""
+    if silencioso:
+        return None
+
+    def _mostrar(numero: int, texto: str) -> None:
+        corpo = (texto or "").strip() or "(página sem texto)"
+        if previa > 0 and len(corpo) > previa:
+            corpo = corpo[:previa].rstrip() + f"… (+{len(texto) - previa} chars)"
+        print(f"\n───── página {numero} ─────\n{corpo}", flush=True)
+
+    return _mostrar
+
+
+async def _rodar(alvos: list, impressor) -> int:
     ctx = AppContext(settings=settings)
     ctx.interactive_idle.set()      # manual: não há conversa concorrendo neste processo
     etl = EtlProcessor(ctx)
@@ -83,10 +99,10 @@ async def _rodar(alvos: list, lote: int) -> int:
     for pdf in alvos:
         print(f"\n=== {pdf.name}")
         while pdf.exists():
-            feitas = await etl.ocr_livro(pdf)
+            feitas = await etl.ocr_livro(pdf, on_pagina=impressor)
             total += feitas
             if feitas == 0:
-                break           # OCR indisponível, erro, ou nada mais a fazer
+                break           # OCR indisponível, erro, desvio p/ digital, ou fim
         print(f"--- {pdf.name}: {'concluído' if not pdf.exists() else 'parou (ver log)'}")
     return total
 
@@ -98,6 +114,10 @@ def main() -> int:
                     help="páginas por bloco (progresso mais frequente; default 5)")
     ap.add_argument("--forcar", action="store_true",
                     help="roda mesmo com o servidor no ar (risco de OOM de VRAM)")
+    ap.add_argument("--silencioso", action="store_true",
+                    help="não imprime a transcrição de cada página")
+    ap.add_argument("--previa", type=int, default=0,
+                    help="corta a prévia de cada página em N chars (0 = página inteira)")
     args = ap.parse_args()
 
     ok, motivo = ocr_mod.disponibilidade(
@@ -127,7 +147,7 @@ def main() -> int:
 
     # O lote do idle vira o passo de PROGRESSO aqui: o laço repete até o livro acabar.
     settings.ocr_paginas_por_ciclo = max(1, args.lote)
-    total = asyncio.run(_rodar(alvos, args.lote))
+    total = asyncio.run(_rodar(alvos, _fazer_impressor(args.silencioso, args.previa)))
     print(f"\n{total} página(s) transcrita(s). Os capítulos prontos estão na fila de "
           "jobs — a atomização acontece no próximo idle do servidor.")
     return 0

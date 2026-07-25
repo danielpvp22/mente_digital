@@ -368,23 +368,44 @@ class EtlProcessor:
             return 0
         return await self._ocr_um_livro(pdfs[0])
 
-    async def ocr_livro(self, pdf: Path) -> int:
+    async def ocr_livro(self, pdf: Path, on_pagina=None) -> int:
         """Transcreve UM livro específico (acionamento MANUAL, scripts/ocr_agora.py).
 
         Mesmo caminho do worker idle — só a escolha do alvo muda: aqui o dono aponta
-        o arquivo, lá a fila decide. Devolve páginas feitas nesta chamada; 0 se o OCR
-        não estiver configurado (com o motivo logado)."""
+        o arquivo, lá a fila decide. `on_pagina(numero, texto)` (opcional) recebe cada
+        página assim que sai, para acompanhar a transcrição ao vivo: custo ZERO de GPU
+        (o texto já está em memória; sem callback ele seria só descartado). Devolve
+        páginas feitas nesta chamada; 0 se o OCR não estiver configurado."""
         ok, motivo = ocr_mod.disponibilidade(
             settings.ocr_bin, settings.caminho_modelo_ocr, settings.caminho_mmproj_ocr)
         if not ok:
             telemetry.warn("OCR", f"OCR não está pronto: {motivo}")
             return 0
-        return await self._ocr_um_livro(pdf)
+        return await self._ocr_um_livro(pdf, on_pagina=on_pagina)
 
     def _ocr_estado_path(self, pdf: Path) -> Path:
         return Path(settings.dir_livros) / "_ocr_estado" / f"{livro_mod.slug(pdf.stem)}.json"
 
-    async def _ocr_um_livro(self, pdf: Path) -> int:
+    async def _ocr_um_livro(self, pdf: Path, on_pagina=None) -> int:
+        # GUARDA ANTI-DESPERDÍCIO (visto ao vivo em 2026-07-25): PDF colocado na fila
+        # à mão pode JÁ ter camada de texto — dois dos três livros do dono estavam
+        # assim, e o OCR gastaria ~4h de GPU para produzir texto PIOR que o embutido.
+        # Aqui ele é desviado para a entrada digital, que é rápida e mais fiel.
+        # Aberto a partir dos BYTES, não do caminho: no Windows o PyMuPDF segura o
+        # handle do arquivo quando falha em PDF inválido, e aí o `move` para falhou/
+        # bate em "arquivo em uso" — o PDF ficaria preso na fila para sempre, retentado
+        # a cada ciclo. Em stream mode nenhum handle toca o path (medido 2026-07-25).
+        try:
+            dados = await asyncio.to_thread(pdf.read_bytes)
+            paginas_txt, _ = await asyncio.to_thread(livro_mod.extrair_pdf, None, dados)
+        except Exception:
+            paginas_txt = []
+        if paginas_txt and not livro_mod.parece_escaneado([len(t) for t in paginas_txt]):
+            telemetry.track(
+                "OCR", f"'{pdf.stem}' JÁ tem texto selecionável — sem OCR; "
+                       "mandando para a ingestão digital (mais rápida e mais fiel).")
+            await self._mover_livro(pdf, "entrada")
+            return 0
         estado_path = self._ocr_estado_path(pdf)
         estado = {"paginas": [], "proxima": 0}
         if estado_path.is_file():
@@ -425,6 +446,12 @@ class EtlProcessor:
             estado["paginas"].append(texto)
             estado["proxima"] = inicio + feitas + 1
             feitas += 1
+            if on_pagina is not None:
+                # Acompanhamento ao vivo (manual): custo zero — o texto já existe.
+                try:
+                    on_pagina(estado["proxima"], texto)
+                except Exception as exc:
+                    telemetry.error("OCR", "Falha no callback de progresso", exc)
             await asyncio.to_thread(self._salvar_estado_ocr, estado_path, estado)
             await asyncio.to_thread(img.unlink, True)
         telemetry.track("OCR", f"'{pdf.stem}': {estado['proxima']}/{total} páginas transcritas.")

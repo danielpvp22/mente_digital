@@ -224,6 +224,36 @@ async def test_acionamento_manual_transcreve_o_livro_apontado(monkeypatch, tmp_p
     assert len(list((tmp_path / "ingestao" / "pendentes").glob("ocr-*.json"))) == 1
 
 
+async def test_progresso_ao_vivo_entrega_cada_pagina(monkeypatch, tmp_path):
+    """O acompanhamento em tempo real do dono: callback por página, custo zero de
+    GPU (o texto já existe — sem callback ele seria só guardado)."""
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=3, saida="pagina ok")
+    vistas = []
+    assert await etl.ocr_livro(pdf, on_pagina=lambda n, t: vistas.append((n, t))) == 3
+    assert [n for n, _ in vistas] == [1, 2, 3]        # em ordem, uma a uma
+    assert all("pagina ok" in t for _, t in vistas)
+
+
+async def test_callback_quebrado_nao_derruba_a_transcricao(monkeypatch, tmp_path):
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=2)
+
+    def _explode(n, t):
+        raise RuntimeError("terminal fechou")
+
+    assert await etl.ocr_livro(pdf, on_pagina=_explode) == 2   # transcreveu mesmo assim
+
+
+async def test_pdf_com_texto_e_desviado_do_ocr(monkeypatch, tmp_path):
+    """Guarda anti-desperdício (caso real 2026-07-25): dois dos três livros do dono
+    na fila de OCR JÁ tinham texto — seriam ~4h de GPU para um resultado PIOR."""
+    etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=3)
+    monkeypatch.setattr("mente_digital.etl.livro_mod.extrair_pdf",
+                        lambda caminho, fonte=None: ([("texto real " * 200)] * 3, []))
+    assert await etl.ocr_livro(pdf) == 0
+    assert chamadas == []                                        # nenhuma página no OCR
+    assert (Path(settings.dir_livros) / "entrada" / pdf.name).exists()  # via digital
+
+
 async def test_acionamento_manual_recusa_sem_ocr_configurado(monkeypatch, tmp_path):
     etl, ctx, pdf, chamadas = _ambiente(monkeypatch, tmp_path, n_paginas=2, configurado=False)
     assert await etl.ocr_livro(pdf) == 0        # motivo vai pro log, nada é tentado
