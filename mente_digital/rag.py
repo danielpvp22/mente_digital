@@ -61,15 +61,18 @@ def rotular_contexto(score: Optional[float], doc) -> str:
     — exatamente a alucinação que o pipeline combate. `score is None` marca o vizinho
     da malha (entrou por conceito, não por distância).
 
-    A FIGURA leva instrução junto: a imagem só aparece na tela se o modelo reproduzir
-    o wikilink `![[...]]` literal, que o front converte em <img>. Descrever a figura
-    com palavras próprias mostra o texto e perde a imagem."""
+    A FIGURA avisa ao modelo que a imagem JÁ SERÁ MOSTRADA ao usuário (o servidor a
+    anexa — ver `respostas._mostrar_figuras`). Antes este rótulo pedia que ele
+    copiasse o wikilink; o teste real mostrou que não funciona (a resposta cabia em
+    90 tokens e o embed sozinho gasta ~40) e que, se funcionasse, duplicaria a
+    imagem. Agora ele é instruído a usar a figura como CONTEÚDO e a não repetir o
+    link."""
     conteudo = doc.page_content
     if score is None:
         return f"[Malha - relacionado] {conteudo}"
     if str((doc.metadata or {}).get("tipo") or "") == "figura":
-        return ("[Figura do acervo — se citá-la, copie o ![[...]] exatamente como está] "
-                f"{conteudo}")
+        return ("[Figura do acervo — a imagem já é mostrada ao usuário; descreva o que "
+                f"ela ensina, NÃO repita o link] {conteudo}")
     confianca = (doc.metadata or {}).get("confidence", 1.0)
     return f"[Local - Confiança: {confianca}] {conteudo}"
 

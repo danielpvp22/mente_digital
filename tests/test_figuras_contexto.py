@@ -58,11 +58,12 @@ def test_metadado_marca_os_DOIS_lados():
 
 
 # --- rótulo: é ele que faz a imagem chegar à tela ---------------------------
-def test_rotulo_da_figura_manda_copiar_o_wikilink():
-    # sem isso o modelo descreve a figura com palavras próprias e a imagem some:
-    # o front só vira <img> o `![[...]]` literal.
+def test_rotulo_da_figura_avisa_que_a_imagem_ja_vai_aparecer():
+    # Antes este rótulo mandava COPIAR o wikilink. O teste real mostrou que não
+    # funciona (resposta cabia em 90 tokens, o embed gasta ~40) e que, se
+    # funcionasse, duplicaria a imagem — o servidor já anexa.
     r = rag.rotular_contexto(0.1, _fig("f1", "![[Figuras/livro/f1.webp]] folha com clorose"))
-    assert "![[" in r and "copie" in r.lower()
+    assert "já é mostrada" in r and "NÃO repita o link" in r
 
 
 def test_rotulo_distingue_texto_e_vizinho_da_malha():
@@ -199,3 +200,44 @@ def test_texto_sem_embed_passa_intacto():
     from mente_digital.textutils import sem_embeds_de_imagem
 
     assert sem_embeds_de_imagem("resposta comum, sem figura") == "resposta comum, sem figura"
+
+
+# --- o SERVIDOR anexa a imagem (o LLM não dá conta) -------------------------
+# Medido no teste real: a pergunta caiu no nível `curto` (teto de 90 tokens), a
+# resposta consumiu o teto inteiro e o embed de ~105 chars não teve onde caber.
+# Nenhuma imagem apareceu. Pedir ao modelo era o plano errado.
+
+def test_embed_da_nota_converte_o_caminho():
+    from mente_digital.figuras_recorte import embed_da_nota
+
+    assert embed_da_nota("/v/Figuras/livro/x_p0288_f1.md") == \
+        "![[Figuras/livro/x_p0288_f1.webp]]"
+    assert embed_da_nota(r"D:\v\Figuras\livro\x_p0288_f1.md") == \
+        "![[Figuras/livro/x_p0288_f1.webp]]"
+
+
+def test_embed_da_nota_ignora_o_que_nao_e_figura():
+    from mente_digital.figuras_recorte import embed_da_nota
+
+    assert embed_da_nota("/v/Notas/comum.md") is None
+    assert embed_da_nota("/v/Notas/Figuras_do_livro.md") is None   # nome, não pasta
+    assert embed_da_nota("") is None
+
+
+def test_bloco_dedup_preserva_a_ordem_da_busca():
+    from mente_digital.figuras_recorte import bloco_de_figuras
+
+    bloco = bloco_de_figuras([
+        "/v/Figuras/l/b_p2_f1.md",      # a busca entrega por distância: esta é a melhor
+        "/v/Notas/texto.md",            # não é figura: fora
+        "/v/Figuras/l/a_p1_f1.md",
+        "/v/Figuras/l/b_p2_f1.md",      # repetida
+    ])
+    assert bloco.split("\n") == ["![[Figuras/l/b_p2_f1.webp]]", "![[Figuras/l/a_p1_f1.webp]]"]
+
+
+def test_bloco_vazio_sem_figura():
+    from mente_digital.figuras_recorte import bloco_de_figuras
+
+    assert bloco_de_figuras(["/v/Notas/a.md", "/v/Notas/b.md"]) == ""
+    assert bloco_de_figuras([]) == ""

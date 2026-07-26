@@ -827,3 +827,42 @@ def resumo_contagem(por_pagina: Dict[int, int]) -> str:
     pct = 100 * secas // max(1, paginas)
     return (f"{figuras} figura(s) em {paginas} página(s) | "
             f"{secas} página(s) sem figura ({pct}%)")
+
+
+def embed_da_nota(caminho_nota: str, subpasta: str = "Figuras") -> Optional[str]:
+    """`…/Figuras/livro/x_p0288_f1.md` → `![[Figuras/livro/x_p0288_f1.webp]]`.
+
+    None quando o caminho não é de uma nota de figura. Puro/testável."""
+    partes = str(caminho_nota or "").replace("\\", "/").split("/")
+    if len(partes) < 2 or not partes[-1].lower().endswith(".md"):
+        return None
+    alvo = (subpasta or "").strip("/\\").casefold()
+    if not alvo:
+        return None
+    # o SEGMENTO tem que ser a pasta (partes[:-1]), nunca o nome do arquivo
+    idx = next((i for i, p in enumerate(partes[:-1]) if p.casefold() == alvo), None)
+    if idx is None:
+        return None
+    rel = "/".join(partes[idx:-1] + [partes[-1][:-3] + ".webp"])
+    return f"![[{rel}]]"
+
+
+def bloco_de_figuras(fontes: Sequence[str], subpasta: str = "Figuras") -> str:
+    """Os embeds das figuras que entraram no contexto, um por linha. Puro/testável.
+
+    Existe porque pedir ao LLM que copie o wikilink não funciona: medido em
+    2026-07-26, a pergunta caiu no nível `curto` (teto de 90 tokens), a resposta
+    consumiu o teto inteiro e não sobrou espaço — e um caminho de 105 chars ainda
+    corre o risco de sair com um caractere trocado, quebrando a <img>. O servidor
+    monta o bloco a partir das fontes que a busca JÁ selecionou: determinístico,
+    custo zero de token, imune à verbosidade.
+
+    Dedup preservando a ordem (a busca entrega por distância: melhor primeiro)."""
+    vistos: set = set()
+    saida: List[str] = []
+    for f in fontes or ():
+        embed = embed_da_nota(f, subpasta)
+        if embed and embed not in vistos:
+            vistos.add(embed)
+            saida.append(embed)
+    return "\n".join(saida)

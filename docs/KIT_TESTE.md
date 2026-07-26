@@ -39,15 +39,26 @@ Perguntas cujo assunto os livros ilustram. **Esperado** = figuras que o gate apr
 | A5 | como funciona a digestão nos animais? | ~4 figuras + 30 textos |
 | A6 | como é a estrutura da célula vegetal? | ~4 figuras + 30 textos |
 
+As imagens aparecem **depois do texto**, anexadas pelo servidor — não dependem de o
+modelo escrever nada. No log:
+
+```
+[FIGURAS] N figura(s) anexada(s) à resposta.
+```
+
+Medido ponta a ponta: A1 anexa 6 imagens, A3 anexa 4, todas com arquivo conferido
+em disco antes de ir para a tela.
+
 **O que observar, em ordem de importância:**
 
-1. **A imagem aparece na tela?** Este é o teste de verdade. A figura só vira `<img>`
-   se o modelo copiar o `![[Figuras/...webp]]` literal na resposta. O contexto manda
-   isso explicitamente ("copie o `![[...]]` exatamente como está"), mas o prompt de
-   sistema não foi alterado — se o modelo preferir descrever a figura com palavras,
-   você lê sobre ela e não a vê. **É o ponto mais provável de falha do dia.**
-2. A figura é a **certa** para a pergunta? Isso nenhuma medição minha responde.
-3. A resposta ficou pior por causa das figuras? Em A4 elas ocupam metade do contexto.
+1. **A figura é a certa para a pergunta?** Esta é a única coisa que nenhuma medição
+   minha responde, e agora é o que importa. Se a imagem não tem a ver, o limiar é
+   que precisa mexer, não o mecanismo.
+2. A quantidade incomoda? A4 pode render bastante imagem de uma vez.
+3. A resposta em TEXTO piorou por causa das figuras no contexto? Em A4 elas ocupam
+   metade do orçamento.
+4. **Nenhuma imagem quebrada** (ícone de erro). Se aparecer, o `.webp` sumiu do
+   vault mas a nota segue indexada — me avise qual.
 
 ---
 
@@ -128,10 +139,11 @@ D5 é o que vale esperar: o push falado chega sozinho, sem você perguntar nada.
 
 Para cada bloco, o mais útil é:
 
-- a linha `[LOCAL_DBG] ... figuras=X/Y` do log;
-- se a **imagem apareceu** ou só o texto;
+- as linhas `[LOCAL_DBG] ... figuras=X/Y` e `[FIGURAS] N anexada(s)` do log;
+- se as figuras que apareceram eram as **certas** para a pergunta;
 - qualquer resposta que pareça inventada (o anti-alucinação falhando é mais grave
-  que figura faltando).
+  que figura errada).
 
-Se A1–A6 trouxerem figura no contexto mas **nenhuma imagem na tela**, o conserto é
-no prompt de sistema (`prompts.py`), não na busca — e nesse caso a busca está certa.
+Calibração, se precisar: `MENTE_FIGURAS_SCORE_CONFIDENT` (hoje herda o
+`rag_score_confident=0.16`). Menor = menos figuras e mais exigente; maior = mais.
+`MENTE_FIGURAS_NO_CONTEXTO=false` desliga tudo.
