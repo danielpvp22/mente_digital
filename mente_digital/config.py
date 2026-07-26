@@ -438,6 +438,22 @@ class Settings(BaseSettings):
     # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
     # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
     malha_sim_min: float = 0.5
+    # --- FIGURAS EM ESPAÇO PRÓPRIO (2026-07-26) -------------------------------
+    # Por que existe: no banco cheio (33k chunks) a nota de figura PERDIA a vaga no
+    # top-k para os átomos de texto. Medido: uma figura a 0,1239 ficava fora de um
+    # top-40 cujo pior era 0,1373 — a busca aproximada não a alcançava. E o oposto
+    # também doía: "como podar a planta" gastava 16 das 40 vagas com figura.
+    # A correção é buscar figura à PARTE (`where={"tipo":"figura"}`, exato dentro do
+    # subconjunto) e deixar o GATE decidir quantas entram — nunca uma cota fixa, que
+    # forçaria imagem em pergunta que não pede e travaria a que precisa de mais.
+    figuras_no_contexto: bool = True
+    # Quantas figuras CONSIDERAR (candidatas, antes do gate). Não é cota: é o tamanho
+    # da busca. Quantas de fato entram depende do gate e do orçamento de chars.
+    figuras_top_k: int = 12
+    # Limiar da figura. 0 = herda o rag_score_confident (mesma régua do texto). Existe
+    # separado porque a nota de figura é curta e descritiva: a distância dela não é
+    # comparável à de um átomo de prosa, então pode precisar de calibração própria.
+    figuras_score_confident: float = 0.0
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000

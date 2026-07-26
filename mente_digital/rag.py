@@ -46,12 +46,33 @@ _FRONTMATTER_RE = re.compile(r"^﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", re.DO
 # ficaria meio velha/meio nova para sempre. Bumpar isto força UMA re-passada e a
 # migração se resolve sozinha. v2: origem/colhido_em/colhido_ts do frontmatter.
 # v3: conceitos da Malha Neural (ver MalhaIndex).
-_META_VERSAO = 3
+# v4: `tipo` (figura/texto), que habilita a busca de figura em espaço próprio.
+_META_VERSAO = 4
 
 # Quantos chunks um dump do Chroma puxa por vez. O limite duro do SQLite é ~32k
 # variáveis por statement; 5.000 deixa 6x de folga e o custo de paginar é
 # desprezível perto do de processar o dump. Ver `dump_paginado`.
 _DUMP_LOTE = 5000
+
+def rotular_contexto(score: Optional[float], doc) -> str:
+    """Prefixa o chunk com O QUE ELE É antes de mandar ao LLM. Puro/testável.
+
+    Sem rótulo, um vizinho tangencial chega indistinguível de um átomo que responde
+    — exatamente a alucinação que o pipeline combate. `score is None` marca o vizinho
+    da malha (entrou por conceito, não por distância).
+
+    A FIGURA leva instrução junto: a imagem só aparece na tela se o modelo reproduzir
+    o wikilink `![[...]]` literal, que o front converte em <img>. Descrever a figura
+    com palavras próprias mostra o texto e perde a imagem."""
+    conteudo = doc.page_content
+    if score is None:
+        return f"[Malha - relacionado] {conteudo}"
+    if str((doc.metadata or {}).get("tipo") or "") == "figura":
+        return ("[Figura do acervo — se citá-la, copie o ![[...]] exatamente como está] "
+                f"{conteudo}")
+    confianca = (doc.metadata or {}).get("confidence", 1.0)
+    return f"[Local - Confiança: {confianca}] {conteudo}"
+
 
 def dump_paginado(store, include: Sequence[str], lote: Optional[int] = None) -> dict:
     """`store.get(include=...)` em LOTES, agregado no mesmo formato de um get só.
@@ -217,7 +238,28 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
         # Delimitado nas DUAS pontas ('|a|b|') para permitir casar '|x|' exato depois
         # sem pegar prefixo de outro conceito ('|xyz|').
         meta["conceitos"] = _SEP_CONCEITO + _SEP_CONCEITO.join(conceitos) + _SEP_CONCEITO
+    # `tipo` é o que permite BUSCAR FIGURA À PARTE. Medido em 2026-07-26: no banco
+    # cheio (33k chunks) as notas de figura perdiam a disputa por vaga no top-k para
+    # os átomos de texto — uma figura a 0,1239 ficava fora de um top-40 cujo pior era
+    # 0,1373. Com `where={"tipo": "figura"}` a busca roda no subconjunto e o recall
+    # volta a ser exato (conferido 20/20 contra força bruta nos 1.735 vetores).
+    # Gravado nos DOIS lados: filtro sobre chave ausente não casa nada no Chroma,
+    # então "texto" precisa ser afirmativo, não a ausência de "figura".
+    meta["tipo"] = "figura" if _e_figura(path) else "texto"
     return meta
+
+
+def _e_figura(path: str) -> bool:
+    """A nota vive sob a subpasta de figuras do vault?
+
+    Compara SEGMENTO de caminho, não substring: `subpasta_conhecimento_novo in path`
+    (o padrão vizinho) marcaria uma nota chamada `Figuras_do_livro.md` como figura.
+    """
+    alvo = (settings.subpasta_figuras or "").strip().strip("/\\").casefold()
+    if not alvo:
+        return False
+    partes = str(path).replace("\\", "/").split("/")
+    return alvo in {p.casefold() for p in partes[:-1]}   # só PASTA, nunca o arquivo
 
 
 def split_markdown(conteudo: str, base_metadata: dict, chunk_size: int, chunk_overlap: int) -> list:
@@ -859,6 +901,43 @@ class VectorStore:
             telemetry.error("LOCAL", "Falha na recuperação especulativa", exc)
             return None
 
+    async def _buscar_figuras(self, consulta: str, chaves: set) -> List[Tuple[float, object]]:
+        """Figuras que passam o gate, num espaço de busca SÓ delas.
+
+        Duas medições de 2026-07-26 justificam o espaço separado. (1) Disputando as
+        mesmas vagas, a figura perdia: uma a 0,1239 ficava fora de um top-40 cujo pior
+        era 0,1373, porque a busca aproximada não a alcançava no meio de 33k chunks.
+        (2) Quando ganhava, ganhava demais: "como podar a planta" tomava 16 das 40
+        vagas. Com `where={"tipo": "figura"}` o Chroma filtra ANTES da ANN e o recall
+        dentro do subconjunto é exato (20/20 contra força bruta nos 1.735 vetores).
+
+        QUANTAS entram é do gate, não de cota: mesma régua do texto (aterramento
+        léxico OU confiança semântica). Pergunta que não pede imagem devolve zero;
+        pergunta ilustrada devolve quantas merecerem, e o corte final é o orçamento
+        de chars lá no `search`.
+
+        Fail-soft em bloco: qualquer erro (inclusive store fake sem `filter`) devolve
+        lista vazia — nunca derruba a busca de texto, que é o que responde."""
+        if not settings.figuras_no_contexto or self._store is None:
+            return []
+        limiar = settings.figuras_score_confident or settings.rag_score_confident
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._store.similarity_search_with_score(
+                    consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
+                )
+            )
+        except Exception as exc:
+            telemetry.error("FIGURAS", "Busca de figuras falhou (seguindo só com texto)", exc)
+            return []
+        aprovadas = [
+            (score, doc) for doc, score in (res or [])
+            if score < settings.rag_score_max
+            and (score < limiar or textutils.contem_alguma(doc.page_content, chaves))
+        ]
+        aprovadas.sort(key=lambda x: x[0])
+        return aprovadas
+
     async def search(
         self, termos: str, texto_busca: Optional[str] = None, economico: bool = False,
         recuperados: Optional[list] = None,
@@ -899,6 +978,18 @@ class VectorStore:
 
             melhor = min(score for _, score in res)
             validos = [(score, doc) for doc, score in res if score < settings.rag_score_max]
+            # A FIGURA SAI DO CANAL DE TEXTO — ela tem o seu (`_buscar_figuras`), com
+            # gate próprio. Sem isto ela concorre duas vezes e, pior, uma figura sozinha
+            # ANCORARIA a resposta (o teste pegou exatamente isso). É também a metade
+            # que faltava do defeito medido: "como podar a planta" gastava 16 das 40
+            # vagas do texto com imagem.
+            # Filtro em PYTHON, e não `where={"tipo":"texto"}`, de propósito: numa base
+            # ainda sem o `tipo` (meta_v<4, reindex em curso) o `where` devolveria VAZIO
+            # e derrubaria a busca inteira; aqui, nada é removido e vale o comportamento
+            # antigo até a migração chegar.
+            if settings.figuras_no_contexto:
+                validos = [(s, d) for s, d in validos
+                           if str((d.metadata or {}).get("tipo") or "") != "figura"]
             chaves = textutils.palavras_chave(termos)
             # ATERRAMENTO PONDERADO POR IDF (G3): o aterramento antigo era um OR sem peso —
             # uma keyword comum (que escapou do STOP) casava a nota errada. Agora só a
@@ -959,6 +1050,20 @@ class VectorStore:
             candidatos.sort(key=lambda x: x[0])
             relevante = bool(candidatos)
 
+            # FIGURAS — buscadas à parte e só quando o TEXTO já ancorou, pela mesma
+            # razão que segura a malha abaixo: uma figura sozinha não pode transformar
+            # pergunta-sem-match em Cache Hit. Ela ILUSTRA uma resposta que existe.
+            # Por isso não vota em `relevante` (já decidido acima) — mas, diferente do
+            # vizinho da malha, PROMOVE (entra em `fontes`): passou o mesmo gate dos
+            # átomos de texto, então é reuso real, não passagem por perto.
+            figuras: List[Tuple[float, object]] = []
+            if candidatos:
+                for s, d in await self._buscar_figuras(consulta, chaves_aterr):
+                    if d.page_content in vistos:
+                        continue                 # já entrou pela busca de texto
+                    vistos.add(d.page_content)
+                    figuras.append((s, d))
+
             # EXPANSÃO PELA MALHA — só DEPOIS de `relevante` estar decidido, e isso é
             # o ponto: a vizinhança ENRIQUECE uma resposta que já tem âncora, mas nunca
             # pode transformar pergunta-sem-match em Cache Hit. Deixá-la votar no gate
@@ -1004,7 +1109,7 @@ class VectorStore:
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
             usar: List[Tuple[Optional[float], object]] = []
             orcamento = settings.rag_context_char_budget
-            for s, d in list(candidatos[: settings.rag_max_chunks]) + vizinhos:
+            for s, d in list(candidatos[: settings.rag_max_chunks]) + figuras + vizinhos:
                 if usar and orcamento - len(d.page_content) < 0:
                     break                                    # respeita o teto (n_ctx)
                 usar.append((s, d))
@@ -1012,10 +1117,14 @@ class VectorStore:
 
             if settings.rag_debug:
                 n_viz = sum(1 for s, _ in usar if s is None)
+                n_fig = sum(1 for s, d in usar
+                            if s is not None
+                            and str((d.metadata or {}).get("tipo") or "") == "figura")
                 telemetry.track(
                     "LOCAL_DBG",
                     f"selecionados={len(usar)}/{len(candidatos)} átomos "
-                    f"(aterrados={len(aterrados)}, vizinhos_malha={n_viz}/{len(vizinhos)})",
+                    f"(aterrados={len(aterrados)}, vizinhos_malha={n_viz}/{len(vizinhos)}, "
+                    f"figuras={n_fig}/{len(figuras)})",
                 )
 
             # O vizinho é ROTULADO como relacionado, não como match. Sem isso ele chega
@@ -1023,12 +1132,7 @@ class VectorStore:
             # tangencial apresentado como resposta é exatamente a alucinação que o
             # pipeline inteiro combate. O rótulo deixa o modelo usá-lo como apoio.
             texto = NENHUM if not usar else "\n".join(
-                (
-                    f"[Malha - relacionado] {d.page_content}"
-                    if s is None
-                    else f"[Local - Confiança: {d.metadata.get('confidence', 1.0)}] {d.page_content}"
-                )
-                for s, d in usar
+                rotular_contexto(s, d) for s, d in usar
             )
             # Fontes (dedup, ordem preservada) dos átomos que ENTRARAM no contexto —
             # a promoção só toca no que foi de fato usado, não em tudo que foi recuperado.
