@@ -430,3 +430,50 @@ def test_capitulo_util_descarta_rotulo_de_janela_de_paginas():
 def test_parece_legenda():
     assert fr.parece_legenda("Figura 4.1 — algo")
     assert not fr.parece_legenda("como mostra a figura 4.1, o ciclo")
+
+
+# --- remover_embeds_orfaos: o caso medido em 2026-07-26 (71 links das sínteses
+# da Fase 3 apontando para páginas que a detecção nova confirmou SECAS).
+
+SINTESE = """---
+origem: Livro 'Cervantes'
+---
+## Figuras
+- ![[Figuras/cervantes/cervantes_p0012_f1.webp]] — página 12
+- ![[Figuras/cervantes/cervantes_p0013_f1.webp]] — página 13
+- ![[Figuras/cervantes/cervantes_p0014_f1.webp]] — página 14
+"""
+
+
+def _existe(alvo):
+    return "p0013" not in alvo
+
+
+def test_remover_embeds_orfaos_apaga_a_linha_inteira_do_item():
+    novo, n = fr.remover_embeds_orfaos(SINTESE, _existe)
+    assert n == 1
+    # a linha some por completo: sem a figura ela seria um marcador vazio
+    assert "p0013" not in novo
+    assert "— página 13" not in novo
+    # e os vizinhos bons continuam intactos
+    assert novo.count("![[") == 2
+    assert "origem: Livro 'Cervantes'" in novo
+
+
+def test_remover_embeds_orfaos_preserva_a_prosa_em_volta():
+    texto = "Veja ![[Figuras/x/x_p0013_f1.webp]] no capítulo sobre solo."
+    novo, n = fr.remover_embeds_orfaos(texto, _existe)
+    assert n == 1
+    assert "no capítulo sobre solo." in novo and "![[" not in novo
+
+
+def test_remover_embeds_orfaos_nao_toca_link_de_fora_da_subpasta():
+    # wikilink de conceito da Malha Neural não é embed de figura: fica.
+    texto = "- ![[Outra/coisa_p0013_f1.webp]] — x\n**Malha:** [[Fotossíntese]]"
+    novo, n = fr.remover_embeds_orfaos(texto, _existe)
+    assert n == 0 and novo == texto
+
+
+def test_remover_embeds_orfaos_no_op_quando_tudo_existe():
+    novo, n = fr.remover_embeds_orfaos(SINTESE, lambda _: True)
+    assert n == 0 and novo == SINTESE

@@ -44,7 +44,7 @@ no CI leve. Todo o IO (fitz/Pillow/HTTP) fica no script.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 # Escala das coordenadas do grounding do DeepSeek-OCR: 0–999 em CADA eixo,
 # independentemente da proporção da página (conferido recortando).
@@ -771,6 +771,50 @@ def corrigir_alvo(alvo: str, subpasta: str = "Figuras") -> Optional[str]:
         return None
     slug = slug_do_arquivo(resto)
     return f"{prefixo}{slug}/{resto}" if slug else None
+
+
+_ITEM_EMBED_RE = re.compile(r"^\s*[-*+]\s*!\[\[(?P<alvo>[^\]|#]+?)(?:\|[^\]]*)?\]\]")
+_EMBED_RE = re.compile(r"!\[\[(?P<alvo>[^\]|#]+?)(?:\|[^\]]*)?\]\]")
+
+
+def remover_embeds_orfaos(texto: str, existe: Callable[[str], bool],
+                          subpasta: str = "Figuras") -> Tuple[str, int]:
+    """Tira do texto os embeds de figura que não têm mais destino em disco.
+
+    Diferente de `corrigir_alvo`, aqui não há conserto possível: o link aponta
+    para um recorte que a detecção nova NÃO produz mais. Medido em 2026-07-26:
+    71 links das sínteses da Fase 3 apontavam para figuras que a heurística velha
+    tirava de páginas que são texto puro — todas confirmadas secas por auditoria
+    visual. Reapontar seria inventar; o certo é remover.
+
+    Quando o embed é o item de lista inteiro (`- ![[…]] — página 13`, a forma que
+    as sínteses usam), a LINHA sai junto: sem a figura ela é um marcador vazio.
+    Embed solto no meio de prosa perde só o link, o texto ao redor fica.
+
+    `existe` é injetado (predicado sobre o alvo) para a função ficar pura e
+    testável sem tocar no disco, como `parse_quando` recebe o `agora`."""
+    prefixo = f"{subpasta}/"
+
+    def _orfao(alvo: str) -> bool:
+        return alvo.startswith(prefixo) and not existe(alvo)
+
+    saida: List[str] = []
+    removidos = 0
+
+    def _troca(mm: "re.Match") -> str:
+        nonlocal removidos
+        if not _orfao(mm.group("alvo")):
+            return mm.group(0)
+        removidos += 1
+        return ""
+
+    for linha in texto.split("\n"):
+        m = _ITEM_EMBED_RE.match(linha)
+        if m and _orfao(m.group("alvo")):
+            removidos += 1
+            continue
+        saida.append(_EMBED_RE.sub(_troca, linha))
+    return "\n".join(saida), removidos
 
 
 def resumo_contagem(por_pagina: Dict[int, int]) -> str:

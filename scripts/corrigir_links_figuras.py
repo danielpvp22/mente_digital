@@ -26,7 +26,7 @@ sys.path.insert(0, str(RAIZ))
 os.chdir(RAIZ)
 
 from mente_digital.config import settings  # noqa: E402
-from mente_digital.figuras_recorte import corrigir_alvo  # noqa: E402
+from mente_digital.figuras_recorte import corrigir_alvo, remover_embeds_orfaos  # noqa: E402
 
 _LINK_RE = re.compile(r"!\[\[([^\]|#]+?)\]\]")
 
@@ -34,11 +34,14 @@ _LINK_RE = re.compile(r"!\[\[([^\]|#]+?)\]\]")
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dry-run", action="store_true", help="so relata")
+    ap.add_argument("--remover-orfaos", action="store_true",
+                    help="apaga o embed que nao tem conserto (o recorte nao existe "
+                         "mais porque a deteccao nova considera a pagina seca)")
     args = ap.parse_args()
 
     vault = Path(settings.caminho_obsidian)
     sub = settings.subpasta_figuras
-    arquivos = corrigidos = pulados = 0
+    arquivos = corrigidos = pulados = removidos = 0
     for md in vault.rglob("*.md"):
         try:
             texto = md.read_text(encoding="utf-8")
@@ -61,6 +64,14 @@ def main() -> int:
             return f"![[{novo}]]"
 
         novo_texto = _LINK_RE.sub(_troca, texto)
+        # A remocao vem DEPOIS do conserto de caminho, senao apagaria o link que
+        # so parecia orfao por estar na convencao antiga (`Figuras/x.webp`).
+        if args.remover_orfaos:
+            novo_texto, n = remover_embeds_orfaos(
+                novo_texto, lambda alvo: (vault / alvo).is_file(), sub)
+            if n:
+                removidos += n
+                mudou = True
         if mudou:
             arquivos += 1
             if not args.dry_run:
@@ -69,6 +80,9 @@ def main() -> int:
     verbo = "corrigiria" if args.dry_run else "corrigiu"
     print(f"{verbo} {corrigidos} link(s) em {arquivos} nota(s); "
           f"{pulados} pulado(s) por o arquivo nao existir em disco.")
+    if args.remover_orfaos:
+        print(f"{'removeria' if args.dry_run else 'removeu'} {removidos} embed(s) "
+              f"orfao(s) sem conserto possivel.")
     if not args.dry_run and corrigidos:
         print("Rode `python scripts/reindexar.py` para a busca ver o texto novo.")
     return 0
