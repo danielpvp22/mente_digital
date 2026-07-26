@@ -48,6 +48,41 @@ _FRONTMATTER_RE = re.compile(r"^﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", re.DO
 # v3: conceitos da Malha Neural (ver MalhaIndex).
 _META_VERSAO = 3
 
+# Quantos chunks um dump do Chroma puxa por vez. O limite duro do SQLite é ~32k
+# variáveis por statement; 5.000 deixa 6x de folga e o custo de paginar é
+# desprezível perto do de processar o dump. Ver `dump_paginado`.
+_DUMP_LOTE = 5000
+
+def dump_paginado(store, include: Sequence[str], lote: Optional[int] = None) -> dict:
+    """`store.get(include=...)` em LOTES, agregado no mesmo formato de um get só.
+
+    Existe porque o get() sem limite vira um SQL com uma variável por registro e o
+    SQLite recusa acima de ~32k ("too many SQL variables"). Não é hipótese: em
+    2026-07-26 a base passou de 31.450 para 33.396 chunks ao indexar as notas de
+    figura e TODO dump quebrou de uma vez — a malha (fail-soft, morreu calada) e o
+    `sync()`, que sem ler o que já está indexado não indexa mais nada.
+
+    Síncrona de propósito: os chamadores já rodam dentro de `asyncio.to_thread`,
+    e os scripts offline a usam direto."""
+    lote = lote or _DUMP_LOTE      # lido em runtime: o default no `def` congelaria
+    agregado: dict = {}
+    offset = 0
+    while True:
+        parte = store.get(include=list(include), limit=lote, offset=offset)
+        # `embeddings` pode vir ndarray — nada de truthiness, só tamanho.
+        listas = {k: v for k, v in (parte or {}).items()
+                  if v is not None and not isinstance(v, (str, bytes, dict))
+                  and hasattr(v, "__len__")}
+        lidos = max((len(v) for v in listas.values()), default=0)
+        if not lidos:
+            return agregado
+        for k, v in listas.items():
+            agregado.setdefault(k, []).extend(v)
+        offset += lidos
+        if lidos < lote:
+            return agregado
+
+
 # Wikilink do Obsidian: [[Conceito]] ou [[Conceito|texto exibido]] (fica o alvo).
 _LINK_RE = re.compile(r"\[\[([^\[\]|]+)(?:\|[^\[\]]*)?\]\]")
 # Separador do campo `conceitos` no metadado. O Chroma só guarda ESCALAR (str/num/bool),
@@ -611,12 +646,18 @@ class VectorStore:
         Chamado no open (o índice vive em RAM, some com o processo) e no fim do sync
         (nota nova = conceito novo; sem isto a expansão ficaria olhando um retrato
         velho da base). Nunca derruba a busca: sem malha, a expansão só não acontece.
+
+        LÊ EM LOTES de propósito. O `get()` sem limite vira um SQL com uma variável
+        por registro, e o SQLite recusa acima de ~32k ("too many SQL variables").
+        Medido em 2026-07-26: com 31.450 chunks a malha montava; as 1.736 notas de
+        figura levaram a 33.396 e ela passou a estourar — falha silenciosa, porque
+        aqui é fail-soft e só a expansão por conceito morria.
         """
         if self._store is None:
             return
         try:
             dump = await asyncio.to_thread(
-                lambda: self._store.get(include=["documents", "metadatas"])
+                dump_paginado, self._store, ["documents", "metadatas"]
             )
             await asyncio.to_thread(
                 self.malha.construir,
@@ -641,7 +682,7 @@ class VectorStore:
         try:
             async with self._write_lock:
                 existing = await asyncio.to_thread(
-                    lambda: self._store.get(include=["metadatas"])
+                    dump_paginado, self._store, ["metadatas"]
                 )
                 # PURGA DE ÓRFÃOS: chunks cujo `source` não vive mais sob o vault atual
                 # (ou sumiu do disco). Conserta o lixo deixado quando o CAMINHO do vault
@@ -745,7 +786,7 @@ class VectorStore:
             return []
         try:
             dump = await asyncio.to_thread(
-                lambda: self._store.get(include=["documents", "metadatas", "embeddings"])
+                dump_paginado, self._store, ["documents", "metadatas", "embeddings"]
             )
         except Exception as exc:
             telemetry.error("RAG", "Falha no dump p/ consolidação", exc)

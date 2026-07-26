@@ -50,11 +50,13 @@ def test_ciclo_7d_conta_eventos(db_tmp):
 
 # -- snapshot no idle (EtlProcessor._snapshot_base) ----------------------------
 class _FakeStore:
-    def get(self, include=None):
-        return {
-            "documents": [f"átomo com {prompts.TAG_NOVO}", "átomo maduro"],
-            "metadatas": [{"origin": "Web"}, {"origin": "Local"}],
-        }
+    # limit/offset porque o dump agora é PAGINADO (o get() inteiro estourava o teto
+    # de variáveis do SQLite acima de ~32k chunks) — ver rag.dump_paginado.
+    def get(self, include=None, limit=None, offset=0):
+        docs = [f"átomo com {prompts.TAG_NOVO}", "átomo maduro"]
+        metas = [{"origin": "Web"}, {"origin": "Local"}]
+        fim = len(docs) if limit is None else offset + limit
+        return {"documents": docs[offset:fim], "metadatas": metas[offset:fim]}
 
 
 class _VS:
