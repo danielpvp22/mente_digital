@@ -46,6 +46,17 @@ from typing import List, Optional, Tuple
 # viraria lixo dentro dos átomos. Para OCR de livro queremos só a prosa.
 PROMPT_PADRAO = "Convert the document to markdown."
 
+# Os dois prompts do RECORTE DE FIGURAS (Fase 5c), onde as coordenadas são
+# justamente o produto. Ficam aqui, e não no script, porque são contrato com o
+# modelo — quem trocar o GGUF precisa reconferir os dois no mesmo lugar.
+#
+# O de markdown transcreve a página inteira e por isso traz a `image_caption`
+# pareada com cada `image`; o de localização devolve SÓ o layout (300 chars
+# contra 6.000), então é 3-4x mais rápido e nunca trunca. Rodam os dois: medido
+# em 2026-07-25, cada um achou uma figura que o outro perdeu.
+PROMPT_GROUNDING_MD = "<|grounding|>Convert the document to markdown."
+PROMPT_LOCALIZAR_FIGURA = "Locate <|ref|>figure<|/ref|> in the image."
+
 # Rede de segurança: se algum caminho ainda produzir as anotações de grounding,
 # elas somem aqui em vez de poluir o Zettelkasten.
 _GROUNDING_RE = re.compile(r"^\s*\w+\[\[[\d,\s]+\]\]\s*", re.MULTILINE)
@@ -222,6 +233,39 @@ class ServidorOcr:
         except Exception:
             self._proc.kill()
         self._proc = None
+
+    def responder(self, imagem: bytes, prompt: str,
+                  max_tokens: int = 4096) -> Tuple[str, str]:
+        """Chamada CRUA: devolve (conteúdo, motivo_de_parada), sem limpar nada.
+
+        Existe para o recorte de figuras (Fase 5c), que precisa do oposto do que
+        `transcrever` faz: lá as anotações `image[[x0,y0,x1,y1]]` são LIXO a
+        remover, aqui são o produto.
+
+        E devolve o `finish_reason` porque ele é a única forma de saber que a
+        página foi CORTADA no meio: numa página densa o modelo gasta os tokens
+        transcrevendo o texto e para antes de chegar às figuras do rodapé. Sem
+        esse sinal, a página perdida seria indistinguível de uma página sem
+        figura — o pior modo de falha para um pipeline cujo requisito é não
+        deixar nenhuma imagem passar.
+
+        Recebe BYTES e não um caminho de propósito: a página já está em memória e
+        gravar um PNG temporário por chamada foi fonte de bug (duas threads
+        sobrescrevendo o mesmo arquivo e o OCR lendo a figura errada)."""
+        import base64
+        import json
+        import urllib.request
+
+        b64 = base64.b64encode(imagem).decode()
+        corpo = json.dumps(montar_payload(b64, prompt, max_tokens)).encode()
+        req = urllib.request.Request(
+            self._base + "/v1/chat/completions", data=corpo,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self._timeout) as r:  # nosec B310
+            dados = json.loads(r.read())
+        escolha = (dados.get("choices") or [{}])[0]
+        return ((escolha.get("message") or {}).get("content") or "",
+                escolha.get("finish_reason") or "")
 
     def transcrever(self, imagem: Path, prompt: str = PROMPT_PADRAO,
                     max_tokens: int = 2048) -> Optional[str]:
