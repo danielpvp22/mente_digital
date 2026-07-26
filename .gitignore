@@ -79,3 +79,11 @@ graphify-out/
 
 # Artefato do pytest-cov local
 .coverage
+
+# Saidas do recorte de figuras (Fase 5c): relatorios de deteccao, folhas de
+# auditoria e o resultado da emulacao. Sao DADOS gerados (o de producao soma
+# ~4 MB), regeneraveis pelos scripts de eval/ — ficam no disco, fora do git.
+eval/relatorios/
+eval/auditoria/
+eval/emulacao_figuras.json
+eval/spike/
