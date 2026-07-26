@@ -163,3 +163,39 @@ async def test_figura_ja_trazida_pelo_texto_nao_duplica():
     ])
     res = await vs.search("clorose")
     assert res.texto.count(mesma) == 1
+
+
+# --- a imagem é para os OLHOS: o TTS não pode falar o caminho do arquivo ------
+# Defeito pego antes do teste real (2026-07-26): o contexto manda o modelo copiar
+# o `![[...]]`, mas o mesmo texto vai para a fala. O `_STRIP_MD` só apaga colchetes
+# e o `_ALLOWED` do Piper preserva letra/`_`/`-`, então a resposta sairia falada
+# como "Figuras livro x p0288 f1 ponto webp".
+
+FALA = "Veja ![[Figuras/livro/x_p0288_f1.webp]] a clorose entre as nervuras."
+
+
+def test_embed_de_imagem_nao_chega_a_fala():
+    from mente_digital.textutils import sem_embeds_de_imagem
+
+    limpo = sem_embeds_de_imagem(FALA)
+    assert "webp" not in limpo and "[[" not in limpo and "Figuras" not in limpo
+    assert "Veja" in limpo and "clorose entre as nervuras" in limpo
+
+
+def test_embed_vira_espaco_e_nao_emenda_palavras():
+    from mente_digital.textutils import sem_embeds_de_imagem
+
+    # colado, viraria "Vejaa clorose"
+    assert "Vejaa" not in sem_embeds_de_imagem(FALA)
+
+
+def test_normalizador_do_piper_tira_o_embed():
+    from mente_digital.audio import TtsService
+
+    assert "webp" not in TtsService()._normalizar(FALA)
+
+
+def test_texto_sem_embed_passa_intacto():
+    from mente_digital.textutils import sem_embeds_de_imagem
+
+    assert sem_embeds_de_imagem("resposta comum, sem figura") == "resposta comum, sem figura"

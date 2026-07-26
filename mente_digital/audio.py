@@ -25,6 +25,7 @@ import numpy as np
 from mente_digital import vram
 from mente_digital.config import DICIONARIO_FONETICO, settings
 from mente_digital.telemetry import telemetry
+from mente_digital.textutils import sem_embeds_de_imagem
 from mente_digital.verbalizar import verbalizar
 
 if TYPE_CHECKING:
@@ -377,6 +378,9 @@ class TtsService:
         pass
 
     def _normalizar(self, texto: str) -> str:
+        # ANTES do _STRIP_MD: ele apaga os colchetes e o embed de figura viraria um
+        # caminho de arquivo solto, que o Piper tenta FALAR. Ver sem_embeds_de_imagem.
+        texto = sem_embeds_de_imagem(texto)
         texto = self._STRIP_MD.sub("", texto)
         # Números/símbolos → palavras faláveis ANTES do filtro _ALLOWED (que apagaria
         # $ % ° º) e do Piper (cujo espeak-ng adivinha e erra decimal/hora em PT-BR).
