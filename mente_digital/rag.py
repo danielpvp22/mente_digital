@@ -896,13 +896,37 @@ class VectorStore:
         if self._store is None or not consulta.strip():
             return None
         try:
-            return await asyncio.to_thread(
-                self._store.similarity_search_with_score,
-                consulta.strip(), k=k or settings.rag_top_k,
-            )
+            return await self._buscar_texto(consulta.strip(), k or settings.rag_top_k)
         except Exception as exc:
             telemetry.error("LOCAL", "Falha na recuperação especulativa", exc)
             return None
+
+    async def _buscar_texto(self, consulta: str, k: int) -> list:
+        """Recupera SÓ texto, pedindo o filtro ao Chroma — não filtrando depois.
+
+        A diferença não é estilo, é sobrevivência da busca. Medido em 2026-07-26,
+        logo após traduzir 635 legendas para PT-BR: as notas de figura ficaram tão
+        competitivas que ocuparam os 40 slots INTEIROS numa pergunta sobre magnésio.
+        Como o texto é o que ancora a resposta, descartar figura DEPOIS deixava a
+        lista vazia e a pergunta ia parar na web — com o vault cheio de átomos bons
+        sobre o assunto, a 0,0951 de distância.
+
+        Fail-open em duas camadas, porque uma base ainda em meta_v<4 não tem o campo
+        `tipo` e o filtro devolveria vazio: se o filtro der erro OU vier vazio
+        enquanto a busca sem filtro acha coisa, vale a busca sem filtro (é o
+        comportamento anterior, com o descarte em Python fazendo o resto)."""
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._store.similarity_search_with_score(
+                    consulta, k=k, filter={"tipo": "texto"})
+            )
+            if res:
+                return res
+        except Exception as exc:
+            telemetry.error("LOCAL", "Filtro de tipo indisponível; busca sem ele", exc)
+        return await asyncio.to_thread(
+            self._store.similarity_search_with_score, consulta, k
+        )
 
     async def _buscar_figuras(self, consulta: str, chaves: set) -> List[Tuple[float, object]]:
         """Figuras que passam o gate, num espaço de busca SÓ delas.
@@ -939,6 +963,16 @@ class VectorStore:
             and (score < limiar or textutils.contem_alguma(doc.page_content, chaves))
         ]
         aprovadas.sort(key=lambda x: x[0])
+        # CORTE RELATIVO À MELHOR FIGURA. O limiar absoluto sozinho não sabe DESISTIR:
+        # num acervo de 1.735 imagens sempre há alguém abaixo dele, então uma pergunta
+        # sem figura boa recebia a "menos ruim" (medido: "tricomas", que o acervo não
+        # cobre, trouxe duas fotos de barbeiro). Ancorar na MELHOR figura da própria
+        # pergunta transforma o gate em "estas são tão boas quanto a melhor?" — e foi
+        # o único denominador que separou nos dados (ver figuras_margem_melhor).
+        margem = settings.figuras_margem_melhor
+        if margem > 0 and aprovadas:
+            teto = aprovadas[0][0] * margem
+            aprovadas = [(s, d) for s, d in aprovadas if s <= teto]
         return aprovadas
 
     async def search(
@@ -973,8 +1007,8 @@ class VectorStore:
             # especulação é a MESMA pergunta crua que seria embeddada aqui, então o
             # resultado é idêntico ao da linha de baixo — só o instante muda. Lista
             # vazia é resultado legítimo ("especulei e não veio nada"), não fallback.
-            res = recuperados if recuperados is not None else await asyncio.to_thread(
-                self._store.similarity_search_with_score, consulta, k=settings.rag_top_k
+            res = recuperados if recuperados is not None else await self._buscar_texto(
+                consulta, settings.rag_top_k
             )
             if not res:
                 return LocalResult(NENHUM, None, False)

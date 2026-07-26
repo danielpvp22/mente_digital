@@ -72,7 +72,9 @@ def test_rotulo_distingue_texto_e_vizinho_da_malha():
 
 
 # --- o gate: QUANTAS entram é da distância, não de cota ---------------------
-async def test_gate_admite_so_as_figuras_confiantes():
+async def test_gate_admite_so_as_figuras_confiantes(monkeypatch):
+    # corte relativo desligado: aqui é o limiar ABSOLUTO que está sob teste
+    monkeypatch.setattr(settings, "figuras_margem_melhor", 0.0)
     vs = rag.VectorStore(embeddings=None)
     vs._store = StoreComFiltro([
         (_fig("boa", "clorose entre as nervuras"), 0.10),
@@ -241,3 +243,49 @@ def test_bloco_vazio_sem_figura():
 
     assert bloco_de_figuras(["/v/Notas/a.md", "/v/Notas/b.md"]) == ""
     assert bloco_de_figuras([]) == ""
+
+
+# --- corte relativo à MELHOR figura ------------------------------------------
+# O limiar absoluto não sabe desistir: num acervo de 1.735 imagens sempre há alguém
+# abaixo dele. Medido em 2026-07-26, já com as legendas traduzidas: na pergunta de
+# magnésio as certas ficam em 1,00-1,01x da melhor e o manganês em 1,12x.
+
+async def test_corte_relativo_derruba_a_menos_ruim(monkeypatch):
+    monkeypatch.setattr(settings, "figuras_margem_melhor", 1.10)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = StoreComFiltro([
+        (_fig("mg1", "deficiência de magnésio"), 0.1077),
+        (_fig("mg2", "fase avançada de magnésio"), 0.1088),   # 1.01x
+        (_fig("mn", "deficiência de manganês"), 0.1201),      # 1.12x -> fora
+        (_fig("fe", "deficiência de ferro"), 0.1319),         # 1.22x -> fora
+    ])
+    aprovadas = await vs._buscar_figuras("magnésio", set())
+    assert [round(s, 4) for s, _ in aprovadas] == [0.1077, 0.1088]
+
+
+async def test_corte_relativo_mantem_o_bloco_coeso(monkeypatch):
+    # "podar": as 6 certas ficam dentro de 1,04x — nenhuma pode cair.
+    monkeypatch.setattr(settings, "figuras_margem_melhor", 1.10)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = StoreComFiltro([
+        (_fig(f"p{i}", f"poda {i}"), d)
+        for i, d in enumerate([0.1465, 0.1476, 0.1482, 0.1508, 0.1510, 0.1525])
+    ])
+    assert len(await vs._buscar_figuras("podar", set())) == 6
+
+
+async def test_corte_relativo_desligado_por_zero(monkeypatch):
+    monkeypatch.setattr(settings, "figuras_margem_melhor", 0.0)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = StoreComFiltro([
+        (_fig("a", "x"), 0.10),
+        (_fig("b", "y"), 0.15),      # 1.5x: só sobrevive com o corte desligado
+    ])
+    assert len(await vs._buscar_figuras("q", set())) == 2
+
+
+async def test_corte_relativo_nao_quebra_com_lista_vazia(monkeypatch):
+    monkeypatch.setattr(settings, "figuras_margem_melhor", 1.10)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = StoreComFiltro([])
+    assert await vs._buscar_figuras("q", set()) == []
