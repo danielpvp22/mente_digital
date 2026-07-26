@@ -22,7 +22,7 @@ import shutil
 import ssl
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, List, Optional, Tuple
+from typing import Awaitable, List, Optional, Sequence, Tuple
 
 from mente_digital import antiinjecao
 from mente_digital import disjuntor as _disjuntor
