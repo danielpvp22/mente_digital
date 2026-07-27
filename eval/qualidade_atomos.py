@@ -87,6 +87,7 @@ def _pct(n: int, tot: int) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--amostra", type=int, default=0, help="mostra N exemplos ruins por grupo")
+    ap.add_argument("--auditoria", action="store_true", help="gera .md revisavel com quem esta fora do padrao")
     args = ap.parse_args()
 
     vault = Path(settings.caminho_obsidian)
@@ -131,6 +132,34 @@ def main() -> int:
     print("malhaOK = usa o rótulo canônico '**Malha Neural:**' | wiki = tem [[link]]")
     print("dup = ideias idênticas dentro do grupo | orfao = wikilink sem átomo de destino")
     print("NÃO mede se a ideia está CORRETA — isso pede julgamento humano.")
+
+    if args.auditoria:
+        # RELATÓRIO REVISÁVEL (pedido do dono, 2026-07-25): quem está fora do padrão,
+        # com a PROVENIÊNCIA ao lado — é o frontmatter que diz de onde o átomo veio
+        # (livro/capítulo/página, ou o .json da conversa importada), então revisar é
+        # abrir a fonte e conferir. Um .md para ler no próprio Obsidian.
+        alvo = Path("eval/saidas/atomos_fora_do_padrao.md")
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        problemas = {
+            "Título fraco (genérico ou fragmento)": lambda m: not m["titulo_forte"],
+            "Sem rótulo canônico da Malha": lambda m: not m["malha_canonica"],
+            "Sem wikilink algum": lambda m: not m["tem_wikilink"],
+            "Sem proveniência no frontmatter": lambda m: not m["tem_proveniencia"],
+        }
+        linhas = ["# Átomos fora do padrão", "",
+                  "Gerado por `eval/qualidade_atomos.py --auditoria`. A coluna ORIGEM é o",
+                  "frontmatter do próprio átomo — é por ela que se chega à fonte (página do",
+                  "livro, arquivo da conversa importada).", ""]
+        for rotulo, teste in problemas.items():
+            afetados = [(g, i) for g, itens in por_grupo.items() for i in itens if teste(i)]
+            linhas += [f"## {rotulo} — {len(afetados)}", ""]
+            for g, i in afetados[:200]:
+                linhas.append(f"- `{i['arquivo']}` · **{g}** · título: {i['titulo'][:60]!r}")
+            if len(afetados) > 200:
+                linhas.append(f"- … e outros {len(afetados)-200}")
+            linhas.append("")
+        alvo.write_text("\n".join(linhas), encoding="utf-8")
+        print(f"\nRelatório: {alvo}")
 
     if args.amostra:
         for grupo, itens in sorted(por_grupo.items(), key=lambda kv: -len(kv[1])):

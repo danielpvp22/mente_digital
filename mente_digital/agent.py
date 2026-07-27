@@ -377,6 +377,12 @@ class Agent(ComandosMestre, Respostas):
                         # os átomos usados "amadureceram" — tira o #conhecimento_novo deles.
                         # Em background: não pesa no TTFA da resposta atual.
                         if len(paragrafos) > antes and local.fontes:
+                            # FIGURAS: aqui, e não dentro do _responder_contexto, porque
+                            # este é o ponto onde já se sabe que o Banco respondeu DE
+                            # VERDADE (passada não-sentinela) — anexar imagem a uma
+                            # passada que virou sentinela mostraria figura sem resposta.
+                            await self._mostrar_figuras(
+                                send_medido, local.fontes, "\n".join(paragrafos))
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
                             # #4 TEMA QUENTE: o Banco respondeu de fato -> o usuário REUSOU
                             # o vault neste tema (interesse recorrente). Registra p/ a

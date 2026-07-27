@@ -14,8 +14,10 @@ continuam sendo o MESMO objeto Agent em runtime. Nada aqui roda sem um Agent.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 
+from mente_digital import figuras_recorte
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import verbosidade
@@ -398,6 +400,46 @@ class Respostas:
             # falar agora — também é enfileirada pro ETL: vira átomos #conhecimento_novo
             # e engorda a base sobre o que o usuário demonstrou interesse.
             mem.enfileirar_etl(tema, ctx_amplo)
+
+    async def _mostrar_figuras(self, send: Sender, fontes: List[str],
+                               ja_dito: str = "") -> int:
+        """Anexa à resposta as figuras que entraram no contexto. Devolve quantas.
+
+        Por que o SERVIDOR monta isto, em vez de pedir ao LLM que copie o wikilink:
+        medido no teste real de 2026-07-26, a pergunta caiu no nível `curto`
+        (teto de 90 tokens), a resposta consumiu o teto INTEIRO e não sobrou espaço
+        para um embed de ~105 chars — nenhuma imagem apareceu. Somam-se dois riscos
+        que este caminho elimina de vez: o system prompt manda ser "BRUTALMENTE
+        CONCISO" (empurra contra), e um caminho longo transcrito por um modelo local
+        pode sair com um caractere trocado, quebrando a <img> em silêncio.
+
+        Vai pelo canal VISÍVEL (`tipo: token`), nunca pelo chunker — então o TTS não
+        vê nada disso e a fala continua sendo só a resposta.
+
+        Confere o arquivo em disco antes: a nota pode seguir indexada depois de o
+        .webp ter sido apagado (aconteceu com a p4 do Cervantes), e imagem quebrada
+        na tela é pior do que figura ausente."""
+        # `ja_dito` é a resposta que o modelo produziu: se ele copiou o embed mesmo
+        # assim (o corpo da nota o contém, então há risco de imitação), não anexa de
+        # novo — a duplicata mostraria a mesma imagem duas vezes.
+        embeds = [
+            e for e in
+            figuras_recorte.bloco_de_figuras(fontes, settings.subpasta_figuras).split("\n")
+            if e and e not in ja_dito
+        ]
+        if not embeds:
+            return 0
+        raiz = Path(settings.caminho_obsidian)
+
+        def _existentes() -> List[str]:
+            return [e for e in embeds if (raiz / e[3:-2]).is_file()]
+
+        vivos = await asyncio.to_thread(_existentes)
+        if not vivos:
+            return 0
+        await send({"tipo": "token", "texto": "\n\n" + "\n".join(vivos)})
+        telemetry.track("FIGURAS", f"{len(vivos)} figura(s) anexada(s) à resposta.")
+        return len(vivos)
 
     async def _consolidar_fontes(self, fontes: List[str]) -> None:
         """Promoção: tira a tag #conhecimento_novo dos arquivos-fonte que foram usados

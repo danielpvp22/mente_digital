@@ -31,6 +31,7 @@ from typing import Optional
 from mente_digital import vram
 from mente_digital.config import settings
 from mente_digital.telemetry import telemetry
+from mente_digital.textutils import sem_embeds_de_imagem
 from mente_digital.verbalizar import verbalizar
 
 # Só tira a marcação Markdown (o XTTS lê pontuação/acentos nativamente — ao contrário do
@@ -243,6 +244,9 @@ class XttsService:
     def _preparar(self, texto: str) -> str:
         """Modelagem de texto: verbaliza números e tira Markdown. SEM o filtro _ALLOWED
         do Piper — o XTTS foneiza acentos/símbolos nativamente. Puro/testável sem modelo."""
+        # ANTES do _STRIP_MD, pelo mesmo motivo do Piper: sem isto o embed de figura
+        # vira caminho de arquivo e o modelo o LÊ. Ver sem_embeds_de_imagem.
+        texto = sem_embeds_de_imagem(texto)
         texto = _STRIP_MD.sub("", texto)
         texto = verbalizar(texto)
         texto = _SANITIZAR.sub(" ", texto)   # tira emoji/símbolo sem leitura (anti-assert)

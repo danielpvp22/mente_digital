@@ -438,6 +438,38 @@ class Settings(BaseSettings):
     # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
     # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
     malha_sim_min: float = 0.5
+    # --- FIGURAS EM ESPAÇO PRÓPRIO (2026-07-26) -------------------------------
+    # Por que existe: no banco cheio (33k chunks) a nota de figura PERDIA a vaga no
+    # top-k para os átomos de texto. Medido: uma figura a 0,1239 ficava fora de um
+    # top-40 cujo pior era 0,1373 — a busca aproximada não a alcançava. E o oposto
+    # também doía: "como podar a planta" gastava 16 das 40 vagas com figura.
+    # A correção é buscar figura à PARTE (`where={"tipo":"figura"}`, exato dentro do
+    # subconjunto) e deixar o GATE decidir quantas entram — nunca uma cota fixa, que
+    # forçaria imagem em pergunta que não pede e travaria a que precisa de mais.
+    figuras_no_contexto: bool = True
+    # Quantas figuras CONSIDERAR (candidatas, antes do gate). Não é cota: é o tamanho
+    # da busca. Quantas de fato entram depende do gate e do orçamento de chars.
+    figuras_top_k: int = 12
+    # Limiar da figura. 0 = herda o rag_score_confident (mesma régua do texto). Existe
+    # separado porque a nota de figura é curta e descritiva: a distância dela não é
+    # comparável à de um átomo de prosa, então pode precisar de calibração própria.
+    figuras_score_confident: float = 0.0
+    # CORTE RELATIVO À MELHOR FIGURA (2026-07-26). O limiar absoluto sozinho deixava
+    # passar a figura "menos ruim": numa pergunta sobre magnésio entravam manganês,
+    # potássio e ferro, todos abaixo de 0,16. Medido depois de traduzir as legendas,
+    # em múltiplos da distância da MELHOR figura daquela pergunta:
+    #   magnésio  as certas em 1,00-1,01x | o manganês (errado) em 1,12x
+    #   podar     as 6 certas dentro de 1,04x
+    #   pragas    as certas dentro de 1,11x
+    # 1,10 corta o manganês/potássio/ferro sem tocar em podar nem pragas. Custa
+    # recall em pergunta cuja resposta é ilustrada por várias figuras diferentes
+    # ("fotossíntese" perde as de 1,15x-1,27x, que eram legítimas) — é troca
+    # deliberada de recall por precisão, que foi a reclamação real.
+    # NÃO confundir com corte relativo ao TEXTO: esse foi medido e REFUTADO (o
+    # denominador vira "quão bom é o texto" e uma pergunta bem coberta reprova
+    # figura boa — "fotossíntese" dá 1,33x com figura certa, acima de casos errados
+    # a 1,27x). 0 desliga; MAIOR = mais figuras e menos exigente.
+    figuras_margem_melhor: float = 1.10
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000

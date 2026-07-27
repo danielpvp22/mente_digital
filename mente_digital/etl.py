@@ -28,6 +28,7 @@ from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
 from mente_digital import figuras as figuras_mod
+from mente_digital import rag
 from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
 from mente_digital import triagem
@@ -1056,7 +1057,7 @@ class EtlProcessor:
             if await asyncio.to_thread(db.snapshot_base_hoje):
                 return
             dump = await asyncio.to_thread(
-                lambda: store.get(include=["documents", "metadatas"])
+                rag.dump_paginado, store, ["documents", "metadatas"]
             )
             metas = dump.get("metadatas") or []
             docs = dump.get("documents") or []

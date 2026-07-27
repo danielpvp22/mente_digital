@@ -259,10 +259,36 @@ def prompt_atomizar_livro(livro: str, capitulo: str, trecho: str) -> str:
         "Use EXATAMENTE este formato para cada nota, uma ideia por nota, sem repetir:\n\n"
         "## <título curto da ideia>\n"
         "<a ideia em 1-2 frases afirmativas>\n"
-        "**Malha Neural:** [[Conceito relacionado]]\n"
+        "**Malha Neural:** [[Conceito]], [[Outro conceito]]\n"
         f"{TAG_ATOMO} {TAG_NOVO}\n\n"
+        # MALHA OBRIGATÓRIA (medido 2026-07-25 nos 2.038 átomos do Amabis): 24% saíram
+        # SEM conceito nenhum — ficam fora do grafo, invisíveis para a navegação. O
+        # rótulo improvisado o Python já canoniza (atomos._MALHA_IMPROVISADA_RE), mas
+        # conceito que o modelo não escreveu ninguém inventa: tem de ser pedido, com
+        # o que conta como conceito (termo, não frase) e o que fazer quando não há um óbvio.
+        "A linha **Malha Neural:** é OBRIGATÓRIA em toda nota e leva de 1 a 3 "
+        "CONCEITOS entre [[colchetes duplos]] — cada um um TERMO curto (2 a 4 "
+        "palavras), nunca uma frase ou definição. Se nenhum conceito específico se "
+        "destacar, use o assunto mais amplo do trecho.\n"
         "Separe as notas por uma linha em branco. Nada de introdução ou conclusão.\n\n"
         f"TRECHO DO LIVRO:\n{trecho}"
+    )
+
+
+def prompt_malha_de_atomo(titulo: str, ideia: str) -> str:
+    """Segunda passada de MALHA para átomo já salvo que ficou sem conceito nenhum.
+
+    Por que existe: medido nos 2.038 átomos do Amabis, 24% saíram sem wikilink — o
+    Python canoniza o rótulo, mas conceito que o modelo não escreveu ninguém
+    inventa. O prompt de ingestão foi corrigido (97% no capítulo seguinte), mas o
+    que já está em disco precisa desta passada. Saída MÍNIMA de propósito: só os
+    conceitos, uma linha — quanto menor a tarefa, menos o modelo deriva."""
+    return (
+        "Leia a nota abaixo e responda APENAS com 1 a 3 conceitos relacionados, "
+        "cada um entre [[colchetes duplos]], separados por vírgula. Cada conceito é "
+        "um TERMO curto (2 a 4 palavras) — nunca uma frase, nunca uma definição, "
+        "nunca repita o título da nota. Sem explicação, sem prefixo, só a linha.\n\n"
+        f"TÍTULO: {titulo}\nNOTA: {ideia}\n\nCONCEITOS:"
     )
 
 

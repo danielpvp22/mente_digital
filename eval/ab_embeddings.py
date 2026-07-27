@@ -44,6 +44,7 @@ import numpy as np  # noqa: E402
 
 from mente_digital import textutils  # noqa: E402
 from mente_digital.config import settings  # noqa: E402
+from mente_digital.rag import dump_paginado  # noqa: E402
 from mente_digital.telemetry import db  # noqa: E402
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -90,7 +91,7 @@ def carregar_corpus() -> Tuple[List[str], List[str], List[str]]:
     if not cols:
         raise SystemExit("ERRO: nenhuma coleção no Chroma — o banco vetorial existe?")
     col = max(cols, key=lambda c: c.count())
-    dados = col.get(include=["documents", "metadatas"])
+    dados = dump_paginado(col, ["documents", "metadatas"])
     docs = dados["documents"] or []
     metas = dados["metadatas"] or []
     titulos: List[str] = []

@@ -125,3 +125,21 @@ def limpar_query(s: str, max_palavras: int = 6) -> str:
         if len(saida) >= max_palavras:
             break
     return " ".join(saida)
+
+
+# O embed de imagem do Obsidian: `![[Figuras/livro/x_p0288_f1.webp]]`.
+_EMBED_IMAGEM_RE = re.compile(r"!\[\[[^\]\n]*?\]\]")
+
+
+def sem_embeds_de_imagem(texto: str) -> str:
+    """Tira o `![[...]]` do texto que vai para a FALA. Puro/testável.
+
+    O contexto de figura pede ao modelo que copie o wikilink literal — é ele que o
+    front converte em <img>. Mas o mesmo texto vai para o TTS, e ali o wikilink é
+    um desastre: o `_STRIP_MD` só apaga os colchetes e o `_ALLOWED` do Piper
+    preserva letra, `_` e `-`, então a resposta sairia falada como "Figuras livro
+    x p0288 f1 ponto webp". A imagem é para os OLHOS; a fala segue sem ela.
+
+    Vira ESPAÇO, não vazio: colado, o embed emendaria as palavras vizinhas.
+    """
+    return _EMBED_IMAGEM_RE.sub(" ", texto or "")

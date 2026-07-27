@@ -153,3 +153,61 @@ def test_centralidade_zero_sem_vizinho_no_conjunto():
 def test_centralidade_ignora_source_fora_da_malha():
     cent = _indice().centralidade(["a.md", "desconhecido.md"])
     assert "desconhecido.md" not in cent     # só átomos conhecidos entram
+
+
+# --- leitura em LOTES do Chroma ---------------------------------------------
+# Regressão medida em 2026-07-26: com 31.450 chunks a malha montava; ao indexar as
+# 1.736 notas de figura a base chegou a 33.396 e o `get()` sem limite passou a
+# estourar o teto de variáveis do SQLite. Como `_reconstruir_malha` é fail-soft, a
+# expansão por conceito morreu EM SILÊNCIO — só o log denunciava.
+
+
+class _StoreComTetoDeVariaveis:
+    """Chroma cujo get() recusa pedido grande, como o SQLite por baixo dele."""
+
+    def __init__(self, quantos: int, teto: int):
+        self.docs = [f"nota {i}\n**Malha Neural:** [[Conceito {i}]]" for i in range(quantos)]
+        # `construir` lê os conceitos do METADADO, não do texto — o fake segue isso,
+        # senão o teste passaria sem provar que os lotes do fim chegam ao índice.
+        self.metas = [{"source": f"n{i}.md", "conceitos": f"Conceito {i}"}
+                      for i in range(quantos)]
+        self.teto = teto
+        self.pedidos: list = []
+
+    def get(self, include=None, limit=None, offset=0):
+        pedido = len(self.docs) if limit is None else limit
+        self.pedidos.append(pedido)
+        if pedido > self.teto:
+            raise RuntimeError("too many SQL variables")
+        fim = len(self.docs) if limit is None else offset + limit
+        return {"documents": self.docs[offset:fim], "metadatas": self.metas[offset:fim]}
+
+
+async def test_reconstruir_malha_pagina_e_nao_estoura_o_teto(monkeypatch):
+    from mente_digital import rag
+
+    monkeypatch.setattr(rag, "_DUMP_LOTE", 100)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = _StoreComTetoDeVariaveis(250, teto=150)
+
+    await vs._reconstruir_malha()
+
+    assert vs.malha.n_atomos == 250          # nenhum chunk ficou para trás
+    assert vs.malha.n_conceitos == 250       # e os conceitos dos ÚLTIMOS lotes entraram
+    assert len(vs._store.pedidos) >= 3       # leu em lotes, não de uma vez
+    assert max(vs._store.pedidos) <= 150     # nunca pediu mais que o teto
+
+
+async def test_reconstruir_malha_encerra_no_lote_vazio(monkeypatch):
+    from mente_digital import rag
+
+    monkeypatch.setattr(rag, "_DUMP_LOTE", 100)
+    vs = rag.VectorStore(embeddings=None)
+    vs._store = _StoreComTetoDeVariaveis(100, teto=150)   # múltiplo exato do lote
+
+    await vs._reconstruir_malha()
+
+    # No múltiplo exato não há como saber que acabou sem perguntar: o 2º get volta
+    # vazio e encerra. Um round-trip barato — o caro seria contar a coleção antes.
+    assert vs.malha.n_atomos == 100
+    assert vs._store.pedidos == [100, 100]
