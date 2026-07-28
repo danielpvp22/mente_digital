@@ -62,6 +62,74 @@ def test_corpo_portugues_com_termos_ingleses_nao_conta():
         "processo descrito no livro como water uptake.")
 
 
+# --- glossário do domínio: jargão fica em inglês (ordem do dono) -------------
+def test_jargao_do_cultivo_atravessa_a_traducao():
+    assert idioma.GLOSSARIO["bud"] == "bud"
+    assert idioma.GLOSSARIO["buds"] == "buds"
+    assert "bud = bud" in idioma.linha_glossario(["bud"])
+
+
+def test_linha_do_glossario_leva_so_os_termos_pedidos():
+    linha = idioma.linha_glossario(["gnats"])
+    assert "gnats = fungus gnats" in linha and "bud" not in linha
+
+
+def test_termos_do_glossario_casa_palavra_inteira():
+    achados = idioma.termos_do_glossario("Fungus gnat adults stick to resinous buds")
+    assert "buds" in achados and "fungus gnat" in achados
+    assert idioma.termos_do_glossario("O budismo não é jargão de cultivo") == []
+
+
+# --- as correções EXIGEM prova no original (defeito pego antes de gravar) -----
+def test_correcao_so_vale_com_o_termo_no_ORIGINAL():
+    """'bordas resinosas' vem de 'resinous buds' — mas só nessa nota."""
+    texto, n = idioma.aplicar_correcoes(
+        "Adere a bordas resinosas como papel de fly",
+        "Fungus gnat adults stick to resinous buds like flypaper")
+    assert n == 2
+    assert "buds resinosos" in texto and "papel pega-moscas" in texto
+
+
+def test_BORBOLETA_DE_VERDADE_nao_e_trocada():
+    """O ensaio a seco pegou isto antes de gravar: a troca cega de 'borboleta'
+    corrompia notas do Raven em que a palavra está CERTA."""
+    texto, n = idioma.aplicar_correcoes(
+        "Coevolução borboleta-monarca e Asclepias",
+        "Monarch butterfly coevolution with Asclepias")
+    assert n == 0 and "borboleta-monarca" in texto
+
+
+def test_o_PLURAL_tambem_e_corrigido():
+    """A regressão que escapou da 1ª pós-checagem: `\\bborboleta\\b` não casa
+    'borboletas', e o título tinha ficado no plural."""
+    texto, n = idioma.aplicar_correcoes("Aplicação de vinagre em borboletas de flor",
+                                        "Vinegar Application for Cut Flower Buds")
+    assert n and "buds de flor" in texto and "borboleta" not in texto
+
+
+def test_palavra_inventada_pelo_modelo_e_corrigida():
+    texto, _n = idioma.aplicar_correcoes("Podre excessivo causa estresse",
+                                         "Excessive Pruning Causes Stress")
+    assert texto.startswith("Poda excessiva")
+
+
+def test_palavra_inventada_sem_prova_no_original_fica():
+    texto, n = idioma.aplicar_correcoes("Podre excessivo causa estresse",
+                                        "Rotten Fruit Causes Stress")
+    assert n == 0 and texto.startswith("Podre")
+
+
+def test_sem_original_preservado_nada_e_trocado():
+    texto, n = idioma.aplicar_correcoes("Refletor borboleta e deflector", "")
+    assert n == 0 and texto == "Refletor borboleta e deflector"
+
+
+def test_correcao_preserva_a_inicial_maiuscula():
+    texto, _n = idioma.aplicar_correcoes("Formiga de fungo adere ao meio",
+                                         "Fungus gnat sticks to the medium")
+    assert texto.startswith("Fungus gnat")
+
+
 def test_contagem_devolve_as_tres_medidas():
     ingles, port, n = idioma.contar_funcionais("the plant and a folha")
     assert ingles == 2 and port == 1 and n == 5

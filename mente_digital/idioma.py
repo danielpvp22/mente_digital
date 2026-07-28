@@ -85,6 +85,113 @@ def em_ingles(titulo: str) -> bool:
     return ingles >= 1 and port == 0
 
 
+# --- glossário do domínio (ordem do dono, 2026-07-28) ------------------------
+# "Quero manter palavras técnicas do meio em inglês, como 'bud'."
+#
+# Não é preferência de estilo: é conserto de corrupção. Medido no lote de
+# 2026-07-28, o modelo de 4B não conhece a gíria do cultivo e produziu
+#   "resinous buds"     -> "bordas resinosas"      (bud virou borda)
+#   "Cut Flower Buds"   -> "borboletas de flor"    (bud virou borboleta)
+#   "fungus gnat"       -> "formiga de fungo"      (mosquito virou formiga)
+#   "flypaper"          -> "papel de fly"          (metade traduzida)
+# Palavra que o modelo não conhece ele CHUTA, e o chute entra no vault como se
+# fosse fato. A tabela abaixo tira a decisão dele.
+#
+# Chave = termo em inglês (minúsculo); valor = o que deve aparecer em PT-BR.
+# Valor IGUAL à chave significa "não traduza" — é assim que o jargão do meio
+# atravessa a tradução intacto.
+GLOSSARIO = {
+    "bud": "bud", "buds": "buds", "nug": "nug", "nugs": "nugs",
+    "cola": "cola", "colas": "colas", "sinsemilla": "sinsemilla",
+    "kief": "kief", "hash": "hash", "trim": "trim", "trimming": "trimming",
+    "curing": "curing", "topping": "topping", "fimming": "fimming",
+    "scrog": "scrog", "sog": "sog", "clone": "clone", "clones": "clones",
+    "trichome": "tricoma", "trichomes": "tricomas",
+    # insetos e utensílios: aqui o modelo não errou o idioma, errou o BICHO
+    "fungus gnat": "fungus gnat", "fungus gnats": "fungus gnats",
+    "gnat": "fungus gnat", "gnats": "fungus gnats",
+    "mealybug": "cochonilha", "mealybugs": "cochonilhas",
+    "flypaper": "papel pega-moscas",
+    "seedling": "muda", "seedlings": "mudas",
+}
+
+# Traduções ERRADAS já gravadas no vault: (errado, certo, TERMO EXIGIDO no
+# original em inglês). Substituição cirúrgica, porque o corpo original não foi
+# preservado (só o título) e retraduzir o corpo seria pedir ao modelo que
+# "melhorasse" um texto sem fonte para comparar.
+#
+# O 3º campo é a PROVA, e ele existe por um erro que o ensaio a seco pegou antes
+# de gravar: trocar "borboleta" por "bud" às cegas corrompia notas em que a
+# palavra está CERTA — "coevolução borboleta-monarca e Asclepias" (do Raven) e
+# "refletor borboleta", um tipo de refletor. A troca só vale quando o inglês
+# daquela nota de fato dizia 'bud'. Mesma lição da precedência entre obras:
+# relação declarada, nunca inferida da semelhança.
+CORRECOES = (
+    ("borboletas de flor cortadas", "buds de flor cortados", "bud"),
+    # O PLURAL precisa de entrada própria: `\bborboleta\b` não casa "borboletas",
+    # e foi exatamente por aí que a regressão escapou da pós-checagem.
+    ("borboletas de flor", "buds de flor", "bud"),
+    ("borboletas", "buds", "bud"),
+    ("borboleta", "bud", "bud"),
+    # Palavra INVENTADA pelo modelo de 4B (não existe em português). O 3º campo
+    # continua sendo a prova: só troca onde o inglês dizia aquilo.
+    ("podre excessivo", "poda excessiva", "pruning"),
+    ("atrapações amarelas adesivas", "armadilhas adesivas amarelas", "sticky trap"),
+    ("atrapa amarela", "armadilha adesiva amarela", "sticky trap"),
+    ("bordas resinosas", "buds resinosos", "bud"),
+    ("borda resinosa", "bud resinoso", "bud"),
+    ("formigas-fungo", "fungus gnats", "gnat"),
+    ("formigas de fungo", "fungus gnats", "gnat"),
+    ("formiga de fungo", "fungus gnat", "gnat"),
+    ("fungo-gnat", "fungus gnat", "gnat"),
+    ("papel de fly", "papel pega-moscas", "flypaper"),
+)
+
+
+def linha_glossario(termos=None) -> str:
+    """O glossário como linha de prompt: 'bud = bud, gnats = fungus gnats, …'.
+
+    Só os termos PEDIDOS quando `termos` é dado — mandar as 30 entradas numa
+    tradução que não usa nenhuma delas só gasta prefill e convida o modelo a
+    enfiar jargão onde não havia."""
+    itens = GLOSSARIO if termos is None else {
+        k: v for k, v in GLOSSARIO.items() if k in set(termos)}
+    return ", ".join(f"{k} = {v}" for k, v in itens.items())
+
+
+def termos_do_glossario(texto: str) -> list:
+    """Os termos do glossário presentes no texto (casando palavra inteira)."""
+    baixo = (texto or "").lower()
+    return [t for t in GLOSSARIO
+            if re.search(rf"\b{re.escape(t)}\b", baixo)]
+
+
+def aplicar_correcoes(texto: str, original_ingles: str) -> tuple:
+    """`(texto_corrigido, quantas)` — troca as traduções erradas CONHECIDAS.
+
+    `original_ingles` é a prova: só corrige o que o inglês daquela nota de fato
+    dizia. Sem ele nada é trocado — uma nota sem original preservado (as que
+    esta passada nunca tocou) fica intacta por definição.
+
+    Case-insensitive e preservando a inicial maiúscula, porque o erro aparece
+    tanto no meio da frase quanto abrindo título."""
+    fonte = (original_ingles or "").lower()
+    if not fonte:
+        return texto or "", 0
+    saida, n = texto or "", 0
+    for errado, certo, exige in CORRECOES:
+        if not re.search(rf"\b{re.escape(exige)}", fonte):
+            continue
+        padrao = re.compile(rf"\b{re.escape(errado)}\b", re.IGNORECASE)
+
+        def _troca(m, certo=certo):
+            return certo.capitalize() if m.group(0)[:1].isupper() else certo
+
+        saida, k = padrao.subn(_troca, saida)
+        n += k
+    return saida, n
+
+
 def corpo_em_ingles(corpo: str) -> bool:
     """O CORPO está em inglês? Régua mais frouxa que a do título de propósito.
 
