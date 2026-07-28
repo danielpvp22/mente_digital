@@ -315,6 +315,42 @@ def prompt_fundir_atomos(textos: str) -> str:
     )
 
 
+def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str) -> str:
+    """Reescreve o CORPO de um átomo QUEBRADO a partir do trecho-fonte do livro.
+
+    Por que é uma tarefa própria, e não uma re-atomização do capítulo: o dedup por
+    átomo (`_salvar_atomos`) descartaria a versão nova como duplicata da pobre que
+    já está no banco — reparo tem de ser POR ÁTOMO, escrevendo por cima. E o
+    TÍTULO é dado, não pedido: ele sobreviveu ao defeito (o truncamento come o
+    fim da saída, não o começo), já está na Malha e no índice, e mudá-lo trocaria
+    o problema de corpo quebrado por um de identidade trocada.
+
+    Saída MÍNIMA de propósito (só o corpo, sem '##', sem Malha, sem tag): quanto
+    menor a tarefa, menos o modelo deriva — mesma lição do `prompt_malha_de_atomo`.
+    O sentinela NADA existe para o caso em que o trecho recuperado não sustenta o
+    título: melhor manter o átomo pobre que inventar um rico."""
+    parcial = (f"O corpo atual, INCOMPLETO, é: \"{corpo_parcial}\"\n"
+               if corpo_parcial.strip() else "")
+    return (
+        "A nota abaixo foi extraída de um livro e o CORPO dela saiu quebrado "
+        "(cortado no meio ou vazio). Reescreva o corpo usando SOMENTE o trecho do "
+        "livro fornecido.\n\n"
+        f"TÍTULO DA NOTA: {titulo}\n"
+        f"{parcial}\n"
+        f"TRECHO DO LIVRO:\n{trecho}\n\n"
+        "Regras:\n"
+        "1. Responda APENAS com o corpo: 1 a 3 frases afirmativas, completas, "
+        "terminando em ponto. Sem título, sem '##', sem 'Malha Neural', sem tag, "
+        "sem aspas em volta, sem comentário.\n"
+        "2. Escreva em português do Brasil mesmo que o trecho esteja em outro "
+        "idioma; ao traduzir um termo técnico, mantenha o original entre "
+        "parênteses na primeira menção.\n"
+        "3. Só afirme o que o TRECHO diz e que sustente o título. Não use "
+        "conhecimento externo, não opine, não repita o título.\n"
+        "4. Se o trecho não trouxer o que o título promete, responda apenas NADA.\n"
+    )
+
+
 def prompt_sintese_capitulo(livro: str, capitulo: str, atomos: str) -> str:
     """O 'reduce' da ingestão hierárquica: a atomização fragmenta o argumento longo;
     esta síntese preserva a TESE do capítulo numa nota única."""
