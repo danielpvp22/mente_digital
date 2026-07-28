@@ -89,15 +89,22 @@ class Settings(BaseSettings):
     # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
-    # LOTE DA ATOMIZAÇÃO — era 6000, e isso QUEBRAVA átomos. Medido em 2026-07-28
-    # sobre os 5.907 átomos da Cannabis Encyclopedia: o defeito não é o tamanho do
-    # texto-fonte (278 das 306 páginas têm 5-6,5k chars e a riqueza mediana é a
-    # mesma em todas as faixas) — é o modelo dividindo um ORÇAMENTO DE SAÍDA FIXO
-    # entre quantos átomos ele resolve emitir. Com 21-30 átomos por chamada, 50%
-    # saem pobres; com 31+, 85%; e o átomo da ponta sai CORTADO NO MEIO DA FRASE
-    # (2.087 assim na base). Com 6-15 átomos por chamada, 10-16%.
-    # 3500 chars rendem ~10-12 átomos: dentro da faixa boa.
-    ingestao_lote_chars: int = 3500       # fatia por chamada do LLM (cabe no n_ctx)
+    # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.
+    #
+    # A queda veio de uma correlação medida na saída do 4B (páginas com 21-30
+    # átomos por chamada davam 50% de átomos pobres; com 31+, 85%). A correlação
+    # é real, mas a CAUSA não era o lote: era o modelo. Com o 8B, um A/B honesto
+    # — o MESMO texto-fonte de 5 páginas, mudando só o fatiamento, porque
+    # comparar `lotes[0]` de configurações diferentes compara TEXTOS diferentes:
+    #
+    #   lote 3500 -> 4,8 átomos/1000 chars | riqueza mediana 14,0 | 30 truncados
+    #   lote 5000 -> 2,6 átomos/1000 chars | riqueza mediana 13,0 |  0 truncados
+    #
+    # O lote menor rende quase o DOBRO de átomos, não mais ricos, e volta a
+    # truncar. Os "0 truncados em 24 medições" do 8B foram medidos a 6000; é para
+    # lá que a config volta. Um capítulo da edição web tem ~5,5k chars, então
+    # 6000 = UMA chamada por capítulo.
+    ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
     # Teto de saída da ATOMIZAÇÃO de livro. Separado do `max_tokens_sintese` (1600)
     # de propósito: aquele governa também a resposta web e a síntese de conversa,
     # onde subir o teto custa LATÊNCIA a quem está esperando falar. Aqui não há

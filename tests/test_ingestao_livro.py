@@ -120,7 +120,12 @@ async def test_capitulo_vira_atomos_com_proveniencia_e_sintese(monkeypatch, tmp_
     assert n == 1
     assert list(pend.glob("*.json")) == []                       # saiu de pendentes
     assert len(list(pend.parent.glob("processados/*.json"))) == 1
-    novos = list((vault / settings.subpasta_conhecimento_novo).glob("*.md"))
+    # UMA PASTA POR OBRA (2026-07-28): átomo de livro nasce em
+    # Conhecimento_Novo/<slug do livro>/, não solto na raiz — assim aposentar uma
+    # obra é mover uma pasta, e não varrer o frontmatter de 26 mil notas.
+    pasta_obra = vault / settings.subpasta_conhecimento_novo / livro.slug("Meu Livro")
+    novos = list(pasta_obra.glob("*.md"))
+    assert novos, f"nada em {pasta_obra}"
     corpo_total = "\n".join(a.read_text(encoding="utf-8") for a in novos)
     assert "Livro 'Meu Livro' — Cap 1 (p. 1-10)" in corpo_total  # proveniência
     assert any(a.name.startswith("LivroSintese_") for a in novos)  # nota-síntese (tese)
@@ -144,7 +149,7 @@ async def test_job_que_sumiu_da_fila_nao_derruba_a_drenagem(monkeypatch, tmp_pat
 
     monkeypatch.setattr(etl, "_processar_capitulo", _some_do_disco)
     assert await etl.ingestao_livros() == 2          # os dois contam como feitos
-    novos = list((vault / settings.subpasta_conhecimento_novo).glob("*.md"))
+    novos = list((vault / settings.subpasta_conhecimento_novo).rglob("*.md"))
     assert novos                                     # e o conhecimento foi salvo
 
 

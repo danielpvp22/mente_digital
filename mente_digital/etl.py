@@ -73,7 +73,7 @@ class EtlProcessor:
         return min(base, cap) if cap else base
 
     async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str,
-                             origem: Optional[str] = None) -> int:
+                             origem: Optional[str] = None, subpasta: str = "") -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
@@ -133,9 +133,18 @@ class EtlProcessor:
                     await asyncio.to_thread(db.log_etl, "DEDUP", _slug_titulo(bloco), "descartado")
                     continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
-            caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
+            # UMA PASTA POR OBRA (ordem do dono, 2026-07-28): tudo caía solto em
+            # Conhecimento_Novo — 26 mil arquivos de 4 livros mais conversa e web
+            # no mesmo diretório, impossível de aposentar um livro sem varrer o
+            # frontmatter de todos. A busca não muda (o índice varre `**/*.md`
+            # recursivo e as figuras já viviam em subpasta); o que muda é poder
+            # mover uma obra inteira movendo uma pasta.
+            destino = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), subpasta) \
+                if subpasta else str(self.ctx.settings.dir_conhecimento_novo)
+            caminho = os.path.join(destino, nome)
 
-            def _save(c=caminho, body=bloco) -> None:
+            def _save(c=caminho, body=bloco, d=destino) -> None:
+                os.makedirs(d, exist_ok=True)
                 with open(c, "w", encoding="utf-8") as f:
                     f.write(body + "\n")
 
@@ -408,7 +417,8 @@ class EtlProcessor:
                 if salvamento is not None:
                     await salvamento      # o do lote anterior já correu sob o decode
                 salvamento = asyncio.ensure_future(
-                    self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem))
+                    self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem,
+                                        subpasta=livro_mod.slug(titulo_livro)))
         finally:
             # Nenhum átomo fica pendurado, nem quando o capítulo aborta acima.
             if salvamento is not None:
@@ -443,7 +453,8 @@ class EtlProcessor:
         # legenda vai como texto, que é o que faz o RAG achar "o diagrama de X".
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
         corpo += figuras_mod.bloco_markdown(list(figuras), settings.subpasta_figuras)
-        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
+        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem,
+                                  subpasta=livro_mod.slug(titulo_livro))
 
     # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
     def _enfileirar_jobs(self, jobs: List[dict], base_nome: str) -> int:

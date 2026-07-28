@@ -19,6 +19,14 @@ dados/modelos/whisper/*
 
 # Vault Obsidian local (notas do usuário, não versionadas)
 dados/Cerebro_Digital/
+# Notas TIRADAS do vault — obra aposentada (scripts/arquivar_obra.py), átomos
+# consolidados e backups de passada. São o MESMO material do vault, só que fora
+# dele: se o vault não é versionado, a cópia dele também não pode ser (um
+# `git add -A` distraído mandou 24.426 notas para o índice em 2026-07-28).
+dados/arquivo_obras/
+dados/aposentados/
+dados/backups/
+dados/_arquivo_consolidacao/
 
 # Índice derivado (Chroma) + SQLite + dump — regenerados em runtime
 dados/banco_vetorial_cerebro/
