@@ -72,11 +72,28 @@ def test_wikilink_separa_por_livro():
     assert "![[Figuras/raven/raven_p0059_f1.webp]]" in md
 
 
+def test_bloco_markdown_aponta_para_a_PASTA_DO_LIVRO():
+    """Defeito medido em 2026-07-28: as 307 notas-síntese saíram com TODAS as
+    figuras quebradas ('não foi encontrado' no Obsidian), porque o job carrega
+    só o NOME do arquivo e o extrator grava uma pasta por livro."""
+    md = figuras.bloco_markdown(
+        [{"arquivo": "raven_p0059_f1.webp", "pagina": 59, "legenda": "L"}], "Figuras")
+    assert "![[Figuras/raven/raven_p0059_f1.webp]]" in md
+    assert "![[Figuras/raven_p0059_f1.webp]]" not in md
+
+
+def test_bloco_markdown_nao_quebra_com_nome_fora_da_convencao():
+    md = figuras.bloco_markdown([{"arquivo": "solta.webp", "pagina": 1}], "Figuras")
+    assert "![[Figuras/solta.webp]]" in md      # sem slug derivável: fica como está
+
+
 def test_bloco_markdown_usa_wikilink_e_legenda_como_texto():
     md = figuras.bloco_markdown(
         [{"arquivo": "raven_p0059_f1.webp", "pagina": 59, "legenda": "Ciclo de Calvin"}],
         "Figuras")
-    assert "![[Figuras/raven_p0059_f1.webp]]" in md      # wikilink nativo do Obsidian
+    # o wikilink é nativo do Obsidian E aponta para a pasta do livro (2026-07-28:
+    # a asserção antiga fixava o caminho PLANO, que não resolve em disco)
+    assert "![[Figuras/raven/raven_p0059_f1.webp]]" in md
     assert "Ciclo de Calvin" in md                        # legenda pesquisável pelo RAG
     assert figuras.bloco_markdown([], "Figuras") == ""    # sem figura, sem seção
 
