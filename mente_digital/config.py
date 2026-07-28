@@ -470,6 +470,67 @@ class Settings(BaseSettings):
     # figura boa — "fotossíntese" dá 1,33x com figura certa, acima de casos errados
     # a 1,27x). 0 desliga; MAIOR = mais figuras e menos exigente.
     figuras_margem_melhor: float = 1.10
+    # --- FIGURA ATTACH-ONLY (2026-07-27) --------------------------------------
+    # "Encontrável ≠ anexável" (medido em 2026-07-27): figura sem legenda de
+    # verdade é INVISÍVEL no acervo — 17,4% dos arquivos, 3,3% das entregas,
+    # 1,9% dos erros. Tentar torná-la encontrável foi o que criou as notas
+    # genéricas e o caso "tricomas" (o acervo não cobria o tema e a busca
+    # entregou a figura "menos ruim"). Então ela não disputa vaga: sai do espaço
+    # de busca (`_buscar_figuras`) e só aparece ACOMPANHANDO o átomo da PRÓPRIA
+    # página dela, que é co-locação exata por construção na importação web.
+    # Quantas dessas podem ser anexadas por resposta. Uma página do livro tem
+    # várias fotos; anexar todas vira parede de imagem. 0 desliga o anexo por
+    # co-locação (a figura attach-only some de vez).
+    figuras_anexo_max: int = 2
+    # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
+    # Marcas (substring da proveniência), separadas por '|', em ordem de
+    # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
+    # O default é a ordem do dono: a edição web de The Cannabis Encyclopedia é a
+    # atual e vence o Cervantes antigo ("Marijuana Horticulture") no vault.
+    # Vazio = nenhuma preferência (fica quem chegou primeiro, comportamento
+    # histórico).
+    obras_preferidas: str = "The Cannabis Encyclopedia"
+    # Obras SUPERADAS: só quem está aqui pode ser aposentado por uma obra
+    # preferida. Não é redundante com o `obras_preferidas` — é o conserto de um
+    # defeito medido em 2026-07-27. Sem esta lista, a regra era "a obra que chega
+    # é preferida?" e QUALQUER nota a menos de `obras_dedup_dist_max` perdia o
+    # lugar: das 532 aposentadorias da primeira passada, 39 vieram de outros
+    # livros (35 do Raven, 3 do Amabis) — um átomo sobre estômatos cedeu vaga
+    # para a enciclopédia de cannabis porque ambos falam de planta.
+    # Substituir é uma relação DECLARADA entre duas edições, nunca inferida da
+    # distância. Vazio = ninguém é aposentado (só o dedup estrito descarta).
+    obras_substituidas: str = "Marijuana Horticulture"
+    # A contradição deixa de ser só relatório QUANDO há edição superada envolvida
+    # (ordem do dono, 2026-07-27: "se duas notas dizem o contrário, vale a nova; a
+    # antiga sai da base"). Fora da relação preferida x superada, o #24 continua
+    # sendo detecção pura — duas fontes independentes que discordam é assunto do
+    # dono, não do ETL. O par vai para a tabela `contradicoes` de qualquer forma,
+    # então toda resolução automática fica auditável. False = volta a só relatar.
+    contradicao_resolver_por_obra: bool = True
+    # LIMIAR PRÓPRIO DA SUBSTITUIÇÃO — e por que ele não pode ser o `dedup_dist_max`.
+    # Medido em 2026-07-27, os 249 átomos do cap. 18 da edição nova contra o
+    # Cervantes antigo: 82% têm gêmeo no livro velho, mas a distância ao gêmeo vai
+    # de 0,042 a 0,128 (mediana 0,088) — uma ORDEM DE GRANDEZA acima do
+    # `dedup_dist_max` (0,01). Com o limiar do dedup, a precedência de obra nunca
+    # dispara: rodei o capítulo inteiro e foram 0 descartes e 0 aposentadorias, com
+    # o vault ficando com "solo" coberto duas vezes.
+    # E subir o `dedup_dist_max` global seria repetir um erro já pago: na escala do
+    # e5 ele foi de 0,08 para 0,01 justamente porque 0,08 marcava ~75% da base como
+    # duplicata e passava a DESCARTAR átomo legítimo de toda origem (web, conversa).
+    # Daí o limiar separado: o caminho de DESCARTE continua em `dedup_dist_max`,
+    # intocado; só o de SUBSTITUIR uma edição pela outra usa este — e ele nunca
+    # joga conhecimento fora, apenas decide qual das duas edições fica.
+    # Calibração no mesmo lote: 0,05 aposenta 3 notas velhas (1%), 0,08 aposenta 54
+    # (21%, os pares que são visivelmente o mesmo fato), 0,10 aposenta 173 (69%,
+    # já engolindo o que só é do mesmo assunto). 0 = desliga (só o dedup estrito).
+    obras_dedup_dist_max: float = 0.08
+    # Quando a obra preferida traz um átomo quase idêntico a um já indexado, o
+    # ANTIGO é aposentado (ordem do dono, 2026-07-27: "apague o átomo antigo,
+    # não o novo"). Ele é MOVIDO para cá, não destruído: o vault não tem backup
+    # (achado do painel de 13), e a purga de órfãos do `sync` já o tira do índice
+    # ao vê-lo fora do vault — ou seja, some da busca do mesmo jeito, e volta se
+    # o dono quiser. Vazio = apaga de verdade (unlink).
+    dir_aposentados: str = str(DIR_DADOS / "aposentados")
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000

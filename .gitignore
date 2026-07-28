@@ -44,6 +44,11 @@ dados/ingestao/
 # reversão — conteúdo do vault do dono, nunca versionado.
 dados/_arquivo_consolidacao/
 
+# Quarentena da precedência entre obras: notas SAÍDAS do vault quando uma edição
+# preferida superou a antiga. É conteúdo de livro, preservado só para reversão —
+# mesma razão do arquivo morto acima.
+dados/aposentados/
+
 # Pasta vigiada de livros: os PDFs do dono (pessoais e com direitos autorais).
 dados/livros/
 

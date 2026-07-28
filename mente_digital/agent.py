@@ -382,7 +382,8 @@ class Agent(ComandosMestre, Respostas):
                             # VERDADE (passada não-sentinela) — anexar imagem a uma
                             # passada que virou sentinela mostraria figura sem resposta.
                             await self._mostrar_figuras(
-                                send_medido, local.fontes, "\n".join(paragrafos))
+                                send_medido, local.fontes + local.anexos,
+                                "\n".join(paragrafos))
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
                             # #4 TEMA QUENTE: o Banco respondeu de fato -> o usuário REUSOU
                             # o vault neste tema (interesse recorrente). Registra p/ a
