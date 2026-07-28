@@ -28,6 +28,9 @@ dados/telemetria_etl.db
 dados/telemetria_etl.db-wal
 dados/telemetria_etl.db-shm
 dados/chat_dump_bruto.md
+# Listas geradas para o dono amostrar (pares de paráfrase, átomos truncados…):
+# são SAÍDA de varredura, refeitas pelo script quando preciso — não fonte.
+dados/*.md
 
 # Traces de latência (padrão de uso com timestamps) e amostras de voz — a pasta de
 # vozes pode conter a VOZ CLONADA do dono (biometria) quando o speaker_wav do XTTS

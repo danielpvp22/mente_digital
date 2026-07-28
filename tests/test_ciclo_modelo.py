@@ -35,6 +35,60 @@ async def test_unload_fecha_o_modelo_e_libera():
     assert lm.ready is False
 
 
+def test_modelo_offline_sobrepoe_o_do_servidor(monkeypatch):
+    """As passadas offline (atomização) rodam com o servidor FECHADO e podem usar
+    um modelo maior; o servidor ao vivo continua no modelo escolhido por latência."""
+    lm = LlamaManager("dados/modelos/Grande.gguf")
+    assert lm._build_llama_kwargs()["model_path"] == "dados/modelos/Grande.gguf"
+
+
+def test_modelo_offline_religa_o_strip_de_think(monkeypatch):
+    """HIGIENE, vale sempre: o .env desliga o strip por causa do modelo do
+    servidor (que não raciocina). Com um modelo que raciocina, desligado = bloco
+    <think> dentro do átomo."""
+    from mente_digital import llm as llm_mod
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "llm_strip_think", False)
+    monkeypatch.setattr(settings, "atomizacao_pensar", False)
+
+    caminho = llm_mod.preparar_offline("dados/modelos/Grande.gguf")
+
+    assert caminho == "dados/modelos/Grande.gguf"
+    assert settings.llm_strip_think is True
+    assert settings.llm_no_think is True     # não pensa: a diretiva vai no system
+
+
+def test_atomizacao_pensar_deixa_o_modelo_raciocinar_sem_sujar_a_nota(monkeypatch):
+    """COMPORTAMENTO é separado da higiene: com `atomizacao_pensar`, o modelo
+    raciocina (sem '/no_think') mas o bloco continua sendo removido do texto."""
+    from mente_digital import llm as llm_mod
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "llm_strip_think", False)
+    monkeypatch.setattr(settings, "atomizacao_pensar", True)
+
+    llm_mod.preparar_offline("dados/modelos/Grande.gguf")
+
+    assert settings.llm_no_think is False    # pensa
+    assert settings.llm_strip_think is True  # e o bloco não chega ao .md
+
+
+def test_sem_modelo_offline_as_flags_do_servidor_ficam_como_estao(monkeypatch):
+    from mente_digital import llm as llm_mod
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "llm_strip_think", False)
+    llm_mod.preparar_offline("")            # sem override: é o servidor rodando
+    assert settings.llm_strip_think is False
+
+
+def test_sem_override_usa_o_modelo_do_settings():
+    from mente_digital.config import settings
+
+    assert LlamaManager()._build_llama_kwargs()["model_path"] == settings.caminho_modelo_llama
+
+
 @pytest.mark.asyncio
 async def test_unload_sem_modelo_e_noop():
     lm = LlamaManager()

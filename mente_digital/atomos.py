@@ -162,6 +162,40 @@ def normalizar_malha(conteudo: str) -> str:
     return " ".join(finais)
 
 
+# Corpo envolto em '<...>' — ARTEFATO DO DECODER na atomização, medido em
+# 2026-07-28 sobre a base inteira: 2.919 linhas de corpo em ~3.000 notas saíram
+# como '<O cultivo exige cinco horas de sol.>' (2.818), '<...>.' (101) ou, nos
+# átomos truncados pelo orçamento de saída do lote, só com o '<' de abertura
+# (78). Não é conteúdo — é a marca de citação que o modelo inventa ao copiar o
+# trecho da fonte — e entra no embedding, no aterramento léxico e na FALA.
+# Mesma lição de sempre: o LLM entrega a IDEIA, o Python impõe a FORMA.
+#
+# O '(.+)' é guloso de propósito: quem fecha é o ÚLTIMO '>', então uma frase com
+# '>' no meio ("temperatura > 30 °C") sobrevive. A pontuação depois do fecha é
+# preservada.
+_ENVOLTO_RE = re.compile(r"^<(.+)>([.,;:!?*\"']*)$")
+
+
+def desembrulhar_angular(linha: str) -> str:
+    """Tira o '<...>' que envolve uma linha de corpo. Puro/testável.
+
+    Guarda: uma linha que é UMA palavra entre angulares ('<think>', '<PID>') é
+    marcação, não frase — desembrulhar transformaria o rótulo em conteúdo. Só
+    mexe no que tem espaço dentro, ou seja, no que tem cara de frase.
+    """
+    ln = linha.strip()
+    if not ln.startswith("<"):
+        return linha
+    m = _ENVOLTO_RE.match(ln)
+    if m:
+        miolo = m.group(1)
+        return f"{miolo}{m.group(2)}" if " " in miolo else linha
+    # Sem fecha em lugar nenhum: átomo truncado. O texto que sobrou ainda vale.
+    if ">" not in ln and " " in ln:
+        return ln[1:]
+    return linha
+
+
 def _e_titulo(linha: str) -> bool:
     """Linha curta que não termina em pontuação de frase = título sem '#'."""
     ln = linha.strip()
@@ -203,6 +237,7 @@ def normalizar_atomo(
     achadas: List[str] = []          # tags que o próprio modelo emitiu
     primeira_analisada = False
     for ln in linhas:
+        ln = desembrulhar_angular(ln)
         if _TAG_LINHA_RE.match(ln):
             achadas.extend(_TAG_RE.findall(ln))
             continue

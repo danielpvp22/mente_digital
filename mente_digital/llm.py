@@ -71,6 +71,35 @@ def montar_system(system_prompt: str) -> str:
     return f"/no_think\n{base}" if settings.llm_no_think else base
 
 
+def preparar_offline(caminho_modelo: str) -> str:
+    """Alinha as flags de `<think>` ao modelo OFFLINE e devolve o caminho dele.
+
+    HIGIENE e COMPORTAMENTO são coisas separadas, e confundi-las custou caro:
+
+    - `llm_strip_think` (higiene) é ligado SEMPRE que há modelo offline. O `.env`
+      o desliga por causa do modelo do SERVIDOR, que não raciocina; com um Qwen3
+      que raciocina, o desligado despeja o bloco `<think>…</think>` DENTRO do
+      átomo — há 8 notas assim na base, resquício de uma passada anterior.
+    - `llm_no_think` (comportamento) é decisão de QUALIDADE, não de higiene, e
+      fica com o dono em `atomizacao_pensar`. Pensar pode condensar melhor a
+      página; e pensar consome o MESMO orçamento de saída que os átomos, que é a
+      causa medida dos átomos truncados. Só um A/B decide — ver
+      `eval/ab_atomizacao_think.py`.
+
+    As flags valem por processo, e o processo offline serve UM modelo só — então
+    alinhar aqui é seguro e não toca no servidor, que roda noutro processo.
+    """
+    if not caminho_modelo:
+        return caminho_modelo
+    settings.llm_strip_think = True
+    settings.llm_no_think = not settings.atomizacao_pensar
+    telemetry.track(
+        "LLM",
+        f"Modelo offline: strip de <think> LIGADO; raciocínio "
+        f"{'LIGADO' if settings.atomizacao_pensar else 'desligado'}.")
+    return caminho_modelo
+
+
 class InferenciaPreemptada(RuntimeError):
     """O decode foi abortado para ceder a GPU à inferência interativa.
 
@@ -156,7 +185,13 @@ class _FiltroThink:
 
 
 class LlamaManager:
-    def __init__(self) -> None:
+    def __init__(self, caminho_modelo: str = "") -> None:
+        # Override do .gguf para as passadas OFFLINE (atomização, tradução,
+        # varredura): com o servidor fechado a VRAM inteira está livre e cabe um
+        # modelo maior, que lê melhor uma página e destila ideias completas. Vazio
+        # = o modelo do servidor, escolhido por latência. Ver
+        # settings.caminho_modelo_atomizacao.
+        self._caminho_modelo = caminho_modelo
         self._model = None
         self._load_lock = asyncio.Lock()        # protege o lazy-load (era llm_manager_lock)
         self._inference_lock = asyncio.Lock()   # serializa streams (era inference_lock)
@@ -220,7 +255,7 @@ class LlamaManager:
         import llama_cpp
 
         kwargs: dict = dict(
-            model_path=settings.caminho_modelo_llama,
+            model_path=self._caminho_modelo or settings.caminho_modelo_llama,
             n_gpu_layers=settings.n_gpu_layers,
             n_ctx=settings.n_ctx,
             n_batch=settings.n_batch,
@@ -275,7 +310,11 @@ class LlamaManager:
             # Loga o ARQUIVO, não um nome fixo: o modelo é trocável por .env e um rótulo
             # cravado ("Qwen 7B") vira mentira no dia da troca — e some a resposta de
             # "qual modelo está rodando?", que é a 1ª pergunta em qualquer diagnóstico.
-            nome = os.path.basename(settings.caminho_modelo_llama)
+            # A MESMA fonte dos kwargs, não o settings direto: com o override
+            # offline (modelo grande), ler o settings aqui faria o log jurar que
+            # subiu o modelo do servidor — a mentira que o comentário acima
+            # promete evitar, só que por outro caminho.
+            nome = os.path.basename(self._caminho_modelo or settings.caminho_modelo_llama)
             telemetry.track("VRAM", f"Ancorando {nome} na GPU...")
             try:
                 from llama_cpp import Llama

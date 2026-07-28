@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
     caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
+    # MODELO DAS PASSADAS OFFLINE (decisão do dono, 2026-07-28). O modelo do
+    # servidor foi escolhido por LATÊNCIA (o 4B-2507 empata o roteador 9/9 e
+    # responde mais rápido) — e nisso ele é ótimo. A ATOMIZAÇÃO é outro trabalho:
+    # ler uma página inteira e destilar 10-20 ideias completas exige mais cabeça,
+    # e ali a latência não importa porque não há ninguém esperando. Como os
+    # scripts offline rodam com o servidor FECHADO, a VRAM inteira está livre e
+    # cabe um modelo maior. Vazio = usa o mesmo do servidor.
+    caminho_modelo_atomizacao: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
     # XTTS-v2 (engine de voz GPU alternativo): DIRETÓRIO com config.json + model.pth +
     # vocab.json + speakers_xtts.pth (não é um arquivo único como o Piper). Baixe o
@@ -81,7 +89,20 @@ class Settings(BaseSettings):
     # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
-    ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
+    # LOTE DA ATOMIZAÇÃO — era 6000, e isso QUEBRAVA átomos. Medido em 2026-07-28
+    # sobre os 5.907 átomos da Cannabis Encyclopedia: o defeito não é o tamanho do
+    # texto-fonte (278 das 306 páginas têm 5-6,5k chars e a riqueza mediana é a
+    # mesma em todas as faixas) — é o modelo dividindo um ORÇAMENTO DE SAÍDA FIXO
+    # entre quantos átomos ele resolve emitir. Com 21-30 átomos por chamada, 50%
+    # saem pobres; com 31+, 85%; e o átomo da ponta sai CORTADO NO MEIO DA FRASE
+    # (2.087 assim na base). Com 6-15 átomos por chamada, 10-16%.
+    # 3500 chars rendem ~10-12 átomos: dentro da faixa boa.
+    ingestao_lote_chars: int = 3500       # fatia por chamada do LLM (cabe no n_ctx)
+    # Teto de saída da ATOMIZAÇÃO de livro. Separado do `max_tokens_sintese` (1600)
+    # de propósito: aquele governa também a resposta web e a síntese de conversa,
+    # onde subir o teto custa LATÊNCIA a quem está esperando falar. Aqui não há
+    # ninguém esperando — é o outro lado da mesma tesoura do lote acima.
+    max_tokens_atomizacao: int = 2400
     # Triagem do aparato editorial (capa/ficha/índice remissivo/créditos): ver
     # triagem.py. Medido no Amabis: 6% do livro, incluindo um capítulo inteiro de
     # índice. False = atomiza tudo (útil para comparar).
@@ -245,6 +266,15 @@ class Settings(BaseSettings):
     # LIGADOS por default porque o modelo default É um Qwen3. Ao apontar o LLM para um
     # modelo SEM <think> (Qwen2.5, Llama…), desligue os dois — o strip vira no-op sozinho,
     # mas o "/no_think" viraria texto solto no system prompt.
+    # O modelo offline PENSA antes de atomizar? Pergunta do dono (2026-07-28):
+    # raciocinar poderia condensar melhor a página — menos átomos por trecho e
+    # cada um mais rico. O contra medido é mecânico: o bloco <think> consome o
+    # MESMO teto de saída (max_tokens_atomizacao) que os átomos, e esgotar esse
+    # teto é justamente a causa dos 2.087 átomos truncados no meio da frase.
+    # Decidido por A/B (eval/ab_atomizacao_think.py), não por preferência.
+    # A HIGIENE (o bloco nunca chegar ao .md) é separada e vale sempre — o
+    # llm.preparar_offline liga o strip independentemente desta flag.
+    atomizacao_pensar: bool = False
     llm_no_think: bool = True       # prefixa "/no_think" no system prompt
     llm_strip_think: bool = True    # remove o bloco <think>…</think> do início do stream
     # PREÂMBULO COMUM (consultoria TTFT #10 — INVESTIGAÇÃO, off até o bench provar):

@@ -394,7 +394,7 @@ class EtlProcessor:
                 try:
                     conteudo = await self.ctx.llama.collect(
                         prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
-                        max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                        max_tokens=self._max_fundo(settings.max_tokens_atomizacao),
                         system_prompt=prompts.SYS_SINTESE,
                         preemptible=True,
                     )

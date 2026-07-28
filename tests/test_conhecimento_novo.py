@@ -417,6 +417,46 @@ def test_rotulo_improvisado_da_malha_e_canonizado():
     assert "**Divisão binária:**" not in out
 
 
+# --- corpo envolto em '<...>' (artefato do decoder, medido 2026-07-28) --------
+def test_corpo_envolto_em_angular_e_desembrulhado():
+    """2.919 linhas de corpo da base saíram como '<A planta precisa de luz>'.
+    O '<' não é conteúdo: é marca de citação que o modelo inventa ao copiar o
+    trecho da fonte, e ela entra no embedding e na fala."""
+    out = normalizar_atomo(
+        "## Luz mínima para cultivo\n<O cultivo exige cinco a seis horas de sol ao dia.>",
+        "Livro 'X'", datetime(2026, 7, 28))
+    assert "O cultivo exige cinco a seis horas de sol ao dia." in out
+    assert "<O cultivo" not in out
+
+
+def test_angular_com_pontuacao_depois_do_fecha_preserva_a_pontuacao():
+    """Variante real (101 linhas): '<texto>.' — o ponto vem DEPOIS do '>'."""
+    out = normalizar_atomo(
+        "## Mulching conserva umidade\n<Uma camada espessa de mulha conserva umidade no solo>.",
+        "Livro 'X'", datetime(2026, 7, 28))
+    assert "conserva umidade no solo." in out
+    assert ">" not in out.split("## ")[1]
+
+
+def test_atomo_truncado_perde_o_angular_mesmo_sem_o_fecha():
+    """78 átomos ficaram truncados no meio da frase (o lote estourou o orçamento
+    de saída) e o '>' nunca veio. O texto que sobrou ainda vale; o '<' não."""
+    out = normalizar_atomo(
+        "## Ciclo de vida do barbeiro\n<O barbeiro adquire",
+        "Livro 'X'", datetime(2026, 7, 28))
+    assert "O barbeiro adquire" in out
+    assert "<O barbeiro" not in out
+
+
+def test_tag_tipo_html_sozinha_NAO_e_desembrulhada():
+    """A guarda: '<think>' e afins são UMA palavra entre angulares — desembrulhar
+    viraria a palavra em conteúdo. Só desembrulha o que tem cara de FRASE."""
+    out = normalizar_atomo(
+        "## Vazamento de raciocínio\n<think>\nO modelo deixou a marca no corpo.",
+        "Livro 'X'", datetime(2026, 7, 28))
+    assert "<think>" in out
+
+
 def test_prosa_com_negrito_NAO_vira_malha():
     """A guarda que impede o conserto de comer conteúdo: só canoniza a linha que
     TEM colchete. Um destaque em negrito no meio da ideia continua sendo prosa."""
