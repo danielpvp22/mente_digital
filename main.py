@@ -64,7 +64,14 @@ async def _boot(ctx: AppContext) -> None:
     # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
     # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
     if settings.tts_carga_preguicosa and settings.tts_engine == "xtts":
-        telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
+        if settings.tts_preparar_ram_no_boot:
+            # Em SEGUNDO PLANO e sem bloquear o boot: monta o modelo em RAM (as 19,3s
+            # de CPU medidas) para que o microfone só pague o ~1s do device. Sem isto a
+            # 1ª resposta falada trava esperando o load inteiro.
+            telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
+            ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
+        else:
+            telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
     else:
         await asyncio.to_thread(ctx.tts.load)
     # RAG: embeddings (singleton) -> abre/sincroniza o VectorDB.

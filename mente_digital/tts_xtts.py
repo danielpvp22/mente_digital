@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import os
 import re
@@ -162,6 +163,11 @@ class XttsService:
         # então concorrência deixou de ser hipótese.
         self._load_lock = threading.Lock()
         self._load_falhou = False              # não insistir num modelo que já recusou
+        # O modelo MONTADO, viva ele na RAM ou no device. `_model` continua significando
+        # "pronto para sintetizar AGORA" (é o que `ready` promete e o resto do arquivo
+        # usa); quando ativo, os dois apontam para o MESMO objeto — `Module.to()` move
+        # em lugar, não copia.
+        self._modelo_pronto = None
 
     def cancel(self) -> None:
         """Sinaliza à síntese em voo (thread do _run) para abortar. Chamável do event loop
@@ -189,14 +195,41 @@ class XttsService:
             return True
         if self._load_falhou:
             return False
+        if not self.preparar_ram():              # fase 1 (pode já estar pronta do boot)
+            return False
         with self._load_lock:
-            if self._model is None and not self._load_falhou:
-                self.load()                      # fail-soft: nunca levanta
+            if self._model is None:
+                self._ativar()                   # fase 2: fail-soft, nunca levanta
                 self._load_falhou = self._model is None
         return self._model is not None
 
-    def load(self) -> None:
-        """Síncrono — chamar via asyncio.to_thread no startup. NUNCA levanta (fail-soft)."""
+    def preparar_ram(self) -> bool:
+        """FASE 1 — CPU e RAM, **zero VRAM**: imports, grafo e pesos desserializados.
+
+        MEDIDO em 2026-07-29 (o load inteiro custa 20,3 s): `import coqui/TTS` 7,4 s,
+        montar o grafo 4,3 s, `load_checkpoint` 5,5 s. Sobram **1,0 s** para o que
+        realmente precisa da GPU — `.to(cuda)` 0,37 s e o warm-up 0,65 s. Rodando esta
+        fase no boot, em segundo plano, a primeira fala paga ~1 s em vez de 20.
+
+        Por que NÃO um RAMDisk (a ideia que originou isto): ler o `model.pth` inteiro
+        custa **0,50 s** a 3,5 GB/s, e o page cache do SO já entrega esses bytes. O caro
+        é DESSERIALIZAR — 7,1 s medidos. RAMDisk guardaria o arquivo; isto guarda o
+        modelo já montado, que é um passo adiante e pula as três etapas caras.
+
+        Idempotente e seguro entre threads, como o `ensure_loaded`.
+        """
+        if self._modelo_pronto is not None:
+            return True
+        if self._load_falhou:
+            return False
+        with self._load_lock:
+            if self._modelo_pronto is None and not self._load_falhou:
+                self._construir_cpu()            # fail-soft: nunca levanta
+                self._load_falhou = self._modelo_pronto is None
+        return self._modelo_pronto is not None
+
+    def _construir_cpu(self) -> None:
+        """Monta o modelo em RAM, sem tocar no device. NUNCA levanta (fail-soft)."""
         try:
             import torch
             from TTS.tts.configs.xtts_config import XttsConfig
@@ -212,36 +245,60 @@ class XttsService:
             model.load_checkpoint(
                 config, checkpoint_dir=cfg_dir, use_deepspeed=settings.tts_xtts_use_deepspeed,
             )
-            model.to(device)
-            model.eval()
             # fp16 = MIXED PRECISION via autocast, NÃO model.half(): o XTTS QUEBRA com
             # pesos half ("expected scalar type Float but found Half" no layer_norm do GPT).
             # O autocast casta só as ops seguras p/ fp16 e mantém layer_norm/softmax em fp32.
             # (Consequência: os PESOS ficam em fp32 — o ganho é de compute/ativação, não a
             # metade da VRAM dos pesos; o XTTS não suporta pesos half de forma estável.)
             self._autocast_fp16 = settings.tts_xtts_fp16 and device.startswith("cuda")
-
-            gpt_cond, spk_emb = self._resolver_speaker(model)
-
-            self._model = model
             self._device = device
-            self._gpt_cond_latent = gpt_cond
-            self._speaker_embedding = spk_emb
             self._sample_rate = int(
                 getattr(config.model_args, "output_sample_rate", 24000) or 24000
             )
+            self._modelo_pronto = model
+            telemetry.track("XTTS", f"Pesos em RAM (device na ativação: {device}).")
+        except Exception as exc:
+            telemetry.error("XTTS", "Falha ao preparar XTTS-v2 em RAM", exc)
+
+    def _ativar(self) -> None:
+        """FASE 2 — ~1 s: move para o device, resolve os latentes e aquece os kernels.
+
+        Os latentes são resolvidos DEPOIS do `.to()` de propósito: no caminho de clone
+        (`speaker_wav`) o `get_conditioning_latents` roda inferência e precisa do modelo
+        já no device. É a mesma ordem do load antigo.
+        """
+        try:
+            model = self._modelo_pronto
+            model.to(self._device)
+            model.eval()
+            gpt_cond, spk_emb = self._resolver_speaker(model)
+            self._gpt_cond_latent = gpt_cond
+            self._speaker_embedding = spk_emb
             # Warm-up: a 1ª inferência aloca/compila kernels — absorve o pico fora do hot path.
             for _ in model.inference_stream(
                 "Ok.", settings.tts_xtts_language, gpt_cond, spk_emb
             ):
                 pass
+            self._model = model
             telemetry.track(
                 "XTTS",
-                f"XTTS-v2 carregado ({device}, fp16={self._autocast_fp16}, "
+                f"XTTS-v2 ativo ({self._device}, fp16={self._autocast_fp16}, "
                 f"sr={self._sample_rate}).",
             )
         except Exception as exc:
-            telemetry.error("XTTS", "Falha ao carregar XTTS-v2", exc)  # ready fica False
+            telemetry.error("XTTS", "Falha ao ativar XTTS-v2 no device", exc)  # ready=False
+
+    def load(self) -> None:
+        """As DUAS fases de uma vez. Síncrono — via `asyncio.to_thread`, nunca levanta.
+
+        É o caminho do boot NÃO-preguiçoso (`MENTE_TTS_CARGA_PREGUICOSA=false`) e dos
+        scripts que só querem uma voz pronta. O fluxo do servidor passa pelo
+        `preparar_ram` (boot, em segundo plano) + `ensure_loaded` (microfone).
+        """
+        if self.preparar_ram():
+            with self._load_lock:
+                if self._model is None:
+                    self._ativar()
 
     def _resolver_speaker(self, model):
         """(gpt_cond_latent, speaker_embedding): clone de .wav OU locutor embutido."""
@@ -270,6 +327,16 @@ class XttsService:
         with self._infer_lock:
             self._model = None
             self._latentes = None
+            # Os latentes são tensores DO DEVICE: segurá-los manteria VRAM viva e
+            # anularia justamente o propósito deste método.
+            self._gpt_cond_latent = None
+            self._speaker_embedding = None
+            # O modelo VOLTA para a RAM em vez de ser destruído. Reativar custa ~1 s
+            # (medido) contra ~20 s para reconstruir do zero — é o que torna barato o
+            # ciclo da Fase 3 do OCR, que existe exatamente para liberar a GPU.
+            if self._modelo_pronto is not None:
+                with contextlib.suppress(Exception):
+                    self._modelo_pronto.to("cpu")
         vram.liberar_cache_gpu()
 
     def _preparar(self, texto: str) -> str:

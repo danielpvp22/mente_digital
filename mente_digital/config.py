@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     # `false` volta a carregar no startup (kill switch, sem mexer no código).
     tts_carga_preguicosa: bool = True
 
+    # PRÉ-MONTAGEM EM RAM (2026-07-29). Sem isto, a carga preguiçosa acima empurra as
+    # 20,3s INTEIRAS do load para a primeira fala — e a janela do aquecimento (fala +
+    # VAD + STT + prefill) tem só ~7-17s, então a 1ª resposta falada trava esperando.
+    # MEDIDO: das 20,3s, 19,3s são CPU/RAM (import coqui 7,4s, montar o grafo 4,3s,
+    # desserializar os pesos 5,5s) e apenas 1,0s precisa da GPU (.to(cuda) 0,37s +
+    # warm-up 0,65s). Fazendo a parte de CPU no boot, em segundo plano, a VRAM segue
+    # livre (o ganho da carga preguiçosa) E a primeira fala custa ~1s.
+    # Preço: ~1,8 GB de RAM de sistema enquanto o app estiver aberto, mesmo numa sessão
+    # só de texto. Decisão do dono, que considerou aceitável por ser memória de processo.
+    tts_preparar_ram_no_boot: bool = True
+
     # COMO O TEXTO CHEGA À TELA (2026-07-29, pedido do dono). No turno FALADO ele sai
     # em FRASES fechadas de propósito: a tela acompanha a voz, e correr na frente dela
     # confunde quem está ouvindo. No turno DIGITADO ninguém está ouvindo — quem lê quer

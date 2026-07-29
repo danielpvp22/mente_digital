@@ -382,6 +382,12 @@ class TtsService:
             self.load()                          # fail-soft: nunca levanta
         return self._voice is not None
 
+    def preparar_ram(self) -> bool:
+        """Contrato do TTS: no XTTS esta é a fase CARA (imports + grafo + pesos, ~19s)
+        que o boot dispara em segundo plano. O Piper cabe inteiro no `load` e já é
+        carregado no startup, então aqui é o próprio load — barato e idempotente."""
+        return self.ensure_loaded()
+
     def cancel(self) -> None:
         # NO-OP: o Piper sintetiza a frase inteira de uma vez na CPU (dezenas de ms),
         # sem streaming em thread para abortar — não há síntese longa em voo como no XTTS.

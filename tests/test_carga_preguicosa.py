@@ -46,16 +46,78 @@ class _TtsFrio:
 
 
 # --- o ensure_loaded do XTTS -------------------------------------------------
+def _fases(monkeypatch, svc, cpu_ok=True, lento=False):
+    """Substitui as DUAS fases reais e devolve o diário de chamadas.
+
+    Remendar `load()` não bastaria: desde a divisão em fases, `ensure_loaded` passa por
+    `_construir_cpu`/`_ativar` — e um teste que remendasse só o `load` carregaria o
+    XTTS DE VERDADE (a suíte foi de 18s para 53s antes de eu perceber).
+    """
+    diario = []
+
+    def _cpu():
+        diario.append("cpu")
+        if lento:
+            time.sleep(0.05)             # janela larga para o outro thread entrar
+        if cpu_ok:
+            svc._modelo_pronto = object()
+
+    def _gpu():
+        diario.append("gpu")
+        svc._model = object()
+
+    monkeypatch.setattr(svc, "_construir_cpu", _cpu)
+    monkeypatch.setattr(svc, "_ativar", _gpu)
+    return diario
+
+
 def test_carrega_uma_vez_so(monkeypatch):
     svc = XttsService()
-    chamadas = []
-    monkeypatch.setattr(svc, "load",
-                        lambda: (chamadas.append(1), setattr(svc, "_model", object())))
+    diario = _fases(monkeypatch, svc)
 
     assert svc.ensure_loaded() is True
     assert svc.ensure_loaded() is True
 
-    assert len(chamadas) == 1
+    assert diario == ["cpu", "gpu"]
+
+
+def test_preparar_ram_NAO_ativa_o_device(monkeypatch):
+    """O ponto da fase 1: 19,3s dos 20,3s do load são CPU e não tocam a VRAM."""
+    svc = XttsService()
+    diario = _fases(monkeypatch, svc)
+
+    assert svc.preparar_ram() is True
+
+    assert diario == ["cpu"]
+    assert svc.ready is False            # nada na GPU ainda
+
+
+def test_ativar_depois_do_boot_nao_refaz_a_fase_cara(monkeypatch):
+    """É o ganho todo: o microfone paga só o ~1s do device."""
+    svc = XttsService()
+    diario = _fases(monkeypatch, svc)
+    svc.preparar_ram()                   # como no boot, em segundo plano
+    diario.clear()
+
+    assert svc.ensure_loaded() is True
+
+    assert diario == ["gpu"]
+
+
+def test_unload_devolve_o_modelo_a_RAM_em_vez_de_destruir(monkeypatch):
+    """A Fase 3 do OCR libera a GPU; antes disso o `unload` jogava fora também a
+    cópia em RAM, e a voz seguinte pagava os 20s de novo."""
+    svc = XttsService()
+    diario = _fases(monkeypatch, svc)
+    svc.ensure_loaded()
+    diario.clear()
+
+    svc.unload()
+    assert svc.ready is False
+    assert svc._modelo_pronto is not None    # continua montado, na RAM
+
+    assert svc.ensure_loaded() is True
+    assert diario == ["gpu"]                 # reativou sem reconstruir
 
 
 def test_gatilhos_SIMULTANEOS_nao_inicializam_duas_vezes(monkeypatch):
@@ -63,21 +125,15 @@ def test_gatilhos_SIMULTANEOS_nao_inicializam_duas_vezes(monkeypatch):
     sessões podem pedir o load ao mesmo tempo. Duas inicializações XTTS no mesmo
     contexto CUDA corrompem a GPU do processo inteiro."""
     svc = XttsService()
-    chamadas = []
+    diario = _fases(monkeypatch, svc, lento=True)
 
-    def _load_lento():
-        chamadas.append(1)
-        time.sleep(0.05)                 # janela larga para o outro thread entrar
-        svc._model = object()
-
-    monkeypatch.setattr(svc, "load", _load_lento)
     threads = [threading.Thread(target=svc.ensure_loaded) for _ in range(4)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    assert len(chamadas) == 1
+    assert diario == ["cpu", "gpu"]
     assert svc.ready is True
 
 
@@ -85,14 +141,13 @@ def test_falha_no_load_nao_vira_tempestade_de_retry(monkeypatch):
     """Sem a marca de falha, um modelo quebrado faria CADA frase tentar carregar
     de novo — no hot path da resposta."""
     svc = XttsService()
-    chamadas = []
-    monkeypatch.setattr(svc, "load", lambda: chamadas.append(1))   # não seta _model
+    diario = _fases(monkeypatch, svc, cpu_ok=False)
 
     assert svc.ensure_loaded() is False
     assert svc.ensure_loaded() is False
     assert svc.ensure_loaded() is False
 
-    assert len(chamadas) == 1
+    assert diario == ["cpu"]             # tentou UMA vez, e nunca chegou ao device
 
 
 def test_piper_pronto_nao_recarrega(monkeypatch):
