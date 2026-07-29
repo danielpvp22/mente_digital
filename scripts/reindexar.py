@@ -20,10 +20,20 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital.config import settings  # noqa: E402
-from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
+from mente_digital.rag import (  # noqa: E402
+    EmbeddingProvider, VectorStore, preparar_embedding_offline,
+)
 
 
 async def main() -> None:
+    # GPU aqui é de graça: este script não sobe o LLM e roda com o servidor fechado,
+    # então não há com quem disputar VRAM (medido: 8,3GB livres). Ao vivo o e5 na GPU
+    # deixaria 474 MiB de folga no pico — por isso o device é OUTRO, não o mesmo.
+    # Medido (400 notas tocadas): 98s -> 77s. É menos que os 14,7x do embedding
+    # porque a passada incremental é dominada por varrer as ~24k notas, não por
+    # embedar; num rebuild completo, aí sim os ~25k chunks mandam.
+    preparar_embedding_offline()
+
     print(f"modelo   = {settings.embedding_model}")
     print(f"prefixos = query='{settings.embedding_query_prefix}' "
           f"passage='{settings.embedding_passage_prefix}'")

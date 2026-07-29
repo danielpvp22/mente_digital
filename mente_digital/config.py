@@ -376,6 +376,19 @@ class Settings(BaseSettings):
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
     # (e acelera a reindexação). Force com MENTE_EMBEDDING_DEVICE=cpu se precisar.
     embedding_device: str = "auto"
+    # DEVICE DAS PASSADAS OFFLINE (2026-07-29) — mesmo padrão do
+    # `caminho_modelo_atomizacao`: script roda com o SERVIDOR FECHADO, e aí a GPU
+    # inteira está livre. Ao vivo é o contrário: os 10GB da 3080 já são divididos por
+    # LLM + Whisper + XTTS, e medir mostrou que o e5 lá dentro deixa 474 MiB de folga
+    # no pico (contra 1.578 com ele na CPU) — fino demais, cai no WDDM. Offline não há
+    # essa disputa, e o embedding em lote é 14,7x mais rápido (40,7 -> 600 docs/s).
+    # ATENÇÃO ao tamanho do ganho REAL: numa passada incremental o embedding é uma
+    # fatia pequena, e 14,7x nele viram 98s -> 77s no relógio (medido com 400 notas
+    # tocadas) — o que domina é varrer as ~24k notas do vault. O ganho grande fica no
+    # rebuild COMPLETO, onde os ~25k chunks é que mandam.
+    # Vazio = não sobrepõe (usa o `embedding_device` do servidor). Ver
+    # `rag.preparar_embedding_offline`, chamado pelos scripts.
+    embedding_device_offline: str = "auto"
     # PREFIXOS DE INSTRUÇÃO (família e5): modelos como intfloat/multilingual-e5-* foram
     # treinados com "query: " nas perguntas e "passage: " nos documentos — sem isso
     # perdem boa parte da qualidade. VAZIOS por padrão (o MiniLM atual não usa prefixo);
