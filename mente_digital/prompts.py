@@ -465,6 +465,41 @@ def prompt_sintese_capitulo(livro: str, capitulo: str, atomos: str) -> str:
     )
 
 
+# --- Legenda de figura em PT-BR (2026-07-29) ---------------------------------
+# A legenda de figura de livro em inglês fica difícil de alcançar: o e5 é
+# multilíngue, mas o aterramento LÉXICO do gate é casamento de PALAVRA e a
+# pergunta chega em português. A cópia da legenda já traduzida (o bloco `##
+# Figuras` da síntese) resolve a esmagadora maioria sem GPU; este prompt é só
+# para a sobra, a figura cuja página não deixou bloco.
+SYS_LEGENDA_PT = (
+    "Você traduz legendas de figuras de livros técnicos para o português do Brasil. "
+    "Responde SOMENTE com a legenda traduzida, sem aspas, sem 'Legenda:' e sem comentário."
+)
+
+
+def prompt_traduzir_legenda(legenda: str, glossario: str = "") -> str:
+    """A legenda é curta e sem contexto — o prompt PROÍBE completá-la.
+
+    Regra 2 existe porque legenda vaga convida o modelo a descrever a imagem que
+    ele não vê: o que ele inventar entra no vault como se fosse do livro. O
+    glossário entra só com os termos PRESENTES (`idioma.linha_glossario`), senão
+    as 30 entradas viram convite a enfiar jargão onde não havia.
+    """
+    linhas = [
+        f"Legenda original (inglês): {legenda}\n",
+        "Escreva a legenda em português do Brasil seguindo estas regras:",
+        "1. Traduza o SENTIDO, não palavra a palavra. Mantenha números, unidades e "
+        "siglas exatamente como estão.",
+        "2. NÃO acrescente nada que a legenda não diga — se ela é vaga, a tradução é "
+        "igualmente vaga. Você não está vendo a imagem.",
+        "3. Uma linha só, sem aspas e sem explicação.",
+    ]
+    if glossario:
+        linhas.append(f"4. Termos do domínio que NÃO devem ser traduzidos ou que têm "
+                      f"tradução fixa: {glossario}.")
+    return "\n".join(linhas)
+
+
 # --- Síntese ATÔMICA da conversa (histórico de chat vira Zettelkasten) --------
 # Antes o idle gerava um 'Resumo_Sessao' estruturado (H1 + bullets + conclusão) — o
 # OPOSTO de Zettelkasten. Agora o histórico (texto OU voz) é destilado em NOTAS
