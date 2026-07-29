@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import shutil
 import sys
 import time
@@ -63,6 +64,19 @@ def esta_em_ingles(legenda: str) -> bool:
     post-check as encontrou. `em_ingles` já limpa por dentro; esta não limpava."""
     return (idioma.em_ingles(legenda)
             or idioma.corpo_em_ingles(idioma.limpar_proveniencia(legenda)))
+
+
+def curta(legenda: str) -> bool:
+    """Curta demais para QUALQUER régua de idioma julgar (o corte do `idioma`)."""
+    return len(idioma.limpar_proveniencia(legenda).split()) < idioma.MIN_PALAVRAS
+
+
+def rotulo_generico(legenda: str) -> bool:
+    """"página 28" é o rótulo que o `bloco_markdown` põe quando NÃO há legenda.
+
+    Sem esta guarda, uma figura sem legenda trocaria o rótulo de seção ("Perlite")
+    por um número de página — perda pura, e logo depois indexada."""
+    return bool(re.match(r"^p[áa]gina\s+\d+$", (legenda or "").strip(), re.IGNORECASE))
 
 
 def mapear_blocos(vault: Path, figs: Path) -> dict:
@@ -157,15 +171,25 @@ def rodar(obra: str, limite: int, aplicar: bool, usar_llm: bool = False) -> int:
     for p in notas:
         texto = p.read_text(encoding="utf-8")
         atual = figuras.legenda_da_nota(texto)
-        if not esta_em_ingles(atual):
-            ja_pt += 1
-            continue
         pt = mapa.get(_stem_da_nota(p))
-        if pt is None:
+        if not esta_em_ingles(atual):
+            # CURTA (1-2 palavras): nenhuma régua de idioma julga "Perlite" ou
+            # "Soil Tests" — abaixo de MIN_PALAVRAS elas se calam, de propósito.
+            # E são justamente as que mais aparecem na resposta, porque chegam por
+            # CO-LOCAÇÃO (rótulo de seção, `attach_only`). Aqui a evidência não é
+            # o idioma, é o PAR: a linha do bloco é a versão traduzida da MESMA
+            # imagem, casada por arquivo (âncora exata). Se as duas discordam e a
+            # do bloco não está em inglês, a do bloco é a tradução — medido em
+            # 205 de 229 curtas: "Soil Tests"/"Testes de Solo", "Perlite"/"Perlita".
+            if not (curta(atual) and pt and pt != atual
+                    and not esta_em_ingles(pt) and not rotulo_generico(pt)):
+                ja_pt += 1
+                continue
+        elif pt is None:
             sem_par += 1
             sobras.append((p, atual))
             continue
-        if esta_em_ingles(pt):
+        elif esta_em_ingles(pt):
             par_ingles += 1
             sobras.append((p, atual))
             continue

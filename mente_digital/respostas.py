@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable, List, Optional
+from typing import Awaitable, Callable, List, Optional, Tuple
 
+from mente_digital import figuras as figuras_mod
 from mente_digital import figuras_recorte
 from mente_digital import prompts
 from mente_digital import textutils
@@ -73,6 +74,49 @@ class _SegurarFraseIncompleta:
         if not truncado or not cauda.strip() or self._FINAL_COMPLETO.search(cauda):
             return cauda, ""
         return "", cauda
+
+
+class _FigurasInline:
+    """As figuras da resposta, entregues DEPOIS da frase que fala de cada uma.
+
+    Pedido antigo do dono: antes tudo saía num bloco no FIM (`_mostrar_figuras`),
+    que é o mais seguro mas põe a imagem longe do trecho que ela ilustra. Aqui,
+    a cada frase emitida, pergunta-se de qual figura ela está falando.
+
+    O que ninguém casou continua saindo no fim — nada se perde, e o pior caso é
+    exatamente o comportamento antigo.
+
+    SÓ é consultado depois que o guard anti-sentinela liberou o stream: enquanto a
+    resposta ainda pode virar "não tenho informações suficientes", nada é emitido.
+    É a mesma razão pela qual o `_mostrar_figuras` mora no fim do estágio Banco —
+    figura sem resposta é pior do que figura no lugar errado.
+    """
+
+    def __init__(self, pendentes: List[Tuple[str, set]]) -> None:
+        self._pendentes = list(pendentes)
+
+    def __bool__(self) -> bool:
+        return bool(self._pendentes)
+
+    def casadas(self, bloco: str) -> List[str]:
+        """Consome e devolve as figuras que ESTA frase casou (ordem da busca)."""
+        minimo = settings.figura_inline_min_palavras
+        casaram = [
+            (embed, chaves) for embed, chaves in self._pendentes
+            # o modelo às vezes copia o embed do corpo da nota; se ele já está na
+            # frase, a imagem já vai aparecer — repetir mostraria duas vezes.
+            if embed not in bloco
+            and figuras_mod.combina_com_legenda(bloco, chaves, minimo)
+        ]
+        for par in casaram:
+            self._pendentes.remove(par)
+        return [embed for embed, _ in casaram]
+
+    def resto(self) -> List[str]:
+        """As que nenhuma frase casou — vão para o fim, como sempre foi."""
+        saida = [embed for embed, _ in self._pendentes]
+        self._pendentes.clear()
+        return saida
 
 
 class Respostas:
@@ -133,6 +177,7 @@ class Respostas:
         max_tokens: int | None = None,
         instrucao_extra: str = "",
         tracker: Optional[LatencyTracker] = None,
+        figuras: Optional[_FigurasInline] = None,
     ):
         """Responde por um contexto (RAM ou Banco) COM streaming, segurando o áudio até
         ter certeza de que não é o sentinela 'Não tenho informações suficientes'.
@@ -162,6 +207,15 @@ class Respostas:
             bloco = visivel.push(pedaco)
             if bloco:
                 await send({"tipo": "token", "texto": bloco})
+                # FIGURA INLINE: a imagem entra logo DEPOIS da frase que fala dela.
+                # Aqui é seguro porque `_emitir` só roda com o guard anti-sentinela
+                # já resolvido. Vai pelo canal VISÍVEL, nunca pelo chunker — o TTS
+                # não vê nada disso e a fala continua sendo só a resposta.
+                if figuras:
+                    casadas = figuras.casadas(bloco)
+                    if casadas:
+                        await send({"tipo": "token",
+                                    "texto": "\n" + "\n".join(casadas) + "\n"})
             frases = chunker.push(pedaco)
             if frases:
                 await self._falar(send, frases, tracker)
@@ -401,9 +455,48 @@ class Respostas:
             # e engorda a base sobre o que o usuário demonstrou interesse.
             mem.enfileirar_etl(tema, ctx_amplo)
 
-    async def _mostrar_figuras(self, send: Sender, fontes: List[str],
+    async def _preparar_figuras(self, fontes: List[str]) -> _FigurasInline:
+        """`(embed, palavras da legenda)` das figuras que entraram no contexto.
+
+        A legenda vem da NOTA da figura, não do embed — e é ela que diz de que a
+        imagem trata. Isto só passou a funcionar em 2026-07-29, quando as legendas
+        da Encyclopedia deixaram de estar em inglês: a resposta é em português, e
+        casar palavra entre idiomas não acontece (825 das 1.818 notas estavam em EN).
+
+        Confere o .webp em disco aqui, uma vez, em vez de na hora de emitir: a nota
+        pode seguir indexada depois de a imagem ter sido apagada (aconteceu com a p4
+        do Cervantes), e imagem quebrada na tela é pior do que figura ausente.
+        """
+        vistos: set = set()
+        pares: List[Tuple[str, str]] = []
+        for fonte in fontes or ():
+            embed = figuras_recorte.embed_da_nota(fonte, settings.subpasta_figuras)
+            if embed and embed not in vistos:
+                vistos.add(embed)
+                pares.append((fonte, embed))
+        if not pares:
+            return _FigurasInline([])
+
+        raiz = Path(settings.caminho_obsidian)
+
+        def _carregar() -> List[Tuple[str, set]]:
+            saida = []
+            for caminho, embed in pares:
+                if not (raiz / embed[3:-2]).is_file():
+                    continue
+                try:
+                    legenda = figuras_mod.legenda_da_nota(
+                        Path(caminho).read_text(encoding="utf-8"))
+                except OSError:      # nota some entre a busca e aqui: sem legenda,
+                    legenda = ""     # a figura ainda sai no fim (só não casa frase)
+                saida.append((embed, textutils.palavras_chave(legenda)))
+            return saida
+
+        return _FigurasInline(await asyncio.to_thread(_carregar))
+
+    async def _mostrar_figuras(self, send: Sender, figuras: _FigurasInline,
                                ja_dito: str = "") -> int:
-        """Anexa à resposta as figuras que entraram no contexto. Devolve quantas.
+        """O bloco do FIM: as figuras que nenhuma frase casou. Devolve quantas.
 
         Por que o SERVIDOR monta isto, em vez de pedir ao LLM que copie o wikilink:
         medido no teste real de 2026-07-26, a pergunta caiu no nível `curto`
@@ -416,29 +509,17 @@ class Respostas:
         Vai pelo canal VISÍVEL (`tipo: token`), nunca pelo chunker — então o TTS não
         vê nada disso e a fala continua sendo só a resposta.
 
-        Confere o arquivo em disco antes: a nota pode seguir indexada depois de o
-        .webp ter sido apagado (aconteceu com a p4 do Cervantes), e imagem quebrada
-        na tela é pior do que figura ausente."""
+        Com o inline (2026-07-29) isto deixou de ser o caminho normal e virou a REDE:
+        figura cuja legenda nenhuma frase mencionou ainda aparece, no lugar de sempre.
+        A existência do .webp em disco já foi conferida no `_preparar_figuras`."""
         # `ja_dito` é a resposta que o modelo produziu: se ele copiou o embed mesmo
         # assim (o corpo da nota o contém, então há risco de imitação), não anexa de
         # novo — a duplicata mostraria a mesma imagem duas vezes.
-        embeds = [
-            e for e in
-            figuras_recorte.bloco_de_figuras(fontes, settings.subpasta_figuras).split("\n")
-            if e and e not in ja_dito
-        ]
-        if not embeds:
-            return 0
-        raiz = Path(settings.caminho_obsidian)
-
-        def _existentes() -> List[str]:
-            return [e for e in embeds if (raiz / e[3:-2]).is_file()]
-
-        vivos = await asyncio.to_thread(_existentes)
+        vivos = [e for e in figuras.resto() if e not in ja_dito]
         if not vivos:
             return 0
         await send({"tipo": "token", "texto": "\n\n" + "\n".join(vivos)})
-        telemetry.track("FIGURAS", f"{len(vivos)} figura(s) anexada(s) à resposta.")
+        telemetry.track("FIGURAS", f"{len(vivos)} figura(s) anexada(s) ao fim da resposta.")
         return len(vivos)
 
     async def _consolidar_fontes(self, fontes: List[str]) -> None:
