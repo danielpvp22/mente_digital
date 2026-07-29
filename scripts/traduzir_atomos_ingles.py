@@ -24,6 +24,7 @@ import os
 import re
 import socket
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -31,9 +32,9 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
 os.chdir(RAIZ)
 
-from mente_digital import idioma, rag  # noqa: E402
+from mente_digital import idioma, rag, reparo  # noqa: E402
 from mente_digital.config import settings  # noqa: E402
-from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital.llm import LlamaManager, preparar_offline  # noqa: E402
 from mente_digital.telemetry import telemetry  # noqa: E402
 
 SYS = (
@@ -47,7 +48,12 @@ _TITULO_RE = re.compile(r"^##\s+(.+)$", re.M)
 _MALHA = "**Malha Neural:**"
 
 
-def prompt(titulo: str, corpo: str) -> str:
+def prompt(titulo: str, corpo: str, glossario: str = "") -> str:
+    regra_glossario = (
+        # Sem isto o modelo TRADUZ o jargão do cultivo e troca o FATO: o 4B fez
+        # "buds" virar "borboletas", o 8B fez virar "cogumelos". Só os termos
+        # presentes na nota são enviados (ver idioma.linha_glossario).
+        f"5. Use EXATAMENTE estas formas para o jargão: {glossario}.\n" if glossario else "")
     return (
         f"Nota em inglês:\n## {titulo}\n{corpo}\n\n"
         "Reescreva em português do Brasil seguindo estas regras:\n"
@@ -58,6 +64,7 @@ def prompt(titulo: str, corpo: str) -> str:
         "deixe o original entre parênteses na primeira ocorrência.\n"
         "4. NÃO acrescente informação que a nota não tem, não resuma e não "
         "comente. Sem tags, sem 'Malha Neural', sem aspas em volta.\n"
+        + regra_glossario
     )
 
 
@@ -126,7 +133,9 @@ def _servidor_no_ar() -> bool:
 def _candidatos(origem_filtro: str, limite: int):
     pasta = Path(settings.dir_conhecimento_novo)
     achados = []
-    for p in sorted(pasta.glob("*.md")):
+    # rglob: desde 2026-07-28 o átomo de livro nasce em Conhecimento_Novo/<obra>/,
+    # e um glob raso não enxerga nenhum deles.
+    for p in sorted(pasta.rglob("*.md")):
         texto = p.read_text(encoding="utf-8", errors="ignore")
         if ja_traduzido(texto):
             continue
@@ -134,7 +143,17 @@ def _candidatos(origem_filtro: str, limite: int):
         if origem_filtro and origem_filtro.lower() not in (fm.get("origem") or "").lower():
             continue
         _f, titulo, corpo, _r = partes(texto)
-        if not titulo or not idioma.em_ingles(titulo):
+        # TÍTULO em inglês OU frase inglesa no CORPO (2026-07-28). Selecionar só
+        # pelo título deixava um buraco: a passada do 8B produziu 356 átomos de
+        # título português com frase inglesa no meio do corpo, e eles não tinham
+        # dono — nem aqui, nem no reparo, que é para átomo QUEBRADO.
+        #
+        # E o reparo é a ferramenta ERRADA para eles: reescrever a partir da
+        # fonte PERDE fato ("coloque a rede quando os galhos estiverem ~2 pés
+        # mais longos" virou prosa genérica sobre trelissas). Traduzir preserva.
+        if not titulo:
+            continue
+        if not idioma.em_ingles(titulo) and not reparo.frases_em_ingles(corpo):
             continue
         achados.append((p, titulo, corpo))
         if limite and len(achados) >= limite:
@@ -151,17 +170,31 @@ async def _rodar(origem_filtro: str, limite: int, dry: bool) -> int:
         print("ATENÇÃO: o servidor está no ar — os dois vão disputar a mesma VRAM.")
         return 3
 
-    llama = LlamaManager()
+    # Modelo OFFLINE (8B): o servidor está fechado aqui, a VRAM está livre, e o
+    # 4B é justamente quem inventou "borboletas" para "buds".
+    backup = None
+    if not dry:
+        from datetime import datetime
+        backup = Path("dados/backups") / f"traducao_{datetime.now():%Y%m%d_%H%M%S}"
+        backup.mkdir(parents=True, exist_ok=True)
+        print(f"backup dos originais em: {backup}\n")
+    llama = LlamaManager(preparar_offline(settings.caminho_modelo_atomizacao))
     telemetry.track("IDIOMA", "Carregando o LLM…")
     await llama.load()
     t0 = time.perf_counter()
     feitos = falhos = 0
     try:
         for p, titulo, corpo in pendentes:
+            original = f"{titulo}\n{corpo}"
             saida = await llama.collect(
-                prompt(titulo, corpo), system_prompt=SYS,
+                prompt(titulo, corpo,
+                       idioma.linha_glossario(idioma.termos_do_glossario(original))),
+                system_prompt=SYS,
                 max_tokens=settings.max_tokens_sintese,
             )
+            # Pós-checagem com PROVA: só troca a tradução errada conhecida onde o
+            # inglês DAQUELA nota dizia aquilo. O prompt previne; isto pega o resto.
+            saida, _n = idioma.aplicar_correcoes(saida, original)
             novo = aplicar(p.read_text(encoding="utf-8"), saida)
             if not novo:
                 falhos += 1
@@ -172,7 +205,21 @@ async def _rodar(origem_filtro: str, limite: int, dry: bool) -> int:
                 falhos += 1
                 print(f"  [continuou em inglês, pulado] {titulo[:60]}")
                 continue
+            # O CORPO também: desde que a seleção passou a pegar nota de título
+            # português com frase inglesa no meio, é ele que muda — mostrar só o
+            # título esconde exatamente o que esta passada faz.
+            _f, _t, novo_corpo, _r = partes(novo)
+            if not dry and backup is not None:
+                # O corpo INGLÊS é sobrescrito e o vault não está no git: sem
+                # cópia, uma tradução ruim não tem desfazer (o `titulo_original`
+                # do frontmatter só preserva o título).
+                (backup / p.name).write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"  EN: {titulo[:74]}\n  PT: {novo_titulo[:74]}")
+            for rotulo, txt in (("     antes ", corpo), ("     depois", novo_corpo)):
+                linhas = textwrap.wrap(txt.replace("\n", " "), 92) or [""]
+                print(f"{rotulo}: {linhas[0]}")
+                for extra in linhas[1:]:
+                    print(f"              {extra}")
             if not dry:
                 p.write_text(novo, encoding="utf-8")
             feitos += 1

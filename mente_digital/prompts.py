@@ -186,6 +186,14 @@ TAG_NOVO = "#conhecimento_novo"
 # qualquer outra tag. É contrato com `rag.metadados_da_nota`, como o TAG_NOVO é
 # com a promoção.
 TAG_FIGURA_ANEXO = "#figura_anexo"
+# Sentinela da FUSÃO enriquecedora: o modelo o emite quando as duas versões da
+# mesma ideia se contradizem, e aí o átomo novo fica como está (ordem do dono).
+# Contrato com `fusao.houve_contradicao` — mora aqui pelo mesmo motivo do
+# SENTINELA_INSUF: é texto de prompt, não constante de código solta.
+TAG_CONTRADICAO = "CONTRADICAO"
+# Contrato com `fusao.nao_e_a_mesma_ideia`: o par veio do vizinho semântico e
+# pode ser só vocabulário compartilhado, não a mesma ideia.
+TAG_IDEIA_DIFERENTE = "OUTRAIDEIA"
 # Sentinela anti-alucinação (normalizado) — REGRA 1 do system prompt de resposta.
 # Vive aqui (camada de linguagem) porque agent.py E respostas.py o consomem; o texto
 # TEM que casar com o que o system prompt manda o modelo dizer.
@@ -315,7 +323,8 @@ def prompt_fundir_atomos(textos: str) -> str:
     )
 
 
-def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str) -> str:
+def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str,
+                         glossario: str = "") -> str:
     """Reescreve o CORPO de um átomo QUEBRADO a partir do trecho-fonte do livro.
 
     Por que é uma tarefa própria, e não uma re-atomização do capítulo: o dedup por
@@ -345,9 +354,60 @@ def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str) -> str:
         "2. Escreva em português do Brasil mesmo que o trecho esteja em outro "
         "idioma; ao traduzir um termo técnico, mantenha o original entre "
         "parênteses na primeira menção.\n"
+        # GLOSSÁRIO DO DOMÍNIO: sem ele o modelo TRADUZ o jargão do cultivo e
+        # troca o FATO — visto no dry-run, "heavy buds" virou "cogumelos
+        # pesados". Só os termos presentes no trecho são enviados (ver
+        # `idioma.linha_glossario`): mandar as 30 entradas convida o modelo a
+        # enfiar jargão onde não havia.
+        + (f"2b. Use EXATAMENTE estas formas: {glossario}.\n" if glossario else "")
+        +
         "3. Só afirme o que o TRECHO diz e que sustente o título. Não use "
         "conhecimento externo, não opine, não repita o título.\n"
         "4. Se o trecho não trouxer o que o título promete, responda apenas NADA.\n"
+    )
+
+
+def prompt_fundir_enriquecendo(corpo_novo: str, titulo: str, corpo_antigo: str) -> str:
+    """Enriquece um átomo da edição NOVA com o que a ANTIGA tem a mais.
+
+    Ordem do dono (2026-07-28): em vez de escolher uma base e apagar a outra, a
+    nova é a espinha dorsal e a antiga entra DENTRO dela; contradição resolve a
+    favor da NOVA. Diferente de `prompt_fundir_atomos`, que trata N notas
+    quase-idênticas como iguais e produz uma canônica: aqui há hierarquia
+    declarada, e o texto novo é o que se preserva.
+
+    A ordem 1 é a que o teste cego cobrou: o que sumiu da base nova foi o DADO
+    DURO ("5 a 14 dias", "±0,5 ponto", "6 a 9 semanas"), não a prosa."""
+    return (
+        "Você tem DUAS versões da mesma ideia, extraídas do mesmo livro por "
+        "passadas diferentes. A versão NOVA é a base; a ANTIGA é fonte de "
+        "complemento.\n\n"
+        f"TÍTULO: {titulo}\n"
+        f"VERSÃO NOVA (base):\n{corpo_novo}\n\n"
+        f"VERSÃO ANTIGA (complemento):\n{corpo_antigo}\n\n"
+        "Regras:\n"
+        "1. Devolva a versão NOVA acrescida dos FATOS que só a antiga tem — "
+        "sobretudo números, faixas, prazos, temperaturas, proporções e nomes "
+        "próprios. Nada da versão nova pode ser removido ou enfraquecido.\n"
+        "2. Se as duas se CONTRADIZEM (dizem valores ou efeitos incompatíveis "
+        f"sobre a mesma coisa), responda apenas a palavra {TAG_CONTRADICAO} e nada mais.\n"
+        # O vizinho semântico aproxima ideias que só COMPARTILHAM VOCABULÁRIO
+        # ("galões de solo por mês" x "lixiviação com solução"), e isso cai
+        # dentro da faixa medida de paráfrase — nenhum limiar separa os dois
+        # casos. Quem separa é este julgamento.
+        f"2b. Se as duas NÃO tratam da mesma ideia (só compartilham palavras), "
+        f"responda apenas a palavra {TAG_IDEIA_DIFERENTE} e nada mais.\n"
+        "3. Se a antiga não acrescenta nada, devolva a versão nova inalterada.\n"
+        "4. Responda APENAS com o corpo final: 1 a 4 frases afirmativas em "
+        "português do Brasil, sem título, sem '##', sem 'Malha Neural', sem tag, "
+        "sem aspas em volta e sem comentar o que você fez.\n"
+        # A edição ANTIGA nunca passou pela limpeza de idioma, então parte dela
+        # está em inglês — e o modelo copiava a frase em vez de traduzi-la. Foram
+        # 414 fusões perdidas por isso (a guarda de idioma as recusou, mantendo o
+        # átomo novo). Traduzir o FATO preserva a informação; strip-á-la, não.
+        "4b. Se a versão antiga estiver em inglês, TRADUZA os fatos dela para o "
+        "português — nunca devolva frase em inglês.\n"
+        "5. Não acrescente nada que não esteja numa das duas versões.\n"
     )
 
 

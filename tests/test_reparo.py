@@ -167,6 +167,42 @@ def test_recusa_saida_MISTA_que_o_detector_de_idioma_deixa_passar():
     assert not ok and "inglês" in motivo
 
 
+def test_regua_de_REESCRITA_e_mais_dura_que_a_de_GUARDA():
+    """Custos opostos: recusar um reparo não custa nada, reescrever um átomo
+    correto estraga o que funciona. Medido na base do 8B — a régua frouxa marcou
+    468 átomos e 5 de 20 amostrados eram português curto legítimo."""
+    curta_pt = "Transferem nutrientes via ação capilar."
+    assert not reparo.em_pt_dominante(curta_pt)      # guarda: marca (custo zero)
+    assert reparo.frases_em_ingles(curta_pt) == []   # reescrita: não toca
+
+
+def test_frase_inglesa_de_verdade_entra_na_reescrita():
+    corpo = ("Recipientes rígidos servem ao cultivo. Small containers are ideal for "
+             "short vegetative and flowering stages.")
+    assert reparo.frases_em_ingles(corpo) == [
+        "Small containers are ideal for short vegetative and flowering stages."]
+
+
+def test_atomo_integro_com_frase_inglesa_e_categoria_IDIOMA():
+    texto = _nota("Recipientes rígidos servem ao cultivo. Small containers are ideal "
+                  "for short vegetative and flowering stages.")
+    cat, _a = reparo.triar(texto)
+    assert cat == reparo.IDIOMA
+    assert cat not in reparo.PRECISAM_LLM       # não entra sem o dono pedir
+
+
+def test_o_ingles_nao_chega_ao_prompt():
+    """O modelo continua no idioma do corpo parcial que o prompt mostra. Corpo
+    inglês inteiro vira "", e ele reescreve do título + trecho-fonte."""
+    misto = ("Recipientes rígidos servem ao cultivo. Small containers are ideal for "
+             "short vegetative and flowering stages.")
+    assert reparo.corpo_sem_ingles(misto) == "Recipientes rígidos servem ao cultivo."
+    assert reparo.corpo_sem_ingles(
+        "All organic products should be certified by an independent third party.") == ""
+    limpo = "A cobertura orgânica retém a umidade do solo."
+    assert reparo.corpo_sem_ingles(limpo) == limpo
+
+
 def test_frase_inglesa_com_um_e_portugues_no_meio_nao_escapa():
     """'…concentrated e inhibit lateral buds': o 'e' zerava a régua de 'nenhuma
     palavra portuguesa na frase'. Por isso a régua por frase tem duas condições."""

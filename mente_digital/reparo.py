@@ -37,7 +37,10 @@ OK = "ok"                # átomo íntegro
 RESIDUO = "residuo"      # íntegro, mas com lixo de formatação — conserto SEM LLM
 VAZIO = "vazio"          # corpo com <=3 palavras de conteúdo
 TRUNCADO = "truncado"    # corpo termina no meio da frase
-# As duas que pedem o LLM (as outras não pagam uma chamada de GPU).
+IDIOMA = "idioma"        # íntegro, mas com frase INGLESA no meio do corpo
+# As duas que pedem o LLM (as outras não pagam uma chamada de GPU). IDIOMA fica
+# de FORA de propósito: é outro defeito, com outro custo de errar, e quem o
+# conserta tem de pedir por ele (`--tambem-idioma`).
 PRECISAM_LLM = (VAZIO, TRUNCADO)
 
 _FM_RE = re.compile(r"^---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
@@ -203,6 +206,8 @@ def triar(texto: str) -> Tuple[str, Atomo]:
     cat = classificar(atomo)
     if cat == OK and tem_residuo(texto):
         return RESIDUO, atomo
+    if cat == OK and frases_em_ingles(atomo.corpo):
+        return IDIOMA, atomo
     return cat, atomo
 
 
@@ -291,6 +296,50 @@ def _tem_frase_sem_portugues(texto: str) -> bool:
         if n >= _MIN_PALAVRAS_FRASE and (port == 0 or (ing >= 2 and ing > port)):
             return True
     return False
+
+
+def frases_em_ingles(corpo: str) -> List[str]:
+    """As frases inglesas de um corpo — régua DURA, para decidir REESCRITA.
+
+    Por que não reusa a de `em_pt_dominante`: os dois usos têm custos opostos.
+    Lá, marcar demais só faz MANTER o átomo original (custo zero); aqui, marcar
+    demais faz REESCREVER um átomo correto, que é estragar o que funciona.
+
+    Medido na base nova (7.435 átomos do 8B): a régua frouxa marca 468, e 5 de 20
+    amostrados eram português legítimo — frase curta e sem palavra funcional
+    ("Transferem nutrientes via ação capilar.", "Estufa protegia contra chuvas
+    intensas."). Os átomos do 8B são mais curtos (riqueza mediana 12 contra 15),
+    e a premissa "frase portuguesa de 5+ palavras traz uma funcional" enfraquece
+    com a brevidade.
+
+    Aqui exige EVIDÊNCIA de inglês (2+ funcionais inglesas dominando as
+    portuguesas), não apenas ausência de português. Nos mesmos 20 amostrados,
+    isso mantém 14 dos 15 acertos e elimina os 5 falsos positivos.
+    """
+    fora: List[str] = []
+    for f in _FRASE_RE.findall(corpo):
+        ing, port, n = idioma.contar_funcionais(f)
+        if n >= _MIN_PALAVRAS_FRASE and ing >= 2 and ing > port:
+            fora.append(f.strip())
+    return fora
+
+
+def corpo_sem_ingles(corpo: str) -> str:
+    """O corpo sem as frases inglesas — o que se pode mostrar ao modelo.
+
+    O prompt de reparo passa o corpo ATUAL como contexto, e o modelo CONTINUA no
+    idioma em que a frase começa (medido no 1º dry-run). Mostrar-lhe o inglês é
+    pedir mais inglês. Tirando as frases inglesas, o corpo vira pista em PT — e
+    quando ele era inglês inteiro, sobra "" e o modelo escreve do zero a partir
+    do título e do trecho-fonte, que é o comportamento certo.
+    """
+    if idioma.em_ingles(corpo):
+        return ""
+    ruins = set(frases_em_ingles(corpo))
+    if not ruins:
+        return corpo
+    mantidas = [f.strip() for f in _FRASE_RE.findall(corpo) if f.strip() not in ruins]
+    return " ".join(f for f in mantidas if f).strip()
 
 
 def sem_eco_do_titulo(corpo: str, titulo: str) -> str:

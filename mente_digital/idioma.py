@@ -113,6 +113,10 @@ GLOSSARIO = {
     "mealybug": "cochonilha", "mealybugs": "cochonilhas",
     "flypaper": "papel pega-moscas",
     "seedling": "muda", "seedlings": "mudas",
+    # Vistos na passada de tradução com o 8B (2026-07-28): "cuttings" virou
+    # "enxotas" (palavra que não existe) e "spirits" virou "Espíritos".
+    "cutting": "estaca", "cuttings": "estacas",
+    "spirits": "destilados",
 }
 
 # Traduções ERRADAS já gravadas no vault: (errado, certo, TERMO EXIGIDO no
@@ -140,6 +144,11 @@ CORRECOES = (
     ("atrapa amarela", "armadilha adesiva amarela", "sticky trap"),
     ("bordas resinosas", "buds resinosos", "bud"),
     ("borda resinosa", "bud resinoso", "bud"),
+    # O 8B tem a sua PRÓPRIA tradução errada de "bud" — visto no reparo de
+    # 2026-07-28: "heavy buds break branches" virou "os cogumelos pesados quebrem
+    # as ramificações". Erro de FATO, não de estilo: cogumelo é fungo.
+    ("cogumelos", "buds", "bud"),
+    ("cogumelo", "bud", "bud"),
     ("formigas-fungo", "fungus gnats", "gnat"),
     ("formigas de fungo", "fungus gnats", "gnat"),
     ("formiga de fungo", "fungus gnat", "gnat"),

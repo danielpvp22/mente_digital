@@ -103,7 +103,7 @@ def _varrer(origem_filtro: str) -> Tuple[List[Alvo], Counter]:
         if not atomo.titulo:
             continue
         contagem[cat] += 1
-        if cat in reparo.PRECISAM_LLM or cat == reparo.RESIDUO:
+        if cat in reparo.PRECISAM_LLM or cat in (reparo.RESIDUO, reparo.IDIOMA):
             alvos.append(Alvo(md, texto, cat, atomo, origem))
     return alvos, contagem
 
@@ -111,7 +111,8 @@ def _varrer(origem_filtro: str) -> Tuple[List[Alvo], Counter]:
 def _relatar_triagem(contagem: Counter, alvos: List[Alvo], jobs: Dict[str, Path]) -> None:
     total = sum(contagem.values())
     print(f"\n{total} átomo(s) na origem escolhida:")
-    for cat in (reparo.OK, reparo.FIGURA, reparo.RESIDUO, reparo.VAZIO, reparo.TRUNCADO):
+    for cat in (reparo.OK, reparo.FIGURA, reparo.RESIDUO, reparo.IDIOMA,
+                reparo.VAZIO, reparo.TRUNCADO):
         print(f"  {contagem[cat]:6d}  {cat}")
     sem_job = [a for a in alvos if a.categoria in reparo.PRECISAM_LLM and a.origem not in jobs]
     if sem_job:
@@ -177,12 +178,19 @@ async def _reparar(alvos: List[Alvo], jobs: Dict[str, Path], dry: bool,
                 rank = rag.rankear_por_similaridade(qv, list(zip(candidatos, vecs)))
                 trecho = reparo.juntar_trechos(rank, ORCAMENTO_TRECHO)
                 saida = await llama.collect(
-                    prompts.prompt_reparar_corpo(a.atomo.titulo, a.atomo.corpo, trecho),
+                    prompts.prompt_reparar_corpo(
+                        a.atomo.titulo, reparo.corpo_sem_ingles(a.atomo.corpo), trecho,
+                        idioma.linha_glossario(idioma.termos_do_glossario(trecho))),
                     system_prompt=prompts.SYS_SINTESE,
                     max_tokens=MAX_TOKENS_CORPO,
                 )
                 novo_corpo = reparo.sem_eco_do_titulo(
                     reparo.limpar_saida(saida), a.atomo.titulo)
+                # Pós-checagem com PROVA no original: troca as traduções erradas
+                # já conhecidas ("cogumelos" por "buds") só onde o inglês daquele
+                # trecho de fato dizia aquilo. O prompt previne; isto pega o que
+                # escapou, sem inventar correção onde não há prova.
+                novo_corpo, _n = idioma.aplicar_correcoes(novo_corpo, trecho)
                 ok, motivo = reparo.corpo_aceitavel(novo_corpo, a.atomo)
                 if not ok:
                     recusas[motivo] += 1
@@ -221,6 +229,8 @@ def main() -> int:
                     help="filtro por substring da proveniência ('' = vault inteiro)")
     ap.add_argument("--limite", type=int, default=0, help="0 = todos os quebrados")
     ap.add_argument("--amostra", type=int, default=10, help="quantos antes/depois imprimir")
+    ap.add_argument("--tambem-idioma", action="store_true",
+                    help="inclui os átomos ÍNTEGROS que têm frase em inglês no corpo")
     ap.add_argument("--so-triagem", action="store_true",
                     help="só conta os buckets (não carrega LLM nem embeddings)")
     ap.add_argument("--dry-run", action="store_true", help="roda o reparo mas NÃO escreve")
@@ -236,15 +246,19 @@ def main() -> int:
     _relatar_triagem(contagem, alvos, jobs)
 
     residuos = [a for a in alvos if a.categoria == reparo.RESIDUO]
-    quebrados = [a for a in alvos if a.categoria in reparo.PRECISAM_LLM and a.origem in jobs]
-    # Corpo JÁ em inglês é outro defeito, com passada própria
-    # (`traduzir_atomos_ingles.py`). Repará-lo aqui só produz mais inglês: medido
-    # no 1º dry-run, o modelo continua a frase no idioma em que ela começa.
-    em_ingles = [a for a in quebrados if idioma.em_ingles(a.atomo.corpo)]
+    # IDIOMA (frase inglesa no meio de um átomo íntegro) só entra quando pedido:
+    # o átomo NÃO está quebrado, e reescrevê-lo é mexer no que já funciona.
+    categorias = reparo.PRECISAM_LLM + ((reparo.IDIOMA,) if args.tambem_idioma else ())
+    quebrados = [a for a in alvos if a.categoria in categorias and a.origem in jobs]
+    # Corpo em INGLÊS não é mais excluído. A razão de excluí-lo era o modelo
+    # continuar no idioma do corpo parcial que o prompt mostra — a causa foi
+    # consertada em `reparo.corpo_sem_ingles` (o inglês não chega ao prompt), e
+    # excluí-los deixava um buraco: `traduzir_atomos_ingles.py` seleciona por
+    # TÍTULO, e esses têm título em português. Ficariam sem dono nenhum.
+    em_ingles = sum(1 for a in quebrados if idioma.em_ingles(a.atomo.corpo))
     if em_ingles:
-        quebrados = [a for a in quebrados if a not in em_ingles]
-        print(f"\n{len(em_ingles)} quebrado(s) com o corpo já em INGLÊS ficam de fora "
-              "(caso do scripts/traduzir_atomos_ingles.py)")
+        print(f"\n{em_ingles} alvo(s) com o corpo INTEIRO em inglês — o corpo parcial "
+              "não vai ao prompt; o modelo reescreve do título + trecho-fonte")
     if args.limite:
         quebrados = quebrados[: args.limite]
     print(f"\nconserto SEM LLM (só formatação): {len(residuos)}")
