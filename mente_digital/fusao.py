@@ -62,6 +62,21 @@ def fatos_ausentes(antigo: str, novos: Sequence[str]) -> Set[str]:
     return tokens_de_dado(antigo) - tem
 
 
+def lacunas_da_pagina(texto_fonte: str, corpos: Sequence[str]) -> Set[str]:
+    """Dados duros que a PÁGINA-FONTE tem e nenhum átomo dela registrou.
+
+    Funciona entre idiomas de propósito: o livro está em inglês e os átomos em
+    português, mas NÚMERO não se traduz. "5 to 14 days" e "5 a 14 dias"
+    compartilham os tokens 5 e 14 — então comparar dado duro atravessa a barreira
+    que derrubou a régua léxica do reparo (ver `scripts/reparar_atomos_quebrados`).
+
+    O que sobra aqui é fato que a atomização DESCARTOU, não fato mal escrito —
+    é a diferença entre esta passada e a fusão, que só remaneja o que já existe
+    numa das duas edições.
+    """
+    return tokens_de_dado(texto_fonte) - {t for c in corpos for t in tokens_de_dado(c)}
+
+
 def palavras_ausentes(antigo: str, novos: Sequence[str], min_len: int = 4) -> Set[str]:
     """Palavras de conteúdo do antigo que não aparecem em nenhum novo.
 

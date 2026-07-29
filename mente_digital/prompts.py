@@ -194,6 +194,8 @@ TAG_CONTRADICAO = "CONTRADICAO"
 # Contrato com `fusao.nao_e_a_mesma_ideia`: o par veio do vizinho semântico e
 # pode ser só vocabulário compartilhado, não a mesma ideia.
 TAG_IDEIA_DIFERENTE = "OUTRAIDEIA"
+# Sentinela de "não há fato novo" nas passadas de colheita dirigida.
+TAG_NADA = "NADA"
 # Sentinela anti-alucinação (normalizado) — REGRA 1 do system prompt de resposta.
 # Vive aqui (camada de linguagem) porque agent.py E respostas.py o consomem; o texto
 # TEM que casar com o que o system prompt manda o modelo dizer.
@@ -364,6 +366,46 @@ def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str,
         "3. Só afirme o que o TRECHO diz e que sustente o título. Não use "
         "conhecimento externo, não opine, não repita o título.\n"
         "4. Se o trecho não trouxer o que o título promete, responda apenas NADA.\n"
+    )
+
+
+def prompt_atomos_faltantes(livro: str, capitulo: str, trecho: str,
+                            dados: str, ja_cobertos: str) -> str:
+    """Notas para os fatos que a atomização DESCARTOU numa página já processada.
+
+    Diferente de `prompt_atomizar_livro`, que trata a página como virgem: aqui
+    ela já rendeu átomos, e reatomizá-la inteira só produziria duplicata (o dedup
+    descartaria). O alvo é fechado — os DADOS DUROS que ficaram de fora, achados
+    comparando os números do trecho com os números dos átomos existentes (número
+    não se traduz, então a comparação atravessa o inglês da fonte).
+    """
+    return (
+        f"O trecho abaixo é do livro '{livro}' ({capitulo}). Ele já foi lido, e "
+        "as notas existentes cobrem parte dele.\n\n"
+        f"TRECHO:\n{trecho}\n\n"
+        f"JÁ REGISTRADO (não repita):\n{ja_cobertos}\n\n"
+        f"DADOS QUE FALTAM: {dados}\n\n"
+        "Escreva notas atômicas SOMENTE para os fatos do trecho que contêm esses "
+        "dados que faltam. Regras:\n"
+        "1. Cada nota traz UM fato, com o número/faixa/unidade do trecho.\n"
+        "2. Se um dado da lista for referência editorial (número de página, "
+        "figura, capítulo) ou não sustentar um fato, IGNORE-O.\n"
+        "3. Português do Brasil, mesmo com o trecho em outro idioma; mantenha o "
+        "termo técnico original entre parênteses na primeira menção.\n"
+        "4. Não repita o que já está registrado e não invente nada.\n"
+        f"5. Se não houver fato novo a escrever, responda apenas {TAG_NADA}.\n\n"
+        # TÍTULO-RÓTULO: visto no dry-run, o modelo intitula pelo DADO ("Ano
+        # 1926", "Idade de 40 dias") em vez de pelo fato. Título assim não casa
+        # pergunta nenhuma — e título é metade do que a busca enxerga.
+        "6. O título é o FATO, nunca um rótulo do dado: 'U.S. Dispensatory de "
+        "1926 registrou variabilidade de potência', jamais 'Ano 1926'.\n"
+        "7. Se o trecho cortar no meio de um fato, PULE esse fato — nunca "
+        "escreva uma nota anotando que o trecho está incompleto.\n\n"
+        "Formato de cada nota:\n"
+        "## <título curto do fato>\n"
+        "<o fato em 1-2 frases, com o dado>\n"
+        "**Malha Neural:** [[Conceito]]\n"
+        f"{TAG_ATOMO} {TAG_NOVO}\n"
     )
 
 

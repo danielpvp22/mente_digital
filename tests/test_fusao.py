@@ -37,6 +37,19 @@ def test_nao_vale_quando_o_novo_ja_cobre():
     assert not vale and "já cobre" in motivo
 
 
+def test_lacuna_da_pagina_atravessa_o_idioma():
+    """O livro está em inglês e os átomos em português — mas NÚMERO não se
+    traduz. É o que faz esta comparação funcionar onde a régua léxica falhou."""
+    fonte = "Dry slowly for 5 to 14 days at 70°F. Cure for 2 to 3 weeks."
+    atomos = ["A secagem lenta leva de 5 a 14 dias a 70°F."]
+    assert fusao.lacunas_da_pagina(fonte, atomos) == {"2", "3"}
+
+
+def test_pagina_coberta_nao_tem_lacuna():
+    fonte = "Dry for 5 to 14 days."
+    assert fusao.lacunas_da_pagina(fonte, ["Seque de 5 a 14 dias."]) == set()
+
+
 def test_sem_par_na_base_nova_nao_funde():
     """Átomo antigo sem correspondente é assunto do dono — enfiá-lo num átomo
     qualquer seria pior que deixá-lo de fora."""
