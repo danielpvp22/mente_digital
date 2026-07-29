@@ -1003,6 +1003,61 @@ class VectorStore:
             aprovadas = [(s, d) for s, d in aprovadas if s <= teto]
         return aprovadas
 
+    async def _irmaos_de_pagina(self, docs: Sequence[object],
+                                vistos: set) -> List[Tuple[Optional[float], object]]:
+        """Os outros átomos da MESMA PÁGINA dos que casaram (H2, 2026-07-29).
+
+        Por que existe: a re-atomização com o 8B fatiou o livro mais fino — 8.296
+        átomos onde o 4B fez 4.739 sobre o MESMO texto — e o fato passou a viver
+        separado do seu contexto. Medido em 14 perguntas reais, a base nova
+        entrega 503 palavras de conteúdo distintas por contexto contra 604 da
+        antiga, cobrindo o mesmo número de páginas: não falta cobertura, falta
+        COMPLETUDE dentro da página que já casou.
+
+        Isto recompõe a página sem reescrever átomo nenhum: se um átomo da página
+        respondeu, seus irmãos entram atrás dele na fila do orçamento. É a mesma
+        âncora e a mesma mecânica de `_anexos_colocados` — co-locação por
+        construção, não por proximidade estimada.
+
+        Figura fica de FORA: ela tem porta própria (`_buscar_figuras`) e teto
+        próprio; deixá-la entrar por aqui devolveria o problema que o teto
+        acabou de resolver.
+
+        Fail-soft: qualquer erro devolve lista vazia e a busca segue como antes.
+        """
+        teto = settings.rag_max_irmaos
+        if teto <= 0 or self._store is None:
+            return []
+        origens: List[str] = []
+        for d in docs:
+            o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
+            if o and o not in origens:
+                origens.append(o)
+        if not origens:
+            return []
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._store.get(
+                    where={"origem": {"$in": origens}},
+                    include=["metadatas", "documents"],
+                )
+            )
+        except Exception as exc:
+            telemetry.error("LOCAL", "Expansão por página indisponível", exc)
+            return []
+        fora: List[Tuple[Optional[float], object]] = []
+        for texto, md in zip(res.get("documents") or [], res.get("metadatas") or []):
+            if not texto or texto in vistos:
+                continue
+            doc = _DocSimples(texto, md or {})
+            if e_nota_de_figura(doc):
+                continue
+            vistos.add(texto)
+            fora.append((None, doc))
+            if len(fora) >= teto:
+                break
+        return fora
+
     async def _anexos_colocados(self, docs: Sequence[object]) -> List[str]:
         """As figuras ATTACH-ONLY da MESMA PÁGINA dos átomos que responderam.
 
@@ -1245,8 +1300,16 @@ class VectorStore:
 
             # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
+            # EXPANSÃO POR PÁGINA: os irmãos entram logo atrás dos matches reais,
+            # antes de figura e da malha — o fato que completa a ideia vale mais
+            # que uma imagem ou um vizinho por conceito.
+            irmaos: List[Tuple[Optional[float], object]] = []
+            if settings.rag_expandir_pagina and candidatos:
+                irmaos = await self._irmaos_de_pagina(
+                    [d for _s, d in candidatos[: settings.rag_max_chunks]], vistos)
+
             usar = selecionar_por_orcamento(
-                list(candidatos[: settings.rag_max_chunks]) + figuras + vizinhos,
+                list(candidatos[: settings.rag_max_chunks]) + irmaos + figuras + vizinhos,
                 settings.rag_context_char_budget,
                 settings.rag_figura_char_frac,
             )
@@ -1355,6 +1418,17 @@ def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         chunk_size=chunk_size, chunk_overlap=chunk_overlap
     )
     return [p.strip() for p in splitter.split_text(texto) if p.strip()]
+
+
+class _DocSimples:
+    """Documento mínimo (page_content + metadata) para o que vem do `store.get`,
+    que devolve texto e metadado crus em vez de objetos do langchain."""
+
+    __slots__ = ("page_content", "metadata")
+
+    def __init__(self, page_content: str, metadata: dict) -> None:
+        self.page_content = page_content
+        self.metadata = metadata
 
 
 def e_nota_de_figura(doc) -> bool:

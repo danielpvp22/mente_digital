@@ -94,6 +94,21 @@ class Settings(BaseSettings):
     # modelo devolveu o sentinela). A legenda é curta e casa muita pergunta.
     # 0 desliga o teto (volta ao comportamento anterior).
     rag_figura_char_frac: float = 0.15
+    # EXPANSÃO POR PÁGINA: quando um átomo casa, os IRMÃOS da mesma página entram
+    # atrás dele na fila do orçamento. A re-atomização com o 8B fatiou o livro
+    # mais fino (8.296 átomos onde o 4B fez 4.739 sobre o mesmo texto) e separou
+    # o fato do seu contexto — medido, a base nova entrega 503 palavras distintas
+    # por contexto contra 604 da antiga cobrindo o MESMO número de páginas.
+    # Não falta cobertura, falta completude dentro da página que já casou.
+    #
+    # MEDIDO pelo caminho real (`VectorStore.search`, 14 perguntas): média de
+    # palavras distintas no contexto 476 (sem) -> 500 (6 irmãos) -> 515 (12). O
+    # ganho é TODO nas perguntas cujo contexto vinha pela metade — poda apical
+    # 5.726 -> 9.742 chars (+52% de palavras), oídio 6.947 -> 11.192 (+66%) —,
+    # que são exatamente as que a base nova errava. Onde o orçamento já enchia
+    # com matches diretos, o resultado é idêntico: irmão não desloca match.
+    rag_expandir_pagina: bool = True
+    rag_max_irmaos: int = 12              # 0 desliga
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.
