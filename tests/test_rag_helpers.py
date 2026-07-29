@@ -46,6 +46,33 @@ def test_resolve_device_cpu_explicito_e_respeitado():
     assert resolve_device("cpu", cuda_available=True) == "cpu"
 
 
+# --- device das passadas OFFLINE (2026-07-29) ------------------------------
+# O servidor ao vivo divide os 10GB da 3080 com LLM + Whisper + XTTS e não tem
+# folga para o e5 (medido: 474 MiB no pico, contra 1.578 com ele na CPU). Script
+# offline roda com o servidor FECHADO, e aí a GPU inteira está livre.
+def test_offline_sobrepoe_o_device_do_servidor(monkeypatch):
+    from mente_digital.config import settings
+    from mente_digital.rag import preparar_embedding_offline
+
+    monkeypatch.setattr(settings, "embedding_device", "cpu")
+    monkeypatch.setattr(settings, "embedding_device_offline", "cuda")
+
+    assert preparar_embedding_offline() == "cuda"
+    assert settings.embedding_device == "cuda"      # o provider lê ISTO no load
+
+
+def test_offline_vazio_nao_sobrepoe_nada(monkeypatch):
+    """O botão de quem quer o mesmo device do servidor também nos scripts."""
+    from mente_digital.config import settings
+    from mente_digital.rag import preparar_embedding_offline
+
+    monkeypatch.setattr(settings, "embedding_device", "cpu")
+    monkeypatch.setattr(settings, "embedding_device_offline", "")
+
+    assert preparar_embedding_offline() == "cpu"
+    assert settings.embedding_device == "cpu"
+
+
 # --- frontmatter -----------------------------------------------------------
 def test_strip_frontmatter_remove_bloco_yaml():
     nota = "---\ntitle: X\ntags: [a, b]\n---\n# Conteúdo\ncorpo"

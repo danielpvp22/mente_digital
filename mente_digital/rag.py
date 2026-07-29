@@ -132,6 +132,35 @@ def resolve_device(requested: str, cuda_available: bool) -> str:
     return req
 
 
+def preparar_embedding_offline() -> str:
+    """Aponta o embedding para o device das passadas OFFLINE. Devolve o pedido.
+
+    Irmão do `llm.preparar_offline`, e pela mesma razão: script roda com o SERVIDOR
+    FECHADO, então a GPU inteira está livre. Ao vivo é o oposto — os 10GB da 3080 se
+    dividem entre LLM, Whisper e XTTS, e o A/B de 2026-07-29 mediu 474 MiB de folga
+    no pico com o e5 junto, contra 1.578 MiB com ele na CPU. Fino demais: o que
+    passa disso não estoura, cai no WDDM, que é pior (precipício de desempenho).
+    Offline não há essa disputa, e o lote é 14,7x mais rápido (40,7 -> 600 docs/s).
+
+    HONESTIDADE SOBRE O GANHO: 14,7x é o EMBEDDING, não o relógio. Medido no
+    `reindexar.py` com 400 notas tocadas, a passada foi de 98s para 77s (-21%) —
+    numa passada incremental quem domina é varrer as ~24k notas do vault. O ganho
+    grande está no rebuild COMPLETO, em que os ~25k chunks é que mandam.
+
+    Chamar ANTES de `EmbeddingProvider.load`: o provider é singleton e lê o settings
+    uma vez só. Com `embedding_device_offline` vazio não sobrepõe nada — é o botão
+    de quem quer o comportamento do servidor também nos scripts.
+    """
+    alvo = (settings.embedding_device_offline or "").strip()
+    if not alvo:
+        return settings.embedding_device
+    if alvo != settings.embedding_device:
+        telemetry.track("EMBED", f"Passada offline: embedding em '{alvo}' "
+                                 f"(servidor usa '{settings.embedding_device}').")
+    settings.embedding_device = alvo
+    return alvo
+
+
 def strip_frontmatter(texto: str) -> str:
     """Remove o frontmatter YAML do topo da nota (não é conteúdo pesquisável)."""
     return _FRONTMATTER_RE.sub("", texto, count=1)
