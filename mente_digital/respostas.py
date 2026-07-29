@@ -216,15 +216,25 @@ class Respostas:
         # Governador de verbosidade (#7): a pergunta define quanto a GPU decodifica e se
         # há instrução de brevidade. Sem nível (None) = comportamento de sempre.
         sistema = f"{system}\n{instrucao_extra}" if instrucao_extra else system
+        # POR PALAVRA ou POR FRASE (ver `settings.texto_stream_por_palavra`): turno que
+        # vai ser OUVIDO mantém o texto em frases fechadas para não correr na frente da
+        # voz; turno digitado mostra a resposta nascendo. O `_SegurarFraseIncompleta`
+        # continua rodando nos DOIS modos — ele deixou de ser o canal de exibição e
+        # virou o detector de FIM DE FRASE, que é o que a legenda da figura precisa
+        # para casar (fragmento nunca alcança as 2 palavras em comum).
+        por_palavra = settings.texto_stream_por_palavra and not turno_falado.get()
 
         async def _emitir(pedaco: str) -> None:
-            # TEXTO em fronteira de frase (corte gracioso do teto); VOZ token-a-token
-            # no chunker (preserva o 1º chunk agressivo da consultoria #8 — TTFA igual).
+            # VOZ token-a-token no chunker (preserva o 1º chunk agressivo da #8).
             nonlocal emitidos
+            if por_palavra and pedaco:
+                await send({"tipo": "token", "texto": pedaco})
+                emitidos += len(pedaco)
             bloco = visivel.push(pedaco)
             if bloco:
-                await send({"tipo": "token", "texto": bloco})
-                emitidos += len(bloco)
+                if not por_palavra:
+                    await send({"tipo": "token", "texto": bloco})
+                    emitidos += len(bloco)
                 # FIGURA INLINE: a imagem entra logo DEPOIS da frase que fala dela.
                 # Aqui é seguro porque `_emitir` só roda com o guard anti-sentinela
                 # já resolvido. Vai pelo canal VISÍVEL, nunca pelo chunker — o TTS
@@ -287,7 +297,8 @@ class Respostas:
 
         truncado = n_tokens >= teto
         resto_visivel, descartado = visivel.flush(truncado)
-        if resto_visivel:
+        # No modo por palavra tudo isto JÁ foi para a tela — reenviar duplicaria.
+        if resto_visivel and not por_palavra:
             await send({"tipo": "token", "texto": resto_visivel})
         if descartado:
             # Bateu no teto no meio de uma frase: melhor calar a meia-frase do que
@@ -297,11 +308,15 @@ class Respostas:
                 "RESPOSTA",
                 f"Teto de {teto} tokens: frase incompleta retida ({len(descartado)} chars).",
             )
-            texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
+            # ...mas só dá para RETER o que ainda não saiu. No modo por palavra o
+            # usuário já leu a meia-frase, então mantê-la no `texto_final` é o que
+            # deixa histórico e tela contando a MESMA coisa.
+            if not por_palavra:
+                texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         if posicoes:
             # Uma linha por TURNO (não por figura): basta para ler depois se a imagem
             # caiu cedo, tarde ou nunca — sem reencenar o turno na mão.
-            total = emitidos + len(resto_visivel)
+            total = emitidos if por_palavra else emitidos + len(resto_visivel)
             telemetry.track(
                 "FIGURAS",
                 f"inline: {len(posicoes)} figura(s) nos chars {posicoes} de {total}."
@@ -614,6 +629,8 @@ class Respostas:
         visivel = _SegurarFraseIncompleta()
         texto_final = ""
         n_tokens = 0
+        # Mesma regra do `_responder_contexto`: a resposta da WEB chega pela mesma tela.
+        por_palavra = settings.texto_stream_por_palavra and not turno_falado.get()
         async for token in self.ctx.llama.stream(
             prompt_resposta,
             max_tokens=settings.max_tokens_resposta,
@@ -622,15 +639,17 @@ class Respostas:
         ):
             texto_final += token
             n_tokens += 1
+            if por_palavra and token:
+                await send({"tipo": "token", "texto": token})
             bloco = visivel.push(token)
-            if bloco:
+            if bloco and not por_palavra:
                 await send({"tipo": "token", "texto": bloco})
             frases = chunker.push(token)
             if frases:
                 await self._falar(send, frases, tracker)
         truncado = n_tokens >= settings.max_tokens_resposta
         resto_visivel, descartado = visivel.flush(truncado)
-        if resto_visivel:
+        if resto_visivel and not por_palavra:
             await send({"tipo": "token", "texto": resto_visivel})
         if descartado:
             telemetry.track(
@@ -638,7 +657,8 @@ class Respostas:
                 f"Teto de {settings.max_tokens_resposta} tokens: frase incompleta retida "
                 f"({len(descartado)} chars).",
             )
-            texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
+            if not por_palavra:          # já foi lido: reter só o que não saiu
+                texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
         resto = chunker.flush()
         if resto and not truncado:
             await self._falar(send, [resto], tracker)

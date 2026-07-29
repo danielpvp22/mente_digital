@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     # `false` volta a carregar no startup (kill switch, sem mexer no código).
     tts_carga_preguicosa: bool = True
 
+    # COMO O TEXTO CHEGA À TELA (2026-07-29, pedido do dono). No turno FALADO ele sai
+    # em FRASES fechadas de propósito: a tela acompanha a voz, e correr na frente dela
+    # confunde quem está ouvindo. No turno DIGITADO ninguém está ouvindo — quem lê quer
+    # ver a resposta nascendo, então cada pedaço sai na hora.
+    # Contrapartida assumida: o que já foi mostrado não se desfaz, então no modo por
+    # palavra a frase incompleta que o teto de tokens guilhotina APARECE, em vez de ser
+    # descartada como no modo falado. Aceitável porque é assim que todo chat streama, e
+    # porque o teto virou 128 + o classificador de verbosidade parou de mandar pergunta
+    # de procedimento para o nível curto (as duas causas medidas de truncamento).
+    texto_stream_por_palavra: bool = True
+
     log_arquivo_habilitado: bool = True
     log_arquivo: str = str(DIR_DADOS / "logs" / "mente.log")
     transcricao_turnos: str = str(DIR_DADOS / "logs" / "turnos.jsonl")
