@@ -164,7 +164,8 @@ async def test_pipeline_roteia_comando_para_conexoes(monkeypatch):
     # o comando-mestre chega ao _descobrir_conexoes (não cai em "não reconheci")
     agent, mem = _agent(monkeypatch, _malha_com_ponte())
     send, _ = make_send()
-    await agent.pipeline_resposta("mestre, alguma conexão nova?", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("mestre, alguma conexão nova?", send, mem, stt_ms=1)
     falado = " ".join(agent.ctx.tts.chamadas)
     assert "Ponte Curiosa" in falado
     assert "reconheci" not in falado.lower()

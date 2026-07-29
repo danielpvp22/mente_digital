@@ -85,7 +85,8 @@ async def test_busca_comeca_antes_do_filler_terminar(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path, web)
     send, enviados = make_send()
 
-    await agent.pipeline_resposta("me fale sobre um tema qualquer", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("me fale sobre um tema qualquer", send, mem, stt_ms=1)
 
     assert "web:inicio" in eventos and "tts" in eventos
     # o cerne da #7: a rede já estava trabalhando quando o filler foi sintetizado
@@ -100,7 +101,7 @@ async def test_caminho_nenhum_segue_gracioso(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path, web)
     send, enviados = make_send()
 
-    await agent.pipeline_resposta("me fale sobre um tema qualquer", send, mem)
+    await agent.pipeline_resposta("me fale sobre um tema qualquer", send, mem, stt_ms=1)
 
     texto = "".join(m["texto"] for m in enviados if m.get("tipo") == "token")
     assert "Não encontrei" in texto

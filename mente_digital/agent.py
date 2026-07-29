@@ -63,7 +63,7 @@ from mente_digital.otimizador import (  # noqa: F401  (re-export histórico)
 # O sentinela mudou-se para prompts.py (é camada de linguagem); eval/ importa daqui.
 from mente_digital.rag import NENHUM, LocalResult, strip_frontmatter  # noqa: F401  (re-export)
 from mente_digital.respostas import Respostas
-from mente_digital.state import AppContext, SessionMemory
+from mente_digital.state import AppContext, SessionMemory, turno_falado
 # LatencyTracker mudou-se para telemetry.py (instrumentação mora com o save_latency).
 from mente_digital.telemetry import LatencyTracker, db, telemetry
 
@@ -95,6 +95,11 @@ class Agent(ComandosMestre, Respostas):
         `tracker` (opcional, hot-path interativo) cronometra CADA síntese — a síntese
         XTTS inline era 100% cega e é justamente ela que a métrica atual de tok/s
         (lado consumidor) confunde com o decode. None = sem medição (fundo/testes)."""
+        # PORTÃO ÚNICO da fala: a síntese abaixo é AWAITADA dentro do laço de tokens,
+        # então num turno que ninguém vai ouvir ela não custa só GPU — ela SEGURA o
+        # texto na tela. Ver `state.turno_falado`.
+        if not turno_falado.get():
+            return
         for frase in frases:
             _t = time.perf_counter() if tracker is not None else 0.0
             audio = await self.ctx.tts.synth_base64(frase)
@@ -167,7 +172,11 @@ class Agent(ComandosMestre, Respostas):
         async with self.ctx.interativo():
             self.ctx.llama.preempt()
             # Origem de voz: `stt_ms` só é preenchido quando o turno veio de TRANSCRIÇÃO
-            # (ws._check_silence). Turno de voz será OUVIDO -> estilo falado (aplicar_fala).
+            # (ws._check_silence). Turno de voz será OUVIDO -> estilo falado (aplicar_fala)
+            # E sintetizado; turno DIGITADO fica mudo por padrão (o áudio ficava no
+            # caminho crítico gerando som para ninguém). Setado aqui, no topo do turno:
+            # daqui pra baixo tudo roda dentro deste Task e enxerga o valor.
+            turno_falado.set(stt_ms is not None or settings.falar_turno_digitado)
             await self._pipeline(
                 texto_usuario, send_medido, tracker, mem, origem_voz=stt_ms is not None
             )

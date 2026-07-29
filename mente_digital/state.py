@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
@@ -22,6 +23,28 @@ if TYPE_CHECKING:  # evita imports circulares em runtime
     from mente_digital.llm import LlamaManager
     from mente_digital.rag import VectorStore, WebSearcher
     from mente_digital.scheduler import SchedulerService
+
+
+# ESTE TURNO VAI SER OUVIDO? (2026-07-29, medido no teste guiado)
+#
+# O `_falar` sintetiza DENTRO do laço de tokens (`await synth_base64`), então o TTS
+# está no caminho crítico: num turno DIGITADO, o texto para na tela enquanto o XTTS
+# gera um áudio que ninguém vai ouvir. Medido em 19 turnos reais: `tts_total` ficou
+# em ~95% do relógio (36,7 s totais com 35,2 s de TTS no pior caso).
+#
+# Por que ContextVar e não um parâmetro: a fala converge para dois primitivos, mas
+# é ACIONADA de 40+ lugares (quase todo comando-mestre chama `_emitir_falado`).
+# Enfiar um argumento por essa árvore toda seria uma mudança espalhada e fácil de
+# esquecer num ramo novo. E por que não um atributo do Agent: ele é um SINGLETON
+# em `ctx.agent`, compartilhado por todas as sessões — duas conversas simultâneas
+# (uma por voz, outra digitada) corromperiam o estado uma da outra.
+#
+# ContextVar resolve os dois: cada turno já roda no seu próprio `asyncio.Task`
+# (`ws._start_pipeline`), e `create_task` copia o contexto — o `set()` feito dentro
+# do pipeline vive e morre naquele turno. O default `True` é deliberado: push
+# proativo do scheduler (alarme, briefing) roda FORA de turno e deve falar sempre.
+turno_falado: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "turno_falado", default=True)
 
 
 class SessionMemory:
