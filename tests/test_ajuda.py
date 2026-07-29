@@ -33,6 +33,7 @@ async def test_ajuda_fala_capacidades(monkeypatch, tmp_path):
     for cmd in ("mestre, ajuda", "mestre /ajuda", "mestre, o que você pode fazer"):
         agent.ctx.tts.chamadas.clear()
         send, _ = make_send()
-        await agent.pipeline_resposta(cmd, send, mem)
+        # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+        await agent.pipeline_resposta(cmd, send, mem, stt_ms=1)
         falado = " ".join(agent.ctx.tts.chamadas).lower()
         assert "pomodoro" in falado and "lista" in falado, cmd

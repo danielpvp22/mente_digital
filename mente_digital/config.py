@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     #                        imagens na posição em que apareceram na tela).
     # Ambos sob dados/logs/, que é gitignorado: carregam perguntas reais e trechos
     # do vault. Desligue com MENTE_LOG_ARQUIVO_HABILITADO=false.
+    # TURNO DIGITADO FALA? (2026-07-29) Não: o `_falar` sintetiza dentro do laço de
+    # tokens, então o áudio fica no CAMINHO CRÍTICO — medido em 19 turnos reais de
+    # teste por texto, o TTS comeu ~95% do relógio (36,7 s totais com 35,2 s de
+    # síntese) para gerar som que ninguém ia ouvir, ainda disputando a VRAM da 3080
+    # com o LLM. Turno de VOZ segue falando sempre; isto governa só o digitado.
+    falar_turno_digitado: bool = False
+
     log_arquivo_habilitado: bool = True
     log_arquivo: str = str(DIR_DADOS / "logs" / "mente.log")
     transcricao_turnos: str = str(DIR_DADOS / "logs" / "turnos.jsonl")

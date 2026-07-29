@@ -64,17 +64,18 @@ async def test_marca_habito_e_lista(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
 
-    await agent.pipeline_resposta("mestre, fiz treino", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("mestre, fiz treino", send, mem, stt_ms=1)
     assert telemetry.db.habito_datas("treino") == [date.today().isoformat()]
     assert "treino" in " ".join(agent.ctx.tts.chamadas)
 
-    await agent.pipeline_resposta("mestre, meus hábitos", send, mem)
+    await agent.pipeline_resposta("mestre, meus hábitos", send, mem, stt_ms=1)
     assert "treino" in " ".join(agent.ctx.tts.chamadas)
 
 
 async def test_marcar_duas_vezes_no_mesmo_dia_nao_duplica(monkeypatch, tmp_path):
     agent, mem = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
-    await agent.pipeline_resposta("mestre, fiz meditação", send, mem)
-    await agent.pipeline_resposta("mestre, fiz meditação", send, mem)
+    await agent.pipeline_resposta("mestre, fiz meditação", send, mem, stt_ms=1)
+    await agent.pipeline_resposta("mestre, fiz meditação", send, mem, stt_ms=1)
     assert telemetry.db.habito_datas("meditacao") == [date.today().isoformat()]   # 1 só

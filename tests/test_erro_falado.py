@@ -25,7 +25,8 @@ async def test_excecao_no_pipeline_emite_erro_e_frase_falada(monkeypatch):
     # Explode DENTRO do try do pipeline (estágio de extração/recuperação).
     monkeypatch.setattr(agent, "_otimizar_e_recuperar", _boom)
 
-    await agent.pipeline_resposta("qual a capital da França?", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("qual a capital da França?", send, mem, stt_ms=1)
 
     tipos = [m.get("tipo") for m in enviados]
     assert "erro" in tipos                                   # o front reseta o orbe

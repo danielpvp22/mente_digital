@@ -28,7 +28,7 @@ from mente_digital.audio import SentenceChunker
 from mente_digital.config import settings
 from mente_digital.otimizador import frase_citada
 from mente_digital.rag import NENHUM
-from mente_digital.state import SessionMemory
+from mente_digital.state import SessionMemory, turno_falado
 from mente_digital.telemetry import LatencyTracker, db, telemetry
 
 Sender = Callable[[dict], Awaitable[bool]]
@@ -317,6 +317,10 @@ class Respostas:
         Só na escalada web (a única espera longa) — o local já streama rápido, sem filler.
         Sem chamada extra ao LLM: é template, então não pesa no TTFA."""
         await send({"tipo": "token", "texto": texto + " "})
+        # O TEXTO do filler sai sempre (é ele que avisa "estou buscando na web"); só a
+        # síntese respeita o portão — num turno digitado o aviso se lê, não se ouve.
+        if not turno_falado.get():
+            return
         audio = await self.ctx.tts.synth_base64(texto)
         if audio:
             await send({"tipo": "audio", "base64": audio})

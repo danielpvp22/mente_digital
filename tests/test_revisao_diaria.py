@@ -53,7 +53,8 @@ async def test_revisao_diaria_agrega_fontes(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    await agent.pipeline_resposta("mestre, resumo do dia", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("mestre, resumo do dia", send, mem, stt_ms=1)
     falado = " ".join(agent.ctx.tts.chamadas)
     assert "fez 1" in falado                    # 1 ação hoje
     assert "2 item" in falado                   # inbox
@@ -64,6 +65,6 @@ async def test_revisao_do_dia_nao_cai_no_srs(monkeypatch, tmp_path):
     # "revisão do dia" contém "revisão" mas deve ir pra revisão diária, não pra o SRS.
     agent, mem = _agent(monkeypatch, tmp_path)
     send, _ = make_send()
-    await agent.pipeline_resposta("mestre, revisão do dia", send, mem)
+    await agent.pipeline_resposta("mestre, revisão do dia", send, mem, stt_ms=1)
     assert mem.revisao is None                  # NÃO abriu sessão de cards
     assert "Fechamento do dia" in " ".join(agent.ctx.tts.chamadas)

@@ -100,6 +100,7 @@ async def test_comando_fala_a_agenda_de_hoje(monkeypatch, tmp_path):
     agent, mem = Agent(ctx), SessionMemory(settings)
     send, _ = make_send()
 
-    await agent.pipeline_resposta("mestre, o que tenho hoje", send, mem)
+    # turno de VOZ (stt_ms): este teste afere a FALA, e turno digitado não sintetiza.
+    await agent.pipeline_resposta("mestre, o que tenho hoje", send, mem, stt_ms=1)
     falado = " ".join(agent.ctx.tts.chamadas)
     assert "Consulta médica" in falado and "15:30" in falado
