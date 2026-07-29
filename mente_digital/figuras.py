@@ -120,6 +120,118 @@ def bloco_markdown(figuras: List[dict], subpasta: str) -> str:
     return "\n".join(linhas)
 
 
+# --- as DUAS cópias da mesma legenda (2026-07-29) -----------------------------
+# A legenda de uma figura vive em dois lugares: nesta linha de bloco (que a síntese
+# do capítulo carrega) e na NOTA da figura. Elas nasceram iguais e DERIVARAM: na
+# Cannabis Encyclopedia, medido em 2026-07-29, o bloco está em português e a nota
+# continua no inglês do site — 1.452 das 1.818 notas. As funções abaixo leem uma
+# ponta e escrevem na outra, sem inventar texto: a tradução já está no vault.
+_LINHA_BLOCO_RE = re.compile(r"^-\s*!\[\[([^\]]+)\]\]\s*[—–-]\s*(.+?)\s*$")
+_FM_RE = re.compile(r"^(---\r?\n)(.*?)(\r?\n---\r?\n)", re.DOTALL)
+
+# O MESMO corte que `encyclopedia.py` e `figuras_recorte.py` aplicam ao CRIAR a
+# nota (`## {titulo[:120]}`). Por isso o título é um PREFIXO do corpo em 606 das
+# 1.452 notas afetadas: a legenda inteira vive no corpo, e o título é a versão
+# cortada dela. Trocar só o título deixaria o inglês na linha de baixo.
+TETO_TITULO = 120
+
+
+def legendas_do_bloco(texto: str) -> Dict[str, str]:
+    """`{nome da imagem sem extensão: legenda}` das linhas escritas por
+    `bloco_markdown`. Casa o par pelo ARQUIVO, nunca por semelhança de texto —
+    é a mesma âncora exata que a co-locação de figura já usa."""
+    achados: Dict[str, str] = {}
+    for linha in (texto or "").split("\n"):
+        m = _LINHA_BLOCO_RE.match(linha.strip())
+        if m:
+            achados[Path(m.group(1)).stem] = m.group(2).strip()
+    return achados
+
+
+def _indice_do_corpo(linhas: List[str], idx_titulo: int, titulo: str) -> int:
+    """A linha do CORPO que repete a legenda, ou -1 se não houver.
+
+    É a primeira linha de conteúdo depois do título. Ela é aceita só quando de
+    fato repete o título (igual, ou o título é prefixo dela — o caso do corte em
+    `TETO_TITULO`); qualquer outro texto é conteúdo alheio e fica intocado, mesmo
+    que isso deixe o conserto pela metade em algumas notas. Reescrever a linha
+    errada é pior do que não reescrever.
+    """
+    for i in range(idx_titulo + 1, len(linhas)):
+        s = linhas[i].strip()
+        if not s:
+            continue
+        if s.startswith(("![[", "**Malha", "#")):
+            return -1               # chegou na parte estrutural: não há corpo
+        return i if s == titulo or s.startswith(titulo) else -1
+    return -1
+
+
+def legenda_da_nota(nota: str) -> str:
+    """A legenda INTEIRA de uma nota de figura — o corpo quando ele existe.
+
+    O título nasce cortado em `TETO_TITULO` e o corpo guarda a frase completa;
+    julgar a nota pelo título é julgar por menos evidência. Custou uma passada:
+    a régua de idioma rodando só no título deixou passar 14 legendas inteiramente
+    em inglês, porque o pedaço cortado é que carregava as palavras que denunciam.
+    """
+    linhas = (nota or "").split("\n")
+    i = next((k for k, ln in enumerate(linhas) if ln.startswith("## ")), -1)
+    if i < 0:
+        return ""
+    titulo = linhas[i][3:].strip()
+    j = _indice_do_corpo(linhas, i, titulo)
+    return linhas[j].strip() if j >= 0 else titulo
+
+
+def trocar_legenda(nota: str, nova: str) -> Optional[str]:
+    """Troca a legenda de uma nota de figura, guardando a original no frontmatter.
+
+    `None` quando não há o que fazer — nota já tocada (`legenda_original:`, o que
+    torna a passada idempotente), sem título `##`, sem frontmatter, ou a nova
+    legenda é igual à atual. Devolver None em vez do texto intacto deixa o
+    chamador CONTAR o que pulou, que é o número que diz se a passada fez sentido.
+
+    A legenda aparece DUAS vezes — título `##` (cortado em `TETO_TITULO`) e corpo
+    (inteiro) — e as duas trocam, cada uma no seu formato: o título é metade do
+    que a busca enxerga, e o corpo é o que entra no embedding. O que fica intocado
+    é tudo o mais, em especial o embed da imagem, a linha de proveniência e a
+    **Malha Neural**: renomear um [[conceito]] reescreveria arestas do grafo sem
+    como reapontá-las (mesma regra da passada de tradução de títulos).
+    """
+    if not nota or "legenda_original:" in nota:
+        return None
+
+    linhas = nota.split("\n")
+    idx_titulo = next((i for i, ln in enumerate(linhas) if ln.startswith("## ")), -1)
+    if idx_titulo < 0:
+        return None
+
+    titulo = linhas[idx_titulo][3:].strip()
+    nova = (nova or "").strip()
+    if not titulo or not nova:
+        return None
+
+    idx_corpo = _indice_do_corpo(linhas, idx_titulo, titulo)
+    # A original a guardar é a do CORPO quando ela existe: é a legenda inteira, e
+    # é ela que serve de PROVA para `idioma.aplicar_correcoes` depois.
+    original = linhas[idx_corpo].strip() if idx_corpo >= 0 else titulo
+    if original == nova:
+        return None
+
+    linhas[idx_titulo] = f"## {nova[:TETO_TITULO]}"
+    if idx_corpo >= 0:
+        linhas[idx_corpo] = nova
+    novo = "\n".join(linhas)
+
+    m = _FM_RE.match(novo)
+    if not m:                       # sem frontmatter não há onde guardar o original
+        return None
+    guardada = original.replace("\n", " ").replace('"', "'")
+    return (m.group(1) + m.group(2) + f"\nlegenda_original: {guardada}"
+            + m.group(3) + novo[m.end():])
+
+
 # --- IO: fitz + Pillow, import tardio (o servidor sobe sem eles) --------------
 def para_webp(dados: bytes, qualidade: int, max_lado: int) -> Optional[bytes]:
     """Converte a imagem embutida para WebP. None se não for imagem decodificável
