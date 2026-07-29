@@ -389,6 +389,13 @@ class Settings(BaseSettings):
     # Vazio = não sobrepõe (usa o `embedding_device` do servidor). Ver
     # `rag.preparar_embedding_offline`, chamado pelos scripts.
     embedding_device_offline: str = "auto"
+    # FIGURA INLINE (2026-07-29, pedido antigo do dono): a imagem aparece DEPOIS da
+    # frase que fala dela, em vez de empilhada no fim da resposta. O casamento é por
+    # palavra da LEGENDA (que desde 2026-07-29 está em PT-BR — antes disso isto não
+    # teria como funcionar, porque a resposta é PT e a legenda era EN).
+    # Mínimo de palavras em comum para grudar a figura na frase; 0 DESLIGA o inline
+    # e tudo volta a sair no fim. Ver `figuras.combina_com_legenda`.
+    figura_inline_min_palavras: int = 2
     # PREFIXOS DE INSTRUÇÃO (família e5): modelos como intfloat/multilingual-e5-* foram
     # treinados com "query: " nas perguntas e "passage: " nos documentos — sem isso
     # perdem boa parte da qualidade. VAZIOS por padrão (o MiniLM atual não usa prefixo);

@@ -270,7 +270,7 @@ class Agent(ComandosMestre, Respostas):
             if nivel.nome != "normal":
                 telemetry.track("VERBOSIDADE", f"nível={nivel.nome} max_tokens={nivel.max_tokens}")
 
-            async def passada(contexto: str, fonte: str) -> None:
+            async def passada(contexto: str, fonte: str, figuras=None) -> None:
                 # prefixo só quando JÁ há parágrafo antes (separa as passadas); é enviado
                 # dentro do _responder_contexto, na 1ª emissão real (não vaza se der sentinela).
                 p = await self._responder_contexto(
@@ -281,6 +281,7 @@ class Agent(ComandosMestre, Respostas):
                     max_tokens=nivel.max_tokens,
                     instrucao_extra=self._instrucao_com_perfil(nivel.instrucao),
                     tracker=tracker,
+                    figuras=figuras,
                 )
                 if p:
                     paragrafos.append(p)
@@ -367,7 +368,12 @@ class Agent(ComandosMestre, Respostas):
                     elif local.relevante:
                         telemetry.track("AGENT", "Fusão: passada Banco.")
                         antes = len(paragrafos)
-                        await passada(self._montar_contexto(local, []), "banco")
+                        # FIGURA INLINE: preparadas ANTES da passada (a imagem entra
+                        # DEPOIS da frase que fala dela, lá dentro do stream). O que
+                        # nenhuma frase casar sai no bloco do fim, logo abaixo — então
+                        # o pior caso desta mudança é o comportamento antigo.
+                        figs = await self._preparar_figuras(local.fontes + local.anexos)
+                        await passada(self._montar_contexto(local, []), "banco", figs)
                         if len(paragrafos) == antes:
                             # obs-01: Banco RELEVANTE que não contribuiu = o decode
                             # morreu no sentinela (ou veio vazio). É o proxy do custo
@@ -382,8 +388,7 @@ class Agent(ComandosMestre, Respostas):
                             # VERDADE (passada não-sentinela) — anexar imagem a uma
                             # passada que virou sentinela mostraria figura sem resposta.
                             await self._mostrar_figuras(
-                                send_medido, local.fontes + local.anexos,
-                                "\n".join(paragrafos))
+                                send_medido, figs, "\n".join(paragrafos))
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
                             # #4 TEMA QUENTE: o Banco respondeu de fato -> o usuário REUSOU
                             # o vault neste tema (interesse recorrente). Registra p/ a

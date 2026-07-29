@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
+
+from mente_digital import textutils
 
 # "Figura 4.1 — texto", "Fig. 12 -", "FIGURA 3.2:" ... o número é o que casa com o
 # corpo do átomo; a legenda é o que dá contexto na nota (e vira texto pesquisável).
@@ -165,6 +167,42 @@ def _indice_do_corpo(linhas: List[str], idx_titulo: int, titulo: str) -> int:
             return -1               # chegou na parte estrutural: não há corpo
         return i if s == titulo or s.startswith(titulo) else -1
     return -1
+
+
+def _radical(palavra: str) -> str:
+    """Tira só o "s" do plural (palavra > 3 letras). Não é stemmer, e não deve
+    virar um: aqui basta empatar "testes"/"teste" dos dois lados da comparação."""
+    return palavra[:-1] if len(palavra) > 3 and palavra.endswith("s") else palavra
+
+
+def combina_com_legenda(trecho: str, chaves: Set[str], minimo: int = 2) -> bool:
+    """A frase que acabou de ser dita fala DESTA figura?
+
+    É o que permite pôr a imagem no meio da resposta em vez de empilhar tudo no
+    fim: a cada frase emitida, pergunta-se de qual figura ela está falando.
+
+    `minimo` é 2 de propósito. Uma palavra só casa por acaso — quase toda frase
+    de uma resposta sobre cultivo contém "solo" ou "planta", e a legenda também,
+    então o teto de 1 grudaria a primeira figura na primeira frase. Duas palavras
+    distintas da legenda já exigem que a frase fale do MESMO assunto. É a mesma
+    ideia do aterramento léxico do gate, uma escala abaixo.
+    """
+    if not trecho or not chaves or minimo <= 0:
+        return False
+    # LIMIAR PROPORCIONAL À LEGENDA, os dois lados medidos em turno real
+    # (2026-07-29). Legenda de rótulo tem 2 palavras ("Testes de Solo") e NUNCA
+    # alcança 2 casamentos, então com o teto fixo ela ia sempre para o fim; com
+    # teto 1 ela grudou na frase certa. Legenda descritiva tem 8+ palavras e aí 2
+    # é o que separa "fala disto" de "usou a mesma palavra". A régua: metade da
+    # legenda, no máximo `minimo`. Quanto MENOS a legenda diz, menos evidência dá
+    # para exigir — e rótulo de seção erra menos, porque ele É o tema da página.
+    minimo = max(1, min(minimo, (len(chaves) + 1) // 2))
+    # Plural: a legenda diz "Testes de Solo" e a frase diz "teste de solo" — sem
+    # isto, o casamento cai de 2 para 1 e a figura vai para o fim. Medido em turno
+    # real. O corte do "s" fica AQUI, e não no `textutils.tokens`, que é o mesmo
+    # dos gates de recuperação: mexer lá mudaria aterramento e dedup de uma vez.
+    alvo = {_radical(t) for t in textutils.tokens(trecho)}
+    return len(alvo & {_radical(c) for c in chaves}) >= minimo
 
 
 def legenda_da_nota(nota: str) -> str:
