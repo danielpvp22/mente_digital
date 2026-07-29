@@ -76,6 +76,19 @@ class _SegurarFraseIncompleta:
         return "", cauda
 
 
+def _nome_figura(embed: str) -> str:
+    """`![[Figuras/livro/livro_p0122_f1.webp]]` -> `livro_p0122_f1`.
+
+    O nome do arquivo carrega a PÁGINA e a ordem na página, então é ele que
+    revela a "mesma sequência de imagens" repetindo entre perguntas diferentes
+    — coisa que a contagem sozinha esconde (observado pelo dono em 2026-07-29).
+    """
+    try:
+        return Path(embed[3:-2]).stem or embed
+    except (IndexError, ValueError, OSError):
+        return embed
+
+
 class _FigurasInline:
     """As figuras da resposta, entregues DEPOIS da frase que fala de cada uma.
 
@@ -196,6 +209,9 @@ class Respostas:
         buffer = ""
         decidido = False
         n_tokens = 0
+        emitidos = 0                     # chars VISÍVEIS já enviados
+        posicoes: List[int] = []         # onde cada figura inline caiu
+        nomes: List[str] = []            # e QUAL figura era (a régua da relevância)
         teto = max_tokens if max_tokens is not None else settings.max_tokens_resposta
         # Governador de verbosidade (#7): a pergunta define quanto a GPU decodifica e se
         # há instrução de brevidade. Sem nível (None) = comportamento de sempre.
@@ -204,9 +220,11 @@ class Respostas:
         async def _emitir(pedaco: str) -> None:
             # TEXTO em fronteira de frase (corte gracioso do teto); VOZ token-a-token
             # no chunker (preserva o 1º chunk agressivo da consultoria #8 — TTFA igual).
+            nonlocal emitidos
             bloco = visivel.push(pedaco)
             if bloco:
                 await send({"tipo": "token", "texto": bloco})
+                emitidos += len(bloco)
                 # FIGURA INLINE: a imagem entra logo DEPOIS da frase que fala dela.
                 # Aqui é seguro porque `_emitir` só roda com o guard anti-sentinela
                 # já resolvido. Vai pelo canal VISÍVEL, nunca pelo chunker — o TTS
@@ -214,6 +232,12 @@ class Respostas:
                 if figuras:
                     casadas = figuras.casadas(bloco)
                     if casadas:
+                        # POSIÇÃO, não só contagem: "char 159 de 1180" é o que diz se a
+                        # imagem caiu junto do trecho certo ou no rodapé. Sem isto o log
+                        # só conta as que SOBRARAM para o fim, e validar o inline exige
+                        # reencenar o turno na mão — o que custou caro em 2026-07-29.
+                        posicoes.extend([emitidos] * len(casadas))
+                        nomes.extend(_nome_figura(e) for e in casadas)
                         await send({"tipo": "token",
                                     "texto": "\n" + "\n".join(casadas) + "\n"})
             frases = chunker.push(pedaco)
@@ -274,6 +298,15 @@ class Respostas:
                 f"Teto de {teto} tokens: frase incompleta retida ({len(descartado)} chars).",
             )
             texto_final = texto_final[: len(texto_final) - len(descartado)].rstrip()
+        if posicoes:
+            # Uma linha por TURNO (não por figura): basta para ler depois se a imagem
+            # caiu cedo, tarde ou nunca — sem reencenar o turno na mão.
+            total = emitidos + len(resto_visivel)
+            telemetry.track(
+                "FIGURAS",
+                f"inline: {len(posicoes)} figura(s) nos chars {posicoes} de {total}."
+                f" -> {', '.join(nomes)}",
+            )
         resto = chunker.flush()
         if resto and not truncado:
             await self._falar(send, [resto], tracker)
@@ -479,7 +512,7 @@ class Respostas:
 
         raiz = Path(settings.caminho_obsidian)
 
-        def _carregar() -> List[Tuple[str, set]]:
+        def _carregar() -> List[Tuple[str, set, str]]:
             saida = []
             for caminho, embed in pares:
                 if not (raiz / embed[3:-2]).is_file():
@@ -489,10 +522,21 @@ class Respostas:
                         Path(caminho).read_text(encoding="utf-8"))
                 except OSError:      # nota some entre a busca e aqui: sem legenda,
                     legenda = ""     # a figura ainda sai no fim (só não casa frase)
-                saida.append((embed, textutils.palavras_chave(legenda)))
+                saida.append((embed, textutils.palavras_chave(legenda), legenda))
             return saida
 
-        return _FigurasInline(await asyncio.to_thread(_carregar))
+        carregadas = await asyncio.to_thread(_carregar)
+        if carregadas:
+            # A LEGENDA é o que diz se a imagem tinha a ver com a pergunta; sem ela o
+            # log provaria QUE apareceu figura, não se ela fazia sentido (o dono viu
+            # imagens sem relação em 2026-07-29). Registrado no PREPARO, uma vez por
+            # turno: aqui está o conjunto INTEIRO que a recuperação entregou, inclusive
+            # o que nem chega a ser mostrado — é esse conjunto que se repete.
+            amostra = " | ".join(
+                f"{_nome_figura(e)} {legenda[:60]!r}" for e, _, legenda in carregadas)
+            telemetry.track(
+                "FIGURAS", f"contexto: {len(carregadas)} candidata(s): {amostra}")
+        return _FigurasInline([(embed, chaves) for embed, chaves, _ in carregadas])
 
     async def _mostrar_figuras(self, send: Sender, figuras: _FigurasInline,
                                ja_dito: str = "") -> int:
@@ -519,7 +563,10 @@ class Respostas:
         if not vivos:
             return 0
         await send({"tipo": "token", "texto": "\n\n" + "\n".join(vivos)})
-        telemetry.track("FIGURAS", f"{len(vivos)} figura(s) anexada(s) ao fim da resposta.")
+        telemetry.track(
+            "FIGURAS",
+            f"{len(vivos)} figura(s) anexada(s) ao fim da resposta."
+            f" -> {', '.join(_nome_figura(e) for e in vivos)}")
         return len(vivos)
 
     async def _consolidar_fontes(self, fontes: List[str]) -> None:

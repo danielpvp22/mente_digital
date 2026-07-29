@@ -7,9 +7,12 @@ da Encyclopedia deixaram de estar em inglês — o casamento é por PALAVRA, a r
 O que nenhuma frase casa continua saindo no bloco do fim: o pior caso desta mudança
 é exatamente o comportamento antigo.
 """
+import re
+
 import pytest
 
 from mente_digital import figuras
+from mente_digital import respostas
 from mente_digital.agent import Agent
 from mente_digital.config import settings
 from mente_digital.respostas import _FigurasInline
@@ -150,6 +153,55 @@ async def test_sem_figuras_o_stream_e_identico_ao_de_sempre():
     await agent._responder_contexto("ctx", "pergunta", send)
 
     assert textos_de_tokens(enviados) == "O solo argiloso retém água. "
+
+
+# --- instrumentação: em que ponto do texto a figura caiu ---------------------
+def _so_figuras(linhas):
+    return [msg for modulo, msg in linhas if modulo == "FIGURAS"]
+
+
+def _espionar_log(monkeypatch):
+    linhas = []
+    monkeypatch.setattr(respostas.telemetry, "track",
+                        lambda modulo, msg: linhas.append((modulo, msg)))
+    return linhas
+
+
+@pytest.mark.asyncio
+async def test_log_registra_em_que_char_a_figura_caiu(monkeypatch):
+    """Sem POSIÇÃO no log, conferir o inline exige reencenar o turno na mão —
+    foi a maior fatia do custo de 2026-07-29. O log antigo só contava as figuras
+    que SOBRAVAM para o fim, ou seja, era cego justamente no caminho novo."""
+    linhas = _espionar_log(monkeypatch)
+    agent = _agent(["O solo ", "argiloso retém água. ", "Outra coisa qualquer aqui."])
+    send, _ = make_send()
+
+    await agent._responder_contexto("ctx", "pergunta", send,
+                                    figuras=_FigurasInline([(EMBED, CHAVES)]))
+
+    registros = _so_figuras(linhas)
+    assert len(registros) == 1                    # uma linha por TURNO, não por figura
+    contagem, nomes = registros[0].split(" -> ")
+    quantas, posicao, total = (int(n) for n in re.findall(r"\d+", contagem))
+    assert quantas == 1
+    assert 0 < posicao < total                    # caiu no MEIO, não no rodapé
+    # QUAL figura era: sem isto o log não distingue a imagem certa da sem relação,
+    # nem mostra a mesma sequência se repetindo entre perguntas.
+    assert nomes == "livro_p0003_f1"
+
+
+@pytest.mark.asyncio
+async def test_turno_sem_casamento_nao_polui_o_log(monkeypatch):
+    """Figura que ninguém casou já é contada pelo bloco do fim; registrá-la aqui
+    também faria a mesma imagem aparecer duas vezes na leitura do log."""
+    linhas = _espionar_log(monkeypatch)
+    agent = _agent(["A poda ", "apical estimula os ramos laterais. "])
+    send, _ = make_send()
+
+    await agent._responder_contexto("ctx", "pergunta", send,
+                                    figuras=_FigurasInline([(EMBED, CHAVES)]))
+
+    assert _so_figuras(linhas) == []
 
 
 # --- preparo (disco) ---------------------------------------------------------

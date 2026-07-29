@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     db_telemetria: str = str(DIR_DADOS / "telemetria_etl.db")
     subpasta_conhecimento_novo: str = "Conhecimento_Novo"
 
+    # --- GRAVAÇÃO DO USO (2026-07-29, pedido do dono após o 1º teste guiado) ----
+    # Duas metades que só juntas contam o turno inteiro:
+    #   `log_arquivo`      = o COMPORTAMENTO (a mesma telemetria do console, sem cor,
+    #                        em arquivo — antes ela morria ao fechar o terminal, e
+    #                        redirecionar com Tee-Object gerava UTF-16 no PS 5.1);
+    #   `transcricao_turnos` = o que o USUÁRIO VIU (JSONL, um turno por linha, com as
+    #                        imagens na posição em que apareceram na tela).
+    # Ambos sob dados/logs/, que é gitignorado: carregam perguntas reais e trechos
+    # do vault. Desligue com MENTE_LOG_ARQUIVO_HABILITADO=false.
+    log_arquivo_habilitado: bool = True
+    log_arquivo: str = str(DIR_DADOS / "logs" / "mente.log")
+    transcricao_turnos: str = str(DIR_DADOS / "logs" / "turnos.jsonl")
+
     # --- Backup diário (painel 2026-07-24, ops-backup-01) ----------------------
     # O vault é a ÚNICA cópia do conhecimento destilado (o dump bruto é APAGADO após
     # a atomização) — sem backup, disco morto = base morta. O scheduler zipa 1x/dia
@@ -257,7 +270,13 @@ class Settings(BaseSettings):
     # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
     # "explica") ganha uma resposta de UMA frase, com teto de tokens menor — menos GPU,
     # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.
-    max_tokens_resposta_curto: int = 90
+    # 90 -> 128 (teste real 2026-07-29): mesmo as perguntas CORRETAMENTE classificadas
+    # como curtas estouravam o teto e perdiam o fim da frase — "qual o pH ideal para
+    # cannabis em solo?" descartou 55 chars, "quantas semanas até a colheita?" 33. Uma
+    # frase de domínio técnico, com número e unidade, passa de 90 tokens em PT-BR. O
+    # custo do teto maior é só o pior caso (~0,3 s de decode); o da frase guilhotinada
+    # era a resposta chegar pela metade.
+    max_tokens_resposta_curto: int = 128
     verbosidade_curto_max_palavras: int = 8
     # Síntese sob Demanda (#23): "o que eu sei sobre X". Fluxo map-reduce SEPARADO —
     # recupera muitos átomos e os resume em LOTES que cabem no n_ctx, depois combina.

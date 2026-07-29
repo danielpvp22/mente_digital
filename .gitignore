@@ -43,6 +43,11 @@ dados/chat_dump_bruto.md
 # são SAÍDA de varredura, refeitas pelo script quando preciso — não fonte.
 dados/*.md
 
+# Log de sessão do servidor (docs/ROTEIRO_TESTE_TEXTO.md manda o stdout para cá):
+# carrega as perguntas REAIS do dono e trechos do vault na telemetria. Mesma regra
+# dos traces abaixo — o dado de uso fica no disco, nunca no repo.
+dados/logs/
+
 # Traces de latência (padrão de uso com timestamps) e amostras de voz — a pasta de
 # vozes pode conter a VOZ CLONADA do dono (biometria) quando o speaker_wav do XTTS
 # apontar para gravação própria. Nunca num repo público (painel 2026-07-24).

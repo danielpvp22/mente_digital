@@ -29,6 +29,10 @@ if "mente_digital.config" in sys.modules:
 _TMP_DB_DIR = tempfile.mkdtemp(prefix="mente_pytest_")
 os.environ["MENTE_DB_TELEMETRIA"] = os.path.join(_TMP_DB_DIR, "telemetria_teste.db")
 atexit.register(shutil.rmtree, _TMP_DB_DIR, ignore_errors=True)  # não vazar tmp por run
+# Mesma razão para o log em ARQUIVO (2026-07-29): o sink do telemetry nasce do
+# `settings` no primeiro track() e a suíte inteira despejaria em dados/logs/mente.log.
+os.environ["MENTE_LOG_ARQUIVO_HABILITADO"] = "false"
+os.environ["MENTE_TRANSCRICAO_TURNOS"] = os.path.join(_TMP_DB_DIR, "turnos_teste.jsonl")
 
 from typing import List, Optional, Tuple
 
