@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from mente_digital import textutils
@@ -49,6 +50,25 @@ class TelemetryStream:
         self.start_time = time.perf_counter()
         self.last_time = self.start_time
         self._lock = threading.Lock()
+        self._arquivo: Optional[object] = None
+        self._arquivo_tentado = False
+
+    def _sink(self) -> Optional[object]:
+        """O arquivo de log, aberto na PRIMEIRA escrita (None = desligado/indisponível).
+
+        Preguiçoso de propósito: abrir no import criaria o arquivo em todo processo
+        que apenas importe o módulo — pytest, scripts de manutenção, o CLI. E uma
+        tentativa só: se o disco recusou, não insiste a cada linha.
+        """
+        if self._arquivo_tentado:
+            return self._arquivo
+        self._arquivo_tentado = True
+        if settings.log_arquivo_habilitado:
+            with contextlib.suppress(OSError, ValueError):
+                caminho = Path(settings.log_arquivo)
+                caminho.parent.mkdir(parents=True, exist_ok=True)
+                self._arquivo = caminho.open("a", encoding="utf-8", errors="replace")
+        return self._arquivo
 
     @staticmethod
     def _fmt(t: float) -> str:
@@ -84,6 +104,14 @@ class TelemetryStream:
                 f"{lvl}[{module}]{c['reset']} {message}\n",
             )
             sys.stdout.flush()
+            # A MESMA linha em arquivo, sem cor: o console some ao fechar o terminal,
+            # e é justamente o comportamento de fundo que a análise depois precisa.
+            sink = self._sink()
+            if sink is not None:
+                with contextlib.suppress(Exception):
+                    sink.write(f"[{self._fmt(total)}] (+{self._fmt(delta)}) "
+                               f"[{level}][{module}] {message}\n")
+                    sink.flush()
 
     def warn(self, module: str, message: str) -> None:
         self.track(module, message, "WARN")

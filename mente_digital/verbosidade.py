@@ -99,10 +99,23 @@ def aplicar_fala(nivel: Nivel, origem_voz: bool) -> Nivel:
 # "o que é o framework Astro?"). Recuperar notas, definir um conceito e quantificar
 # um EFEITO não são fato-único — ganham espaço normal. "quanto é/custa/vale" (um
 # número seco) continua curto: é o ganho de latência do #7.
-_LARGA_PREFIXOS = ("o que e ", "o que sao ", "o que eu ", "o que voce ")
+_LARGA_PREFIXOS = (
+    "o que e ", "o que sao ", "o que eu ", "o que voce ",
+    # COMPARATIVA (teste real 2026-07-29): "qual o melhor meio para enraizar
+    # estacas?" tem 4 palavras úteis e caiu em `curto`. Recomendar exige comparar —
+    # a resposta saiu cortada, e o corte apagou tanto texto que o pipeline julgou o
+    # banco insuficiente e escalou para a WEB, que respondeu PIOR do que o vault.
+    "qual o melhor ", "qual a melhor ", "quais os melhores ", "quais as melhores ",
+)
 _QUANTO_SECO = (
     "quanto e ", "quanto eh ", "quanto custa", "quanto vale", "quanto fica",
     "quanto tem ", "quantos sao ", "quanto sao ", "quantas sao ",
+)
+# "como" quase sempre pede PROCEDIMENTO — passo a passo não cabe em uma frase.
+# Fora estas, em que "como" é só o modo de uma pergunta de fato único.
+_COMO_SECO = (
+    "como esta", "como estao", "como vai", "como vao",
+    "como se chama", "como se escreve", "como se diz", "como se fala",
 )
 
 
@@ -110,7 +123,17 @@ def _resposta_larga(n: str) -> bool:
     """Pergunta curta cuja RESPOSTA não cabe em 1 frase (opera no texto normalizado)."""
     if any(n.startswith(p) for p in _LARGA_PREFIXOS):
         return True
-    return n.startswith("quanto") and not any(n.startswith(q) for q in _QUANTO_SECO)
+    # PROCEDIMENTO (teste real 2026-07-29): "como faço um teste de pH do solo?",
+    # "como faço o transplante de uma muda?", "como identificar ácaro da teia?" e
+    # "como prevenir e tratar oídio?" são curtas em PALAVRAS e largas em RESPOSTA —
+    # as quatro saíram cortadas no meio da frase pelo teto de 1 frase.
+    if n.startswith("como ") and not any(n.startswith(c) for c in _COMO_SECO):
+        return True
+    # "quantas" NÃO casa `startswith("quanto")` — a flexão feminina escapava por um
+    # buraco de string. Medido no mesmo teste: "quanto tempo leva a secagem?" ganhou
+    # espaço normal e "QUANTAS semanas de floração até a colheita?" saiu truncada.
+    return n.startswith(("quanto", "quantas")) and not any(
+        n.startswith(q) for q in _QUANTO_SECO)
 
 
 def classificar(pergunta: str) -> Nivel:

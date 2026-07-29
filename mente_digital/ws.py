@@ -27,6 +27,7 @@ from mente_digital.otimizador import e_backchannel
 from mente_digital.config import settings
 from mente_digital.state import AppContext, SessionMemory
 from mente_digital.telemetry import db, telemetry
+from mente_digital.transcricao import GravadorTurno
 
 _RECV_TIMEOUT = 0.5  # s — granularidade da checagem de silêncio
 
@@ -75,6 +76,10 @@ class LiveSession:
         # `set_conversa` no onopen, então o último a conectar sobrescrevia o
         # `conversa_id` de todos — e os turnos iam pro SQLite na conversa errada.
         self.memory = SessionMemory(ctx.settings)
+        # Gravação do turno: mora aqui porque o `safe_send` abaixo é a ÚNICA porta
+        # de saída para o front — o registro é o que foi ENVIADO, não o que o
+        # servidor acha que enviou.
+        self.gravador = GravadorTurno(settings.transcricao_turnos)
 
     # -- envio seguro (falha esperada durante barge-in/disconnect) --------------
     async def safe_send(self, data: dict) -> bool:
@@ -83,6 +88,7 @@ class LiveSession:
         # enquanto a resposta toca, senão o próprio TTS vira pergunta-fantasma no Whisper).
         if data.get("tipo") == "audio":
             self._ultimo_audio_ts = time.time()
+        self.gravador.ver(data)
         try:
             await self.ws.send_json(data)
             return True
@@ -114,11 +120,17 @@ class LiveSession:
         # front descarta a cauda pelo mesmo caminho do barge-in quando o áudio novo chega.
         self._cancel_tts()
         self._cancel_pipeline()
+        self.gravador.abrir(texto, self.memory.conversa_id)
         self.pipeline_task = asyncio.create_task(
             self.ctx.agent.pipeline_resposta(
                 texto, self.safe_send, self.memory, stt_ms=stt_ms, vad_ms=vad_ms
             )
         )
+        # Fecha no FIM do turno — inclusive quando ele é cancelado por barge-in, que é
+        # justamente o caso em que saber o que chegou à tela antes do corte importa.
+        # Escrita síncrona (um append curto): agendar tarefa a partir de um callback
+        # de conclusão corre com o shutdown do loop e perderia o último turno.
+        self.pipeline_task.add_done_callback(lambda _: self.gravador.fechar())
 
     def _tts_tocando(self) -> bool:
         """A resposta ainda está saindo em VOZ? Pipeline em voo OU áudio enviado há menos de

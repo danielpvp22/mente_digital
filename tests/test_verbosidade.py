@@ -98,3 +98,41 @@ def test_factuais_seguem_curto():
     # Regressão do ganho do #7: o conserto não pode matar a resposta de 1 frase.
     for p in ["que horas são?", "qual a capital da França?", "Céu Azul fica em que estado?"]:
         assert classificar(p).nome == "curto", p
+
+
+# --- teste real de 2026-07-29: curtas em PALAVRAS, largas em RESPOSTA --------
+def test_procedimento_com_como_nao_e_curto():
+    """As quatro saíram CORTADAS no meio da frase no teste guiado. "Como" pede
+    passo a passo, e passo a passo não cabe em uma frase."""
+    for p in ["Como faço um teste de pH do solo?",
+              "Como faço o transplante de uma muda?",
+              "Como identificar ácaro da teia nas folhas?",
+              "Como prevenir e tratar oídio?"]:
+        assert classificar(p).nome == "detalhado", p
+
+
+def test_como_de_fato_unico_continua_curto():
+    """Nem todo "como" é procedimento — não devolver o ganho de latência à toa."""
+    for p in ["como está o tempo hoje?", "como se chama o vizinho?", "como vai você"]:
+        assert classificar(p).nome == "curto", p
+
+
+def test_quantas_no_feminino_nao_e_curto():
+    """A flexão feminina escapava por `startswith("quanto")`: "quanto tempo leva
+    a secagem?" ganhava espaço e "QUANTAS semanas até a colheita?" saía truncada."""
+    assert classificar("Quantas semanas de floração até a colheita?").nome == "detalhado"
+    assert classificar("Quantos dias até a germinação?").nome == "detalhado"
+
+
+def test_quantas_seco_continua_curto():
+    """O conserto do feminino não pode furar a lista de exceções do fato único."""
+    for p in ["quantas são 3 mais 4", "quantos são dois mais dois"]:
+        assert classificar(p).nome == "curto", p
+
+
+def test_comparativa_nao_e_curto():
+    """"Qual o melhor X" pede COMPARAÇÃO. No teste real o corte foi tão grande que
+    o pipeline julgou o banco insuficiente e escalou para a web — que respondeu pior."""
+    for p in ["Qual o melhor meio para enraizar estacas?",
+              "qual a melhor lâmpada para floração"]:
+        assert classificar(p).nome == "detalhado", p
