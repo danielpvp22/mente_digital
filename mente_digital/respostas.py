@@ -321,6 +321,10 @@ class Respostas:
         # síntese respeita o portão — num turno digitado o aviso se lê, não se ouve.
         if not turno_falado.get():
             return
+        # Numa escalada web o filler costuma ser a PRIMEIRA fala do turno — mesma
+        # espera do `_falar` (ver lá o porquê).
+        if not self.ctx.tts.ready:
+            await asyncio.to_thread(self.ctx.tts.ensure_loaded)
         audio = await self.ctx.tts.synth_base64(texto)
         if audio:
             await send({"tipo": "audio", "base64": audio})
