@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     # sobrevive a restart); o scheduler os atomiza NO IDLE, nunca com sessão viva
     # (restrição do dono). Capado por ciclo: um livro grande atravessa vários
     # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
+    # TETO DE FIGURA NO CONTEXTO (fração do `rag_context_char_budget`). Medido em
+    # 2026-07-29 sobre 14 perguntas reais: as notas de figura ocupavam 40% do
+    # orçamento (7,5 notas, 4.740 chars por pergunta; 17 numa pergunta sobre
+    # oídio, 15 na de poda apical — nesta o texto que respondia não coube e o
+    # modelo devolveu o sentinela). A legenda é curta e casa muita pergunta.
+    # 0 desliga o teto (volta ao comportamento anterior).
+    rag_figura_char_frac: float = 0.15
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.

@@ -1245,13 +1245,11 @@ class VectorStore:
 
             # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
-            usar: List[Tuple[Optional[float], object]] = []
-            orcamento = settings.rag_context_char_budget
-            for s, d in list(candidatos[: settings.rag_max_chunks]) + figuras + vizinhos:
-                if usar and orcamento - len(d.page_content) < 0:
-                    break                                    # respeita o teto (n_ctx)
-                usar.append((s, d))
-                orcamento -= len(d.page_content)
+            usar = selecionar_por_orcamento(
+                list(candidatos[: settings.rag_max_chunks]) + figuras + vizinhos,
+                settings.rag_context_char_budget,
+                settings.rag_figura_char_frac,
+            )
 
             if settings.rag_debug:
                 n_viz = sum(1 for s, _ in usar if s is None)
@@ -1357,6 +1355,49 @@ def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         chunk_size=chunk_size, chunk_overlap=chunk_overlap
     )
     return [p.strip() for p in splitter.split_text(texto) if p.strip()]
+
+
+def e_nota_de_figura(doc) -> bool:
+    """A nota é de FIGURA? Puro/testável.
+
+    Duas provas porque a base tem as duas gerações: o metadado `tipo` (a partir
+    da migração `scripts/migrar_tipo_figura.py`) e o embed de imagem no corpo,
+    que é o que as notas antigas trazem.
+    """
+    md = getattr(doc, "metadata", None) or {}
+    if str(md.get("tipo") or "") == "figura":
+        return True
+    return "![[" in (getattr(doc, "page_content", "") or "")
+
+
+def selecionar_por_orcamento(itens, orcamento: int, frac_figura: float):
+    """Preenche o orçamento em chars com TETO PRÓPRIO para nota de figura. Puro.
+
+    Por que o teto existe (medido em 2026-07-29 sobre 14 perguntas reais): as
+    notas de figura comiam **40% do orçamento** — 7,5 notas e 4.740 chars por
+    pergunta, 17 delas numa pergunta sobre oídio e 15 na de poda apical. Nesta
+    última o texto que respondia não coube, e o modelo devolveu o sentinela.
+    A legenda é curta e casa muita pergunta; sem teto, ela desloca o átomo que
+    de fato responde.
+
+    Figura fora do teto é PULADA, não interrompe a seleção — o `break` de
+    orçamento continua valendo para o resto. Assim a busca por legenda ("me
+    mostra o diagrama de X") segue funcionando, só que sem monopolizar o espaço.
+    """
+    teto_fig = int(orcamento * frac_figura) if frac_figura > 0 else orcamento
+    usar: List[Tuple[Optional[float], object]] = []
+    gasto_fig = 0
+    for s, d in itens:
+        n = len(d.page_content)
+        if e_nota_de_figura(d):
+            if gasto_fig + n > teto_fig:
+                continue
+            gasto_fig += n
+        if usar and orcamento - n < 0:
+            break                                        # respeita o teto (n_ctx)
+        usar.append((s, d))
+        orcamento -= n
+    return usar
 
 
 def rankear_por_similaridade(
