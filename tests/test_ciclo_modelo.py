@@ -89,6 +89,27 @@ def test_sem_override_usa_o_modelo_do_settings():
     assert LlamaManager()._build_llama_kwargs()["model_path"] == settings.caminho_modelo_llama
 
 
+def test_kwargs_montam_sem_llama_cpp_instalado(monkeypatch):
+    """Regressão de 2026-07-29, achada só no CI: um `import llama_cpp` no topo de
+    `_build_llama_kwargs` passava AQUI (a lib está na env de dev) e reprovava LÁ,
+    onde ela fica fora de propósito — compila por minutos, e a suíte roda com fakes.
+
+    O ramo do KV quantizado é o único que precisa da lib, e ele degrada para f16.
+    """
+    import sys
+
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "kv_cache_type", "q8_0")   # entra no ramo da lib
+    monkeypatch.setattr(settings, "flash_attn", True)
+    monkeypatch.setitem(sys.modules, "llama_cpp", None)      # None => ImportError no import
+
+    kwargs = LlamaManager("dados/modelos/Grande.gguf")._build_llama_kwargs()
+
+    assert kwargs["model_path"] == "dados/modelos/Grande.gguf"
+    assert "type_k" not in kwargs                            # degradou, não estourou
+
+
 @pytest.mark.asyncio
 async def test_unload_sem_modelo_e_noop():
     lm = LlamaManager()

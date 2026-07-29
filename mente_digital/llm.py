@@ -100,6 +100,29 @@ def preparar_offline(caminho_modelo: str) -> str:
     return caminho_modelo
 
 
+def _ggml_type(kv: str) -> Optional[int]:
+    """Constante `GGML_TYPE_*` do llama_cpp para o KV-cache, ou None (com aviso).
+
+    O import mora AQUI, e não no topo de `_build_llama_kwargs`, porque só este ramo
+    precisa dele: montar os kwargs tem de funcionar sem llama-cpp-python instalado
+    — é o que o CI faz (a lib compila por minutos e fica fora de propósito) e é o
+    que a docstring de lá promete ao chamar a função de "pura". Cada motivo de
+    desistir tem seu próprio aviso: lib ausente e valor desconhecido são coisas
+    diferentes, e um log que troca uma pela outra manda o diagnóstico para o lado
+    errado.
+    """
+    try:
+        import llama_cpp
+    except ImportError as exc:
+        telemetry.warn("VRAM", f"kv_cache_type={kv} exige llama-cpp-python ({exc}); usando f16.")
+        return None
+
+    tipo = getattr(llama_cpp, f"GGML_TYPE_{kv.upper()}", None)
+    if tipo is None:
+        telemetry.warn("VRAM", f"kv_cache_type={kv} desconhecido; usando f16.")
+    return tipo
+
+
 class InferenciaPreemptada(RuntimeError):
     """O decode foi abortado para ceder a GPU à inferência interativa.
 
@@ -251,9 +274,12 @@ class LlamaManager:
         Puro/sem GPU (só monta um dict) — seguro chamar do event loop. Cada botão
         de tuning (§7) e o speculative decoding (§5) entram aqui, cada um guardado
         e logado: um valor inválido degrada para o default em vez de derrubar o load.
-        """
-        import llama_cpp
 
+        O `import llama_cpp` vive DENTRO do ramo que precisa dele (as constantes
+        GGML_TYPE_*): no topo, ele contradizia o "puro" do parágrafo acima e
+        reprovava o CI, que não instala llama-cpp-python de propósito (compila por
+        minutos). O caminho default agora monta o dict sem importar nada.
+        """
         kwargs: dict = dict(
             model_path=self._caminho_modelo or settings.caminho_modelo_llama,
             n_gpu_layers=settings.n_gpu_layers,
@@ -274,10 +300,8 @@ class LlamaManager:
                     "VRAM", f"kv_cache_type={kv} exige flash_attn=True; usando f16."
                 )
             else:
-                ggml_type = getattr(llama_cpp, f"GGML_TYPE_{kv.upper()}", None)
-                if ggml_type is None:
-                    telemetry.warn("VRAM", f"kv_cache_type={kv} desconhecido; usando f16.")
-                else:
+                ggml_type = _ggml_type(kv)
+                if ggml_type is not None:
                     kwargs["type_k"] = ggml_type
                     kwargs["type_v"] = ggml_type
                     telemetry.track("VRAM", f"KV-cache quantizado em {kv}.")
