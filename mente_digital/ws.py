@@ -80,6 +80,10 @@ class LiveSession:
         # de saída para o front — o registro é o que foi ENVIADO, não o que o
         # servidor acha que enviou.
         self.gravador = GravadorTurno(settings.transcricao_turnos)
+        # Uma tentativa de aquecer o TTS por sessão. Se o load falhar, o serviço já
+        # segura o próprio "não insista" (fail-soft) — aqui só evitamos despachar uma
+        # tarefa por quadro de áudio enquanto o modelo de 17 s ainda está subindo.
+        self._tts_aquecido = False
 
     # -- envio seguro (falha esperada durante barge-in/disconnect) --------------
     async def safe_send(self, data: dict) -> bool:
@@ -335,6 +339,18 @@ class LiveSession:
             if not self.is_recording:
                 agora = time.time()
                 self._fala_inicio = agora   # duração da fala alimenta a janela adaptativa
+                # AQUECIMENTO DO TTS: começou a FALAR, então vai haver resposta falada.
+                # Este é o instante mais cedo em que temos essa certeza, e daqui até a
+                # 1ª frase sintetizada ainda vêm o resto da fala, o endpoint do VAD, o
+                # STT e o prefill — folga suficiente para os ~17 s do XTTS subirem por
+                # baixo. Mesmo padrão do religamento do LLM logo acima no arquivo.
+                # `tts` é Optional no AppContext (o lifespan o injeta depois da
+                # construção); aqui é hot path por QUADRO de áudio, onde um
+                # AttributeError mataria o laço do VAD inteiro.
+                tts = self.ctx.tts
+                if not self._tts_aquecido and tts is not None and not tts.ready:
+                    self._tts_aquecido = True
+                    self.ctx.track_task(asyncio.to_thread(tts.ensure_loaded))
                 # TAXA DE CORTE-PRECOCE (#3): retomar a fala logo depois de um endpoint
                 # CURTO sugere que cortamos um enunciado que ia continuar. É este log que
                 # decide se vad_silence_curta aperta ou relaxa — medir antes de cravar.

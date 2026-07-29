@@ -155,6 +155,13 @@ class XttsService:
         self._gen = 0
         self._gen_lock = threading.Lock()      # protege o incremento de _gen
         self._infer_lock = threading.Lock()    # 1 inferência XTTS por vez (anti-corrupção CUDA)
+        # CARGA PREGUIÇOSA (2026-07-29): `_load_lock` serializa a INICIALIZAÇÃO pela mesma
+        # razão que `_infer_lock` serializa a inferência — dois `load()` concorrentes no
+        # mesmo contexto CUDA são a classe de bug que já envenenou a GPU aqui. Com o boot
+        # não carregando mais, o gatilho passou a ser externo (microfone abrindo, 1ª fala),
+        # então concorrência deixou de ser hipótese.
+        self._load_lock = threading.Lock()
+        self._load_falhou = False              # não insistir num modelo que já recusou
 
     def cancel(self) -> None:
         """Sinaliza à síntese em voo (thread do _run) para abortar. Chamável do event loop
@@ -163,6 +170,30 @@ class XttsService:
         nasce válida — sem o clear() que ressuscitava a thread órfã do turno anterior."""
         with self._gen_lock:
             self._gen += 1
+
+    def ensure_loaded(self) -> bool:
+        """Carrega UMA vez, sob demanda. Síncrono — chamar via `asyncio.to_thread`.
+
+        O XTTS custa ~17 s de boot e ~1,4 GB de VRAM na 3080, e com o portão de fala
+        (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Em vez de pagar isso
+        sempre, o `main.py` deixa de carregá-lo no startup e o `ws.py` aquece quando o
+        microfone abre — a fala do usuário, o VAD, o STT e o prefill dão a folga.
+
+        Idempotente e seguro entre threads (duplo-check sob `_load_lock`): dois gatilhos
+        simultâneos NÃO podem inicializar o modelo duas vezes na mesma GPU.
+
+        Uma falha é DEFINITIVA nesta execução — sem isso, um Piper/XTTS quebrado faria
+        cada frase tentar carregar de novo, virando tempestade de retry no hot path.
+        """
+        if self._model is not None:
+            return True
+        if self._load_falhou:
+            return False
+        with self._load_lock:
+            if self._model is None and not self._load_falhou:
+                self.load()                      # fail-soft: nunca levanta
+                self._load_falhou = self._model is None
+        return self._model is not None
 
     def load(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup. NUNCA levanta (fail-soft)."""

@@ -100,6 +100,13 @@ class Agent(ComandosMestre, Respostas):
         # texto na tela. Ver `state.turno_falado`.
         if not turno_falado.get():
             return
+        # CARGA PREGUIÇOSA: o aquecimento já começou quando o microfone abriu
+        # (ws._on_audio); aqui só se espera o que faltar. Sem isto a 1ª resposta falada
+        # sairia MUDA — `synth_base64` num serviço não-pronto devolve vazio em silêncio.
+        # Cobre também quem nunca passou pelo microfone (turno digitado com
+        # MENTE_FALAR_TURNO_DIGITADO=true).
+        if not self.ctx.tts.ready:
+            await asyncio.to_thread(self.ctx.tts.ensure_loaded)
         for frase in frases:
             _t = time.perf_counter() if tracker is not None else 0.0
             audio = await self.ctx.tts.synth_base64(frase)

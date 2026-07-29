@@ -128,12 +128,22 @@ class FakeLlama:
 # TTS falso — não sintetiza nada (retorna None => o _falar pula o áudio)
 # ==========================================================================
 class FakeTts:
+    # Contrato do TTS (carga preguiçosa, 2026-07-29): o fake nasce PRONTO — quem carrega
+    # sob demanda é o XTTS real, que custa ~17s e VRAM. Com `ready=True` o `_falar` nem
+    # chega a chamar `ensure_loaded`, então a suíte exercita o caminho normal.
+    ready = True
+
     def __init__(self) -> None:
         self.chamadas: List[str] = []
+        self.carregou = 0
 
     async def synth_base64(self, texto: str) -> Optional[str]:
         self.chamadas.append(texto)
         return None
+
+    def ensure_loaded(self) -> bool:
+        self.carregou += 1
+        return True
 
     def cancel(self) -> None:
         # Contrato do TTS (barge-in): existe em ambos os engines reais; no-op no fake.

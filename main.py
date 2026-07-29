@@ -59,7 +59,14 @@ async def _boot(ctx: AppContext) -> None:
     ctx.track_task(ctx.llama.load())
     # CPU: Whisper e Piper em threads.
     await asyncio.to_thread(ctx.stt.load)
-    await asyncio.to_thread(ctx.tts.load)
+    # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
+    # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
+    # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
+    # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
+    if settings.tts_carga_preguicosa and settings.tts_engine == "xtts":
+        telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
+    else:
+        await asyncio.to_thread(ctx.tts.load)
     # RAG: embeddings (singleton) -> abre/sincroniza o VectorDB.
     await asyncio.to_thread(ctx.vectorstore.load_embeddings)
     await ctx.vectorstore.open()

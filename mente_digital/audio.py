@@ -370,6 +370,18 @@ class TtsService:
     def ready(self) -> bool:
         return self._voice is not None
 
+    def ensure_loaded(self) -> bool:
+        """Carrega se ainda não estiver pronto. Síncrono — via `asyncio.to_thread`.
+
+        No Piper isto quase sempre é um no-op: ele é CPU, leve, e o `main.py` continua
+        carregando-o no startup — a carga preguiçosa existe para o XTTS, que custa VRAM.
+        Existe aqui pelo mesmo motivo que `cancel()`: UNIFICAR o contrato, para o
+        chamador não precisar saber qual engine está montado (ver XttsService).
+        """
+        if self._voice is None:
+            self.load()                          # fail-soft: nunca levanta
+        return self._voice is not None
+
     def cancel(self) -> None:
         # NO-OP: o Piper sintetiza a frase inteira de uma vez na CPU (dezenas de ms),
         # sem streaming em thread para abortar — não há síntese longa em voo como no XTTS.

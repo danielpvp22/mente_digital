@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     # com o LLM. Turno de VOZ segue falando sempre; isto governa só o digitado.
     falar_turno_digitado: bool = False
 
+    # CARGA PREGUIÇOSA DO TTS (2026-07-29): consequência direta do portão acima. Se o
+    # turno digitado não fala, uma sessão só de texto nunca usa o XTTS — e ele custa
+    # ~17 s de boot e ~1,4 GB de VRAM na 3080, disputando com o LLM. Com isto ligado o
+    # `main.py` NÃO o carrega no startup; o `ws.py` aquece quando o microfone abre e o
+    # `_falar` espera o que faltar. Só afeta o XTTS: o Piper é CPU e segue no boot.
+    # `false` volta a carregar no startup (kill switch, sem mexer no código).
+    tts_carga_preguicosa: bool = True
+
     log_arquivo_habilitado: bool = True
     log_arquivo: str = str(DIR_DADOS / "logs" / "mente.log")
     transcricao_turnos: str = str(DIR_DADOS / "logs" / "turnos.jsonl")

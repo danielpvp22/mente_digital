@@ -43,6 +43,8 @@ class _WebOrdenada:
 
 
 class _TtsOrdenada:
+    ready = True   # já pronto: a carga preguiçosa é do XTTS real, não deste fake
+
     def __init__(self, eventos):
         self.ev = eventos
         self.chamadas = []
