@@ -28,7 +28,7 @@ os.chdir(RAIZ)   # o pydantic lê o .env relativo ao CWD (ver ocr_agora.py)
 
 from mente_digital.config import settings  # noqa: E402
 from mente_digital.etl import EtlProcessor  # noqa: E402
-from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital.llm import LlamaManager, preparar_offline  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore  # noqa: E402
 from mente_digital.state import AppContext  # noqa: E402
 from mente_digital.telemetry import telemetry  # noqa: E402
@@ -44,7 +44,9 @@ def _servidor_no_ar() -> bool:
 async def _rodar(max_caps: int) -> int:
     ctx = AppContext(settings=settings)
     ctx.interactive_idle.set()          # processo dedicado: não há conversa aqui
-    ctx.llama = LlamaManager()
+    # Servidor FECHADO (o guard acima garante): VRAM livre para o modelo grande.
+    # `preparar_offline` alinha as flags de <think> ao modelo (ver llm.py).
+    ctx.llama = LlamaManager(preparar_offline(settings.caminho_modelo_atomizacao))
     ctx.vectorstore = VectorStore(EmbeddingProvider())
     telemetry.track("ATOMIZAR", "Carregando LLM e embeddings (sem voz, sem WS)…")
     await ctx.llama.load()

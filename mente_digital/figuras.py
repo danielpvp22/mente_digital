@@ -100,12 +100,23 @@ def bloco_markdown(figuras: List[dict], subpasta: str) -> str:
     A legenda entra como TEXTO (não só alt) de propósito: é ela que faz a figura
     ser encontrável pelo RAG — "o diagrama do ciclo de Krebs" casa a legenda, e o
     átomo que a contém traz o link junto."""
+    from mente_digital import figuras_recorte  # tardio: evita ciclo de import
+
     if not figuras:
         return ""
     linhas = ["", "## Figuras", ""]
     for f in figuras:
         legenda = f.get("legenda") or f"página {f.get('pagina', '?')}"
-        linhas.append(f"- ![[{subpasta}/{f['arquivo']}]] — {legenda}")
+        # O EXTRATOR GRAVA UMA PASTA POR LIVRO, e o job carrega só o NOME do
+        # arquivo. Montar `Figuras/<nome>` produz um link que não resolve —
+        # medido em 2026-07-28: as 307 notas-síntese da Cannabis Encyclopedia
+        # saíram com TODAS as figuras quebradas ("não foi encontrado" no
+        # Obsidian), enquanto as notas de figura, que montam o caminho completo,
+        # estavam certas. O slug sai do PRÓPRIO nome do arquivo, então isto vale
+        # para qualquer livro, inclusive os que ainda nem foram processados.
+        alvo = f"{subpasta}/{f['arquivo']}"
+        linhas.append(f"- ![[{figuras_recorte.corrigir_alvo(alvo, subpasta) or alvo}]] "
+                      f"— {legenda}")
     return "\n".join(linhas)
 
 

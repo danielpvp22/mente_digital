@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # --- Caminhos (relativos à raiz do projeto — ver BASE_DIR acima) -----------
     # Coloque os modelos em ./modelos/ (ou aponte para outro lugar via .env).
     caminho_modelo_llama: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
+    # MODELO DAS PASSADAS OFFLINE (decisão do dono, 2026-07-28). O modelo do
+    # servidor foi escolhido por LATÊNCIA (o 4B-2507 empata o roteador 9/9 e
+    # responde mais rápido) — e nisso ele é ótimo. A ATOMIZAÇÃO é outro trabalho:
+    # ler uma página inteira e destilar 10-20 ideias completas exige mais cabeça,
+    # e ali a latência não importa porque não há ninguém esperando. Como os
+    # scripts offline rodam com o servidor FECHADO, a VRAM inteira está livre e
+    # cabe um modelo maior. Vazio = usa o mesmo do servidor.
+    caminho_modelo_atomizacao: str = str(DIR_MODELOS / "Qwen3-8B-Q4_K_M.gguf")
     caminho_voz_piper: str = str(DIR_MODELOS / "pt_BR-cadu-medium.onnx")
     # XTTS-v2 (engine de voz GPU alternativo): DIRETÓRIO com config.json + model.pth +
     # vocab.json + speakers_xtts.pth (não é um arquivo único como o Piper). Baixe o
@@ -79,9 +87,51 @@ class Settings(BaseSettings):
     # sobrevive a restart); o scheduler os atomiza NO IDLE, nunca com sessão viva
     # (restrição do dono). Capado por ciclo: um livro grande atravessa vários
     # idles em vez de monopolizar a GPU. Livro escaneado espera o worker OCR (F3).
+    # TETO DE FIGURA NO CONTEXTO (fração do `rag_context_char_budget`). Medido em
+    # 2026-07-29 sobre 14 perguntas reais: as notas de figura ocupavam 40% do
+    # orçamento (7,5 notas, 4.740 chars por pergunta; 17 numa pergunta sobre
+    # oídio, 15 na de poda apical — nesta o texto que respondia não coube e o
+    # modelo devolveu o sentinela). A legenda é curta e casa muita pergunta.
+    # 0 desliga o teto (volta ao comportamento anterior).
+    rag_figura_char_frac: float = 0.15
+    # EXPANSÃO POR PÁGINA: quando um átomo casa, os IRMÃOS da mesma página entram
+    # atrás dele na fila do orçamento. A re-atomização com o 8B fatiou o livro
+    # mais fino (8.296 átomos onde o 4B fez 4.739 sobre o mesmo texto) e separou
+    # o fato do seu contexto — medido, a base nova entrega 503 palavras distintas
+    # por contexto contra 604 da antiga cobrindo o MESMO número de páginas.
+    # Não falta cobertura, falta completude dentro da página que já casou.
+    #
+    # MEDIDO pelo caminho real (`VectorStore.search`, 14 perguntas): média de
+    # palavras distintas no contexto 476 (sem) -> 500 (6 irmãos) -> 515 (12). O
+    # ganho é TODO nas perguntas cujo contexto vinha pela metade — poda apical
+    # 5.726 -> 9.742 chars (+52% de palavras), oídio 6.947 -> 11.192 (+66%) —,
+    # que são exatamente as que a base nova errava. Onde o orçamento já enchia
+    # com matches diretos, o resultado é idêntico: irmão não desloca match.
+    rag_expandir_pagina: bool = True
+    rag_max_irmaos: int = 12              # 0 desliga
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
+    # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.
+    #
+    # A queda veio de uma correlação medida na saída do 4B (páginas com 21-30
+    # átomos por chamada davam 50% de átomos pobres; com 31+, 85%). A correlação
+    # é real, mas a CAUSA não era o lote: era o modelo. Com o 8B, um A/B honesto
+    # — o MESMO texto-fonte de 5 páginas, mudando só o fatiamento, porque
+    # comparar `lotes[0]` de configurações diferentes compara TEXTOS diferentes:
+    #
+    #   lote 3500 -> 4,8 átomos/1000 chars | riqueza mediana 14,0 | 30 truncados
+    #   lote 5000 -> 2,6 átomos/1000 chars | riqueza mediana 13,0 |  0 truncados
+    #
+    # O lote menor rende quase o DOBRO de átomos, não mais ricos, e volta a
+    # truncar. Os "0 truncados em 24 medições" do 8B foram medidos a 6000; é para
+    # lá que a config volta. Um capítulo da edição web tem ~5,5k chars, então
+    # 6000 = UMA chamada por capítulo.
     ingestao_lote_chars: int = 6000       # fatia por chamada do LLM (cabe no n_ctx)
+    # Teto de saída da ATOMIZAÇÃO de livro. Separado do `max_tokens_sintese` (1600)
+    # de propósito: aquele governa também a resposta web e a síntese de conversa,
+    # onde subir o teto custa LATÊNCIA a quem está esperando falar. Aqui não há
+    # ninguém esperando — é o outro lado da mesma tesoura do lote acima.
+    max_tokens_atomizacao: int = 2400
     # Triagem do aparato editorial (capa/ficha/índice remissivo/créditos): ver
     # triagem.py. Medido no Amabis: 6% do livro, incluindo um capítulo inteiro de
     # índice. False = atomiza tudo (útil para comparar).
@@ -245,6 +295,15 @@ class Settings(BaseSettings):
     # LIGADOS por default porque o modelo default É um Qwen3. Ao apontar o LLM para um
     # modelo SEM <think> (Qwen2.5, Llama…), desligue os dois — o strip vira no-op sozinho,
     # mas o "/no_think" viraria texto solto no system prompt.
+    # O modelo offline PENSA antes de atomizar? Pergunta do dono (2026-07-28):
+    # raciocinar poderia condensar melhor a página — menos átomos por trecho e
+    # cada um mais rico. O contra medido é mecânico: o bloco <think> consome o
+    # MESMO teto de saída (max_tokens_atomizacao) que os átomos, e esgotar esse
+    # teto é justamente a causa dos 2.087 átomos truncados no meio da frase.
+    # Decidido por A/B (eval/ab_atomizacao_think.py), não por preferência.
+    # A HIGIENE (o bloco nunca chegar ao .md) é separada e vale sempre — o
+    # llm.preparar_offline liga o strip independentemente desta flag.
+    atomizacao_pensar: bool = False
     llm_no_think: bool = True       # prefixa "/no_think" no system prompt
     llm_strip_think: bool = True    # remove o bloco <think>…</think> do início do stream
     # PREÂMBULO COMUM (consultoria TTFT #10 — INVESTIGAÇÃO, off até o bench provar):
@@ -470,6 +529,67 @@ class Settings(BaseSettings):
     # figura boa — "fotossíntese" dá 1,33x com figura certa, acima de casos errados
     # a 1,27x). 0 desliga; MAIOR = mais figuras e menos exigente.
     figuras_margem_melhor: float = 1.10
+    # --- FIGURA ATTACH-ONLY (2026-07-27) --------------------------------------
+    # "Encontrável ≠ anexável" (medido em 2026-07-27): figura sem legenda de
+    # verdade é INVISÍVEL no acervo — 17,4% dos arquivos, 3,3% das entregas,
+    # 1,9% dos erros. Tentar torná-la encontrável foi o que criou as notas
+    # genéricas e o caso "tricomas" (o acervo não cobria o tema e a busca
+    # entregou a figura "menos ruim"). Então ela não disputa vaga: sai do espaço
+    # de busca (`_buscar_figuras`) e só aparece ACOMPANHANDO o átomo da PRÓPRIA
+    # página dela, que é co-locação exata por construção na importação web.
+    # Quantas dessas podem ser anexadas por resposta. Uma página do livro tem
+    # várias fotos; anexar todas vira parede de imagem. 0 desliga o anexo por
+    # co-locação (a figura attach-only some de vez).
+    figuras_anexo_max: int = 2
+    # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
+    # Marcas (substring da proveniência), separadas por '|', em ordem de
+    # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
+    # O default é a ordem do dono: a edição web de The Cannabis Encyclopedia é a
+    # atual e vence o Cervantes antigo ("Marijuana Horticulture") no vault.
+    # Vazio = nenhuma preferência (fica quem chegou primeiro, comportamento
+    # histórico).
+    obras_preferidas: str = "The Cannabis Encyclopedia"
+    # Obras SUPERADAS: só quem está aqui pode ser aposentado por uma obra
+    # preferida. Não é redundante com o `obras_preferidas` — é o conserto de um
+    # defeito medido em 2026-07-27. Sem esta lista, a regra era "a obra que chega
+    # é preferida?" e QUALQUER nota a menos de `obras_dedup_dist_max` perdia o
+    # lugar: das 532 aposentadorias da primeira passada, 39 vieram de outros
+    # livros (35 do Raven, 3 do Amabis) — um átomo sobre estômatos cedeu vaga
+    # para a enciclopédia de cannabis porque ambos falam de planta.
+    # Substituir é uma relação DECLARADA entre duas edições, nunca inferida da
+    # distância. Vazio = ninguém é aposentado (só o dedup estrito descarta).
+    obras_substituidas: str = "Marijuana Horticulture"
+    # A contradição deixa de ser só relatório QUANDO há edição superada envolvida
+    # (ordem do dono, 2026-07-27: "se duas notas dizem o contrário, vale a nova; a
+    # antiga sai da base"). Fora da relação preferida x superada, o #24 continua
+    # sendo detecção pura — duas fontes independentes que discordam é assunto do
+    # dono, não do ETL. O par vai para a tabela `contradicoes` de qualquer forma,
+    # então toda resolução automática fica auditável. False = volta a só relatar.
+    contradicao_resolver_por_obra: bool = True
+    # LIMIAR PRÓPRIO DA SUBSTITUIÇÃO — e por que ele não pode ser o `dedup_dist_max`.
+    # Medido em 2026-07-27, os 249 átomos do cap. 18 da edição nova contra o
+    # Cervantes antigo: 82% têm gêmeo no livro velho, mas a distância ao gêmeo vai
+    # de 0,042 a 0,128 (mediana 0,088) — uma ORDEM DE GRANDEZA acima do
+    # `dedup_dist_max` (0,01). Com o limiar do dedup, a precedência de obra nunca
+    # dispara: rodei o capítulo inteiro e foram 0 descartes e 0 aposentadorias, com
+    # o vault ficando com "solo" coberto duas vezes.
+    # E subir o `dedup_dist_max` global seria repetir um erro já pago: na escala do
+    # e5 ele foi de 0,08 para 0,01 justamente porque 0,08 marcava ~75% da base como
+    # duplicata e passava a DESCARTAR átomo legítimo de toda origem (web, conversa).
+    # Daí o limiar separado: o caminho de DESCARTE continua em `dedup_dist_max`,
+    # intocado; só o de SUBSTITUIR uma edição pela outra usa este — e ele nunca
+    # joga conhecimento fora, apenas decide qual das duas edições fica.
+    # Calibração no mesmo lote: 0,05 aposenta 3 notas velhas (1%), 0,08 aposenta 54
+    # (21%, os pares que são visivelmente o mesmo fato), 0,10 aposenta 173 (69%,
+    # já engolindo o que só é do mesmo assunto). 0 = desliga (só o dedup estrito).
+    obras_dedup_dist_max: float = 0.08
+    # Quando a obra preferida traz um átomo quase idêntico a um já indexado, o
+    # ANTIGO é aposentado (ordem do dono, 2026-07-27: "apague o átomo antigo,
+    # não o novo"). Ele é MOVIDO para cá, não destruído: o vault não tem backup
+    # (achado do painel de 13), e a purga de órfãos do `sync` já o tira do índice
+    # ao vê-lo fora do vault — ou seja, some da busca do mesmo jeito, e volta se
+    # o dono quiser. Vazio = apaga de verdade (unlink).
+    dir_aposentados: str = str(DIR_DADOS / "aposentados")
     chunk_size: int = 1000
     chunk_overlap: int = 150
     chroma_batch: int = 2000

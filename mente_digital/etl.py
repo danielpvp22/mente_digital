@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple
 
 from mente_digital import contradicao
 from mente_digital import diapasao
+from mente_digital import obras
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import academico
@@ -72,7 +73,7 @@ class EtlProcessor:
         return min(base, cap) if cap else base
 
     async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str,
-                             origem: Optional[str] = None) -> int:
+                             origem: Optional[str] = None, subpasta: str = "") -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
@@ -90,6 +91,7 @@ class EtlProcessor:
         agora = datetime.now()
         salvos = 0
         duplicados = 0
+        substituidos = 0        # átomo antigo aposentado por uma edição preferida
         salvos_info: List[Tuple[str, str]] = []  # (caminho, corpo sem frontmatter) p/ #24
         for i, bloco in enumerate(blocos):
             # `origem` (opcional) é a proveniência RICA do frontmatter (ex.: livro/
@@ -101,16 +103,48 @@ class EtlProcessor:
             # DEDUP contra o banco (pedido: "impeça a duplicação"). Um átomo quase
             # idêntico a um já indexado não vira arquivo novo — senão a base incha com
             # a mesma ideia e o rag_top_k recupera clones. Fail-open sem embeddings.
-            if await self._ja_no_banco(strip_frontmatter(bloco)):
-                duplicados += 1
-                # Métricas do ciclo (painel): o descarte vira EVENTO persistido —
-                # "quanto o dedup segura por dia" deixa de ser log transitório.
-                await asyncio.to_thread(db.log_etl, "DEDUP", _slug_titulo(bloco), "descartado")
-                continue
+            viz = await self._vizinho_proximo(strip_frontmatter(bloco))
+            if viz is not None:
+                dup, dist = viz
+                # DUAS RÉGUAS, uma medição só (ver `obras_dedup_dist_max`):
+                #  - `dedup_dist_max` (0,01) decide DESCARTAR o átomo que chega. É
+                #    a régua do "mesmo átomo reatomizado" e não se mexe nela.
+                #  - `obras_dedup_dist_max` (0,08) decide SUBSTITUIR uma edição pela
+                #    outra. Precisa ser mais frouxa porque a mesma ideia dita por
+                #    outra edição fica a 0,042-0,128 (medido no cap. 18: com a régua
+                #    do dedup, a precedência de obra nunca disparava — 0 de 249).
+                #    Este caminho nunca joga conhecimento fora: ele TROCA.
+                # Antes, quem saía era sempre o que CHEGA — e quem chega é a edição
+                # nova, então importar a Cannabis Encyclopedia por cima do Cervantes
+                # antigo jogaria fora, fato a fato, o que se queria preferir.
+                limiar_troca = max(settings.dedup_dist_max, settings.obras_dedup_dist_max)
+                venceu = dist < limiar_troca and obras.substitui(
+                    origem or prefixo,
+                    str((getattr(dup, "metadata", None) or {}).get("origem") or ""),
+                    obras.marcas(settings.obras_preferidas),
+                    obras.marcas(settings.obras_substituidas),
+                )
+                if venceu and await self._aposentar(dup):
+                    substituidos += 1
+                elif dist < settings.dedup_dist_max:
+                    duplicados += 1
+                    # Métricas do ciclo (painel): o descarte vira EVENTO persistido —
+                    # "quanto o dedup segura por dia" deixa de ser log transitório.
+                    await asyncio.to_thread(db.log_etl, "DEDUP", _slug_titulo(bloco), "descartado")
+                    continue
             nome = f"{prefixo}_{_slug_titulo(bloco)}_{int(time.time())}_{i}.md"
-            caminho = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), nome)
+            # UMA PASTA POR OBRA (ordem do dono, 2026-07-28): tudo caía solto em
+            # Conhecimento_Novo — 26 mil arquivos de 4 livros mais conversa e web
+            # no mesmo diretório, impossível de aposentar um livro sem varrer o
+            # frontmatter de todos. A busca não muda (o índice varre `**/*.md`
+            # recursivo e as figuras já viviam em subpasta); o que muda é poder
+            # mover uma obra inteira movendo uma pasta.
+            destino = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), subpasta) \
+                if subpasta else str(self.ctx.settings.dir_conhecimento_novo)
+            caminho = os.path.join(destino, nome)
 
-            def _save(c=caminho, body=bloco) -> None:
+            def _save(c=caminho, body=bloco, d=destino) -> None:
+                os.makedirs(d, exist_ok=True)
                 with open(c, "w", encoding="utf-8") as f:
                     f.write(body + "\n")
 
@@ -123,17 +157,30 @@ class EtlProcessor:
                 telemetry.error(tipo_log, f"Falha ao salvar átomo {nome}", exc)
         if duplicados:
             telemetry.track(tipo_log, f"Dedup: {duplicados} átomo(s) já no banco, ignorados.")
+        if substituidos:
+            telemetry.track(tipo_log, f"Edição preferida: {substituidos} átomo(s) antigo(s) "
+                                      f"aposentado(s) em favor do novo.")
         # #24: no idle, varre os átomos novos por CONTRADIÇÃO com a base existente.
-        await self._varredura_contradicoes(salvos_info)
+        await self._varredura_contradicoes(salvos_info, origem or prefixo)
         return salvos
 
-    async def _varredura_contradicoes(self, salvos_info: List[Tuple[str, str]]) -> None:
+    async def _varredura_contradicoes(self, salvos_info: List[Tuple[str, str]],
+                                      origem_nova: str = "") -> None:
         """Para cada átomo recém-salvo, acha o vizinho semântico "relacionado mas
         distinto" (a banda onde mora a contradição) e pergunta ao LLM se se
         contradizem. Capado por ciclo, preemptível (a conversa passa na frente) e
         fail-open (sem loja/embeddings, não faz nada). Os pares achados vão para a
         tabela `contradicoes` e são reportados sob demanda ('mestre, alguma
-        contradição?'). Detecção, não ação: nunca apaga nem edita nota."""
+        contradição?').
+
+        Detecção, não ação — com UMA exceção declarada (ordem do dono,
+        2026-07-27): "se duas notas dizem o contrário uma da outra, vale a
+        informação nova; a antiga sai da base". Isso só vale dentro da relação
+        `preferida x superada` (mesma trava de `obras.substitui`), então uma
+        contradição entre a enciclopédia nova e um livro de botânica continua
+        sendo REPORTADA, nunca resolvida por decreto — as duas podem estar
+        certas em contextos diferentes, e não há edição velha ali para aposentar.
+        A nota que sai vai para a quarentena, como toda aposentadoria."""
         if not settings.contradicao_detectar or not salvos_info:
             return
         store = self.ctx.vectorstore
@@ -169,6 +216,18 @@ class EtlProcessor:
                 )
                 if gravou:
                     telemetry.warn("CONTRADICAO", f"Possível contradição: {motivo[:80]}")
+                # A informação NOVA prevalece — mas só sobre a edição que ela
+                # declaradamente supera. O par fica registrado de qualquer forma,
+                # então uma resolução errada continua auditável.
+                if settings.contradicao_resolver_por_obra and obras.substitui(
+                    origem_nova,
+                    str((doc.metadata or {}).get("origem") or ""),
+                    obras.marcas(settings.obras_preferidas),
+                    obras.marcas(settings.obras_substituidas),
+                ) and await self._aposentar(doc, "contradiz a edicao nova"):
+                    telemetry.warn(
+                        "CONTRADICAO",
+                        f"Nota da edição superada aposentada: {os.path.basename(fonte_b)}")
 
     async def _vizinho_relacionado(self, corpo: str):
         """Vizinho na banda [dedup_dist_max, contradicao_dist_max): próximo o bastante
@@ -188,22 +247,82 @@ class EtlProcessor:
         return None
 
     async def _ja_no_banco(self, corpo: str) -> bool:
-        """True se um átomo quase idêntico já está indexado (distância < dedup_dist_max).
+        """True se um átomo quase idêntico já está indexado (distância < dedup_dist_max)."""
+        return await self._duplicata(corpo) is not None
 
-        Fail-open: sem embeddings/loja (testes) devolve False — dedup é uma trava de
+    async def _duplicata(self, corpo: str):
+        """O átomo quase idêntico já indexado (distância < dedup_dist_max), ou None."""
+        viz = await self._vizinho_proximo(corpo)
+        return viz[0] if viz and viz[1] < settings.dedup_dist_max else None
+
+    async def _vizinho_proximo(self, corpo: str):
+        """`(doc, distância)` do vizinho mais próximo no banco, SEM limiar. Ou None.
+
+        Sem limiar de propósito: as duas decisões que dependem dele usam réguas
+        diferentes — descartar o átomo novo exige `dedup_dist_max` (0,01, o mesmo
+        átomo reatomizado), enquanto trocar uma edição pela outra usa
+        `obras_dedup_dist_max` (a mesma ideia dita com outras palavras). Medir uma
+        vez e decidir duas vezes também poupa um embedding por átomo.
+
+        Fail-open: sem embeddings/loja (testes) devolve None — dedup é uma trava de
         qualidade, não pode virar bloqueio de escrita. Barato: 1 embedding + 1 vizinho."""
         store = self.ctx.vectorstore
         if store is None or getattr(store, "_store", None) is None or not corpo.strip():
-            return False
+            return None
         try:
             res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
         except Exception as exc:
             telemetry.warn("DEDUP", f"Falha ao checar duplicata (seguindo com o save): {exc}")
+            return None
+        return res[0] if res else None
+
+    async def _aposentar(self, doc, motivo: str = "substituido por edicao preferida") -> bool:
+        """Tira do vault a nota SUPERADA por uma edição mais nova. Best-effort.
+
+        Ordem do dono (2026-07-27): "se tiver átomo duplicado, apague o átomo
+        antigo, não o novo". Ela é MOVIDA para `dir_aposentados`, não destruída —
+        o vault não tem backup (achado do painel de 13 especialistas), e fora do
+        vault ela já some da busca: a purga de órfãos do `sync` apaga os chunks de
+        toda fonte que não existe mais ali. Configurar `dir_aposentados` vazio
+        volta ao unlink de verdade.
+
+        Idempotente e silenciosa quanto ao alvo faltante: a nota pode já ter sido
+        removida à mão entre a indexação e agora."""
+        src = str((getattr(doc, "metadata", None) or {}).get("source") or "")
+        if not src:
             return False
-        if not res:
+        origem = Path(src)
+
+        def _mover() -> bool:
+            if not origem.is_file():
+                return False
+            destino_dir = (settings.dir_aposentados or "").strip()
+            if not destino_dir:
+                origem.unlink()
+                return True
+            pasta = Path(destino_dir)
+            pasta.mkdir(parents=True, exist_ok=True)
+            alvo = pasta / origem.name
+            # Dois átomos de nomes iguais vindos de pastas diferentes não podem se
+            # sobrescrever aqui: isto é o arquivo morto, perder nele é perder de vez.
+            if alvo.exists():
+                alvo = pasta / f"{origem.stem}_{int(time.time())}{origem.suffix}"
+            origem.replace(alvo)
+            return True
+
+        try:
+            if not await asyncio.to_thread(_mover):
+                return False
+        except OSError as exc:
+            telemetry.error("DEDUP", f"Falha ao aposentar nota superada: {src}", exc)
             return False
-        _doc, dist = res[0]
-        return dist < settings.dedup_dist_max
+        store = self.ctx.vectorstore
+        if store is not None and hasattr(store, "remover_fontes"):
+            # Tira do índice AGORA em vez de esperar a purga de órfãos do próximo
+            # sync: entre uma coisa e outra a busca ainda entregaria a versão velha.
+            await store.remover_fontes([src])
+        await asyncio.to_thread(db.log_etl, "APOSENTADO", os.path.basename(src), motivo)
+        return True
 
     # -- Ingestão de livros — Fase 1 (2026-07-25) -------------------------------
     async def ingestao_livros(self) -> int:
@@ -228,7 +347,19 @@ class EtlProcessor:
             if await self._processar_capitulo(job):
                 destino = pend.parent / "processados" / job_path.name
                 destino.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(lambda a=job_path, b=destino: a.replace(b))
+                try:
+                    await asyncio.to_thread(lambda a=job_path, b=destino: a.replace(b))
+                except FileNotFoundError:
+                    # O job sumiu da fila entre o glob e o arquivamento. Acontece
+                    # quando DOIS drenadores rodam ao mesmo tempo (2026-07-27: um
+                    # atomizador órfão sobreviveu ao script que o lançava e
+                    # disputou a fila com o novo). O capítulo já foi atomizado —
+                    # e o dedup por átomo torna reprocessar idempotente de
+                    # qualquer forma —, então derrubar a drenagem INTEIRA por
+                    # causa disto é o pior desfecho possível: os outros 100 jobs
+                    # ficam parados por um arquivo que já está no lugar certo.
+                    telemetry.warn("INGESTAO", f"Job já arquivado por outro processo: "
+                                               f"{job_path.name}")
                 concluidos += 1
         if concluidos:
             await self.ctx.vectorstore.sync()
@@ -241,8 +372,9 @@ class EtlProcessor:
         False = não terminou (preempção/erro) e o job PERMANECE pendente."""
         titulo_livro = job.get("livro", "?")
         cap = job.get("titulo_cap") or f"cap. {job.get('capitulo', '?')}"
-        origem = (f"Livro '{titulo_livro}' — {cap} "
-                  f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
+        # A string vem do módulo do livro (ponto único): ela é a âncora que a nota
+        # de figura attach-only usa para achar o texto da sua própria página.
+        origem = livro_mod.origem_do_job(job)
         lotes = livro_mod.fatiar_lotes(job.get("texto", ""), settings.ingestao_lote_chars)
         # TRIAGEM (2026-07-25): capa, ficha catalográfica, índice remissivo e créditos
         # de fotos NÃO viram átomo. Medido no Amabis: 6% do livro é aparato editorial
@@ -271,7 +403,7 @@ class EtlProcessor:
                 try:
                     conteudo = await self.ctx.llama.collect(
                         prompts.prompt_atomizar_livro(titulo_livro, cap, lote),
-                        max_tokens=self._max_fundo(settings.max_tokens_sintese),
+                        max_tokens=self._max_fundo(settings.max_tokens_atomizacao),
                         system_prompt=prompts.SYS_SINTESE,
                         preemptible=True,
                     )
@@ -285,7 +417,8 @@ class EtlProcessor:
                 if salvamento is not None:
                     await salvamento      # o do lote anterior já correu sob o decode
                 salvamento = asyncio.ensure_future(
-                    self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem))
+                    self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem,
+                                        subpasta=livro_mod.slug(titulo_livro)))
         finally:
             # Nenhum átomo fica pendurado, nem quando o capítulo aborta acima.
             if salvamento is not None:
@@ -320,7 +453,8 @@ class EtlProcessor:
         # legenda vai como texto, que é o que faz o RAG achar "o diagrama de X".
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
         corpo += figuras_mod.bloco_markdown(list(figuras), settings.subpasta_figuras)
-        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem)
+        await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem,
+                                  subpasta=livro_mod.slug(titulo_livro))
 
     # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
     def _enfileirar_jobs(self, jobs: List[dict], base_nome: str) -> int:

@@ -179,6 +179,23 @@ SYS_SINTESE = (
 # ver Agent._consolidar_fontes. O #zettelkasten_atomico permanece; só a maturidade muda.
 TAG_ATOMO = "#zettelkasten_atomico"
 TAG_NOVO = "#conhecimento_novo"
+# ATTACH-ONLY: a nota de figura que NÃO entra no espaço de busca (ver
+# `rag._buscar_figuras`). A marca vive no CORPO da nota, e não num campo de
+# frontmatter novo, por dois motivos: `normalizar_atomo` já preserva as tags que
+# encontra (nenhuma assinatura muda) e o dono a vê e a filtra no Obsidian como
+# qualquer outra tag. É contrato com `rag.metadados_da_nota`, como o TAG_NOVO é
+# com a promoção.
+TAG_FIGURA_ANEXO = "#figura_anexo"
+# Sentinela da FUSÃO enriquecedora: o modelo o emite quando as duas versões da
+# mesma ideia se contradizem, e aí o átomo novo fica como está (ordem do dono).
+# Contrato com `fusao.houve_contradicao` — mora aqui pelo mesmo motivo do
+# SENTINELA_INSUF: é texto de prompt, não constante de código solta.
+TAG_CONTRADICAO = "CONTRADICAO"
+# Contrato com `fusao.nao_e_a_mesma_ideia`: o par veio do vizinho semântico e
+# pode ser só vocabulário compartilhado, não a mesma ideia.
+TAG_IDEIA_DIFERENTE = "OUTRAIDEIA"
+# Sentinela de "não há fato novo" nas passadas de colheita dirigida.
+TAG_NADA = "NADA"
 # Sentinela anti-alucinação (normalizado) — REGRA 1 do system prompt de resposta.
 # Vive aqui (camada de linguagem) porque agent.py E respostas.py o consomem; o texto
 # TEM que casar com o que o system prompt manda o modelo dizer.
@@ -305,6 +322,134 @@ def prompt_fundir_atomos(textos: str) -> str:
         "**Malha Neural:** [[Conceito relacionado]]\n"
         f"{TAG_ATOMO}\n\n"
         f"NOTAS A FUNDIR:\n{textos}"
+    )
+
+
+def prompt_reparar_corpo(titulo: str, corpo_parcial: str, trecho: str,
+                         glossario: str = "") -> str:
+    """Reescreve o CORPO de um átomo QUEBRADO a partir do trecho-fonte do livro.
+
+    Por que é uma tarefa própria, e não uma re-atomização do capítulo: o dedup por
+    átomo (`_salvar_atomos`) descartaria a versão nova como duplicata da pobre que
+    já está no banco — reparo tem de ser POR ÁTOMO, escrevendo por cima. E o
+    TÍTULO é dado, não pedido: ele sobreviveu ao defeito (o truncamento come o
+    fim da saída, não o começo), já está na Malha e no índice, e mudá-lo trocaria
+    o problema de corpo quebrado por um de identidade trocada.
+
+    Saída MÍNIMA de propósito (só o corpo, sem '##', sem Malha, sem tag): quanto
+    menor a tarefa, menos o modelo deriva — mesma lição do `prompt_malha_de_atomo`.
+    O sentinela NADA existe para o caso em que o trecho recuperado não sustenta o
+    título: melhor manter o átomo pobre que inventar um rico."""
+    parcial = (f"O corpo atual, INCOMPLETO, é: \"{corpo_parcial}\"\n"
+               if corpo_parcial.strip() else "")
+    return (
+        "A nota abaixo foi extraída de um livro e o CORPO dela saiu quebrado "
+        "(cortado no meio ou vazio). Reescreva o corpo usando SOMENTE o trecho do "
+        "livro fornecido.\n\n"
+        f"TÍTULO DA NOTA: {titulo}\n"
+        f"{parcial}\n"
+        f"TRECHO DO LIVRO:\n{trecho}\n\n"
+        "Regras:\n"
+        "1. Responda APENAS com o corpo: 1 a 3 frases afirmativas, completas, "
+        "terminando em ponto. Sem título, sem '##', sem 'Malha Neural', sem tag, "
+        "sem aspas em volta, sem comentário.\n"
+        "2. Escreva em português do Brasil mesmo que o trecho esteja em outro "
+        "idioma; ao traduzir um termo técnico, mantenha o original entre "
+        "parênteses na primeira menção.\n"
+        # GLOSSÁRIO DO DOMÍNIO: sem ele o modelo TRADUZ o jargão do cultivo e
+        # troca o FATO — visto no dry-run, "heavy buds" virou "cogumelos
+        # pesados". Só os termos presentes no trecho são enviados (ver
+        # `idioma.linha_glossario`): mandar as 30 entradas convida o modelo a
+        # enfiar jargão onde não havia.
+        + (f"2b. Use EXATAMENTE estas formas: {glossario}.\n" if glossario else "")
+        +
+        "3. Só afirme o que o TRECHO diz e que sustente o título. Não use "
+        "conhecimento externo, não opine, não repita o título.\n"
+        "4. Se o trecho não trouxer o que o título promete, responda apenas NADA.\n"
+    )
+
+
+def prompt_atomos_faltantes(livro: str, capitulo: str, trecho: str,
+                            dados: str, ja_cobertos: str) -> str:
+    """Notas para os fatos que a atomização DESCARTOU numa página já processada.
+
+    Diferente de `prompt_atomizar_livro`, que trata a página como virgem: aqui
+    ela já rendeu átomos, e reatomizá-la inteira só produziria duplicata (o dedup
+    descartaria). O alvo é fechado — os DADOS DUROS que ficaram de fora, achados
+    comparando os números do trecho com os números dos átomos existentes (número
+    não se traduz, então a comparação atravessa o inglês da fonte).
+    """
+    return (
+        f"O trecho abaixo é do livro '{livro}' ({capitulo}). Ele já foi lido, e "
+        "as notas existentes cobrem parte dele.\n\n"
+        f"TRECHO:\n{trecho}\n\n"
+        f"JÁ REGISTRADO (não repita):\n{ja_cobertos}\n\n"
+        f"DADOS QUE FALTAM: {dados}\n\n"
+        "Escreva notas atômicas SOMENTE para os fatos do trecho que contêm esses "
+        "dados que faltam. Regras:\n"
+        "1. Cada nota traz UM fato, com o número/faixa/unidade do trecho.\n"
+        "2. Se um dado da lista for referência editorial (número de página, "
+        "figura, capítulo) ou não sustentar um fato, IGNORE-O.\n"
+        "3. Português do Brasil, mesmo com o trecho em outro idioma; mantenha o "
+        "termo técnico original entre parênteses na primeira menção.\n"
+        "4. Não repita o que já está registrado e não invente nada.\n"
+        f"5. Se não houver fato novo a escrever, responda apenas {TAG_NADA}.\n\n"
+        # TÍTULO-RÓTULO: visto no dry-run, o modelo intitula pelo DADO ("Ano
+        # 1926", "Idade de 40 dias") em vez de pelo fato. Título assim não casa
+        # pergunta nenhuma — e título é metade do que a busca enxerga.
+        "6. O título é o FATO, nunca um rótulo do dado: 'U.S. Dispensatory de "
+        "1926 registrou variabilidade de potência', jamais 'Ano 1926'.\n"
+        "7. Se o trecho cortar no meio de um fato, PULE esse fato — nunca "
+        "escreva uma nota anotando que o trecho está incompleto.\n\n"
+        "Formato de cada nota:\n"
+        "## <título curto do fato>\n"
+        "<o fato em 1-2 frases, com o dado>\n"
+        "**Malha Neural:** [[Conceito]]\n"
+        f"{TAG_ATOMO} {TAG_NOVO}\n"
+    )
+
+
+def prompt_fundir_enriquecendo(corpo_novo: str, titulo: str, corpo_antigo: str) -> str:
+    """Enriquece um átomo da edição NOVA com o que a ANTIGA tem a mais.
+
+    Ordem do dono (2026-07-28): em vez de escolher uma base e apagar a outra, a
+    nova é a espinha dorsal e a antiga entra DENTRO dela; contradição resolve a
+    favor da NOVA. Diferente de `prompt_fundir_atomos`, que trata N notas
+    quase-idênticas como iguais e produz uma canônica: aqui há hierarquia
+    declarada, e o texto novo é o que se preserva.
+
+    A ordem 1 é a que o teste cego cobrou: o que sumiu da base nova foi o DADO
+    DURO ("5 a 14 dias", "±0,5 ponto", "6 a 9 semanas"), não a prosa."""
+    return (
+        "Você tem DUAS versões da mesma ideia, extraídas do mesmo livro por "
+        "passadas diferentes. A versão NOVA é a base; a ANTIGA é fonte de "
+        "complemento.\n\n"
+        f"TÍTULO: {titulo}\n"
+        f"VERSÃO NOVA (base):\n{corpo_novo}\n\n"
+        f"VERSÃO ANTIGA (complemento):\n{corpo_antigo}\n\n"
+        "Regras:\n"
+        "1. Devolva a versão NOVA acrescida dos FATOS que só a antiga tem — "
+        "sobretudo números, faixas, prazos, temperaturas, proporções e nomes "
+        "próprios. Nada da versão nova pode ser removido ou enfraquecido.\n"
+        "2. Se as duas se CONTRADIZEM (dizem valores ou efeitos incompatíveis "
+        f"sobre a mesma coisa), responda apenas a palavra {TAG_CONTRADICAO} e nada mais.\n"
+        # O vizinho semântico aproxima ideias que só COMPARTILHAM VOCABULÁRIO
+        # ("galões de solo por mês" x "lixiviação com solução"), e isso cai
+        # dentro da faixa medida de paráfrase — nenhum limiar separa os dois
+        # casos. Quem separa é este julgamento.
+        f"2b. Se as duas NÃO tratam da mesma ideia (só compartilham palavras), "
+        f"responda apenas a palavra {TAG_IDEIA_DIFERENTE} e nada mais.\n"
+        "3. Se a antiga não acrescenta nada, devolva a versão nova inalterada.\n"
+        "4. Responda APENAS com o corpo final: 1 a 4 frases afirmativas em "
+        "português do Brasil, sem título, sem '##', sem 'Malha Neural', sem tag, "
+        "sem aspas em volta e sem comentar o que você fez.\n"
+        # A edição ANTIGA nunca passou pela limpeza de idioma, então parte dela
+        # está em inglês — e o modelo copiava a frase em vez de traduzi-la. Foram
+        # 414 fusões perdidas por isso (a guarda de idioma as recusou, mantendo o
+        # átomo novo). Traduzir o FATO preserva a informação; strip-á-la, não.
+        "4b. Se a versão antiga estiver em inglês, TRADUZA os fatos dela para o "
+        "português — nunca devolva frase em inglês.\n"
+        "5. Não acrescente nada que não esteja numa das duas versões.\n"
     )
 
 

@@ -18,6 +18,11 @@ numpy>=1.26
 httpx>=0.27
 num2words>=0.5.13
 langchain-text-splitters>=0.2
+# Os testes do extrator do livro web (test_encyclopedia.py) sao PUROS — HTML como
+# string, sem rede nem disco —, entao devem rodar no CI: sao a rede de seguranca da
+# escada de legenda e do attach-only. bs4 e pure-Python e leve (nao puxa o
+# trafilatura inteiro), o job segue em ~1 minuto.
+beautifulsoup4>=4.12
 pytest>=8.0
 pytest-asyncio>=0.23
 hypothesis>=6.100

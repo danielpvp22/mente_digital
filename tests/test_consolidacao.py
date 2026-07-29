@@ -85,7 +85,7 @@ def _ambiente(monkeypatch, tmp_path, clusters):
     async def _nunca_dup(corpo):
         return False
 
-    async def _nao_varre(info):
+    async def _nao_varre(info, origem_nova=""):
         return None
 
     monkeypatch.setattr(etl, "_ja_no_banco", _nunca_dup)

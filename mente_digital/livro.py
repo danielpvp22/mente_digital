@@ -37,6 +37,20 @@ def parece_escaneado(chars_por_pagina: List[int],
     return statistics.median(chars_por_pagina) < limiar
 
 
+def origem_do_job(job: Dict) -> str:
+    """A PROVENIÊNCIA de um job de capítulo: `Livro 'X' — cap (p. 3-4)`.
+
+    Ponto único de propósito. Esta string é o frontmatter `origem` de cada átomo
+    e virou também a ÂNCORA DE PÁGINA que liga a figura attach-only ao texto que
+    ela ilustra (`rag._anexos_colocados` casa por igualdade exata). Ela é montada
+    em dois lugares distantes — aqui, quando o ETL atomiza, e no importador web,
+    quando ele grava a nota da figura. Duas cópias que precisam bater caractere a
+    caractere é uma que precisa existir."""
+    cap = job.get("titulo_cap") or f"cap. {job.get('capitulo', '?')}"
+    return (f"Livro '{job.get('livro', '?')}' — {cap} "
+            f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
+
+
 def slug(texto: str, max_len: int = 40) -> str:
     """Nome seguro de arquivo (Windows incluso) a partir de um título livre."""
     s = re.sub(r"[^\w\s-]", "", texto, flags=re.UNICODE).strip().lower()

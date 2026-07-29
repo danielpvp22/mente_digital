@@ -29,6 +29,8 @@ from mente_digital import disjuntor as _disjuntor
 from mente_digital import vram
 from mente_digital import egressao
 from mente_digital import grafo
+from mente_digital import obras
+from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import academico
 from mente_digital.config import settings
@@ -249,6 +251,13 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
     # Gravado nos DOIS lados: filtro sobre chave ausente não casa nada no Chroma,
     # então "texto" precisa ser afirmativo, não a ausência de "figura".
     meta["tipo"] = "figura" if _e_figura(path) else "texto"
+    # ATTACH-ONLY: figura que NÃO disputa vaga na busca (ver `_buscar_figuras`).
+    # Só é gravado quando VERDADEIRO, de propósito: as ~1.735 notas de figura já
+    # indexadas não têm o campo, e escrever `False` para todas exigiria bumpar o
+    # `_META_VERSAO` (uma re-passada na base inteira) para nada — a ausência já
+    # significa "buscável", que é o comportamento delas hoje.
+    if meta["tipo"] == "figura" and prompts.TAG_FIGURA_ANEXO in conteudo:
+        meta["attach_only"] = True
     return meta
 
 
@@ -473,6 +482,12 @@ class LocalResult:
     # Arquivos-fonte dos chunks que ENTRARAM no contexto (não só recuperados). Alimenta
     # a PROMOÇÃO: se a resposta local usar estes átomos, o Agent tira o #conhecimento_novo.
     fontes: List[str] = field(default_factory=list)
+    # ANEXOS: notas de figura ATTACH-ONLY, que acompanham um átomo usado sem nunca
+    # terem competido na busca (co-locação — ver `_anexos_colocados`). Ficam FORA
+    # de `fontes` de propósito: elas não entram no contexto do LLM e não devem
+    # disparar a promoção do #conhecimento_novo, que mede reuso de CONHECIMENTO.
+    # O que elas fazem é uma coisa só: virar imagem na tela.
+    anexos: List[str] = field(default_factory=list)
 
 
 # ==========================================================================
@@ -959,7 +974,20 @@ class VectorStore:
             return []
         aprovadas = [
             (score, doc) for doc, score in (res or [])
-            if score < settings.rag_score_max
+            # ATTACH-ONLY NÃO DISPUTA VAGA. Até aqui o campo era declaração e não
+            # comportamento: ele viajava no job de importação e ninguém o lia. É o
+            # descarte que cumpre o achado de 2026-07-27 — a figura sem legenda de
+            # verdade (rótulo herdado da seção, ou nenhum) é INVISÍVEL no acervo
+            # atual e é isso que a mantém inofensiva; deixá-la concorrer é repetir
+            # o caso "tricomas", em que a busca entrega a "menos ruim" porque
+            # sempre há alguém abaixo do limiar. Ela volta pelo anexo por
+            # co-locação (`_anexos_colocados`), acompanhando o texto da sua página.
+            # Filtro em PYTHON, e não no `where` do Chroma: as ~1.735 notas de
+            # figura já indexadas não têm o campo, então `{"attach_only": False}`
+            # não casaria NENHUMA delas (chave ausente não casa) e a busca de
+            # figura zeraria de uma vez. O custo é gastar slots do top_k.
+            if not (doc.metadata or {}).get("attach_only")
+            and score < settings.rag_score_max
             and (score < limiar or textutils.contem_alguma(doc.page_content, chaves))
         ]
         aprovadas.sort(key=lambda x: x[0])
@@ -974,6 +1002,109 @@ class VectorStore:
             teto = aprovadas[0][0] * margem
             aprovadas = [(s, d) for s, d in aprovadas if s <= teto]
         return aprovadas
+
+    async def _irmaos_de_pagina(self, docs: Sequence[object],
+                                vistos: set) -> List[Tuple[Optional[float], object]]:
+        """Os outros átomos da MESMA PÁGINA dos que casaram (H2, 2026-07-29).
+
+        Por que existe: a re-atomização com o 8B fatiou o livro mais fino — 8.296
+        átomos onde o 4B fez 4.739 sobre o MESMO texto — e o fato passou a viver
+        separado do seu contexto. Medido em 14 perguntas reais, a base nova
+        entrega 503 palavras de conteúdo distintas por contexto contra 604 da
+        antiga, cobrindo o mesmo número de páginas: não falta cobertura, falta
+        COMPLETUDE dentro da página que já casou.
+
+        Isto recompõe a página sem reescrever átomo nenhum: se um átomo da página
+        respondeu, seus irmãos entram atrás dele na fila do orçamento. É a mesma
+        âncora e a mesma mecânica de `_anexos_colocados` — co-locação por
+        construção, não por proximidade estimada.
+
+        Figura fica de FORA: ela tem porta própria (`_buscar_figuras`) e teto
+        próprio; deixá-la entrar por aqui devolveria o problema que o teto
+        acabou de resolver.
+
+        Fail-soft: qualquer erro devolve lista vazia e a busca segue como antes.
+        """
+        teto = settings.rag_max_irmaos
+        if teto <= 0 or self._store is None:
+            return []
+        origens: List[str] = []
+        for d in docs:
+            o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
+            if o and o not in origens:
+                origens.append(o)
+        if not origens:
+            return []
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._store.get(
+                    where={"origem": {"$in": origens}},
+                    include=["metadatas", "documents"],
+                )
+            )
+        except Exception as exc:
+            telemetry.error("LOCAL", "Expansão por página indisponível", exc)
+            return []
+        fora: List[Tuple[Optional[float], object]] = []
+        for texto, md in zip(res.get("documents") or [], res.get("metadatas") or []):
+            if not texto or texto in vistos:
+                continue
+            doc = _DocSimples(texto, md or {})
+            if e_nota_de_figura(doc):
+                continue
+            vistos.add(texto)
+            fora.append((None, doc))
+            if len(fora) >= teto:
+                break
+        return fora
+
+    async def _anexos_colocados(self, docs: Sequence[object]) -> List[str]:
+        """As figuras ATTACH-ONLY da MESMA PÁGINA dos átomos que responderam.
+
+        É a outra metade de "encontrável ≠ anexável". A figura sem legenda boa foi
+        tirada da busca (`_buscar_figuras`) para não poluir; aqui ela volta pela
+        única porta que não pode errar de assunto: ela ilustra o trecho que o
+        usuário está lendo. Não há similaridade envolvida — se o átomo da página 3
+        do capítulo Soil respondeu, a foto da página 3 do capítulo Soil acompanha.
+
+        A âncora é o `origem` do frontmatter, que já é metadado indexado e é
+        gravado IDÊNTICO nos dois lados pela importação web (`Livro 'X' — cap
+        (p. N-N)`). Reusar esse campo evita inventar um id de página novo — e é
+        exatamente por isso que a página SINTÉTICA existe: co-locação por
+        construção, não por proximidade estimada.
+
+        Fail-soft em bloco: qualquer erro (store fake sem `where`, base sem o
+        campo) devolve lista vazia. Anexo é bônus visual; nunca derruba resposta."""
+        teto = settings.figuras_anexo_max
+        if teto <= 0 or self._store is None or not settings.figuras_no_contexto:
+            return []
+        origens = []
+        for d in docs:
+            o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
+            if o and o not in origens:
+                origens.append(o)
+        if not origens:
+            return []
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._store.get(
+                    where={"$and": [{"attach_only": True},
+                                    {"origem": {"$in": origens}}]},
+                    include=["metadatas"],
+                )
+            )
+        except Exception as exc:
+            telemetry.error("FIGURAS", "Anexo por co-locação indisponível", exc)
+            return []
+        saida: List[str] = []
+        for md in (res or {}).get("metadatas", []) or []:
+            src = str((md or {}).get("source") or "")
+            if src and src not in saida:
+                saida.append(src)
+        # Ordem estável (o nome carrega página e índice) para a resposta não mudar
+        # de figura a cada execução com o mesmo contexto.
+        saida.sort()
+        return saida[:teto]
 
     async def search(
         self, termos: str, texto_busca: Optional[str] = None, economico: bool = False,
@@ -1069,6 +1200,14 @@ class VectorStore:
             checa_near = 0.0 < limiar_dedup < 1.0
             tokens_vistos: List[set] = []
             candidatos: List[Tuple[float, object]] = []
+            # PRECEDÊNCIA ENTRE OBRAS no desempate de quase-duplicata: quando a
+            # mesma ideia está no vault em duas EDIÇÕES (o Cervantes antigo e a
+            # Cannabis Encyclopedia nova), quem chegava primeiro no ranking calava
+            # a outra — e "primeiro" é a distância, que não sabe qual edição é a
+            # atual. Aqui a nova TOMA O LUGAR da velha. Só entre clones: fora do
+            # dedup, nenhuma obra ganha vantagem de ranking (ver obras.py).
+            preferidas = obras.marcas(settings.obras_preferidas)
+            substituiveis = obras.marcas(settings.obras_substituidas)
             # Modo Econômico (#30): ignora aterramento/confiança e considera TODOS os
             # válidos — assim uma pergunta sem match forte ainda responde do vault.
             fonte_candidatos = validos if economico else (aterrados + confiaveis)
@@ -1079,8 +1218,25 @@ class VectorStore:
                     continue
                 if checa_near:
                     toks = set(textutils.tokens(d.page_content))
-                    if any(textutils.jaccard(toks, t) >= limiar_dedup for t in tokens_vistos):
-                        continue                # near-duplicate de um átomo já escolhido
+                    gemeo = next(
+                        (i for i, t in enumerate(tokens_vistos)
+                         if textutils.jaccard(toks, t) >= limiar_dedup), None)
+                    if gemeo is not None:
+                        # Clone de um átomo já escolhido. Fica o da obra preferida —
+                        # o antigo só sai quando o novo VENCE (empate mantém quem
+                        # chegou, que é o comportamento histórico).
+                        antigo = candidatos[gemeo][1]
+                        if not obras.substitui(
+                            str((d.metadata or {}).get("origem") or ""),
+                            str((antigo.metadata or {}).get("origem") or ""),
+                            preferidas, substituiveis,
+                        ):
+                            continue
+                        vistos.discard(antigo.page_content)
+                        candidatos[gemeo] = (s, d)
+                        tokens_vistos[gemeo] = toks
+                        vistos.add(d.page_content)
+                        continue
                     tokens_vistos.append(toks)
                 vistos.add(d.page_content)
                 candidatos.append((s, d))
@@ -1144,13 +1300,19 @@ class VectorStore:
 
             # Os matches reais vêm primeiro; a vizinhança disputa o que SOBRAR do
             # orçamento. Ordem = prioridade, o corte é o char budget (protege o n_ctx).
-            usar: List[Tuple[Optional[float], object]] = []
-            orcamento = settings.rag_context_char_budget
-            for s, d in list(candidatos[: settings.rag_max_chunks]) + figuras + vizinhos:
-                if usar and orcamento - len(d.page_content) < 0:
-                    break                                    # respeita o teto (n_ctx)
-                usar.append((s, d))
-                orcamento -= len(d.page_content)
+            # EXPANSÃO POR PÁGINA: os irmãos entram logo atrás dos matches reais,
+            # antes de figura e da malha — o fato que completa a ideia vale mais
+            # que uma imagem ou um vizinho por conceito.
+            irmaos: List[Tuple[Optional[float], object]] = []
+            if settings.rag_expandir_pagina and candidatos:
+                irmaos = await self._irmaos_de_pagina(
+                    [d for _s, d in candidatos[: settings.rag_max_chunks]], vistos)
+
+            usar = selecionar_por_orcamento(
+                list(candidatos[: settings.rag_max_chunks]) + irmaos + figuras + vizinhos,
+                settings.rag_context_char_budget,
+                settings.rag_figura_char_frac,
+            )
 
             if settings.rag_debug:
                 n_viz = sum(1 for s, _ in usar if s is None)
@@ -1184,7 +1346,12 @@ class VectorStore:
                 src = d.metadata.get("source")
                 if src and src not in fontes:
                     fontes.append(str(src))
-            return LocalResult(texto, melhor, relevante, fontes)
+            # A figura attach-only entra por AQUI e só por aqui: ela acompanha as
+            # páginas que de fato responderam (as promovíveis, `s is not None`), e
+            # não vale como fonte nem como contexto.
+            anexos = await self._anexos_colocados(
+                [d for s, d in usar if s is not None]) if usar else []
+            return LocalResult(texto, melhor, relevante, fontes, anexos)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)
             return LocalResult(NENHUM, None, False)
@@ -1251,6 +1418,60 @@ def _chunk_texto(texto: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         chunk_size=chunk_size, chunk_overlap=chunk_overlap
     )
     return [p.strip() for p in splitter.split_text(texto) if p.strip()]
+
+
+class _DocSimples:
+    """Documento mínimo (page_content + metadata) para o que vem do `store.get`,
+    que devolve texto e metadado crus em vez de objetos do langchain."""
+
+    __slots__ = ("page_content", "metadata")
+
+    def __init__(self, page_content: str, metadata: dict) -> None:
+        self.page_content = page_content
+        self.metadata = metadata
+
+
+def e_nota_de_figura(doc) -> bool:
+    """A nota é de FIGURA? Puro/testável.
+
+    Duas provas porque a base tem as duas gerações: o metadado `tipo` (a partir
+    da migração `scripts/migrar_tipo_figura.py`) e o embed de imagem no corpo,
+    que é o que as notas antigas trazem.
+    """
+    md = getattr(doc, "metadata", None) or {}
+    if str(md.get("tipo") or "") == "figura":
+        return True
+    return "![[" in (getattr(doc, "page_content", "") or "")
+
+
+def selecionar_por_orcamento(itens, orcamento: int, frac_figura: float):
+    """Preenche o orçamento em chars com TETO PRÓPRIO para nota de figura. Puro.
+
+    Por que o teto existe (medido em 2026-07-29 sobre 14 perguntas reais): as
+    notas de figura comiam **40% do orçamento** — 7,5 notas e 4.740 chars por
+    pergunta, 17 delas numa pergunta sobre oídio e 15 na de poda apical. Nesta
+    última o texto que respondia não coube, e o modelo devolveu o sentinela.
+    A legenda é curta e casa muita pergunta; sem teto, ela desloca o átomo que
+    de fato responde.
+
+    Figura fora do teto é PULADA, não interrompe a seleção — o `break` de
+    orçamento continua valendo para o resto. Assim a busca por legenda ("me
+    mostra o diagrama de X") segue funcionando, só que sem monopolizar o espaço.
+    """
+    teto_fig = int(orcamento * frac_figura) if frac_figura > 0 else orcamento
+    usar: List[Tuple[Optional[float], object]] = []
+    gasto_fig = 0
+    for s, d in itens:
+        n = len(d.page_content)
+        if e_nota_de_figura(d):
+            if gasto_fig + n > teto_fig:
+                continue
+            gasto_fig += n
+        if usar and orcamento - n < 0:
+            break                                        # respeita o teto (n_ctx)
+        usar.append((s, d))
+        orcamento -= n
+    return usar
 
 
 def rankear_por_similaridade(

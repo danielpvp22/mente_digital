@@ -71,6 +71,58 @@ def montar_system(system_prompt: str) -> str:
     return f"/no_think\n{base}" if settings.llm_no_think else base
 
 
+def preparar_offline(caminho_modelo: str) -> str:
+    """Alinha as flags de `<think>` ao modelo OFFLINE e devolve o caminho dele.
+
+    HIGIENE e COMPORTAMENTO são coisas separadas, e confundi-las custou caro:
+
+    - `llm_strip_think` (higiene) é ligado SEMPRE que há modelo offline. O `.env`
+      o desliga por causa do modelo do SERVIDOR, que não raciocina; com um Qwen3
+      que raciocina, o desligado despeja o bloco `<think>…</think>` DENTRO do
+      átomo — há 8 notas assim na base, resquício de uma passada anterior.
+    - `llm_no_think` (comportamento) é decisão de QUALIDADE, não de higiene, e
+      fica com o dono em `atomizacao_pensar`. Pensar pode condensar melhor a
+      página; e pensar consome o MESMO orçamento de saída que os átomos, que é a
+      causa medida dos átomos truncados. Só um A/B decide — ver
+      `eval/ab_atomizacao_think.py`.
+
+    As flags valem por processo, e o processo offline serve UM modelo só — então
+    alinhar aqui é seguro e não toca no servidor, que roda noutro processo.
+    """
+    if not caminho_modelo:
+        return caminho_modelo
+    settings.llm_strip_think = True
+    settings.llm_no_think = not settings.atomizacao_pensar
+    telemetry.track(
+        "LLM",
+        f"Modelo offline: strip de <think> LIGADO; raciocínio "
+        f"{'LIGADO' if settings.atomizacao_pensar else 'desligado'}.")
+    return caminho_modelo
+
+
+def _ggml_type(kv: str) -> Optional[int]:
+    """Constante `GGML_TYPE_*` do llama_cpp para o KV-cache, ou None (com aviso).
+
+    O import mora AQUI, e não no topo de `_build_llama_kwargs`, porque só este ramo
+    precisa dele: montar os kwargs tem de funcionar sem llama-cpp-python instalado
+    — é o que o CI faz (a lib compila por minutos e fica fora de propósito) e é o
+    que a docstring de lá promete ao chamar a função de "pura". Cada motivo de
+    desistir tem seu próprio aviso: lib ausente e valor desconhecido são coisas
+    diferentes, e um log que troca uma pela outra manda o diagnóstico para o lado
+    errado.
+    """
+    try:
+        import llama_cpp
+    except ImportError as exc:
+        telemetry.warn("VRAM", f"kv_cache_type={kv} exige llama-cpp-python ({exc}); usando f16.")
+        return None
+
+    tipo = getattr(llama_cpp, f"GGML_TYPE_{kv.upper()}", None)
+    if tipo is None:
+        telemetry.warn("VRAM", f"kv_cache_type={kv} desconhecido; usando f16.")
+    return tipo
+
+
 class InferenciaPreemptada(RuntimeError):
     """O decode foi abortado para ceder a GPU à inferência interativa.
 
@@ -156,7 +208,13 @@ class _FiltroThink:
 
 
 class LlamaManager:
-    def __init__(self) -> None:
+    def __init__(self, caminho_modelo: str = "") -> None:
+        # Override do .gguf para as passadas OFFLINE (atomização, tradução,
+        # varredura): com o servidor fechado a VRAM inteira está livre e cabe um
+        # modelo maior, que lê melhor uma página e destila ideias completas. Vazio
+        # = o modelo do servidor, escolhido por latência. Ver
+        # settings.caminho_modelo_atomizacao.
+        self._caminho_modelo = caminho_modelo
         self._model = None
         self._load_lock = asyncio.Lock()        # protege o lazy-load (era llm_manager_lock)
         self._inference_lock = asyncio.Lock()   # serializa streams (era inference_lock)
@@ -216,11 +274,14 @@ class LlamaManager:
         Puro/sem GPU (só monta um dict) — seguro chamar do event loop. Cada botão
         de tuning (§7) e o speculative decoding (§5) entram aqui, cada um guardado
         e logado: um valor inválido degrada para o default em vez de derrubar o load.
-        """
-        import llama_cpp
 
+        O `import llama_cpp` vive DENTRO do ramo que precisa dele (as constantes
+        GGML_TYPE_*): no topo, ele contradizia o "puro" do parágrafo acima e
+        reprovava o CI, que não instala llama-cpp-python de propósito (compila por
+        minutos). O caminho default agora monta o dict sem importar nada.
+        """
         kwargs: dict = dict(
-            model_path=settings.caminho_modelo_llama,
+            model_path=self._caminho_modelo or settings.caminho_modelo_llama,
             n_gpu_layers=settings.n_gpu_layers,
             n_ctx=settings.n_ctx,
             n_batch=settings.n_batch,
@@ -239,10 +300,8 @@ class LlamaManager:
                     "VRAM", f"kv_cache_type={kv} exige flash_attn=True; usando f16."
                 )
             else:
-                ggml_type = getattr(llama_cpp, f"GGML_TYPE_{kv.upper()}", None)
-                if ggml_type is None:
-                    telemetry.warn("VRAM", f"kv_cache_type={kv} desconhecido; usando f16.")
-                else:
+                ggml_type = _ggml_type(kv)
+                if ggml_type is not None:
                     kwargs["type_k"] = ggml_type
                     kwargs["type_v"] = ggml_type
                     telemetry.track("VRAM", f"KV-cache quantizado em {kv}.")
@@ -275,7 +334,11 @@ class LlamaManager:
             # Loga o ARQUIVO, não um nome fixo: o modelo é trocável por .env e um rótulo
             # cravado ("Qwen 7B") vira mentira no dia da troca — e some a resposta de
             # "qual modelo está rodando?", que é a 1ª pergunta em qualquer diagnóstico.
-            nome = os.path.basename(settings.caminho_modelo_llama)
+            # A MESMA fonte dos kwargs, não o settings direto: com o override
+            # offline (modelo grande), ler o settings aqui faria o log jurar que
+            # subiu o modelo do servidor — a mentira que o comentário acima
+            # promete evitar, só que por outro caminho.
+            nome = os.path.basename(self._caminho_modelo or settings.caminho_modelo_llama)
             telemetry.track("VRAM", f"Ancorando {nome} na GPU...")
             try:
                 from llama_cpp import Llama
