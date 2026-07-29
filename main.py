@@ -63,21 +63,28 @@ async def _boot(ctx: AppContext) -> None:
     # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
     # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
     # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
-    if settings.tts_carga_preguicosa and settings.tts_engine == "xtts":
-        if settings.tts_preparar_ram_no_boot:
-            # Em SEGUNDO PLANO e sem bloquear o boot: monta o modelo em RAM (as 19,3s
-            # de CPU medidas) para que o microfone só pague o ~1s do device. Sem isto a
-            # 1ª resposta falada trava esperando o load inteiro.
-            telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
-            ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
-        else:
-            telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
-    else:
+    preguicoso = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
+    if not preguicoso:
         await asyncio.to_thread(ctx.tts.load)
     # RAG: embeddings (singleton) -> abre/sincroniza o VectorDB.
     await asyncio.to_thread(ctx.vectorstore.load_embeddings)
     await ctx.vectorstore.open()
     ctx.track_task(ctx.vectorstore.sync())
+    # XTTS EM RAM, DEPOIS DOS EMBEDDINGS — a ordem é o conserto de um bug real (medido
+    # em 2026-07-29): despachado ANTES, o `preparar_ram` importava torch+coqui numa
+    # thread enquanto o `load_embeddings` importava sentence-transformers noutra, e as
+    # duas árvores se cruzam (transformers -> torch.utils.checkpoint -> sympy -> mpmath).
+    # O CPython estourou `KeyError: 'mpmath.functions.orthogonal'` — módulo visto pela
+    # metade por outra thread. Como o load_embeddings é AWAITADO, depois dele a árvore
+    # pesada já está inteira em `sys.modules` e o import do XTTS não disputa nada.
+    # O sintoma era traiçoeiro: fail-soft, app "saudável" e SEM RAG, só com um WARN.
+    if preguicoso and settings.tts_preparar_ram_no_boot:
+        # Em segundo plano: monta o modelo em RAM (as 19,3s de CPU medidas) para que o
+        # microfone só pague o ~1s do device. Sem isto a 1ª fala espera o load inteiro.
+        telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
+        ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
+    elif preguicoso:
+        telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
 
 
 @asynccontextmanager
