@@ -29,6 +29,7 @@ from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
+from mente_digital import rede  # noqa: E402
 from mente_digital.scheduler import SchedulerService  # noqa: E402
 from mente_digital.state import AppContext  # noqa: E402
 from mente_digital.telemetry import db, telemetry  # noqa: E402
@@ -89,6 +90,18 @@ async def _boot(ctx: AppContext) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A PORTA PRIMEIRO, os modelos depois. O uvicorn só faz o bind DEPOIS deste
+    # lifespan, então sem esta linha uma segunda instância gasta ~45 s carregando
+    # tudo, escreve "Mente Digital online" e só então descobre que a porta é de
+    # outro — deixando um zumbi com ~4,7 GB de VRAM presos. Ver rede.py.
+    if rede.porta_em_uso(settings.host, settings.port):
+        telemetry.error(
+            "BOOT",
+            f"Porta {settings.host}:{settings.port} já está em uso — quase sempre é "
+            f"outra instância do Mente Digital já rodando. Feche-a antes de subir "
+            f"esta (nenhum modelo foi carregado).",
+        )
+        raise RuntimeError(f"porta {settings.host}:{settings.port} ocupada")
     settings.ensure_dirs()
     await asyncio.to_thread(db.init)
 
