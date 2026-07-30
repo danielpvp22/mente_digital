@@ -26,7 +26,7 @@ import re
 
 from mente_digital.audio import SentenceChunker
 from mente_digital.config import settings
-from mente_digital.otimizador import frase_citada
+from mente_digital.otimizador import frase_citada, precisa_antecedente
 from mente_digital.rag import NENHUM
 from mente_digital.state import SessionMemory, turno_falado
 from mente_digital.telemetry import LatencyTracker, db, telemetry
@@ -140,9 +140,18 @@ class Respostas:
         texto cru e ficava cego a follow-ups ("explique melhor", "e sobre isso") — daí
         respondia sentinela mesmo com os átomos certos. Damos 2 turnos recentes (resposta
         anterior truncada) e marcamos [PERGUNTA ATUAL] para manter o foco. Sem histórico,
-        devolve a pergunta intacta (custo zero na 1ª pergunta da sessão)."""
+        devolve a pergunta intacta (custo zero na 1ª pergunta da sessão).
+
+        SÓ em pergunta que PRECISA do antecedente (`precisa_antecedente`): injetar em
+        TODAS custou uma alucinação real (2026-07-29) — "O que o livro diz sobre cultivo
+        de tomate?" é auto-contida, levou os 2 turnos recentes ao gerador e a resposta
+        colou as "6 a 9 semanas" de floração do turno de dois antes. Medido naquela
+        sessão: 1 das 40 perguntas precisava do antecedente; 40 recebiam. Marcar o
+        [PERGUNTA ATUAL] não basta — o modelo funde o que está no prompt."""
         hist = mem.chat_history
         if not hist:
+            return texto_usuario
+        if settings.contexto_gerador_followup and not precisa_antecedente(texto_usuario):
             return texto_usuario
         turnos = []
         for q, a in list(hist)[-2:]:

@@ -29,6 +29,7 @@ from mente_digital import disjuntor as _disjuntor
 from mente_digital import vram
 from mente_digital import egressao
 from mente_digital import grafo
+from mente_digital import livro
 from mente_digital import obras
 from mente_digital import prompts
 from mente_digital import textutils
@@ -1058,10 +1059,26 @@ class VectorStore:
         if teto <= 0 or self._store is None:
             return []
         origens: List[str] = []
+        descartadas = 0
         for d in docs:
             o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
-            if o and o not in origens:
-                origens.append(o)
+            if not o or o in origens:
+                continue
+            # SÓ PÁGINA DE VERDADE. `origem` é a âncora de co-locação, mas só o
+            # `livro.origem_do_job` escreve página; o átomo auto-colhido guarda ali o
+            # BALDE de onde veio ('Sintese', 'Conversa', 'Projeto-X.json'). Medido no
+            # índice (2026-07-30): baldes de até 1.947 átomos, 54,2% do índice num
+            # balde maior que este teto — a expansão entrava CHEIA com 12 átomos
+            # escolhidos pela ordem do Chroma. Foi assim que "o que é topping" montou
+            # contexto com notas de YOLO: a palavra inglesa só existe nesses baldes.
+            if settings.rag_irmaos_so_pagina and not livro.e_origem_de_pagina(o):
+                descartadas += 1
+                continue
+            origens.append(o)
+        if descartadas:
+            telemetry.track(
+                "LOCAL", f"Expansão por página: {descartadas} origem(ns) sem página ignorada(s)."
+            )
         if not origens:
             return []
         try:

@@ -51,6 +51,25 @@ def origem_do_job(job: Dict) -> str:
             f"(p. {job.get('pagina_inicio', '?')}-{job.get('pagina_fim', '?')})")
 
 
+# A metade LEITORA do `origem_do_job` acima: o " (p. N-M)" que ele sempre escreve.
+_PAGINA_RE = re.compile(r"\(p\.\s*\d+")
+
+
+def e_origem_de_pagina(origem: str) -> bool:
+    """A `origem` é uma PÁGINA de livro (co-locação real), ou um balaio? Puro/testável.
+
+    A expansão por página e o anexo de figura tratam `origem` como "a mesma página".
+    Isso só é verdade para o que o `origem_do_job` escreveu. Para átomo auto-colhido o
+    campo guarda o BALDE de onde ele veio — medido no índice de 2026-07-30 (24.918
+    chunks): 306 páginas de livro (mediana 37 átomos, máx. 69) contra 95 origens
+    não-página com até **1.947 átomos na mesma chave** ('Orquestração-de-IA-…json',
+    'Sintese', 'Conversa'). 54,2% do índice cai num balde maior que o teto de irmãos,
+    e nesses o "irmão de página" é só a ordem do Chroma — 12 átomos de assunto
+    nenhum a ver, os MESMOS em perguntas diferentes.
+    """
+    return bool(_PAGINA_RE.search(origem or ""))
+
+
 def slug(texto: str, max_len: int = 40) -> str:
     """Nome seguro de arquivo (Windows incluso) a partir de um título livre."""
     s = re.sub(r"[^\w\s-]", "", texto, flags=re.UNICODE).strip().lower()

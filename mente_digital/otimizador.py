@@ -39,6 +39,42 @@ def referencia_contexto(pergunta: str) -> bool:
     return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
 
 
+# Palavras que pedem CONTINUAÇÃO sem nomear assunto nenhum ("explique melhor", "e a
+# segunda opção?"). Servem ao `precisa_antecedente` abaixo: se TODAS as keywords da
+# pergunta estão aqui, ela não tem núcleo próprio — o assunto mora no turno anterior.
+_PALAVRAS_CONTINUACAO = {
+    "melhor", "mais", "menos", "detalhe", "detalhes", "detalha", "detalhar",
+    "explique", "explica", "explicar", "explicacao", "resume", "resuma", "resumir",
+    "continue", "continua", "continuar", "primeiro", "primeira", "segundo", "segunda",
+    "terceiro", "terceira", "ultimo", "ultima", "opcao", "opcoes", "depois", "antes",
+    "outro", "outra", "outros", "outras", "exemplo", "exemplos", "fala", "fale",
+    "diz", "diga", "conta", "conte", "sobre",
+}
+
+
+def precisa_antecedente(pergunta: str) -> bool:
+    """A pergunta só se entende COM o turno anterior? Puro/testável.
+
+    Existe por causa de uma alucinação medida no teste real de 2026-07-29: o gerador
+    recebia os 2 turnos recentes em TODA pergunta (ver Respostas._pergunta_com_contexto)
+    e "O que o livro diz sobre cultivo de tomate?" saiu com as "6 a 9 semanas" de
+    floração do turno de dois antes colada dentro. Medido nas 40 perguntas daquela
+    sessão: **1 precisava** do antecedente e 40 recebiam.
+
+    Duas maneiras de precisar, e a 2ª é o motivo de não bastar `referencia_contexto`:
+      (a) aponta pra trás com pronome/demonstrativo ("e sobre isso?");
+      (b) não tem NÚCLEO próprio — todas as keywords são de continuação ("explique
+          melhor", "e a segunda opção?"), que é justamente o caso para o qual o
+          histórico foi introduzido e não tem pronome nenhum.
+    Mesma forma do `lacuna_pesquisavel`: keywords menos as palavras vazias = núcleo.
+    """
+    if referencia_contexto(pergunta):
+        return True
+    kws = textutils.palavras_chave(pergunta)
+    nucleo = {k for k in kws if k not in _PALAVRAS_CONTINUACAO and not k.isdigit()}
+    return not nucleo
+
+
 # AFIRMAÇÃO vs pergunta/pedido (conserto do caso "Falcão", teste real 2026-07-21):
 # "O codinome do meu drone é Falcão." foi tratado como PERGUNTA, escalou pra web,
 # achou o drone homônimo da Avibras e o fato ALHEIO contaminou a RAM e virou átomo
