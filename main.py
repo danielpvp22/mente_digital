@@ -48,6 +48,36 @@ def _preinit_cudnn() -> None:
         telemetry.warn("BOOT", f"pré-init do cuDNN falhou (segue): {exc}")
 
 
+def _preimportar_arvores() -> None:
+    """Importa as árvores pesadas do Whisper e do embedding na MESMA thread.
+
+    É o que torna segura a paralelização abaixo. O bug de 2026-07-29 (#75): duas
+    threads importando árvores que se cruzam (`transformers` -> `torch.utils.checkpoint`
+    -> `sympy` -> `mpmath`) fizeram o CPython estourar `KeyError:
+    'mpmath.functions.orthogonal'` — módulo visto pela metade pela outra thread. O app
+    subia "saudável" e SEM RAG NENHUM, com um único WARN de pista.
+
+    Régua que ficou: nunca despachar import pesado em background antes de um await que
+    importe a mesma árvore. Aqui os imports acontecem UMA vez, single-thread; depois
+    disso `sys.modules` está inteiro e os dois `load` só carregam PESO em paralelo.
+    Falha de import não é fatal — o `load` de cada serviço tem o próprio pára-quedas."""
+    for mod in ("faster_whisper", "sentence_transformers"):
+        try:
+            __import__(mod)
+        except Exception as exc:
+            telemetry.warn("BOOT", f"pré-import de {mod} falhou (segue): {exc}")
+
+
+async def _malha_e_sync(ctx: AppContext) -> None:
+    """O trabalho de RAG que não precisa segurar o boot — na ordem de sempre.
+
+    A malha PRIMEIRO, o reindex depois. Os dois leem/escrevem o mesmo SQLite do Chroma
+    (escritor único), então soltá-los como tasks irmãos os faz brigar: medido em
+    2026-07-30, a malha ficou 79 s sem montar e o app atendeu sem índice de conceitos."""
+    await ctx.vectorstore.reconstruir_malha()
+    await ctx.vectorstore.sync()
+
+
 async def _boot(ctx: AppContext) -> None:
     """Carrega modelos sem bloquear o startup do servidor."""
     # cuDNN: com o XTTS (torch, cuDNN 9) ligado, o faster-whisper (ctranslate2, cuDNN 8)
@@ -58,8 +88,18 @@ async def _boot(ctx: AppContext) -> None:
         await asyncio.to_thread(_preinit_cudnn)
     # GPU: em background (inclui warm-up).
     ctx.track_task(ctx.llama.load())
-    # CPU: Whisper e Piper em threads.
-    await asyncio.to_thread(ctx.stt.load)
+    # CPU: Whisper e Piper em threads. Com `boot_paralelo`, o Whisper (2,50 s medidos)
+    # carrega JUNTO com os embeddings (7,55 s) — os dois são CPU e independentes, então
+    # o boot paga o maior em vez da soma. A ordem em relação ao _preinit_cudnn acima é
+    # preservada: o cuDNN do torch já foi fixado antes de o ctranslate2 tocar o dele.
+    if settings.boot_paralelo:
+        await asyncio.to_thread(_preimportar_arvores)
+        await asyncio.gather(
+            asyncio.to_thread(ctx.stt.load),
+            asyncio.to_thread(ctx.vectorstore.load_embeddings),
+        )
+    else:
+        await asyncio.to_thread(ctx.stt.load)
     # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
     # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
     # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
@@ -67,10 +107,24 @@ async def _boot(ctx: AppContext) -> None:
     preguicoso = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
     if not preguicoso:
         await asyncio.to_thread(ctx.tts.load)
-    # RAG: embeddings (singleton) -> abre/sincroniza o VectorDB.
-    await asyncio.to_thread(ctx.vectorstore.load_embeddings)
-    await ctx.vectorstore.open()
-    ctx.track_task(ctx.vectorstore.sync())
+    # RAG: embeddings (singleton, já carregados acima no caminho paralelo) -> abre o
+    # VectorDB. A MALHA (3,09 s) sai do caminho crítico: sem ela o `search` mantém o
+    # aterramento léxico original e só a expansão por conceito não acontece — a
+    # degradação graciosa que o próprio `search` já tratava. O `_reconstruir_malha` tem
+    # lock, então esta montagem e a do fim do `sync` não se cruzam.
+    if not settings.boot_paralelo:
+        await asyncio.to_thread(ctx.vectorstore.load_embeddings)
+    await ctx.vectorstore.open(com_malha=not settings.boot_malha_background)
+    if settings.boot_malha_background:
+        # MALHA e SYNC no MESMO task, na ordem de sempre. Despachá-los como dois tasks
+        # irmãos MEDIU MAL (2026-07-30): a malha ficou 79 s sem montar e o app rodou sem
+        # índice de conceitos, porque os dois disputam o MESMO SQLite do Chroma — que é
+        # de escritor único. Antes disso não acontecia por acidente de ordem: a malha
+        # rodava AWAITADA, então terminava antes de o sync começar. Encadeando, os 3,09 s
+        # saem do caminho crítico E a ordem relativa é a de sempre.
+        ctx.track_task(_malha_e_sync(ctx))
+    else:
+        ctx.track_task(ctx.vectorstore.sync())
     # XTTS EM RAM, DEPOIS DOS EMBEDDINGS — a ordem é o conserto de um bug real (medido
     # em 2026-07-29): despachado ANTES, o `preparar_ram` importava torch+coqui numa
     # thread enquanto o `load_embeddings` importava sentence-transformers noutra, e as

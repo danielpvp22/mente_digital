@@ -159,6 +159,25 @@ class Settings(BaseSettings):
     # com matches diretos, o resultado é idêntico: irmão não desloca match.
     rag_expandir_pagina: bool = True
     rag_max_irmaos: int = 12              # 0 desliga
+    # ...E SÓ QUANDO A `origem` É PÁGINA DE VERDADE. O campo é a âncora de co-locação,
+    # mas só o `livro.origem_do_job` escreve página; átomo auto-colhido guarda ali o
+    # BALDE de onde veio. Medido no índice (2026-07-30, 24.918 chunks): 306 páginas de
+    # livro (mediana 37 átomos, máx. 69) contra 95 origens não-página com até 1.947
+    # átomos na MESMA chave — 54,2% do índice num balde maior que o teto de irmãos.
+    # Nesses, "irmão de página" era só a ordem do Chroma: 12 átomos sem relação, os
+    # MESMOS em perguntas diferentes. MENTE_RAG_IRMAOS_SO_PAGINA=false volta atrás.
+    rag_irmaos_so_pagina: bool = True
+    # BOOT — o que sai do caminho crítico. Fases medidas em 2026-07-29 (17,79 s totais):
+    # LLM 3,19 (já em background) + Whisper 2,50 + embeddings 7,55 + Chroma 1,40 +
+    # MALHA 3,09. `boot_paralelo` pré-importa as duas árvores pesadas na MESMA thread e
+    # então carrega Whisper e embeddings JUNTOS (paga o maior, não a soma) — o pré-import
+    # é obrigatório, não decoração: foi a corrida de import entre eles que subiu o app
+    # SEM RAG em 2026-07-29 (ver main._preimportar_arvores).
+    boot_paralelo: bool = True
+    # A malha é índice de conceitos em RAM; sem ela o `search` mantém o aterramento
+    # léxico original e só a expansão por conceito não roda. Montá-la em segundo plano
+    # devolve os 3,09 s. MENTE_BOOT_MALHA_BACKGROUND=false volta a esperar por ela.
+    boot_malha_background: bool = True
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.
@@ -515,6 +534,16 @@ class Settings(BaseSettings):
     #   alto (ex.: 999) = quase toda definição vai pra web (≈ Part A puro).
     # Só age quando rotear_definicional_web=True E a pergunta é definicional (não pessoal).
     definicional_min_atomos: int = 3
+    # HISTÓRICO NO PROMPT DO GERADOR — só em pergunta que PRECISA de antecedente.
+    # O `_pergunta_com_contexto` prefixa os 2 turnos recentes para o gerador enxergar
+    # follow-ups ("explique melhor"), mas fazia isso em TODA pergunta. Alucinação medida
+    # no teste real de 2026-07-29: "O que o livro diz sobre cultivo de tomate?" saiu com
+    # as "6 a 9 semanas" de floração do turno de dois antes colada dentro. Naquelas 40
+    # perguntas, 1 precisava do antecedente e 40 recebiam. Com isto ligado, o portão é
+    # `otimizador.precisa_antecedente` (pronome OU sem núcleo próprio) — o MESMO critério
+    # que o extrator já usa para decidir se passa o histórico ao LLM de query.
+    # MENTE_CONTEXTO_GERADOR_FOLLOWUP=false volta ao comportamento antigo (sempre injeta).
+    contexto_gerador_followup: bool = True
     # DEDUP NEAR-DUPLICATE DO CONTEXTO (G6, Onda 3): a busca dedupa átomos por texto
     # EXATO, mas o ETL pode ter atomizado o MESMO fato de fontes diferentes (web +
     # conversa) com palavras quase iguais — os dois entram no contexto e gastam prefill
