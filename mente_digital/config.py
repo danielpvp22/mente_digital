@@ -167,6 +167,17 @@ class Settings(BaseSettings):
     # Nesses, "irmão de página" era só a ordem do Chroma: 12 átomos sem relação, os
     # MESMOS em perguntas diferentes. MENTE_RAG_IRMAOS_SO_PAGINA=false volta atrás.
     rag_irmaos_so_pagina: bool = True
+    # BOOT — o que sai do caminho crítico. Fases medidas em 2026-07-29 (17,79 s totais):
+    # LLM 3,19 (já em background) + Whisper 2,50 + embeddings 7,55 + Chroma 1,40 +
+    # MALHA 3,09. `boot_paralelo` pré-importa as duas árvores pesadas na MESMA thread e
+    # então carrega Whisper e embeddings JUNTOS (paga o maior, não a soma) — o pré-import
+    # é obrigatório, não decoração: foi a corrida de import entre eles que subiu o app
+    # SEM RAG em 2026-07-29 (ver main._preimportar_arvores).
+    boot_paralelo: bool = True
+    # A malha é índice de conceitos em RAM; sem ela o `search` mantém o aterramento
+    # léxico original e só a expansão por conceito não roda. Montá-la em segundo plano
+    # devolve os 3,09 s. MENTE_BOOT_MALHA_BACKGROUND=false volta a esperar por ela.
+    boot_malha_background: bool = True
     ingestao_habilitada: bool = True
     dir_ingestao: str = str(DIR_DADOS / "ingestao")
     # LOTE DA ATOMIZAÇÃO — 6000, e a queda para 3500 foi DESFEITA em 2026-07-28.

@@ -601,6 +601,11 @@ class VectorStore:
         self._store = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
         self.malha = MalhaIndex()
+        # A malha é montada em DOIS caminhos (fim do open e fim do sync) e, desde que o
+        # boot a manda para segundo plano, os dois podem se cruzar — duas threads
+        # mutando o MESMO MalhaIndex. O lock as serializa; sem ele o índice de conceitos
+        # ficaria pela metade em silêncio (fail-soft), que é o pior modo de falhar.
+        self._malha_lock = asyncio.Lock()
         self._recuperado_ja = False  # #33: recupera índice no máximo 1x por processo
 
     @property
@@ -683,7 +688,10 @@ class VectorStore:
             return True
         return all(meta.get(k) == v for k, v in atual.items())
 
-    async def open(self) -> None:
+    async def open(self, com_malha: bool = True) -> None:
+        """Abre o Chroma. `com_malha=False` deixa o índice de conceitos para o
+        chamador montar em segundo plano (ver `reconstruir_malha`) — é o boot
+        devolvendo 3,09 s ao caminho crítico."""
         if self._embeddings.instance is None:
             telemetry.warn("DB", "VectorStore sem embeddings — indexação desativada.")
             return
@@ -727,8 +735,17 @@ class VectorStore:
                 except Exception as exc2:
                     telemetry.error("DB", "Recuperação do índice falhou", exc2)
                     return
-        if self._store is not None:
+        if self._store is not None and com_malha:
             await self._reconstruir_malha()
+
+    async def reconstruir_malha(self) -> None:
+        """Porta pública da malha, para o BOOT montá-la em segundo plano.
+
+        Medido em 2026-07-29: a malha custa 3,09 s dos 17,79 s de boot, e o servidor
+        não precisa dela para atender — sem malha construída (`n_atomos == 0`) o
+        `search` mantém o aterramento léxico original (o OR sem IDF) e a expansão por
+        conceito só não acontece. Degradação graciosa que o código já tratava."""
+        await self._reconstruir_malha()
 
     async def _reconstruir_malha(self) -> None:
         """Recarrega o índice de conceitos do que está no Chroma.
@@ -745,22 +762,23 @@ class VectorStore:
         """
         if self._store is None:
             return
-        try:
-            dump = await asyncio.to_thread(
-                dump_paginado, self._store, ["documents", "metadatas"]
-            )
-            await asyncio.to_thread(
-                self.malha.construir,
-                dump.get("documents") or [],
-                dump.get("metadatas") or [],
-            )
-            telemetry.track(
-                "MALHA",
-                f"Índice de conceitos: {self.malha.n_conceitos} conceitos "
-                f"em {self.malha.n_atomos} átomos.",
-            )
-        except Exception as exc:
-            telemetry.error("MALHA", "Falha ao montar índice de conceitos", exc)
+        async with self._malha_lock:
+            try:
+                dump = await asyncio.to_thread(
+                    dump_paginado, self._store, ["documents", "metadatas"]
+                )
+                await asyncio.to_thread(
+                    self.malha.construir,
+                    dump.get("documents") or [],
+                    dump.get("metadatas") or [],
+                )
+                telemetry.track(
+                    "MALHA",
+                    f"Índice de conceitos: {self.malha.n_conceitos} conceitos "
+                    f"em {self.malha.n_atomos} átomos.",
+                )
+            except Exception as exc:
+                telemetry.error("MALHA", "Falha ao montar índice de conceitos", exc)
 
     async def sync(self) -> None:
         """Reindex incremental por mtime (novos + modificados) e por `meta_v`
