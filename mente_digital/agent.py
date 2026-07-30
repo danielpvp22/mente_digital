@@ -269,9 +269,11 @@ class Agent(ComandosMestre, Respostas):
             # a query da web — o embedding continua recebendo a pergunta crua, que é o
             # que mantém a fase (b) idêntica à busca serial. Pergunta sem jargão sai
             # inalterada.
+            ponte = ""
             if settings.vocab_ponte:
                 ampliado = vocabulario.expandir(termos)
                 if ampliado != termos:
+                    ponte = ampliado[len(termos):].strip()
                     telemetry.track("VOCAB", f"ponte: '{termos}' -> '{ampliado}'")
                     termos = ampliado
             tracker.extrator_ms = round((time.perf_counter() - _t_extrator) * 1000)
@@ -362,9 +364,29 @@ class Agent(ComandosMestre, Respostas):
                     # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
                     _t_busca = time.perf_counter()
                     texto_busca = await self._texto_busca(texto_usuario, termos)
+                    # A PONTE TAMBÉM VAI AO EMBEDDING — e é aqui que ela funciona.
+                    # MEDIDO em "o que é topping" na base reindexada de 2026-07-30:
+                    # sem ponte 0 átomos (dist 0,182); só no aterramento léxico, 2 —
+                    # e 2 < `definicional_min_atomos`, então ainda escapava pra web;
+                    # com a ponte no embedding, 11 átomos e dist 0,146, ABAIXO do
+                    # `rag_score_confident`. A razão é estrutural: o aterramento é um
+                    # FILTRO sobre o que o embedding já recuperou, não um canal de
+                    # busca próprio — ampliar só as keywords não alcança átomo que a
+                    # recuperação vetorial nem trouxe.
+                    if ponte:
+                        texto_busca = f"{texto_busca} {ponte}"
                     # `recuperados` só entra quando a fase (b) especulou — assim os
                     # fakes/stores antigos (sem o kwarg) seguem funcionando intactos.
-                    _extra = {"recuperados": recuperados} if recuperados is not None else {}
+                    # Com a ponte ativa a especulação é DESCARTADA de propósito: ela
+                    # embeddou a pergunta CRUA, e reusá-la aqui devolveria justamente a
+                    # recuperação sem os termos PT que acabamos de acrescentar. Paga-se
+                    # a busca serial em troca da resposta certa, e só quando o jargão
+                    # aparece (pergunta em português segue com o overlap intacto).
+                    _extra = (
+                        {} if ponte
+                        else {"recuperados": recuperados} if recuperados is not None
+                        else {}
+                    )
                     local = await self.ctx.vectorstore.search(
                         termos, texto_busca=texto_busca, economico=mem.economico, **_extra
                     )

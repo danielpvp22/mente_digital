@@ -11,11 +11,17 @@ casaram "topping" vieram de notas de YOLO/Ollama (a palavra inglesa só existe n
 baldes auto-colhidos). Contexto de outro domínio → o portão definicional escalou
 para a web, certíssimo, e a web sem âncora de domínio respondeu sobre pizza.
 
-É a MESMA classe da correção das legendas de figura EN→PT: o e5 é multilíngue, então
-a metade SEMÂNTICA do gate já atravessa idiomas; quem morre no jargão é a metade
-LÉXICA. Aqui só o `termos` é ampliado (aterramento + query da web) — o embedding
-segue recebendo a pergunta crua, que é o que mantém a fase (b) do extrator idêntica
-à busca serial.
+Os termos daqui vão aos DOIS lados da busca: ao aterramento léxico (e à query da web)
+e ao EMBEDDING. Eu tentei primeiro só o léxico, para não perturbar a fase (b) do
+extrator, e MEDI que não bastava — "o que é topping" ia de 0 para 2 átomos, e 2 fica
+abaixo de `definicional_min_atomos`, então a pergunta escapava para a web do mesmo
+jeito. Com os termos no embedding são 11 átomos e a distância cai de 0,182 para
+0,146, abaixo do `rag_score_confident`.
+
+A razão é estrutural e vale para qualquer ideia futura de "melhorar o aterramento":
+**o aterramento é um FILTRO sobre o que o embedding já recuperou, não um canal de
+busca próprio.** Ampliar só as keywords nunca alcança o átomo que a recuperação
+vetorial não trouxe.
 
 ⚠ `idioma.GLOSSARIO` NÃO serve para isto e não deve ser reusado: ele é tabela de
 TRADUÇÃO e mantém o jargão de propósito (`"topping": "topping"`), porque o dono quer

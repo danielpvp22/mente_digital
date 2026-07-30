@@ -172,8 +172,9 @@ class Settings(BaseSettings):
     # "meristema"). O aterramento léxico casa TOKEN, então sem token em comum ele não
     # aterra — foi assim que "o que é topping" montou contexto com notas de YOLO (a
     # palavra inglesa só existe nos baldes auto-colhidos) e acabou respondendo sobre
-    # cobertura de pizza. Só o `termos` é ampliado (aterramento + query da web); o
-    # embedding segue com a pergunta crua. MENTE_VOCAB_PONTE=false desliga.
+    # cobertura de pizza. Os termos vão ao aterramento E ao embedding: medido, só no
+    # léxico a pergunta ia de 0 para 2 átomos e seguia escapando pra web (2 < o mínimo
+    # definicional); com o embedding são 11. MENTE_VOCAB_PONTE=false desliga.
     vocab_ponte: bool = True
     # BOOT — o que sai do caminho crítico. Fases medidas em 2026-07-29 (17,79 s totais):
     # LLM 3,19 (já em background) + Whisper 2,50 + embeddings 7,55 + Chroma 1,40 +
