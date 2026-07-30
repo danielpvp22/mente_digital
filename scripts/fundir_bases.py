@@ -173,6 +173,7 @@ async def main_async(args) -> int:
     await llama.load()
     feitos = 0
     recusas: Counter = Counter()
+    residuo: List[str] = []          # aceitos que ainda carregam inglês (ver abaixo)
     contradicoes: List[str] = []
     mostrados = 0
     t0 = time.perf_counter()
@@ -192,6 +193,10 @@ async def main_async(args) -> int:
                 prompts.prompt_fundir_enriquecendo(atomo.corpo, atomo.titulo, corpo),
                 system_prompt=prompts.SYS_SINTESE,
                 max_tokens=MAX_TOKENS_FUSAO,
+                # Passada OFFLINE em lote: decode determinístico. Sem isto, rodar a
+                # mesma amostra duas vezes dá saídas diferentes e nenhum A/B de prompt
+                # é legível — a variação medida seria a da amostragem, não a da regra.
+                temperature=0.0,
             )
             if fusao.nao_e_a_mesma_ideia(saida):
                 recusas["o par não é a mesma ideia"] += 1
@@ -209,6 +214,21 @@ async def main_async(args) -> int:
             if not fusao.preserva_o_novo(atomo.corpo, fundido):
                 recusas["a fusão apagaria dado do átomo novo"] += 1
                 continue
+            # RESÍDUO DE INGLÊS NO QUE FOI ACEITO. As guardas acima só barram o corpo
+            # MAJORITARIAMENTE inglês; o defeito que sobra é o FRAGMENTO dentro de uma
+            # frase portuguesa ("Watt for watt, a 600-watt HPS produz 7 percent mais
+            # luz"), que passa porque o português domina. Sem esta contagem o script era
+            # cego justamente para o inglês que ele mesmo estava escrevendo no vault.
+            # ⚠ NÃO usar `idioma.contar_funcionais(...)[0] > 0` aqui — eu tentei, e a
+            # medição saiu inválida: `a`, `as` e `no` são funcionais em inglês E em
+            # português, então "As formigas levam as folhas" contava como inglês e a
+            # régua marcou 12 de 20 aceitos que não tinham inglês nenhum. Aquela função
+            # só vale como RAZÃO (ing >= 2 E ing > port), que é o que `frases_em_ingles`
+            # faz por frase — a régua já calibrada neste corpus (14 de 15 acertos
+            # mantidos, 5 falsos positivos eliminados).
+            frases_ing = reparo.frases_em_ingles(fundido)
+            if frases_ing:
+                residuo.append(f"{atomo.titulo} :: {' | '.join(frases_ing)[:220]}")
             if mostrados < args.amostra:
                 mostrados += 1
                 print(f"\n  ## {atomo.titulo}")
@@ -232,6 +252,9 @@ async def main_async(args) -> int:
         print("\nnão fundidos:")
         for m, n in recusas.most_common():
             print(f"  {n:5d}  {m}")
+    print(f"\nFRASE EM INGLES nos aceitos: {len(residuo)}/{feitos}")
+    for r in residuo[:12]:
+        print(f"  - {r}")
     if contradicoes:
         destino = Path("dados/contradicoes_fusao.md")
         destino.write_text("# Contradições entre as duas edições\n\n"
