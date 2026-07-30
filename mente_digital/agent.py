@@ -270,10 +270,17 @@ class Agent(ComandosMestre, Respostas):
             # que mantém a fase (b) idêntica à busca serial. Pergunta sem jargão sai
             # inalterada.
             ponte = ""
+            nota_vocab = ""
             if settings.vocab_ponte:
                 ampliado = vocabulario.expandir(termos)
                 if ampliado != termos:
                     ponte = ampliado[len(termos):].strip()
+                    # A equivalência vai também ao GERADOR. Sem ela, a busca entrega o
+                    # material certo e o modelo o ignora: medido ao vivo, "controlar
+                    # oídio" trouxe controle_com_leite/serenade/bicarbonato nas
+                    # posições 3, 5 e 7 do contexto e a resposta usou só o átomo que
+                    # continha a palavra "oídio", dizendo que não havia mais nada.
+                    nota_vocab = vocabulario.nota_de_equivalencia(termos)
                     telemetry.track("VOCAB", f"ponte: '{termos}' -> '{ampliado}'")
                     termos = ampliado
             tracker.extrator_ms = round((time.perf_counter() - _t_extrator) * 1000)
@@ -309,7 +316,9 @@ class Agent(ComandosMestre, Respostas):
                     system=prompts.SYS_FUSAO,
                     prefixo="\n\n" if paragrafos else "",
                     max_tokens=nivel.max_tokens,
-                    instrucao_extra=self._instrucao_com_perfil(nivel.instrucao),
+                    instrucao_extra=self._instrucao_com_perfil(
+                        f"{nivel.instrucao}\n{nota_vocab}".strip()
+                        if nota_vocab else nivel.instrucao),
                     tracker=tracker,
                     figuras=figuras,
                 )

@@ -1142,8 +1142,24 @@ class VectorStore:
         teto = settings.figuras_anexo_max
         if teto <= 0 or self._store is None or not settings.figuras_no_contexto:
             return []
+        # SÓ A PÁGINA DO(S) MELHOR(ES) ÁTOMO(S). A premissa acima — "ela ilustra o
+        # trecho que o usuário está lendo" — só vale para a página que de fato
+        # respondeu. `docs` traz o CONTEXTO INTEIRO (34 átomos de dezenas de páginas),
+        # e usar todas fazia a figura vir de qualquer capítulo que tenha contribuído
+        # com uma frase.
+        #
+        # MEDIDO ao vivo em 2026-07-30, 6 perguntas, 6 figuras erradas — é a "mesma
+        # sequência de imagens sem relação" que o dono relatava:
+        #   "como controlar o oídio?"  -> "Curing: Passo a passo", "Secagem rápida"
+        #   "e o fimming?"             -> "Transplante: Etapas"
+        #   "me fale sobre HPS"        -> "Salas de Cultivo com Tenda"
+        #   "o que é tripes?"          -> "Floração" (o mesmo rótulo de f1 a f13)
+        # No caso do oídio a culpada foi "Controle de Moldes Antes da Colheita", um
+        # átomo do capítulo de COLHEITA que entrou no contexto por vizinhança e
+        # arrastou as fotos da página dele. O átomo que realmente respondeu era
+        # `controle_da_mildew` — e as figuras DA PÁGINA DELE seriam pertinentes.
         origens = []
-        for d in docs:
+        for d in docs[: max(1, settings.figuras_anexo_paginas)]:
             o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
             if o and o not in origens:
                 origens.append(o)

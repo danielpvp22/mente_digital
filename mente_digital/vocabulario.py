@@ -116,6 +116,43 @@ def _sem_acento(texto: str) -> str:
     )
 
 
+def equivalencias(termos: str) -> list:
+    """[(jargao, sinonimos)] das entradas que casam em `termos`. Puro."""
+    if not termos:
+        return []
+    baixo = _sem_acento(termos)
+    return [(j, s) for j, s in PONTE.items() if _RE[j].search(baixo)]
+
+
+def nota_de_equivalencia(termos: str) -> str:
+    """A equivalência dita ao GERADOR — não só à busca. Puro.
+
+    MEDIDO ao vivo em 2026-07-30, e o mecanismo é o oposto do que eu supus. Em
+    "como controlar o oídio?" a recuperação foi ÓTIMA: `controle_com_leite` (0,129),
+    `controle_com_serenade` (0,133), `controle_com_bicarbonato` (0,136) entraram no
+    contexto, nas posições 3, 5 e 7 de 34. E a resposta usou APENAS o átomo da
+    posição 8 — o único cujo texto contém a palavra "oídio" — e declarou que "não há
+    outros métodos de controle nos átomos fornecidos".
+
+    O gerador ancora no termo LITERAL da pergunta e trata como fora de assunto o
+    átomo que não o contém. É o anti-alucinação funcionando bem demais: ele se recusa
+    a assumir por conta própria que "mildew" é "oídio". A mesma pergunta sobre
+    BOTRITE saiu completa porque ali o átomo se chama "mofo cinza (Botrytis
+    cinerea)" — a equivalência está DENTRO do texto, e ele não precisou supor nada.
+
+    Por isso a ponte tem três destinos, não dois: aterramento léxico, embedding e
+    agora o PROMPT. Sem este, a busca entrega o material certo e o gerador o ignora.
+    """
+    eqs = equivalencias(termos)
+    if not eqs:
+        return ""
+    partes = ["; ".join(
+        f"o que você chama de '{j}' aparece no material como {', '.join(s)}"
+        for j, s in eqs)]
+    return ("IMPORTANTE: " + partes[0] + " — são o MESMO assunto. Trate esses "
+            "trechos como respondendo à pergunta e use o que eles trazem.")
+
+
 def expandir(termos: str) -> str:
     """`termos` acrescido dos termos PT do vault quando há jargão inglês. Puro.
 

@@ -655,6 +655,14 @@ class Settings(BaseSettings):
     # várias fotos; anexar todas vira parede de imagem. 0 desliga o anexo por
     # co-locação (a figura attach-only some de vez).
     figuras_anexo_max: int = 2
+    # De QUANTAS páginas do contexto o anexo por co-locação pode puxar figura. O
+    # anexo se justifica por "esta figura ilustra o trecho que o usuário está lendo",
+    # e isso só vale para a página que RESPONDEU — não para as dezenas que entraram
+    # no contexto por vizinhança. Medido ao vivo em 2026-07-30: com todas as páginas
+    # elegíveis, 6 de 6 perguntas receberam figura de outro assunto ("oídio" trouxe
+    # "Curing: Passo a passo"; "HPS" trouxe "Salas de Cultivo com Tenda"). 1 = só a
+    # página do melhor átomo. MENTE_FIGURAS_ANEXO_PAGINAS sobe se quiser mais.
+    figuras_anexo_paginas: int = 1
     # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
     # Marcas (substring da proveniência), separadas por '|', em ordem de
     # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
