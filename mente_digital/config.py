@@ -167,6 +167,14 @@ class Settings(BaseSettings):
     # Nesses, "irmão de página" era só a ordem do Chroma: 12 átomos sem relação, os
     # MESMOS em perguntas diferentes. MENTE_RAG_IRMAOS_SO_PAGINA=false volta atrás.
     rag_irmaos_so_pagina: bool = True
+    # PONTE DE VOCABULÁRIO (ver vocabulario.py): o dono digita o jargão inglês do
+    # cultivo ("topping") e o átomo está em português ("Dominância Apical", "poda",
+    # "meristema"). O aterramento léxico casa TOKEN, então sem token em comum ele não
+    # aterra — foi assim que "o que é topping" montou contexto com notas de YOLO (a
+    # palavra inglesa só existe nos baldes auto-colhidos) e acabou respondendo sobre
+    # cobertura de pizza. Só o `termos` é ampliado (aterramento + query da web); o
+    # embedding segue com a pergunta crua. MENTE_VOCAB_PONTE=false desliga.
+    vocab_ponte: bool = True
     # BOOT — o que sai do caminho crítico. Fases medidas em 2026-07-29 (17,79 s totais):
     # LLM 3,19 (já em background) + Whisper 2,50 + embeddings 7,55 + Chroma 1,40 +
     # MALHA 3,09. `boot_paralelo` pré-importa as duas árvores pesadas na MESMA thread e

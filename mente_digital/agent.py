@@ -30,6 +30,7 @@ from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import tools
 from mente_digital import verbosidade
+from mente_digital import vocabulario
 # A atomização (um .md por ideia — Zettelkasten puro) mora em atomos.py; os nomes
 # seguem re-exportados por aqui porque scripts/, eval/ e testes importam de `agent`.
 from mente_digital.atomos import (  # noqa: F401  (re-export histórico)
@@ -262,6 +263,17 @@ class Agent(ComandosMestre, Respostas):
             # Banco desaba, que é o overlap aparecendo no waterfall.
             _t_extrator = time.perf_counter()
             termos, recuperados = await self._otimizar_e_recuperar(texto_usuario, mem)
+            # PONTE DE VOCABULÁRIO: o jargão inglês do dono ganha os termos PT que o
+            # vault de fato usa ("topping" → poda/apical/meristema/auxinas). Aqui e não
+            # dentro do extrator porque o alvo é o ATERRAMENTO LÉXICO (que casa token) e
+            # a query da web — o embedding continua recebendo a pergunta crua, que é o
+            # que mantém a fase (b) idêntica à busca serial. Pergunta sem jargão sai
+            # inalterada.
+            if settings.vocab_ponte:
+                ampliado = vocabulario.expandir(termos)
+                if ampliado != termos:
+                    telemetry.track("VOCAB", f"ponte: '{termos}' -> '{ampliado}'")
+                    termos = ampliado
             tracker.extrator_ms = round((time.perf_counter() - _t_extrator) * 1000)
             # Pergunta enriquecida com o histórico p/ o GERADOR da resposta (não a
             # recuperação, que já resolve o pronome via QueryOptimizer). Sem isso, um

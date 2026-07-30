@@ -447,8 +447,18 @@ def prompt_fundir_enriquecendo(corpo_novo: str, titulo: str, corpo_antigo: str) 
         # está em inglês — e o modelo copiava a frase em vez de traduzi-la. Foram
         # 414 fusões perdidas por isso (a guarda de idioma as recusou, mantendo o
         # átomo novo). Traduzir o FATO preserva a informação; strip-á-la, não.
-        "4b. Se a versão antiga estiver em inglês, TRADUZA os fatos dela para o "
-        "português — nunca devolva frase em inglês.\n"
+        # A 1ª versão desta regra ("nunca devolva frase em inglês") derrubou a recusa
+        # por corpo inglês INTEIRO, mas deixou passar o que a guarda não vê: o
+        # FRAGMENTO dentro de uma frase portuguesa. Medido no dry-run de 2026-07-30 —
+        # "Watt for watt, a 600-watt HPS produz 7 percent mais luz" foi ACEITO, porque
+        # `em_pt_dominante` só reprova quando o inglês domina. Daí a regra nomear o
+        # fragmento e trazer os exemplos reais: o modelo traduzia a frase e conservava
+        # a expressão de abertura.
+        "4b. NENHUM pedaço de inglês pode sobrar — nem uma expressão solta dentro de "
+        "uma frase em português. Traduza também o fragmento: 'Watt for watt' vira "
+        "'Watt por watt', 'HPS lamps vêm' vira 'As lâmpadas HPS vêm', '7 percent' "
+        "vira '7 por cento'. Siglas, unidades e nomes próprios (HPS, IAA, pH, NPK, "
+        "CO2) FICAM como estão — traduzir sigla é estragar o dado.\n"
         "5. Não acrescente nada que não esteja numa das duas versões.\n"
     )
 
