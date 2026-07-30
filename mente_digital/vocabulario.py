@@ -1,4 +1,14 @@
-"""Ponte de vocabulário: o jargão INGLÊS do dono → os termos PT que o vault usa.
+"""Ponte de vocabulário: a palavra do DONO → a palavra que está no VAULT.
+
+Duas direções, e a segunda só apareceu no teste real:
+
+1. **EN → PT** — ele digita o jargão inglês do cultivo ("topping") e o átomo está
+   em português ("Dominância Apical", "poda", "meristema").
+2. **PT → PT** — ele digita o português CORRETO ("oídio") e o vault escreve ERRADO
+   ("mildio", que não é palavra) ou nem traduziu ("mildew", "botrytis", "aphid",
+   "thrips", "pythium"). Eu supus que só a direção 1 existia; era suposição, não
+   medição, e quebrou na primeira pergunta que não era sobre poda.
+
 
 O defeito que este módulo existe para corrigir (teste real de 2026-07-29): o dono
 perguntou *"o que é topping"* e recebeu resposta sobre **cobertura de pizza**. A
@@ -61,6 +71,34 @@ PONTE: Dict[str, Tuple[str, ...]] = {
     # "Super-Cropping Technique" está no vault com o título em inglês E hifenizado —
     # quem digita "supercropping" (uma palavra) não casa "Super-Cropping" (duas).
     "supercropping": ("super", "cropping", "poda"),
+
+    # --- PT → PT: o dono escreve CERTO e o vault escreve ERRADO -----------------
+    # Descoberto no teste real de 2026-07-30: "como controlar o oídio?" foi para a
+    # web e voltou com agricultura genérica, enquanto o vault tinha "Controle com
+    # Leite", "Controle com Serenade", "AQ10 como Biofungicida". A atomização
+    # traduziu *powdery mildew* como "mildio" (que não é palavra) e muitas vezes
+    # nem traduziu. `melhor_dist` deu 0,16137 contra o limiar 0,16 — perdeu por um fio.
+    #
+    # Eu supus que a ponte fosse só EN→PT. Foi suposição, não medição, e quebrou no
+    # primeiro contato. Medindo 26 termos que um cultivador digita, OITO têm lacuna:
+    # o termo correto é raro no vault e o assunto está lá com outro nome — quase
+    # sempre o inglês cru que a atomização deixou passar.
+    "oidio": ("mildio", "mildew"),                      # 4 chunks x 14 + 22
+    "botrite": ("botrytis", "mofo cinza"),              # 0 x 32 + 16
+    "mofo cinzento": ("botrytis", "mofo cinza"),        # 2 x 32 + 16
+    "pulgao": ("aphid",),                               # 3 x 21
+    "tripes": ("thrips",),                              # 9 x 27
+    "podridao radicular": ("pythium", "podridao de raizes"),   # 2 x 23 + 4
+    "mosca branca": ("whitefly",),                      # 4 x 6
+    "pistilos": ("estigma", "estigmas"),                # 6 x 75 + 68
+    "pistilo": ("estigma", "estigmas"),
+    # "estiolamento" tem 0 chunks e 30 páginas inglesas falam de `stretch`; o único
+    # alvo que a medição sustentou foi "alongamento" (8). Fraco, mas 8 > 0.
+    "estiolamento": ("alongamento",),
+    # NÃO entraram, e por medição: "hermafrodita" (o vault já tem 6 e nenhum
+    # sinônimo mediu melhor — "hermafroditismo" deu 1), "ácaros" (113, já alcança),
+    # "lagarta" (29), "muda" (250), "transplante" (152), "estaca" (78). Ponte onde
+    # não há lacuna só suja o aterramento.
 }
 
 # Palavra inteira, sem acento, minúsculo — o mesmo casamento da medição que montou
