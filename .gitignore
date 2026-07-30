@@ -111,3 +111,6 @@ eval/relatorios/
 eval/auditoria/
 eval/emulacao_figuras.json
 eval/spike/
+
+# backups do .env (config local, nunca versionar)
+.env.bak-*
