@@ -7,7 +7,7 @@ for >= malha_sim_min. Sem embeddings, o filtro é pulado (fail-open).
 from mente_digital.config import settings
 from mente_digital.rag import VectorStore
 
-from conftest import FakeDoc, FakeStore
+from conftest import FakeDoc, FakeStore, dist_confiante
 
 
 class _EmbInstance:
@@ -46,7 +46,8 @@ _VETORES = {"vizinho perto": [1.0, 0.0], "vizinho longe": [0.0, 1.0]}
 
 def _vs_com_semente(emb):
     vs = VectorStore(embeddings=emb)
-    vs._store = FakeStore([(FakeDoc("semente", {"source": "s.md", "confidence": 1.0}), 0.4)])
+    vs._store = FakeStore([(FakeDoc("semente", {"source": "s.md", "confidence": 1.0}),
+                            dist_confiante())])
     docs = [txt for _, _, txt in _CORPUS]
     metas = [{"source": s, "conceitos": c} for s, c, _ in _CORPUS]
     vs.malha.construir(docs, metas)
