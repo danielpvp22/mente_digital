@@ -172,8 +172,9 @@ class Settings(BaseSettings):
     # "meristema"). O aterramento léxico casa TOKEN, então sem token em comum ele não
     # aterra — foi assim que "o que é topping" montou contexto com notas de YOLO (a
     # palavra inglesa só existe nos baldes auto-colhidos) e acabou respondendo sobre
-    # cobertura de pizza. Só o `termos` é ampliado (aterramento + query da web); o
-    # embedding segue com a pergunta crua. MENTE_VOCAB_PONTE=false desliga.
+    # cobertura de pizza. Os termos vão ao aterramento E ao embedding: medido, só no
+    # léxico a pergunta ia de 0 para 2 átomos e seguia escapando pra web (2 < o mínimo
+    # definicional); com o embedding são 11. MENTE_VOCAB_PONTE=false desliga.
     vocab_ponte: bool = True
     # BOOT — o que sai do caminho crítico. Fases medidas em 2026-07-29 (17,79 s totais):
     # LLM 3,19 (já em background) + Whisper 2,50 + embeddings 7,55 + Chroma 1,40 +
@@ -331,6 +332,20 @@ class Settings(BaseSettings):
     optimizer_overlap: bool = True
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
+    # ORÇAMENTO DE ENTRADA das tarefas de fundo (idle). Existe por um estouro REAL:
+    # em 2026-07-31 o `summarize_dump` mandou o dump inteiro (118 turnos acumulados
+    # em 2 dias, ~57k chars) e a chamada morreu com "Requested tokens (21277) exceed
+    # context window of 8192" — n_ctx é 8192 e o prompt sozinho pedia ~19,4k tokens.
+    # 6000 chars é a mesma escala já calibrada do `ingestao_lote_chars`/`sintese_lote_chars`:
+    # a ~3,2 chars/token (medido no dump real) dá ~1,9k tokens de entrada, deixando
+    # folga larga para o system prompt e para os 1600-1800 tokens de saída. O texto
+    # que passa disso é FATIADO (textutils.lotes_de_texto), nunca truncado — cada
+    # lote vira sua própria chamada e os átomos se somam.
+    etl_lote_chars: int = 6000
+    # Teto do prompt do Diapasão (#36). Aqui truncar é CERTO, não preguiça: o perfil
+    # descreve COMO falar com o usuário agora, então o fim da conversa é o que importa
+    # — o corte pega a CAUDA. Fatiar em lotes daria N perfis para reconciliar sem ganho.
+    etl_perfil_max_chars: int = 6000
     # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
     # "explica") ganha uma resposta de UMA frase, com teto de tokens menor — menos GPU,
     # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.
@@ -589,9 +604,44 @@ class Settings(BaseSettings):
     # na inspeção, os vizinhos vêm do assunto certo e da pergunta errada (fine-tuning
     # de YOLO numa pergunta sobre TensorRT). A ablação de formato explica o porquê: a
     # linha da Malha vale 0.010 de distância (vs 0.029 do assunto no título) — ela quase
-    # não carrega sinal. Ligue com MENTE_MALHA_EXPANDIR=true para experimentar; o
-    # candidato a consertá-la é filtrar o vizinho por similaridade com a PERGUNTA
-    # (rag.rankear_por_similaridade, já existe), exigindo conceito raro E proximidade.
+    # não carrega sinal.
+    #
+    # 2026-07-31 — RE-MEDIDA a pedido ("afina a seleção de vizinhos, 93 pra 8"), em
+    # 196 perguntas REAIS do chat_history, sobre a base atual (24.495 átomos). O
+    # candidato a conserto (rankear o vizinho pela PERGUNTA) FOI testado e não paga:
+    #
+    #   Régua: o vizinho não entra num vácuo — ele disputa o rag_context_char_budget
+    #   com o PRÓXIMO match vetorial que o top-k não pegou. Juiz = a distância de
+    #   cosseno do próprio gate (validada: erro 0.00000 contra o score do Chroma).
+    #   "VENCE" = % das vagas em que o vizinho está mais perto da pergunta que o
+    #   match que ele desloca. 50% = empate; abaixo disso a vaga estaria melhor
+    #   com o match, que sai de graça só subindo o top_k.
+    #
+    #   seleção do vizinho (só TEXTO; ver a nota de figura abaixo)      VENCE
+    #   ---------------------------------------------------------------------
+    #   top-8 por soma de IDF (é o que `MalhaIndex.vizinhos` faz hoje)    2,3%
+    #   top-8 por distância à PERGUNTA                                   16,8%
+    #   idem + gate absoluto do sistema (dq < rag_score_confident)       25,0%
+    #   idem + corte relativo 1,10x do melhor match                      21,4%
+    #   idem + exigir >=2 conceitos raros compartilhados                  9,3%
+    #   idem + restringir ao mesmo domínio (obra/balde)                  13,8%
+    #
+    #   Nenhuma cruza 50%. Ranquear pela pergunta ajuda muito (2,3% -> 25%) e ainda
+    #   assim perde: o vizinho de TEXTO simplesmente não é melhor que o átomo que
+    #   ele desloca. Somar critério (>=2 conceitos, mesmo domínio) PIORA — corta
+    #   junto os poucos vizinhos bons. Custo do lado de lá: +928 chars de contexto
+    #   na média (+2.592 no p90) = ~+63 ms de prefill no p50, ~+176 ms no p90.
+    #
+    #   E o teto de 8 não é o gargalo: sob a semeadura REAL (o contexto inteiro, ~29
+    #   átomos, não uma nota só) o pool de vizinhos a 1 salto tem mediana de 1.639,
+    #   p95 2.492, máx 4.109 — não 93. Afinar 8 dentro de 1.639 é o problema, e o
+    #   ranking que se tentou afinar já é o que menos separa.
+    #
+    #   Cuidado ao re-medir: com `rag_expandir_pagina` no ar o orçamento JÁ enche
+    #   sozinho. Ligando o botão, dos 7,59 vizinhos propostos por pergunta só 2,67
+    #   entram, e em 105 das 205 perguntas o contexto não muda UM caractere.
+    #
+    # Ligue com MENTE_MALHA_EXPANDIR=true para experimentar.
     malha_expandir: bool = False
     # Teto de vizinhos. Eles entram DEPOIS dos matches reais e disputam o que sobra do
     # rag_context_char_budget — na prática o orçamento corta antes deste número.
@@ -606,9 +656,18 @@ class Settings(BaseSettings):
     # (fine-tuning de YOLO numa pergunta sobre TensorRT). Agora, além do conceito raro
     # (malha_idf_min), o vizinho só entra se a similaridade de cosseno do seu texto com a
     # PERGUNTA for >= este mínimo (usa o embedding já carregado, rankear_por_similaridade).
-    # Assim a expansão exige conceito raro E proximidade — o conserto que torna
-    # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
-    # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
+    # 0 desliga o filtro (volta a aceitar todo vizinho). Sem embeddings (testes), pulado.
+    #
+    # ATENÇÃO — 0,5 NÃO FILTRA NADA. Medido em 2026-07-31 nas 196 perguntas reais: com
+    # e5 e os prefixos query:/passage:, o pool inteiro (299.309 pares pergunta-vizinho)
+    # tem similaridade MÍNIMA de 0,677 — nenhum vizinho, nem o pior, cai abaixo de 0,5.
+    # Ligar o botão com este valor dá resultado IDÊNTICO a não ter filtro (mesmas vagas,
+    # mesmos 3.086 chars). É o mesmo esquecimento do MENTE_DEDUP_DIST_MAX: limiar herdado
+    # de outra escala de embedding, que passa a marcar tudo (ou nada) e não avisa.
+    # A escala certa é a do gate: sim >= 1 - rag_score_confident (0,16 -> 0,84).
+    # E mesmo calibrado ele NÃO salva a expansão — é a linha "gate absoluto" da tabela
+    # do malha_expandir acima, que chega a 25% de vitória e continua perdendo do match
+    # que desloca. Este campo é um botão de experimento, não "o conserto".
     malha_sim_min: float = 0.5
     # --- FIGURAS EM ESPAÇO PRÓPRIO (2026-07-26) -------------------------------
     # Por que existe: no banco cheio (33k chunks) a nota de figura PERDIA a vaga no
@@ -622,6 +681,18 @@ class Settings(BaseSettings):
     # Quantas figuras CONSIDERAR (candidatas, antes do gate). Não é cota: é o tamanho
     # da busca. Quantas de fato entram depende do gate e do orçamento de chars.
     figuras_top_k: int = 12
+    # BUSCA EXATA DE FIGURA, em memória, no lugar do índice aproximado do Chroma.
+    # Medido em 2026-07-31 (1.861 figuras em 24.925 chunks): o ANN com
+    # `where={"tipo":"figura"}` erra o PRIMEIRO colocado em 30% das perguntas, porque o
+    # hnswlib usa `ef = max(ef_search, n_results)` e pedir 12 explora o grafo raso
+    # demais para alcançar um ponto isolado — "tem foto de uma capivara?" tinha a nota
+    # certa a 0,1319 e recebia 0,1673, com a capivara fora até do top-300.
+    #   n_results=12 (o que estava no ar) .. recall@10 90,5% · top-1 70% · 18,6 ms
+    #   n_results=2000 (exaustivo no ANN) .. recall@10 100%  · top-1 100% · 140,1 ms
+    #   busca exata em memória ............. recall@10 100%  · top-1 100% · **0,22 ms**
+    # Exata E 85x mais rápida, por 5,7 MB de RAM: 1.861 vetores cabem numa matriz, e o
+    # índice aproximado existe para milhões. Desligar volta ao ANN (o status quo).
+    figuras_busca_exata: bool = True
     # Limiar da figura. 0 = herda o rag_score_confident (mesma régua do texto). Existe
     # separado porque a nota de figura é curta e descritiva: a distância dela não é
     # comparável à de um átomo de prosa, então pode precisar de calibração própria.
@@ -654,6 +725,76 @@ class Settings(BaseSettings):
     # várias fotos; anexar todas vira parede de imagem. 0 desliga o anexo por
     # co-locação (a figura attach-only some de vez).
     figuras_anexo_max: int = 2
+    # A co-locação aceita a figura COM legenda, não só a attach-only (2026-07-31).
+    # Motivo medido: das 41 figuras de tricoma do acervo, UMA diz "tricoma" em
+    # português; as outras 40 dizem "glândulas resiníferas", o nome que o autor usa.
+    # Nenhum embedding parte de "tricoma" e chega nelas, e tabela de sinônimo não
+    # escala para todo assunto de um livro de 350 páginas. A página que respondeu já
+    # é a garantia de assunto — por isso a figura dela entra sem precisar repetir a
+    # palavra da pergunta. True volta ao comportamento anterior (só attach-only).
+    figuras_anexo_so_attach_only: bool = False
+    # --- IMAGEM DA WEB (2026-07-31) -------------------------------------------
+    # Quando o dono PEDE para ver algo e o acervo do vault não tem, procurar na
+    # internet em vez de só dizer que não tem. O acervo vem SEMPRE primeiro: a foto
+    # do livro dele é melhor resposta que a foto de um site qualquer, e não custa
+    # rede. A web só entra no vazio.
+    imagem_web_enabled: bool = True
+    # Quantos candidatos pedir ao buscador. Baixa-se do primeiro que sobreviver às
+    # defesas (host público, tamanho, reencode), então este número é a margem para
+    # link morto/hotlink barrado — não é quantas imagens aparecem.
+    imagem_web_candidatos: int = 5
+    # UMA imagem por resposta, e isso não é configurável de propósito: o pedido é
+    # "tem imagem disso?", não "faça uma galeria". Um campo `imagem_web_max` chegou
+    # a existir aqui e foi removido no mesmo dia — ninguém o lia, e config que não
+    # tem consumidor é promessa falsa para quem for calibrar o sistema depois.
+    imagem_web_max_mb: int = 5
+    imagem_web_timeout_segundos: float = 12.0
+    # Onde o arquivo baixado é guardado, RELATIVO ao vault — precisa ficar dentro
+    # dele porque é o `/api/imagem/` que serve, e essa rota tranca tudo fora da
+    # raiz do vault. Subpasta própria para nunca se misturar com as figuras dos
+    # livros: o que veio da internet fica identificável e apagável de uma vez.
+    imagem_web_subpasta: str = "Figuras/_web"
+    # ACERVO (ordem do dono, 2026-07-31: "não ficar dependente da web"): a imagem
+    # baixada ganha uma nota .md irmã e passa a fazer parte do vault. Sem a nota, o
+    # .webp é invisível — no vault quem é indexado é o markdown. Com ela, a foto
+    # buscada hoje é encontrada amanhã pela busca LOCAL, sem rede.
+    imagem_web_acervo: bool = True
+    # Teto de imagens guardadas (as mais recentes ficam); a nota some junto com a
+    # imagem. 0 = não limpa, que é o default JUSTAMENTE porque isto virou acervo:
+    # apagar por idade seria voltar a depender da web.
+    imagem_web_cache_max: int = 0
+    # De QUANTAS páginas do contexto o anexo por co-locação pode puxar figura. O
+    # anexo se justifica por "esta figura ilustra o trecho que o usuário está lendo",
+    # e isso só vale para a página que RESPONDEU — não para as dezenas que entraram
+    # no contexto por vizinhança. Medido ao vivo em 2026-07-30: com todas as páginas
+    # elegíveis, 6 de 6 perguntas receberam figura de outro assunto ("oídio" trouxe
+    # "Curing: Passo a passo"; "HPS" trouxe "Salas de Cultivo com Tenda"). 1 = só a
+    # página do melhor átomo. MENTE_FIGURAS_ANEXO_PAGINAS sobe se quiser mais.
+    #
+    # 1 → 6 em 2026-07-31, e o que mudou foi o CRITÉRIO, não a coragem: em julho as
+    # figuras de uma página entravam por ordem de NOME (sempre a f1), então abrir o
+    # espaço só espalhava o erro. Agora elas são rankeadas contra a pergunta, e o
+    # espaço maior é o que deixa a certa aparecer. Medido em lote de 8 perguntas,
+    # 1 contra 3 contra 6 páginas:
+    #   tricomas  1 -> "insetos e ácaros" (errada) | 3 e 6 -> a foto dos tricomas
+    #   tripes    1 -> "moscas brancas" (errada)   | 3 e 6 -> "as tripas raspam a folha"
+    #   podar     1 -> ramificações (ok)           | 6 -> "podada ao remover o meristema"
+    #   HPS e deficiência de nitrogênio: certas nas três (a 1ª página já era boa)
+    # 6 nunca ficou pior que 1 no lote. Também conserta um efeito colateral do teto
+    # baixo: se as primeiras páginas não tiverem figura nenhuma, o anexo saía VAZIO
+    # mesmo havendo foto certa na página seguinte.
+    figuras_anexo_paginas: int = 6
+    # GATE DE PÁGINA da co-locação: pula o anexo quando o melhor átomo de TEXTO é mais
+    # de N× pior que a melhor FIGURA da busca. Nesse regime a pergunta é sobre uma
+    # imagem e o texto foi recuperado por acidente léxico — "tartaruga MARINHA" casou
+    # "algas MARINHAS" (adubo) e o fertilizante veio junto com a tartaruga (2026-07-31).
+    # O gate é de PÁGINA, não de figura: a figura co-locada pode estar legitimamente
+    # longe da pergunta, que é o defeito que aquele caminho existe para contornar —
+    # cortar por distância de figura removeu os tricomas glandulares certos e as fotos
+    # de poda corretas (medido: consertava 1 caso e quebrava 2).
+    # Medido em 9 sondas, sem sobreposição: co-locação boa 0,76–1,01; ruim 1,16–1,37.
+    # n=9 é pequeno; 0 desliga o gate e volta ao comportamento anterior.
+    figuras_anexo_texto_ratio: float = 1.08
     # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
     # Marcas (substring da proveniência), separadas por '|', em ordem de
     # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
@@ -992,6 +1133,16 @@ class Settings(BaseSettings):
     # o tema; o valor é a NOVIDADE que a web traz (o dedup por átomo descarta o já-sabido),
     # então a base "amadurece" nos temas favoritos, não só nos buracos. Desligue p/ pausar.
     idle_pesquisa_temas: bool = True
+    # REVALIDAÇÃO DO ACERVO WEB no idle: reconfere se a imagem colhida da web é o que a
+    # nota AFIRMA ser, comparando o termo buscado com o título da página que a nota já
+    # guarda. Existe porque o gate de busca (`imagem_web.casa_com_o_pedido`) só passou a
+    # rodar em 2026-07-31 e o que entrou antes nunca foi julgado: das 40 notas de
+    # `Figuras/_web/`, 4 (10%) mostram outra coisa — 'polvo' é um calendário do EBT da
+    # Flórida, 'solo argiloso' é uma miniatura do Rainbow Six Siege. Elas estão indexadas
+    # e podem ser anexadas como figura. É a única rotina do idle que NÃO usa GPU nem rede
+    # (léxico puro, microssegundos); o Qwen2.5-VL-7B pega as mesmas 4 por 7,9 GB de VRAM.
+    # Só MARCA (`acervo_confere: NAO` no frontmatter) — nunca apaga: marcar é reversível.
+    idle_revalidar_acervo: bool = True
     # Quantos temas quentes re-pesquisar por ciclo (extra, DEPOIS das lacunas). Baixo de
     # propósito: buraco genuíno (lacuna) tem prioridade sobre refrescar o que já se sabe.
     idle_temas_max: int = 2

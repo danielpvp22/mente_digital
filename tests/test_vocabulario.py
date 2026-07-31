@@ -41,6 +41,32 @@ def test_query_vazia_nao_quebra():
     assert vocabulario.expandir("") == ""
 
 
+def test_pt_correto_alcanca_o_pt_errado_do_vault():
+    """O turno que falhou no teste real: ele digita "oídio", o vault diz "mildio".
+
+    `melhor_dist` deu 0,16137 contra o limiar 0,16 — a pergunta perdeu por um fio e
+    foi para a web, enquanto o vault tinha "Controle com Serenade" e "AQ10 como
+    Biofungicida".
+    """
+    fora = vocabulario.expandir("controlar oidio?")
+    assert "mildio" in fora and "mildew" in fora
+
+
+def test_ponte_pt_casa_com_acento_como_o_dono_digita():
+    """As chaves são guardadas sem acento; quem digita "oídio" tem de casar."""
+    assert "mildio" in vocabulario.expandir("como controlar o oídio")
+
+
+def test_termo_sem_lacuna_NAO_entra_na_tabela():
+    """Ponte onde não há lacuna só suja o aterramento.
+
+    Medido em 2026-07-30: estes já têm cobertura de sobra no vault com o nome que o
+    dono usaria (ácaros 113 chunks, muda 250, transplante 152, estaca 78).
+    """
+    for termo in ("acaros", "muda", "transplante", "estaca", "lagarta"):
+        assert termo not in vocabulario.PONTE
+
+
 def test_tabela_so_tem_sinonimo_medido_no_vault():
     """Guarda da REGRA do módulo: sinônimo plausível que o vault não usa é peso morto.
 

@@ -111,3 +111,9 @@ eval/relatorios/
 eval/auditoria/
 eval/emulacao_figuras.json
 eval/spike/
+
+# backups do .env (config local, nunca versionar)
+.env.bak-*
+
+# estado retomável da passada de links (gerado)
+scripts/melhorar_links.estado.json

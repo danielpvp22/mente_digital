@@ -33,6 +33,14 @@ atexit.register(shutil.rmtree, _TMP_DB_DIR, ignore_errors=True)  # não vazar tm
 # `settings` no primeiro track() e a suíte inteira despejaria em dados/logs/mente.log.
 os.environ["MENTE_LOG_ARQUIVO_HABILITADO"] = "false"
 os.environ["MENTE_TRANSCRICAO_TURNOS"] = os.path.join(_TMP_DB_DIR, "turnos_teste.jsonl")
+# CHAT DUMP (2026-07-31): mesmo motivo, e o vazamento era o mais caro dos três. O dump
+# não é log — é a FILA que o `EtlProcessor.summarize_dump` consome no idle e atomiza
+# como nota PERMANENTE no vault do dono. Dois testes do caminho declarativo gravavam
+# "**Mente Digital:** Entendido, registrei." no dados/chat_dump_bruto.md REAL a cada
+# rodada da suíte; na próxima passada de idle aquilo viraria átomo Zettelkasten.
+# Cinto (aqui) E suspensório (o `_isola_do_env` aponta para tmp_path por teste): este
+# redirect cobre quem lê o caminho no IMPORT, a fixture cobre quem lê por chamada.
+os.environ["MENTE_ARQUIVO_CHAT_DUMP"] = os.path.join(_TMP_DB_DIR, "chat_dump_teste.md")
 
 from typing import List, Optional, Tuple
 
@@ -81,6 +89,11 @@ def _isola_do_env(monkeypatch, tmp_path):
                        ("dir_arquivo_consolidacao", "_arq_cons"), ("backup_dir", "backups"),
                        ("trace_dir", "traces")):
         monkeypatch.setattr(_settings, campo, str(tmp_path / sub), raising=False)
+    # ...e o mesmo para o ARQUIVO de dump: o laço acima cobria só DIRETÓRIOS, e era por
+    # essa fresta que o caminho declarativo ("registrei") escrevia no dump de produção.
+    # Aqui é por TESTE (tmp_path), então um teste nem enxerga o que o outro gravou.
+    monkeypatch.setattr(_settings, "arquivo_chat_dump",
+                        str(tmp_path / "chat_dump.md"), raising=False)
     yield
 
 
@@ -99,6 +112,7 @@ class FakeLlama:
         self.tokens = tokens
         self.preempcoes = 0
         self._preemptar_proximo = False
+        self._falhar_proximo = False
 
     def preempt(self) -> int:
         self.preempcoes += 1
@@ -109,8 +123,20 @@ class FakeLlama:
         no meio de uma síntese de ETL)."""
         self._preemptar_proximo = True
 
+    def armar_falha(self) -> None:
+        """A PRÓXIMA stream MORRE no meio (simula o worker de inferência caindo —
+        estouro de n_ctx, OOM de VRAM). Diferente da preempção: ali o trabalho é
+        reagendado, aqui houve ERRO e o texto parcial é lixo."""
+        self._falhar_proximo = True
+
     async def stream(self, prompt: str, **kwargs):
-        from mente_digital.llm import InferenciaPreemptada
+        from mente_digital.llm import InferenciaFalhou, InferenciaPreemptada
+
+        if self._falhar_proximo:
+            self._falhar_proximo = False
+            if self.tokens:
+                yield self.tokens[0]          # chegou a emitir um pedaço...
+            raise InferenciaFalhou("falha simulada no worker")   # ...e morreu
 
         if kwargs.get("preemptible") and self._preemptar_proximo:
             self._preemptar_proximo = False

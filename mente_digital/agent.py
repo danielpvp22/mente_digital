@@ -30,6 +30,7 @@ from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import tools
 from mente_digital import verbosidade
+from mente_digital import otimizador
 from mente_digital import vocabulario
 # A atomização (um .md por ideia — Zettelkasten puro) mora em atomos.py; os nomes
 # seguem re-exportados por aqui porque scripts/, eval/ e testes importam de `agent`.
@@ -236,7 +237,18 @@ class Agent(ComandosMestre, Respostas):
             # tentava criar_lembrete — a frase não virava memória. Comando explícito ('me
             # lembra', 'adiciona', 'salva nota') começa por imperativo → e_declarativa=False
             # → segue roteando; só a afirmação é poupada e cai no pipeline como memória.
-            if tools.talvez_acao(texto_usuario) and not e_declarativa(texto_usuario):
+            # VETO DO PEDIDO DE IMAGEM (2026-07-31): "pesquisa na web uma foto de folha
+            # de cannabis" casa `talvez_acao` pelo verbo e o roteador escolhe a
+            # ferramenta `buscar_web` — que responde TEXTO e encerra o turno. Medido no
+            # teste de 50 casos: os DOIS únicos casos sem imagem nenhuma foram
+            # exatamente estes dois sequestros (`rota=tool:buscar_web`, sem uma linha
+            # de FIGURAS no log), e num deles o sentinela anti-alucinação ainda vazou
+            # falado para o usuário. Pedido de imagem tem caminho próprio e é ele que
+            # sabe entregar pixel; ferramenta de texto não.
+            if otimizador.pedido_de_imagem(texto_usuario):
+                telemetry.track(
+                    "AGENT", "Pedido de imagem: roteador de ferramentas vetado.")
+            elif tools.talvez_acao(texto_usuario) and not e_declarativa(texto_usuario):
                 decisao = await self._rotear(texto_usuario, mem=mem, origem="pipeline")
                 if decisao and decisao.tool != "responder" and self.tools.get(decisao.tool):
                     telemetry.track("AGENT", f"Ação -> ferramenta '{decisao.tool}'.")
@@ -269,9 +281,35 @@ class Agent(ComandosMestre, Respostas):
             # a query da web — o embedding continua recebendo a pergunta crua, que é o
             # que mantém a fase (b) idêntica à busca serial. Pergunta sem jargão sai
             # inalterada.
+            # PEDIDO DE IMAGEM: "imagem/foto/figura" diz o FORMATO, não o assunto —
+            # como termo de busca ela puxa o balaio errado. Medido em 2026-07-31 com o
+            # índice de produção: "tem imagem de um tricoma?" trouxe átomos de oito
+            # baldes de conversa sobre YOLO/Ollama/detecção de objetos (é lá que a
+            # palavra "imagem" vive no vault) e a resposta saiu falando de "PMC com
+            # fita vermelha ou azul". Tirada a palavra, sobra o assunto de verdade.
+            quer_imagem = otimizador.pedido_de_imagem(texto_usuario)
+            # "procura na internet uma foto de X" — pedido ESCRITO de web pula o
+            # acervo. No caso automático o vault vence sempre (foto do livro dele,
+            # sem rede); quando ele MANDA buscar fora, vencer seria desobedecer.
+            quer_web = otimizador.pedido_de_imagem_web(texto_usuario)
+            imagem_entregue = False
+            if quer_imagem:
+                enxuto = otimizador.sem_formato(termos)
+                if enxuto != termos:
+                    telemetry.track("FIGURAS", f"pedido de imagem: '{termos}' -> '{enxuto}'")
+                    termos = enxuto
+            ponte = ""
+            nota_vocab = ""
             if settings.vocab_ponte:
                 ampliado = vocabulario.expandir(termos)
                 if ampliado != termos:
+                    ponte = ampliado[len(termos):].strip()
+                    # A equivalência vai também ao GERADOR. Sem ela, a busca entrega o
+                    # material certo e o modelo o ignora: medido ao vivo, "controlar
+                    # oídio" trouxe controle_com_leite/serenade/bicarbonato nas
+                    # posições 3, 5 e 7 do contexto e a resposta usou só o átomo que
+                    # continha a palavra "oídio", dizendo que não havia mais nada.
+                    nota_vocab = vocabulario.nota_de_equivalencia(termos)
                     telemetry.track("VOCAB", f"ponte: '{termos}' -> '{ampliado}'")
                     termos = ampliado
             tracker.extrator_ms = round((time.perf_counter() - _t_extrator) * 1000)
@@ -307,7 +345,9 @@ class Agent(ComandosMestre, Respostas):
                     system=prompts.SYS_FUSAO,
                     prefixo="\n\n" if paragrafos else "",
                     max_tokens=nivel.max_tokens,
-                    instrucao_extra=self._instrucao_com_perfil(nivel.instrucao),
+                    instrucao_extra=self._instrucao_com_perfil(
+                        f"{nivel.instrucao}\n{nota_vocab}".strip()
+                        if nota_vocab else nivel.instrucao),
                     tracker=tracker,
                     figuras=figuras,
                 )
@@ -355,16 +395,50 @@ class Agent(ComandosMestre, Respostas):
                 # não-sentinela), PARA a cascata — não roda o Banco (nem a busca vetorial,
                 # nem sua passada de inferência). Economiza um decode na GPU serializada.
                 # Botão MENTE_EARLY_STOP_CASCATA; desligado, volta à fusão RAM+Banco.
-                if settings.early_stop_cascata and paragrafos:
+                # PEDIDO DE IMAGEM SUSPENDE O EARLY-STOP. A figura mora no Banco (é a
+                # co-locação com o átomo que responde); parar na RAM entregaria o texto
+                # sem nunca olhar o acervo — e mandaria buscar na web uma foto que está
+                # no livro do dono. O caso não é hipotético: é exatamente a forma do
+                # print que originou tudo isto ("o que são tricomas?" e, no turno
+                # seguinte, "tem imagem de um?"), em que a RAM tem o assunto fresco e
+                # responderia sozinha. Custa um decode a mais só quando ele pede imagem.
+                if settings.early_stop_cascata and paragrafos and not quer_imagem:
                     telemetry.track("AGENT", "Early-stop: RAM respondeu — pula Banco/Web.")
                 else:
                     # ESTÁGIO 2 — Banco vetorial: query atomizada (mesmo formato da base)
                     # colhe dezenas de átomos Zettelkasten e os funde num parágrafo.
                     _t_busca = time.perf_counter()
-                    texto_busca = await self._texto_busca(texto_usuario, termos)
+                    # A palavra de FORMATO sai também do texto que vai ao EMBEDDING,
+                    # não só do aterramento: é o embedding que puxou os oito baldes de
+                    # YOLO/Ollama em "tem imagem de um tricoma?" (medido 2026-07-31).
+                    # O aterramento é filtro do que o embedding trouxe — limpar só ele
+                    # não alcança o átomo que a recuperação não recuperou.
+                    texto_busca = await self._texto_busca(
+                        otimizador.sem_formato(texto_usuario) if quer_imagem
+                        else texto_usuario, termos)
+                    # A PONTE TAMBÉM VAI AO EMBEDDING — e é aqui que ela funciona.
+                    # MEDIDO em "o que é topping" na base reindexada de 2026-07-30:
+                    # sem ponte 0 átomos (dist 0,182); só no aterramento léxico, 2 —
+                    # e 2 < `definicional_min_atomos`, então ainda escapava pra web;
+                    # com a ponte no embedding, 11 átomos e dist 0,146, ABAIXO do
+                    # `rag_score_confident`. A razão é estrutural: o aterramento é um
+                    # FILTRO sobre o que o embedding já recuperou, não um canal de
+                    # busca próprio — ampliar só as keywords não alcança átomo que a
+                    # recuperação vetorial nem trouxe.
+                    if ponte:
+                        texto_busca = f"{texto_busca} {ponte}"
                     # `recuperados` só entra quando a fase (b) especulou — assim os
                     # fakes/stores antigos (sem o kwarg) seguem funcionando intactos.
-                    _extra = {"recuperados": recuperados} if recuperados is not None else {}
+                    # Com a ponte ativa a especulação é DESCARTADA de propósito: ela
+                    # embeddou a pergunta CRUA, e reusá-la aqui devolveria justamente a
+                    # recuperação sem os termos PT que acabamos de acrescentar. Paga-se
+                    # a busca serial em troca da resposta certa, e só quando o jargão
+                    # aparece (pergunta em português segue com o overlap intacto).
+                    _extra = (
+                        {} if ponte
+                        else {"recuperados": recuperados} if recuperados is not None
+                        else {}
+                    )
                     local = await self.ctx.vectorstore.search(
                         termos, texto_busca=texto_busca, economico=mem.economico, **_extra
                     )
@@ -401,6 +475,12 @@ class Agent(ComandosMestre, Respostas):
                         # nenhuma frase casar sai no bloco do fim, logo abaixo — então
                         # o pior caso desta mudança é o comportamento antigo.
                         figs = await self._preparar_figuras(local.fontes + local.anexos)
+                        # PEDIU IMAGEM E NÃO HÁ NENHUMA: dizer isso é a resposta, não
+                        # um detalhe. Sem esta linha o turno responde texto e deixa a
+                        # pergunta feita ("tem imagem?") sem resposta — foi o que o
+                        # dono viu na tela. Uma frase só, e sem inventar: o que o
+                        # acervo não tem, não tem.
+                        figs_havia = bool(figs)
                         await passada(self._montar_contexto(local, []), "banco", figs)
                         if len(paragrafos) == antes:
                             # obs-01: Banco RELEVANTE que não contribuiu = o decode
@@ -417,6 +497,8 @@ class Agent(ComandosMestre, Respostas):
                             # passada que virou sentinela mostraria figura sem resposta.
                             await self._mostrar_figuras(
                                 send_medido, figs, "\n".join(paragrafos))
+                            if figs_havia and not quer_web:
+                                imagem_entregue = True
                             self.ctx.track_task(self._consolidar_fontes(local.fontes))
                             # #4 TEMA QUENTE: o Banco respondeu de fato -> o usuário REUSOU
                             # o vault neste tema (interesse recorrente). Registra p/ a
@@ -472,6 +554,19 @@ class Agent(ComandosMestre, Respostas):
                     if web:
                         paragrafos.append(web)
                         fontes.append("web")
+
+            # IMAGEM: no FIM do pipeline, e não dentro de um estágio, porque o pedido
+            # de imagem não sabe de que fonte a resposta vai sair. Medido ao montar o
+            # teste de 2026-07-31: "tem foto de uma capivara?" é assunto que o vault
+            # não tem, então o estágio Banco não responde, o turno escala para a web —
+            # e um gancho preso ao Banco nunca dispararia justamente no caso em que a
+            # web é a única saída. Aqui cobre RAM, Banco e Web de uma vez.
+            #
+            # Só entra se NENHUMA figura do acervo apareceu (`imagem_entregue`), ou se
+            # o dono mandou buscar fora explicitamente. A prioridade continua sendo o
+            # vault dele.
+            if quer_imagem and not imagem_entregue and paragrafos:
+                await self._imagem_da_web(send_medido, termos)
 
             texto_final = "\n\n".join(paragrafos) if paragrafos else None
             rota = "+".join(fontes) if fontes else "web"

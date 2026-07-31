@@ -106,6 +106,20 @@ _LARGA_PREFIXOS = (
     # a resposta saiu cortada, e o corte apagou tanto texto que o pipeline julgou o
     # banco insuficiente e escalou para a WEB, que respondeu PIOR do que o vault.
     "qual o melhor ", "qual a melhor ", "quais os melhores ", "quais as melhores ",
+    # PEDIDO ABERTO (teste real 2026-07-30): "me fale sobre lâmpadas HPS" tem 4
+    # palavras úteis, caiu em `curto` e saiu cortada em "...populares em potências
+    # de 1". Quem diz "me fale sobre X" está pedindo panorama, não fato único.
+    "me fale sobre ", "fale sobre ", "me fala sobre ", "fala sobre ",
+    "me conte sobre ", "conte sobre ", "me diga sobre ",
+)
+# COMPARATIVA em QUALQUER posição — diferente de `_LARGA_PREFIXOS`, que ancora no
+# começo. Medido no mesmo teste: "e o fimming, qual a diferença?" saiu cortada em
+# "...mas seu", e ali o "qual a diferença" vem DEPOIS do assunto, então nenhum
+# prefixo o alcança. Comparar exige apresentar os dois lados: nunca cabe em 1 frase.
+_LARGA_CONTIDAS = (
+    "qual a diferenca", "qual e a diferenca", "quais as diferencas",
+    "quais sao as diferencas", "diferenca entre", "diferencas entre",
+    "compare ", "comparado com", "em relacao a",
 )
 _QUANTO_SECO = (
     "quanto e ", "quanto eh ", "quanto custa", "quanto vale", "quanto fica",
@@ -122,6 +136,8 @@ _COMO_SECO = (
 def _resposta_larga(n: str) -> bool:
     """Pergunta curta cuja RESPOSTA não cabe em 1 frase (opera no texto normalizado)."""
     if any(n.startswith(p) for p in _LARGA_PREFIXOS):
+        return True
+    if any(p in n for p in _LARGA_CONTIDAS):
         return True
     # PROCEDIMENTO (teste real 2026-07-29): "como faço um teste de pH do solo?",
     # "como faço o transplante de uma muda?", "como identificar ácaro da teia?" e

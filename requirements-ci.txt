@@ -23,6 +23,13 @@ langchain-text-splitters>=0.2
 # escada de legenda e do attach-only. bs4 e pure-Python e leve (nao puxa o
 # trafilatura inteiro), o job segue em ~1 minuto.
 beautifulsoup4>=4.12
+# Pillow (2026-07-31): test_imagem_web.py importa PIL direto. Poderia ser um
+# importorskip, mas o teste que ele cobre e o REENCODE para WebP — a etapa que
+# sanitiza a imagem baixada da web (o arquivo e reaberto e re-salvo, entao payload
+# escondido em metadado/EOF nao sobrevive). Pular isso no CI seria deixar sem rede de
+# seguranca justamente a propriedade de seguranca. O wheel e pequeno e instala em
+# segundos; o job segue no orcamento de ~1 minuto.
+pillow>=10.0
 pytest>=8.0
 pytest-asyncio>=0.23
 hypothesis>=6.100

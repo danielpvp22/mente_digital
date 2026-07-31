@@ -46,6 +46,52 @@ def fracao_cjk(s: str) -> float:
     return sum(1 for c in sem_espaco if _CJK_RE.match(c)) / len(sem_espaco)
 
 
+def lotes_de_texto(texto: str, budget: int, sep: str = "\n\n") -> list[str]:
+    """Fatia um texto longo em LOTES que cabem em `budget` chars, cortando só nas
+    fronteiras de `sep` (no dump da conversa, `\\n\\n` é a fronteira de turno).
+
+    Por que existe (idle de 2026-07-31): o `summarize_dump` mandava o dump INTEIRO
+    ao LLM. Ele acumulara 2 dias sem ser limpo (118 turnos, ~57k chars) e a chamada
+    morreu com `Requested tokens (21277) exceed context window of 8192` — e o erro,
+    virando resposta vazia, fez o ETL concluir "nada a reter" e APAGAR o dump.
+
+    Truncar seria uma linha, mas jogaria conversa fora; a régua aqui é NADA SE PERDE:
+    todo char de entrada sai em exatamente um lote. Um bloco maior que o orçamento
+    (uma resposta gigante sem linha em branco) é partido no meio — feio, mas preferível
+    a descartá-lo ou a estourar o n_ctx de novo.
+
+    Puro/testável, como `verbalizar` e `agenda.parse_quando` — sem settings embutido,
+    o orçamento é INJETADO por quem chama.
+    """
+    if budget <= 0:
+        raise ValueError("budget de lote precisa ser positivo")
+    if not texto.strip():
+        return []
+    lotes: list[str] = []
+    atual: list[str] = []
+    tam = 0
+    for bloco in texto.split(sep):
+        # Bloco que sozinho não cabe: parte em pedaços do tamanho do orçamento. Fecha
+        # o lote em curso antes, para não intercalar pedaço com bloco inteiro.
+        if len(bloco) > budget:
+            if atual:
+                lotes.append(sep.join(atual))
+                atual, tam = [], 0
+            lotes.extend(bloco[i:i + budget] for i in range(0, len(bloco), budget))
+            continue
+        # +len(sep) porque o join vai recolocar o separador entre os blocos.
+        custo = len(bloco) + (len(sep) if atual else 0)
+        if atual and tam + custo > budget:
+            lotes.append(sep.join(atual))
+            atual, tam = [], 0
+            custo = len(bloco)
+        atual.append(bloco)
+        tam += custo
+    if atual:
+        lotes.append(sep.join(atual))
+    return [lote for lote in lotes if lote.strip()]
+
+
 def sem_acento(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
@@ -91,6 +137,46 @@ def contem_alguma(texto: str, chaves: set[str]) -> bool:
     if not chaves:
         return False
     return bool(set(tokens(texto)) & chaves)
+
+
+def radical(token: str) -> str:
+    """Tira o plural PT/ES do token. Puro. Aproximação deliberada, não um stemmer.
+
+    Existe porque `contem_alguma` casa TOKEN INTEIRO, e um "s" derruba o casamento:
+    medido em 2026-07-31 sobre as 40 notas de imagem da web, a régua marcou como
+    suspeitas `'tricoma'` contra o título "## tricomas" e `'bráctea'` contra
+    "## Brácteas, las hojas..." — 5 falsos positivos em 40, TODOS dessa família.
+
+    Não é um stemmer de verdade de propósito: sobra-radicalizar ("gás"→"ga") é
+    inofensivo aqui porque os DOIS lados passam pela mesma função, então o erro é
+    simétrico. O risco assimétrico seria o contrário — rejeitar nota boa —, que é
+    exatamente o defeito que isto corrige.
+    """
+    t = normaliza(token)
+    if len(t) <= 3:
+        return t
+    for fim, troca in (("oes", "ao"), ("aes", "ao"), ("aos", "ao"), ("ns", "m")):
+        if t.endswith(fim) and len(t) - len(fim) + len(troca) > 2:
+            return t[: -len(fim)] + troca
+    if t.endswith("is") and len(t) > 4:          # animais -> animal
+        return t[:-2] + "l"
+    if t.endswith("es") and len(t) > 4:          # flores -> flor
+        return t[:-2]
+    if t.endswith("s"):                          # tricomas -> tricoma
+        return t[:-1]
+    return t
+
+
+def contem_alguma_flex(texto: str, chaves: set[str]) -> bool:
+    """Como `contem_alguma`, mas comparando RADICAIS (tolera plural).
+
+    Separada de propósito, e não um parâmetro da outra: `contem_alguma` governa o
+    aterramento léxico do `VectorStore.search` sobre ~24 mil notas, e afrouxá-la
+    mudaria o gate inteiro sem medição. Quem quiser a tolerância, pede por ela.
+    """
+    if not chaves:
+        return False
+    return bool({radical(t) for t in tokens(texto)} & {radical(c) for c in chaves})
 
 
 def remover_tag(conteudo: str, tag: str) -> str:

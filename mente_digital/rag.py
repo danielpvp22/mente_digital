@@ -57,12 +57,29 @@ _META_VERSAO = 4
 # desprezível perto do de processar o dump. Ver `dump_paginado`.
 _DUMP_LOTE = 5000
 
+# Marca de PROVENIÊNCIA posta por `_irmaos_de_pagina`. Existe porque `score is None`
+# sozinho não distingue as duas coisas que entram sem distância — ver `rotular_contexto`.
+IRMAO_DE_PAGINA = "_irmao_de_pagina"
+
+
 def rotular_contexto(score: Optional[float], doc) -> str:
     """Prefixa o chunk com O QUE ELE É antes de mandar ao LLM. Puro/testável.
 
     Sem rótulo, um vizinho tangencial chega indistinguível de um átomo que responde
-    — exatamente a alucinação que o pipeline combate. `score is None` marca o vizinho
-    da malha (entrou por conceito, não por distância).
+    — exatamente a alucinação que o pipeline combate. `score is None` marca o que
+    entrou SEM distância, mas não diz por qual porta.
+
+    DUAS PORTAS ENTRAM SEM DISTÂNCIA, e elas não valem o mesmo. O vizinho da malha
+    entrou por conceito compartilhado (evidência fraca: medido em 2026-07-31, o
+    ranking por IDF ganha 2,3% das vagas contra o próximo match vetorial). O IRMÃO DE
+    PÁGINA entrou por co-locação POR CONSTRUÇÃO — é a mesma página do mesmo livro do
+    átomo que respondeu, a evidência mais forte do pipeline depois do match.
+
+    O bug que isto corrige (medido em 205 perguntas reais do `chat_history`, com
+    `malha_expandir=false`, ou seja, ZERO vizinhos de malha existindo): o contexto
+    ainda levava 3,96 blocos por pergunta rotulados "[Malha - relacionado]" — todos
+    irmãos de página. A evidência mais forte chegava ao modelo anunciada como a mais
+    fraca, e o rótulo existe exatamente para dizer qual é qual.
 
     A FIGURA avisa ao modelo que a imagem JÁ SERÁ MOSTRADA ao usuário (o servidor a
     anexa — ver `respostas._mostrar_figuras`). Antes este rótulo pedia que ele
@@ -72,6 +89,8 @@ def rotular_contexto(score: Optional[float], doc) -> str:
     link."""
     conteudo = doc.page_content
     if score is None:
+        if (getattr(doc, "metadata", None) or {}).get(IRMAO_DE_PAGINA):
+            return f"[Mesma página - completa o trecho que respondeu] {conteudo}"
         return f"[Malha - relacionado] {conteudo}"
     if str((doc.metadata or {}).get("tipo") or "") == "figura":
         return ("[Figura do acervo — a imagem já é mostrada ao usuário; descreva o que "
@@ -288,6 +307,18 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
     # significa "buscável", que é o comportamento delas hoje.
     if meta["tipo"] == "figura" and prompts.TAG_FIGURA_ANEXO in conteudo:
         meta["attach_only"] = True
+    # ACERVO SUSPEITO: figura colhida da web cuja IMAGEM não é o que a nota afirma ser.
+    # A revalidação do idle (`EtlProcessor.revalidar_acervo_web`) marca
+    # `acervo_confere: NAO` no frontmatter, mas até 2026-07-31 ninguém lia a marca —
+    # exatamente o estágio em que o `attach_only` já esteve ("declaração e não
+    # comportamento"). São 5 das 45 notas do acervo, e é o que faz uma pergunta sobre
+    # 'polvo' trazer um calendário do EBT da Flórida e 'solo argiloso' trazer uma
+    # miniatura de Rainbow Six Siege (o buscador casou o "solo" de *solo queue*).
+    # Gravado só quando VERDADEIRO, pelo mesmo motivo do attach_only: chave ausente
+    # não casa `where` no Chroma, e ausência aqui significa "confere ou nunca avaliada"
+    # — que é o comportamento buscável de toda nota de figura de livro.
+    if str(fm.get("acervo_confere", "")).strip().upper() == "NAO":
+        meta["acervo_suspeito"] = True
     return meta
 
 
@@ -595,10 +626,91 @@ class _FingerprintMudou(RuntimeError):
     erro nenhum no Chroma). Levantada no open() para reusar o caminho do #33."""
 
 
+class _IndiceFiguras:
+    """As figuras em RAM para busca EXATA — HNSW é maquinário errado para 1.861 itens.
+
+    O DEFEITO MEDIDO (2026-07-31, índice de produção com 24.925 chunks e 1.861 figuras):
+    a busca aproximada com `where={"tipo":"figura"}` erra o PRIMEIRO colocado em 30% das
+    perguntas. "tem foto de uma capivara?" tem a nota certa a 0,1319 e o Chroma devolvia
+    0,1673 — a capivara não aparecia nem no top-300. A causa é mecânica: o hnswlib usa
+    `ef = max(ef_search, n_results)`, e pedir 12 resultados explora o grafo raso demais
+    para alcançar um ponto ISOLADO (uma capivara num acervo de cannabis tem poucos
+    vizinhos no grafo). Com `n_results=1000` ela reaparece em 1º lugar.
+
+    ⚠ O docstring antigo de `_buscar_figuras` afirmava "recall exato dentro do
+    subconjunto (20/20 contra força bruta)". Isso valia para 1.735 figuras e deixou de
+    valer; medir de novo depois de crescer a base é o que pegou.
+
+    A curva medida (recall@10 / top-1 exato / ms por query):
+        n_results=12 (o que estava no ar) .... 90,5% / 70% / 18,6 ms
+        n_results=500 ....................... 98,0% / 90% / 50,4 ms
+        n_results=2000 (exaustivo) .......... 100%  / 100% / 140,1 ms
+        ESTA CLASSE ......................... 100%  / 100% / **0,22 ms**
+
+    Ou seja: exato E 85x mais rápido que o aproximado, por 5,7 MB de RAM. Faz sentido
+    porque 1.861 vetores cabem numa multiplicação de matriz; o índice aproximado existe
+    para milhões, e aqui só atrapalha.
+    """
+    __slots__ = ("_matriz", "_docs")
+
+    def __init__(self, matriz, docs) -> None:
+        self._matriz = matriz          # (n, dim), já normalizada por linha
+        self._docs = docs
+
+    def __len__(self) -> int:
+        return len(self._docs)
+
+    def buscar(self, vetor, k: int) -> List[Tuple[float, object]]:
+        """As `k` figuras mais próximas, por cosseno. Exato, sem aproximação."""
+        import numpy as np
+
+        v = np.asarray(vetor, dtype="float32")
+        norma = float(np.linalg.norm(v))
+        if norma == 0.0:
+            return []
+        distancias = 1.0 - (self._matriz @ (v / norma))
+        k = max(1, min(k, len(self._docs)))
+        # argpartition e não sort: só o topo importa, e ordenar 1.861 à toa é o
+        # tipo de desperdício que some no benchmark e aparece no TTFT.
+        topo = np.argpartition(distancias, k - 1)[:k]
+        return sorted(((float(distancias[i]), self._docs[i]) for i in topo),
+                      key=lambda par: par[0])
+
+
+def montar_indice_figuras(store) -> Optional[_IndiceFiguras]:
+    """Lê as figuras do Chroma e monta a matriz. Fail-soft: None mantém o caminho antigo.
+
+    Síncrona — o chamador já está em `asyncio.to_thread`. Custo medido: 76 ms para as
+    1.861, uma vez por `sync()`.
+    """
+    try:
+        import numpy as np
+
+        col = store._collection
+        got = col.get(where={"tipo": "figura"}, include=["embeddings", "metadatas", "documents"])
+        embs = got.get("embeddings")
+        if embs is None or len(embs) == 0:
+            return None
+        matriz = np.asarray(embs, dtype="float32")
+        matriz /= (np.linalg.norm(matriz, axis=1, keepdims=True) + 1e-12)
+        docs = [_DocSimples(t or "", m or {})
+                for t, m in zip(got.get("documents") or [], got.get("metadatas") or [])]
+        if len(docs) != matriz.shape[0]:
+            return None          # desalinhado: melhor o caminho antigo que a figura errada
+        return _IndiceFiguras(matriz, docs)
+    except Exception as exc:
+        telemetry.error("FIGURAS", "Índice exato de figuras indisponível (seguindo no ANN)", exc)
+        return None
+
+
 class VectorStore:
     def __init__(self, embeddings: EmbeddingProvider) -> None:
         self._embeddings = embeddings
         self._store = None
+        # Índice EXATO das figuras, montado sob demanda e zerado a cada `sync`. Lazy
+        # porque o custo (76 ms medidos) não deve entrar no boot de quem nunca pede
+        # imagem — e a primeira pergunta com figura já o paga uma vez só.
+        self._idx_figuras: Optional["_IndiceFiguras"] = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
         self.malha = MalhaIndex()
         # A malha é montada em DOIS caminhos (fim do open e fim do sync) e, desde que o
@@ -787,6 +899,12 @@ class VectorStore:
             await self.open()
         if self._store is None:
             return
+        # INVALIDA O ÍNDICE EXATO DE FIGURAS logo na entrada, e não nos pontos em que o
+        # sync grava: `sync` tem várias saídas antecipadas ("nada novo", erro, lock), e
+        # esquecer UMA delas deixaria a figura nova invisível até o próximo restart —
+        # falha silenciosa, do tipo que só aparece semanas depois. Invalidar aqui custa
+        # no máximo uma remontagem de 76 ms por sync, mesmo quando nada mudou.
+        self._idx_figuras = None
         try:
             async with self._write_lock:
                 existing = await asyncio.to_thread(
@@ -991,6 +1109,30 @@ class VectorStore:
             self._store.similarity_search_with_score, consulta, k
         )
 
+    async def _figuras_candidatas(self, consulta: str) -> List[Tuple[object, float]]:
+        """Os candidatos brutos, no formato (doc, score) do Chroma.
+
+        Prefere o índice EXATO em memória (`_IndiceFiguras`) e cai no ANN se ele não
+        existir — base sem figura, numpy ausente, store fake nos testes. O fallback é o
+        que estava no ar até 2026-07-31, então o pior caso é o status quo.
+        """
+        if settings.figuras_busca_exata:
+            if self._idx_figuras is None:
+                self._idx_figuras = await asyncio.to_thread(montar_indice_figuras, self._store)
+                if self._idx_figuras is not None:
+                    telemetry.track("FIGURAS",
+                                    f"Índice exato de figuras montado ({len(self._idx_figuras)}).")
+            if self._idx_figuras is not None:
+                vetor = await asyncio.to_thread(
+                    self._embeddings.instance.embed_query, consulta)
+                achados = self._idx_figuras.buscar(vetor, settings.figuras_top_k)
+                return [(doc, dist) for dist, doc in achados]
+        return await asyncio.to_thread(
+            lambda: self._store.similarity_search_with_score(
+                consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
+            )
+        )
+
     async def _buscar_figuras(self, consulta: str, chaves: set) -> List[Tuple[float, object]]:
         """Figuras que passam o gate, num espaço de busca SÓ delas.
 
@@ -998,8 +1140,13 @@ class VectorStore:
         mesmas vagas, a figura perdia: uma a 0,1239 ficava fora de um top-40 cujo pior
         era 0,1373, porque a busca aproximada não a alcançava no meio de 33k chunks.
         (2) Quando ganhava, ganhava demais: "como podar a planta" tomava 16 das 40
-        vagas. Com `where={"tipo": "figura"}` o Chroma filtra ANTES da ANN e o recall
-        dentro do subconjunto é exato (20/20 contra força bruta nos 1.735 vetores).
+        vagas. Por isso o `where={"tipo": "figura"}`.
+
+        ⚠ CORREÇÃO DE 2026-07-31: este docstring afirmava que, com o filtro, "o recall
+        dentro do subconjunto é exato (20/20 contra força bruta nos 1.735 vetores)".
+        DEIXOU DE SER VERDADE ao crescer a base — medido em 1.861 figuras, o ANN erra o
+        PRIMEIRO colocado em 30% das perguntas. Hoje a busca é EXATA e em memória (ver
+        `_IndiceFiguras`), com o ANN como fallback.
 
         QUANTAS entram é do gate, não de cota: mesma régua do texto (aterramento
         léxico OU confiança semântica). Pergunta que não pede imagem devolve zero;
@@ -1012,11 +1159,7 @@ class VectorStore:
             return []
         limiar = settings.figuras_score_confident or settings.rag_score_confident
         try:
-            res = await asyncio.to_thread(
-                lambda: self._store.similarity_search_with_score(
-                    consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
-                )
-            )
+            res = await self._figuras_candidatas(consulta)
         except Exception as exc:
             telemetry.error("FIGURAS", "Busca de figuras falhou (seguindo só com texto)", exc)
             return []
@@ -1035,6 +1178,11 @@ class VectorStore:
             # não casaria NENHUMA delas (chave ausente não casa) e a busca de
             # figura zeraria de uma vez. O custo é gastar slots do top_k.
             if not (doc.metadata or {}).get("attach_only")
+            # SUSPEITA NÃO DISPUTA VAGA (2026-07-31): a revalidação do idle já sabe
+            # que a imagem não é o que a nota diz; deixá-la concorrer é entregar a
+            # figura errada com a confiança da certa. Filtro em Python pelo mesmo
+            # motivo do attach_only — a maioria das notas não tem o campo.
+            and not (doc.metadata or {}).get("acervo_suspeito")
             and score < settings.rag_score_max
             and (score < limiar or textutils.contem_alguma(doc.page_content, chaves))
         ]
@@ -1113,7 +1261,11 @@ class VectorStore:
         for texto, md in zip(res.get("documents") or [], res.get("metadatas") or []):
             if not texto or texto in vistos:
                 continue
-            doc = _DocSimples(texto, md or {})
+            # Dicionário NOVO, não mutação do que veio do Chroma: a marca é nossa e
+            # não deve vazar para quem mais leia esse metadado. Sem ela o rótulo cai
+            # em "[Malha - relacionado]" e o irmão chega como vizinho solto — ver
+            # `rotular_contexto`.
+            doc = _DocSimples(texto, {**(md or {}), IRMAO_DE_PAGINA: True})
             if e_nota_de_figura(doc):
                 continue
             vistos.add(texto)
@@ -1122,8 +1274,9 @@ class VectorStore:
                 break
         return fora
 
-    async def _anexos_colocados(self, docs: Sequence[object]) -> List[str]:
-        """As figuras ATTACH-ONLY da MESMA PÁGINA dos átomos que responderam.
+    async def _anexos_colocados(self, docs: Sequence[object],
+                                consulta: str = "") -> List[str]:
+        """As figuras da MESMA PÁGINA dos átomos que responderam.
 
         É a outra metade de "encontrável ≠ anexável". A figura sem legenda boa foi
         tirada da busca (`_buscar_figuras`) para não poluir; aqui ela volta pela
@@ -1142,26 +1295,100 @@ class VectorStore:
         teto = settings.figuras_anexo_max
         if teto <= 0 or self._store is None or not settings.figuras_no_contexto:
             return []
+        # SÓ A PÁGINA DO(S) MELHOR(ES) ÁTOMO(S). A premissa acima — "ela ilustra o
+        # trecho que o usuário está lendo" — só vale para a página que de fato
+        # respondeu. `docs` traz o CONTEXTO INTEIRO (34 átomos de dezenas de páginas),
+        # e usar todas fazia a figura vir de qualquer capítulo que tenha contribuído
+        # com uma frase.
+        #
+        # MEDIDO ao vivo em 2026-07-30, 6 perguntas, 6 figuras erradas — é a "mesma
+        # sequência de imagens sem relação" que o dono relatava:
+        #   "como controlar o oídio?"  -> "Curing: Passo a passo", "Secagem rápida"
+        #   "e o fimming?"             -> "Transplante: Etapas"
+        #   "me fale sobre HPS"        -> "Salas de Cultivo com Tenda"
+        #   "o que é tripes?"          -> "Floração" (o mesmo rótulo de f1 a f13)
+        # No caso do oídio a culpada foi "Controle de Moldes Antes da Colheita", um
+        # átomo do capítulo de COLHEITA que entrou no contexto por vizinhança e
+        # arrastou as fotos da página dele. O átomo que realmente respondeu era
+        # `controle_da_mildew` — e as figuras DA PÁGINA DELE seriam pertinentes.
+        # ...e só PÁGINA DE VERDADE. `docs[0]` pode ser um átomo auto-colhido, cuja
+        # `origem` é o BALDE ('TemaQuente', 'Conversa', 'Projeto-X.json') e não uma
+        # página — e aí a âncora se perde sem que nada apareça. Foi o que aconteceu em
+        # "o que são tricomas?" (2026-07-31): o melhor átomo era um TemaQuente, e as
+        # 49 figuras das páginas 53-54 que responderam ficaram todas de fora.
         origens = []
         for d in docs:
             o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
-            if o and o not in origens:
-                origens.append(o)
+            if not o or o in origens or not livro.e_origem_de_pagina(o):
+                continue
+            origens.append(o)
+            if len(origens) >= max(1, settings.figuras_anexo_paginas):
+                break
         if not origens:
             return []
+        # A FIGURA COM LEGENDA TAMBÉM ENTRA POR AQUI (2026-07-31). Antes só a
+        # attach-only vinha, e isso deixava de fora exatamente as boas: das 41 figuras
+        # de tricoma do acervo, UMA diz "tricoma" em português — as outras 40 dizem
+        # "glândulas resiníferas", que é como Cervantes chama a estrutura. Nenhuma
+        # busca por embedding alcança essas 40 partindo da palavra que o dono digitou,
+        # e nenhuma tabela de sinônimos escala para todo assunto do livro.
+        #
+        # A co-locação não precisa da palavra: se o átomo da página 54 respondeu, a
+        # foto da página 54 ilustra o que ele diz — em qualquer assunto, sem tabela.
+        # `figuras_anexo_so_attach_only=true` volta ao comportamento anterior.
+        onde = [{"origem": {"$in": origens}}]
+        if settings.figuras_anexo_so_attach_only:
+            onde.append({"attach_only": True})
+        else:
+            onde.append({"tipo": "figura"})
         try:
-            res = await asyncio.to_thread(
-                lambda: self._store.get(
-                    where={"$and": [{"attach_only": True},
-                                    {"origem": {"$in": origens}}]},
-                    include=["metadatas"],
+            # ORDENADAS PELA PERGUNTA, não pelo nome do arquivo. Uma página do livro tem
+            # até 13 fotos de assuntos diferentes e o teto deixa passar 2: escolher por
+            # ordem alfabética entrega a f1 sempre (foi o "mesmo rótulo de f1 a f13" que
+            # o dono viu). Aqui a página já garante o ASSUNTO — o ranking só decide qual
+            # das fotos dela ilustra melhor, então não há gate de distância nenhum: a
+            # figura certa pode não repetir uma palavra sequer da pergunta, que é o
+            # defeito inteiro que este caminho existe para contornar.
+            if consulta and not settings.figuras_anexo_so_attach_only:
+                res = await asyncio.to_thread(
+                    lambda: self._store.similarity_search_with_score(
+                        consulta, k=max(teto, 8), filter={"$and": onde})
                 )
+                ordenadas = sorted(res or [], key=lambda ds: ds[1])
+                # SUSPEITA SAI ANTES DO CORTE RELATIVO (2026-07-31). A ordem importa:
+                # descartada depois, ela ainda seria `ordenadas[0]` e ANCORARIA a
+                # margem abaixo — uma reprovada em 0,08 puxaria o limite para 0,09 e
+                # empurraria para fora a figura BOA em 0,10. O gate não pode deixar a
+                # figura que ele mesmo barrou decidir quem mais entra.
+                ordenadas = [(d, s) for d, s in ordenadas
+                             if not (d.metadata or {}).get("acervo_suspeito")]
+                # CORTE RELATIVO À MELHOR, o mesmo remédio do `figuras_margem_melhor`:
+                # o teto de 2 preenchia o segundo slot com a próxima da fila mesmo
+                # quando ela era muito pior. Medido em 2026-07-31: "o que são
+                # tricomas?" trazia a foto certa e, atrás dela, "uma tempestade de
+                # chuva forte deitou esse jardim". Os pares BONS ficam (mudas com
+                # deficiência de N; lâmpada HPS + seu corte transversal) porque neles
+                # a segunda está perto da primeira.
+                margem = settings.figuras_margem_melhor
+                if margem > 0 and ordenadas:
+                    limite = ordenadas[0][1] * margem
+                    ordenadas = [(d, s) for d, s in ordenadas if s <= limite]
+                saida = []
+                for doc, _score in ordenadas:
+                    src = str(((doc.metadata or {}).get("source")) or "")
+                    if src and src not in saida:
+                        saida.append(src)
+                return saida[:teto]
+            res = await asyncio.to_thread(
+                lambda: self._store.get(where={"$and": onde}, include=["metadatas"])
             )
         except Exception as exc:
             telemetry.error("FIGURAS", "Anexo por co-locação indisponível", exc)
             return []
         saida: List[str] = []
         for md in (res or {}).get("metadatas", []) or []:
+            if (md or {}).get("acervo_suspeito"):
+                continue          # mesma marca, mesmo descarte (ver acima)
             src = str((md or {}).get("source") or "")
             if src and src not in saida:
                 saida.append(src)
@@ -1222,6 +1449,12 @@ class VectorStore:
             if settings.figuras_no_contexto:
                 validos = [(s, d) for s, d in validos
                            if str((d.metadata or {}).get("tipo") or "") != "figura"]
+            # A melhor distância SÓ DE TEXTO, depois de a figura sair do canal. Não dá
+            # para reusar `melhor` (linha acima) no gate de página do anexo: ele é o
+            # mínimo ANTES deste filtro, então numa pergunta por imagem ele é a própria
+            # figura — a comparação viraria a figura contra ela mesma e o gate nunca
+            # dispararia. Ver o bloco 'GATE DE PÁGINA' adiante.
+            melhor_texto = min((s for s, _ in validos), default=None)
             chaves = textutils.palavras_chave(termos)
             # ATERRAMENTO PONDERADO POR IDF (G3): o aterramento antigo era um OR sem peso —
             # uma keyword comum (que escapou do STOP) casava a nota errada. Agora só a
@@ -1413,8 +1646,36 @@ class VectorStore:
             # A figura attach-only entra por AQUI e só por aqui: ela acompanha as
             # páginas que de fato responderam (as promovíveis, `s is not None`), e
             # não vale como fonte nem como contexto.
+            # ORDENADOS POR DISTÂNCIA para a âncora do anexo: `usar` sai na ordem em
+            # que o contexto foi montado (aterrados, depois confiantes, depois irmãos
+            # de página), que NÃO é a ordem de quão bem cada átomo respondeu. Medido em
+            # 2026-07-31: em "o que são tricomas?" a primeira página da lista era a 33
+            # (plantas-mãe, ácaros) e a que respondeu era a 54 — o anexo saía da página
+            # errada por causa da ordem, não do critério.
+            promovidos = sorted(
+                ((s, d) for s, d in usar if s is not None), key=lambda sd: sd[0])
+            # GATE DE PÁGINA: a co-locação só vale se a página veio por mérito.
+            # Quando a melhor FIGURA vence com folga o melhor TEXTO, a pergunta é sobre
+            # uma imagem e os átomos de texto entraram por acidente léxico — anexar as
+            # figuras DELES é herdar o acidente. Caso real (2026-07-31): "poderia me
+            # mostrar uma tartaruga marinha?" casou "tartaruga MARINHA" com "algas
+            # MARINHAS" (adubo, na Cannabis Encyclopedia) e trouxe a figura do
+            # fertilizante ao lado da tartaruga.
+            # O gate é de PÁGINA e não de figura porque a figura co-locada pode
+            # legitimamente estar longe da pergunta — é o defeito que este caminho
+            # existe para contornar. Medido em 9 sondas, sem sobreposição: co-locação
+            # boa (tricomas, podar, deficiência de N, clones, hidroponia) tem razão
+            # texto/figura entre 0,76 e 1,01; ruim (tartaruga, torre Eiffel, pinguim,
+            # Coliseu) entre 1,16 e 1,37. n=9 é pequeno — daí o botão.
+            razao = settings.figuras_anexo_texto_ratio
+            texto_perdeu = (razao > 0 and figuras and melhor_texto is not None
+                            and melhor_texto > figuras[0][0] * razao)
+            if texto_perdeu:
+                telemetry.track("FIGURAS",
+                                f"Co-locação pulada: melhor texto {melhor_texto:.4f} perde "
+                                f"da melhor figura {figuras[0][0]:.4f}.")
             anexos = await self._anexos_colocados(
-                [d for s, d in usar if s is not None]) if usar else []
+                [d for _s, d in promovidos], consulta) if (usar and not texto_perdeu) else []
             return LocalResult(texto, melhor, relevante, fontes, anexos)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)
@@ -1702,6 +1963,47 @@ class WebSearcher:
             return buscar_com_fallback(_um_backend, settings.web_backends)
 
         return await asyncio.to_thread(_fetch)
+
+    async def buscar_imagens(self, termo: str, max_results: int) -> list:
+        """Candidatos de IMAGEM na web (2026-07-31). Lista de dicts do ddgs.
+
+        Mesmo caminho do `_ddg`: máscara de PII antes de o termo sair (este e o
+        `_ddg` são as únicas portas de saída de texto do usuário) e fallback de
+        backend, porque um backend do DDG cair é rotina.
+
+        `safesearch="on"` é deliberado: o buscador de imagem é o único ponto do
+        projeto que traz PIXEL de fora, e o vault é de cultivo — uma consulta
+        ambígua não pode devolver qualquer coisa na tela do dono.
+
+        Não baixa nada: quem baixa, valida e sanitiza é o `imagem_web`.
+        """
+        if not termo:
+            return []
+        if settings.egressao_guarda:
+            termo, pii = egressao.mascarar_pii(termo)
+            if pii:
+                telemetry.warn("EGRESSAO", f"PII mascarada na busca de imagem: {', '.join(pii)}")
+
+        def _fetch() -> list:
+            from ddgs import DDGS
+
+            def _um_backend(backend: str) -> list:
+                with DDGS() as ddgs:
+                    try:
+                        return list(ddgs.images(
+                            termo, max_results=max_results, safesearch="on",
+                            backend=backend))
+                    except TypeError:
+                        return list(ddgs.images(
+                            termo, max_results=max_results, safesearch="on"))
+
+            return buscar_com_fallback(_um_backend, settings.web_backends)
+
+        try:
+            return await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            telemetry.warn("IMG_WEB", f"Busca de imagem falhou: {exc}")
+            return []
 
     async def _baixar_pagina(self, client, url: str) -> Optional[str]:
         """Baixa e extrai o texto principal de UMA página. Nunca levanta — devolve
