@@ -154,6 +154,117 @@ CORRECOES = (
     ("formiga de fungo", "fungus gnat", "gnat"),
     ("fungo-gnat", "fungus gnat", "gnat"),
     ("papel de fly", "papel pega-moscas", "flypaper"),
+    # --- Colheita de 2026-07-30: varredura com 5 lentes independentes sobre os
+    # ~10,8k átomos COM job-fonte, cada candidato passado por um refutador cético.
+    # 39 candidatos, 14 sobreviveram — e destes, só os abaixo foram aplicados.
+    #
+    # O CRITÉRIO DE CORTE, e ele é o que torna esta leva segura: só entra o termo
+    # que NÃO É palavra portuguesa em contexto nenhum (erro de grafia ou invenção
+    # do modelo). Esses não têm como corromper nota correta, mesmo que a palavra da
+    # prova apareça na página por acaso.
+    #
+    # O que sobreviveu à refutação mas FICOU DE FORA, porque a palavra errada é
+    # legítima em outro sentido e a troca cega estragaria nota boa — foi o próprio
+    # refutador que mediu o dano: "molde/moldes -> mofo" (21 ocorrências ERRADAS a
+    # corrigir, mas a troca cega corromperia 8 corretas — o rejulgamento de
+    # 2026-07-30 mostrou que eu havia INVERTIDO esses dois números aqui; o veredito
+    # de barrar seguia certo), "cortes -> estacas" (23 erradas, 14 notas estragadas),
+    # "brotos -> bud" (~6 erradas contra 21 corretas em risco: "broto" = shoot é
+    # tradução CORRETA, razão 3:1 contra),
+    # "estômato -> caule" (11), e ainda "bulbo", "estaca", "cobertura",
+    # "cobertura", "ramificação", "pote", "cama", "banco". Precisam de regra mais
+    # estreita que um par de strings, não de mais confiança.
+    ("jardinadores", "jardineiros", "gardener"),
+    ("jardinador", "jardineiro", "gardener"),
+    ("amendamentos", "corretivos de solo", "amendment"),
+    ("amendamento", "corretivo de solo", "amendment"),
+    # `\b` já protege "colaborador": em "colaborador" o caractere antes de "borador"
+    # é 'a', que é \w, então não há fronteira de palavra e o padrão não casa.
+    ("boradores", "brocas", "borer"),
+    ("borador", "broca", "borer"),
+    ("rejuvenação", "rejuvenescimento", "rejuvenat"),
+    ("higrímetros", "higrômetros", "hygromet"),
+    ("higrímetro", "higrômetro", "hygromet"),
+    ("insecticidas", "inseticidas", "insecticide"),
+    ("insecticida", "inseticida", "insecticide"),
+    ("tincturas", "tinturas", "tincture"),
+    ("tinctura", "tintura", "tincture"),
+    ("catequistas", "lagartas", "caterpillar"),
+    ("catequista", "lagarta", "caterpillar"),
+    ("bolas de flores", "buds", "bud"),
+    ("bolas de flor", "buds", "bud"),
+    # SETE grafias da mesma palavra saíram do atomizador. Corrigir só a mais comum
+    # repararia 37% do defeito, então vão todas. O alvo é `balastro` — a forma que o
+    # próprio vault já usa 62 vezes, então a troca não introduz vocabulário novo.
+    # (O termo padrão em PT-BR é "reator"; isso é escolha de estilo do dono, não
+    # correção de erro, e por isso não foi tomada aqui.)
+    ("balastados", "balastros", "ballast"),
+    ("balastado", "balastro", "ballast"),
+    ("balastes", "balastros", "ballast"),
+    ("balasts", "balastros", "ballast"),
+    ("balastim", "balastro", "ballast"),
+    ("balastre", "balastro", "ballast"),
+    ("balaste", "balastro", "ballast"),
+    ("balast", "balastro", "ballast"),
+    # --- 2ª leva (2026-07-30): os 9 candidatos cujos refutadores morreram no limite
+    # de sessão, rejulgados. 8 confirmados como mistradução real, 5 aplicáveis como
+    # par de strings. Estes são palavra portuguesa legítima em outro sentido — só
+    # entram porque a medição mostrou ZERO ocorrência correta em risco, não porque
+    # a palavra seja impossível.
+    #
+    # "moleque" era toupeira: EN "Moles… their tunnels may dislodge cannabis roots"
+    # virou "Moleques são pragas de baixo risco, mas seus túneis podem deslocar
+    # raízes". Zero "moleque" (garoto) no vault. ⚠ NÃO estender para `moles` →
+    # `toupeiras`: há 22 `\bmoles\b` no vault e a maioria é português legítimo
+    # ("sementes moles", "folhas estão moles", "podridões moles").
+    ("moleques", "toupeiras", "moles"),
+    ("moleque", "toupeira", "moles"),
+    # "serrote" era greenhouse (EN "Growing in a greenhouse is easy" -> "Cultivar em
+    # um SERROTE é fácil"). A ferramenta de verdade aparece no vault como
+    # "serra"/"serras" (50+ usos reais), que `\bserrote\b` nunca casa. O modelo
+    # tratou a palavra como MASCULINA, então os determinantes vêm antes do par nu —
+    # sem eles a saída fica "em um estufa". "serra de vidro" é a mesma mistradução
+    # por outra grafia, e não é português legítimo em contexto nenhum.
+    ("dos serrote", "das estufas", "greenhouse"),
+    ("os serrote", "as estufas", "greenhouse"),
+    ("um serrote", "uma estufa", "greenhouse"),
+    ("o serrote", "a estufa", "greenhouse"),
+    ("serra de vidro", "estufa", "greenhouse"),
+    ("serrote", "estufa", "greenhouse"),
+    # "salva" era salve (pomada tópica). O próprio átomo se autorrefuta na mesma
+    # frase: "Salvas e balms são POMADAS TÓPICAS simples com óleo e cera de abelha".
+    # Só 3 das 399 páginas casam a prova, todas de tópicos — os usos legítimos
+    # ("salva cerca de 25 kWh") ficam todos fora delas. "pomada" e não "unguento":
+    # com pomada o gênero fecha nas 17 ocorrências.
+    ("salvas", "pomadas", "salve"),
+    ("salva", "pomada", "salve"),
+    # "carne de kelp" e "farelo de mar" são DOIS chutes diferentes para a MESMA
+    # frase inglesa ("Kelp meal contains more than 60 available elements"). A escada
+    # de determinantes existe porque farelo é masculino e farinha é feminina: sem
+    # ela sai "O farinha de algas contém…" dentro do TÍTULO do átomo. O alvo não
+    # leva parentético porque o vault já tem o átomo canônico "## Farinha de Algas"
+    # — assim o wikilink pousa num nó existente em vez de criar órfão.
+    ("carne de kelp", "farinha de algas", "kelp meal"),
+    ("no farelo de mar", "na farinha de algas", "kelp meal"),
+    ("do farelo de mar", "da farinha de algas", "kelp meal"),
+    ("o farelo de mar", "a farinha de algas", "kelp meal"),
+    ("farelo de mar", "farinha de algas", "kelp meal"),
+    # "hampa" não é tradução ruim, é o modelo tentando o SOM de "hemp". Grafia com
+    # circunflexo de propósito: o vault escreve "cânhamo" 80 vezes e "canhamo"
+    # zero, e sem o acento o Piper lê errado. O "(hemp)" é ponte de vocabulário
+    # EN→PT — exatamente o que faltou no caso "topping".
+    ("hampa", "cânhamo (hemp)", "hemp"),
+    # --- Regras ESTREITAS: o termo largo foi barrado, mas estas expressões não têm
+    # leitura legítima possível. Cobrem pouco de propósito.
+    # "molde" solto NÃO entra: o livro usa "mold" nos dois sentidos, às vezes na
+    # MESMA página ("heavy-duty steel mold" -> "molde de aço resistente"), então o
+    # portão de prova não separa. "controle de moldes" só existe no sentido fungo.
+    ("controle de moldes", "controle de mofos", "mold"),
+    # "cortes" solto NÃO entra: é português pleno e o dano mora dentro das próprias
+    # ocorrências. ⚠ A prova aqui é "cuttings" COM o 's': escrevê-la como "cutting"
+    # corromperia "Sanitize ferramentas de poda entre cortes" (p.44), que traduz
+    # "between cuts" e está CERTO. A margem é uma letra.
+    ("cortes de madeira jovem", "estacas de madeira jovem", "cuttings"),
 )
 
 

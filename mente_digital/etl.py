@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
 from mente_digital import figuras as figuras_mod
+from mente_digital import imagem_web
 from mente_digital import rag
 from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
@@ -40,6 +42,32 @@ from mente_digital.otimizador import lacuna_pesquisavel
 from mente_digital.rag import NENHUM, strip_frontmatter
 from mente_digital.state import AppContext
 from mente_digital.telemetry import db, telemetry
+
+# Leitura da nota de acervo web (ver `EtlProcessor.revalidar_acervo_web`). O prefixo vem
+# de `imagem_web.ORIGEM_PREFIXO` e não é recopiado aqui: é CONTRATO de texto com quem
+# escreve a nota, e duas cópias divergem no primeiro dia em que alguém mudar uma delas.
+_TERMO_DO_ACERVO = re.compile(re.escape(imagem_web.ORIGEM_PREFIXO) + r"\s*'([^']+)'")
+_TITULO_H2 = re.compile(r"^##\s+(.+?)\s*$", re.M)
+_CAMPO_CONFERE = re.compile(r"^acervo_confere: (\w+)\s*$", re.M)
+# Linhas do corpo DERIVADAS do próprio termo buscado. Precisam sair antes de julgar: a
+# de crédito repete o termo em prosa e a Malha o repete como wikilink, então mantê-las
+# faz o termo casar consigo mesmo. Medido: com o corpo inteiro a revalidação pegou 0 das
+# 4 imagens erradas; subtraindo estas duas, pega 4.
+_DERIVADAS_DO_TERMO = ("**Malha Neural:**", imagem_web.CREDITO_PREFIXO)
+
+
+def _evidencia_independente(texto: str) -> str:
+    """O que a nota diz que NÃO foi copiado do termo buscado. Puro/testável.
+
+    Sobra o que é evidência de verdade: a descrição do VLM, quando existe, e qualquer
+    texto que a página tenha trazido. Subtrai em vez de listar o que serve porque o
+    formato da nota ainda muda — linha nova entra como evidência por padrão, e o
+    esquecimento erra para o lado seguro (aceitar), não para o de condenar nota boa.
+    """
+    return "\n".join(
+        ln for ln in strip_frontmatter(texto).splitlines()
+        if not any(d in ln for d in _DERIVADAS_DO_TERMO)
+    )
 
 
 async def append_chat_dump(ator: str, texto: str) -> None:
@@ -206,6 +234,13 @@ class EtlProcessor:
                 )
             except InferenciaPreemptada:
                 telemetry.track("IDLE", "Varredura de contradição cedeu a GPU.")
+                return
+            except Exception as exc:
+                # Único sítio do projeto onde uma falha do LLM escaparia para cima (o
+                # `_salvar_atomos` que chama isto não tem try). Encerra a varredura em
+                # vez de seguir: se o modelo quebrou, o próximo par quebra igual — e a
+                # varredura é bônus, nunca pode derrubar a atomização que a hospeda.
+                telemetry.error("IDLE", "Varredura de contradição falhou", exc)
                 return
             checados += 1
             motivo = contradicao.parse_veredito(veredito)
@@ -896,21 +931,35 @@ class EtlProcessor:
                 pendentes.pop(0)
                 continue
             dados = "\n\n".join(limpos)
-            try:
-                conteudo = await self.ctx.llama.collect(
-                    prompts.prompt_sintese(tema, dados),
-                    max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
-                    system_prompt=prompts.SYS_SINTESE,
-                    preemptible=True,   # background: a pergunta do usuário passa na frente
-                )
-            except InferenciaPreemptada:
+            # EM LOTES que cabem no n_ctx (2026-07-31): a colheita enfileira o CORPO de
+            # uma página inteira, até `web_fetch_max_chars` (20.000 chars) — o prompt
+            # único podia estourar o contexto do mesmo jeito que o dump da conversa.
+            sinteses: List[str] = []
+            preemptado = False
+            for lote in textutils.lotes_de_texto(dados, settings.etl_lote_chars):
+                await self._esperar_idle()    # a série é longa: cede a vez a cada lote
+                try:
+                    sinteses.append(await self.ctx.llama.collect(
+                        prompts.prompt_sintese(tema, lote),
+                        max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
+                        system_prompt=prompts.SYS_SINTESE,
+                        preemptible=True,   # background: a pergunta do usuário passa na frente
+                    ))
+                except InferenciaPreemptada:
+                    preemptado = True
+                    break
+                except Exception as exc:
+                    # Para a série, mas guarda o que já saiu: meia página retida é melhor
+                    # que nenhuma, e o dedup por átomo limpa a sobreposição de um retry.
+                    telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar lote de '{tema}'", exc)
+                    break
+            if preemptado:
                 telemetry.track("ETL_POST_CHAT", f"'{tema}' cedeu a GPU — será retomado no idle.")
                 continue                      # item continua em pendentes[0]
-            except Exception as exc:
-                telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar '{tema}'", exc)
-                pendentes.pop(0)              # falha real: não retenta em loop
+            pendentes.pop(0)                  # consumido: erro real não retenta em loop
+            conteudo = "\n\n".join(s for s in sinteses if s.strip())
+            if not conteudo:
                 continue
-            pendentes.pop(0)
             try:
                 total += await self._salvar_atomos(conteudo, "Sintese", "ETL_POST_CHAT")
             except Exception as exc:
@@ -938,22 +987,50 @@ class EtlProcessor:
         if len(conteudo) < 50:
             return
 
-        await self._esperar_idle()
-        telemetry.track("IDLE", "Atomizando histórico da conversa (Zettelkasten)...")
-        try:
-            atomos = await self.ctx.llama.collect(
-                prompts.prompt_sintese_conversa(conteudo),
-                max_tokens=self._max_fundo(settings.max_tokens_resumo),  # #29
-                system_prompt=prompts.SYS_SINTESE_CONVERSA,
-                preemptible=True,   # background: a pergunta do usuário passa na frente
-            )
-        except InferenciaPreemptada:
-            # Sair aqui é seguro E é o ponto: o dump só é limpo mais abaixo, depois de
-            # salvar. Cedemos a GPU sem tocar em nada, e a conversa inteira continua no
-            # arquivo para a próxima passada de idle.
-            telemetry.track("IDLE", "Atomização cedeu a GPU — dump preservado p/ a próxima.")
-            return
-        atomos = atomos.strip()
+        # EM LOTES que cabem no n_ctx (idle de 2026-07-31): o dump acumula entre as
+        # passadas — quando uma atomização é preemptada ou não salva nada, a conversa
+        # fica para a próxima. Ele chegou a 2 dias (118 turnos, ~57k chars) e a chamada
+        # única morreu com "Requested tokens (21277) exceed context window of 8192".
+        # Fatiar preserva a conversa inteira; truncar a jogaria fora.
+        lotes = textutils.lotes_de_texto(conteudo, settings.etl_lote_chars)
+        telemetry.track("IDLE", f"Atomizando histórico da conversa (Zettelkasten): "
+                                f"{len(conteudo)} chars em {len(lotes)} lote(s).")
+        partes: List[str] = []
+        falhou = False
+        for lote in lotes:
+            # Cede a vez ANTES de cada lote, não só uma vez no começo: numa conversa
+            # longa são várias chamadas, e o usuário pode voltar no meio da série.
+            await self._esperar_idle()
+            try:
+                parte = await self.ctx.llama.collect(
+                    prompts.prompt_sintese_conversa(lote),
+                    max_tokens=self._max_fundo(settings.max_tokens_resumo),  # #29
+                    system_prompt=prompts.SYS_SINTESE_CONVERSA,
+                    preemptible=True,   # background: a pergunta do usuário passa na frente
+                )
+            except InferenciaPreemptada:
+                # Sair aqui é seguro E é o ponto: o dump só é limpo mais abaixo, depois de
+                # salvar. Cedemos a GPU sem tocar em nada, e a conversa inteira continua no
+                # arquivo para a próxima passada de idle.
+                telemetry.track("IDLE", "Atomização cedeu a GPU — dump preservado p/ a próxima.")
+                return
+            except Exception as exc:
+                telemetry.error("IDLE", "Falha ao atomizar um lote da conversa", exc)
+                falhou = True
+                continue
+            parte = parte.strip()
+            if not parte:
+                # Resposta VAZIA não é "nada a reter" — o prompt manda escrever o literal
+                # 'NADA' nesse caso. Vazio significa que o decode MORREU (hoje o worker do
+                # llm.py loga e encerra a stream), e foi exatamente essa confusão que fez
+                # o estouro de contexto ser lido como small talk e APAGAR o dump.
+                telemetry.warn("IDLE", "Lote da conversa voltou vazio do LLM — tratado como falha.")
+                falhou = True
+                continue
+            if parte.upper().strip(".!\n ") != "NADA":
+                partes.append(parte)
+
+        atomos = "\n\n".join(partes)
 
         async def _limpar_dump() -> None:
             try:
@@ -961,9 +1038,23 @@ class EtlProcessor:
             except OSError as exc:
                 telemetry.error("IDLE", "Erro ao limpar dump", exc)
 
+        if falhou:
+            # NUNCA limpa com falha em jogo. O que deu certo é salvo mesmo assim (nada
+            # se perde nos dois sentidos): o dedup por átomo de `_salvar_atomos` descarta
+            # o repetido quando a próxima passada reprocessar o dump inteiro.
+            if atomos:
+                salvos = await self._salvar_atomos(atomos, "Conversa", "IDLE_CONVERSA")
+                if salvos:
+                    await self.ctx.vectorstore.sync()
+                    telemetry.warn("IDLE", f"Conversa atomizada em PARTE ({salvos} átomo(s)) — "
+                                           "dump preservado p/ retry.")
+                    return
+            telemetry.warn("IDLE", "Atomização da conversa falhou — dump preservado p/ retry.")
+            return
+
         # O prompt manda responder só 'NADA' quando não há conhecimento a reter
         # (conversa de small talk). Nesse caso não cria nota — mas limpa o dump.
-        if not atomos or atomos.upper().strip(".!\n ") == "NADA":
+        if not atomos:
             await _limpar_dump()
             telemetry.track("IDLE", "Conversa sem conhecimento novo a reter.")
             return
@@ -992,7 +1083,12 @@ class EtlProcessor:
         await self._esperar_idle()
         try:
             resp = await self.ctx.llama.collect(
-                prompts.prompt_perfil_conversa(conteudo, self.ctx.perfil_conversa or ""),
+                # CAUDA, não o começo (teto de 2026-07-31): este prompt recebia o MESMO
+                # dump inteiro que estourou o n_ctx no `summarize_dump`. Aqui truncar é a
+                # escolha certa, não a preguiçosa — o perfil descreve como falar com o
+                # usuário AGORA, e é o fim da conversa que carrega isso.
+                prompts.prompt_perfil_conversa(conteudo[-settings.etl_perfil_max_chars:],
+                                               self.ctx.perfil_conversa or ""),
                 max_tokens=self._max_fundo(settings.max_tokens_perfil),  # #29
                 system_prompt=prompts.SYS_DIAPASAO,
                 preemptible=True,
@@ -1070,6 +1166,70 @@ class EtlProcessor:
             await self.ctx.vectorstore.sync()
             telemetry.track("ETL_PROATIVO", f"Pesquisa proativa: {feitas} lacuna(s) trazida(s) ao banco.")
 
+    async def revalidar_acervo_web(self) -> None:
+        """No idle, reconfere se cada imagem colhida da web é o que a nota AFIRMA ser.
+
+        Por que existe: o gate que julga o candidato ANTES de baixar
+        (`imagem_web.casa_com_o_pedido`) só passou a rodar em 2026-07-31. O que entrou
+        antes dele nunca foi julgado — e das 40 notas de `Figuras/_web/`, **4 (10%)**
+        mostram outra coisa: 'polvo' é um calendário do EBT da Flórida, 'estômato' é um
+        formulário de currículo em espanhol, 'solo argiloso' é uma miniatura do Rainbow
+        Six Siege (o buscador casou o "solo" de *solo queue*). Elas estão INDEXADAS e
+        podem ser anexadas como figura numa resposta.
+
+        Barata de propósito, e é isso que a torna adequada ao idle: NÃO usa LLM, NÃO usa
+        VLM, NÃO usa rede — é comparação léxica sobre o título que a nota já carrega. O
+        Qwen2.5-VL-7B pega as mesmas 4, mas custa 7,9 GB de VRAM (numa placa de 10) e
+        0,87 s por imagem; aqui são microssegundos e a GPU segue livre para a conversa.
+
+        Não apaga nem reescreve nada: marca `acervo_confere: NAO` no frontmatter, que é
+        metadado (não entra no corpo indexado) e deixa a decisão com o dono. Marcar é
+        reversível; apagar imagem por heurística não é.
+        """
+        if not settings.idle_revalidar_acervo:
+            return
+        pasta = imagem_web.pasta_do_acervo()
+        if not pasta.is_dir():
+            return
+        try:
+            notas = sorted(pasta.glob("*.md"))
+            marcadas, conferidas = await asyncio.to_thread(self._revalidar_notas, notas)
+        except OSError as exc:
+            telemetry.error("ETL_ACERVO", "Revalidação do acervo web falhou", exc)
+            return
+        if conferidas:
+            telemetry.track("ETL_ACERVO",
+                            f"Acervo web revalidado: {conferidas} nota(s), "
+                            f"{marcadas} marcada(s) como suspeita(s).")
+
+    def _revalidar_notas(self, notas: List[Path]) -> Tuple[int, int]:
+        """O laço síncrono da revalidação (roda em `to_thread`). Devolve (marcadas, lidas)."""
+        marcadas = conferidas = 0
+        for md in notas:
+            try:
+                texto = md.read_text(encoding="utf-8")
+            except OSError:
+                continue      # nota sumindo no meio do idle não derruba o ciclo
+            m = _TERMO_DO_ACERVO.search(texto)
+            titulo = _TITULO_H2.search(texto)
+            if not (m and titulo):
+                continue
+            conferidas += 1
+            ok = imagem_web.confere_o_acervo(
+                m.group(1), titulo.group(1), _evidencia_independente(texto))
+            marca = "sim" if ok else "NAO"
+            if not ok:
+                marcadas += 1
+            atual = _CAMPO_CONFERE.search(texto)
+            if atual and atual.group(1) == marca:
+                continue      # idempotente: sem reescrita, sem mexer no mtime do reindex
+            novo = (_CAMPO_CONFERE.sub(f"acervo_confere: {marca}", texto, count=1)
+                    if atual else
+                    texto.replace("tipo: figura", f"tipo: figura\nacervo_confere: {marca}", 1))
+            if novo != texto:
+                md.write_text(novo, encoding="utf-8")
+        return marcadas, conferidas
+
     async def pesquisa_temas_quentes(self) -> None:
         """#4: no idle, RE-PESQUISA na web os temas que o usuário mais REUSA do vault (o
         estágio Banco respondeu de fato) para trazer NOVIDADE. É o ESPELHO da lacuna:
@@ -1146,6 +1306,10 @@ class EtlProcessor:
         `ensure_loaded` (no stream) religa: seguro nas duas direções."""
         await self.process_queue(itens)
         await self.summarize_dump()
+        # ANTES das pesquisas de propósito: é a única rotina do idle que não toca o LLM
+        # (léxico puro, milissegundos), então roda enquanto a GPU ainda está quente com o
+        # trabalho anterior, em vez de esperar a fila de inferência.
+        await self.revalidar_acervo_web()
         await self.pesquisa_proativa()
         await self.pesquisa_temas_quentes()
         await self._sincronizar_vault_pendente()

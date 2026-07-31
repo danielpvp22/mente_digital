@@ -34,9 +34,34 @@ _REFERENCIAS_CONTEXTO = {
 }
 
 
+# INDEFINIDO ANAFÓRICO — o pronome que aponta pra trás SEM nomear nada ("tem imagem
+# de UM?"). Ele não pode entrar no conjunto acima: "um/uma/outro" aparecem em frases
+# perfeitamente auto-contidas ("me fale sobre um balastro"), e marcar todas elas
+# reabriria a contaminação que o gate custou caro a fechar (o caso do tomate, que
+# colou "6 a 9 semanas" de dois turnos antes).
+#
+# O que separa os dois casos é ESTRUTURAL, não temático: quando o indefinido é o
+# ÚLTIMO elemento da frase, o substantivo que ele deveria determinar não existe — foi
+# elidido porque está no turno anterior. "imagem de um?" não tem sujeito; "sobre um
+# balastro" tem. Vale para qualquer assunto, que é o ponto: a régua olha a forma da
+# frase, nunca a palavra do domínio.
+_INDEFINIDOS = {
+    "um", "uma", "uns", "umas", "algum", "alguma", "alguns", "algumas",
+    "outro", "outra", "outros", "outras", "nenhum", "nenhuma", "qualquer",
+}
+
+
+def _indefinido_orfao(pergunta: str) -> bool:
+    """Termina em pronome indefinido sem substantivo ("tem foto de um?"). Puro."""
+    toks = textutils.tokens(pergunta)
+    return bool(toks) and toks[-1] in _INDEFINIDOS
+
+
 def referencia_contexto(pergunta: str) -> bool:
     """A pergunta aponta pra um assunto anterior (tem pronome/demonstrativo)? Puro."""
-    return bool(set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO)
+    if set(textutils.tokens(pergunta)) & _REFERENCIAS_CONTEXTO:
+        return True
+    return _indefinido_orfao(pergunta)
 
 
 # Palavras que pedem CONTINUAÇÃO sem nomear assunto nenhum ("explique melhor", "e a
@@ -50,6 +75,88 @@ _PALAVRAS_CONTINUACAO = {
     "outro", "outra", "outros", "outras", "exemplo", "exemplos", "fala", "fale",
     "diz", "diga", "conta", "conte", "sobre",
 }
+
+# FORMATO ≠ ASSUNTO. "imagem", "foto", "exemplo" dizem em que FORMA o usuário quer a
+# resposta; o assunto é outra palavra da frase — ou o turno anterior. Tratá-las como
+# núcleo foi o segundo motivo de "tem imagem de um?" ter sido lida como auto-contida.
+#
+# E o efeito não para no antecedente: como termo de BUSCA elas são ativamente
+# nocivas. Medido em 2026-07-31 com o índice de produção — "tem imagem de um
+# tricoma?" recuperou átomos de oito baldes de conversa sobre YOLO, Ollama e
+# detecção de objetos, porque é lá que a palavra "imagem" vive no vault. Foi de onde
+# saiu o "PMC com fita vermelha ou azul" que o dono viu na tela.
+#
+# É uma classe fechada de palavras funcionais (mídia/formato), não uma lista de
+# temas: serve a qualquer assunto que o dono venha a perguntar.
+PALAVRAS_FORMATO = {
+    "imagem", "imagens", "foto", "fotos", "fotografia", "fotografias",
+    "figura", "figuras", "ilustracao", "ilustracoes", "desenho", "desenhos",
+    "diagrama", "diagramas", "esquema", "esquemas", "grafico", "graficos",
+    "video", "videos", "print", "prints", "screenshot", "screenshots",
+    "link", "links", "foto?", "visual", "visuais",
+}
+
+
+def sem_formato(termos: str) -> str:
+    """`termos` sem as palavras de FORMATO ("imagem de tricoma" -> "tricoma"). Puro.
+
+    Só limpa se SOBRAR assunto: "tem imagem?" (formato puro, sem núcleo) sai intacta,
+    porque uma query vazia não busca nada e o antecedente já foi resolvido antes.
+    """
+    if not termos:
+        return termos
+    # Os marcadores de canal saem junto: numa busca de imagem, "internet"/"google"
+    # é a ORDEM ("procura na internet uma foto de tricoma"), não o assunto — e como
+    # query de imagem devolveria fotos de roteador. Só quando sobra assunto.
+    lixo = PALAVRAS_FORMATO | _MARCADORES_WEB | _VERBOS_PEDIDO
+    resto = [p for p in termos.split() if textutils.normaliza(p) not in lixo]
+    return " ".join(resto) if resto else termos
+
+
+def pedido_de_imagem(pergunta: str) -> bool:
+    """O usuário está pedindo para VER algo ("tem imagem disso?"). Puro/testável.
+
+    Serve para o pipeline saber que a figura deixou de ser bônus e virou o pedido —
+    e, principalmente, para não gastar a busca de CONTEÚDO com a palavra que nomeia
+    o formato. Não decide sozinho o que mostrar: quem escolhe a figura segue sendo a
+    co-locação com os átomos que responderam.
+    """
+    return bool(textutils.palavras_chave(pergunta) & PALAVRAS_FORMATO)
+
+
+# O usuário MANDANDO buscar fora. Classe fechada de marcadores de "lá fora", como
+# as demais réguas deste módulo — nada de assunto, só a forma do pedido.
+_MARCADORES_WEB = {
+    "internet", "web", "online", "google", "rede", "navegador", "site", "sites",
+}
+
+# O VERBO DO PEDIDO. Medido no teste de 50 casos (2026-07-31): "me mostra uma imagem
+# do Monte Fuji" virou a query `mostra Monte Fuji` e caiu numa página italiana sobre
+# uma *mostra* (exposição) de Hokusai; `mostra girafa` caiu numa matéria de
+# celebridade. Os três piores resultados do bloco começavam por "me mostra".
+#
+# O verbo diz o que fazer, não o que procurar — e num buscador de IMAGEM ele é pior
+# que ruído, porque casa título de página em outra língua. Mesma família do
+# PALAVRAS_FORMATO: classe fechada, serve a qualquer assunto.
+_VERBOS_PEDIDO = {
+    "mostra", "mostre", "mostrar", "procura", "procure", "procurar", "busca",
+    "busque", "buscar", "pesquisa", "pesquise", "pesquisar", "acha", "ache",
+    "achar", "encontra", "encontre", "encontrar", "ver", "veja", "vejo", "exibe",
+    "exiba", "exibir", "manda", "mande", "envia", "envie", "traz", "traga",
+    "trazer", "quero", "queria", "gostaria", "preciso", "tem", "temos", "existe",
+}
+
+
+def pedido_de_imagem_web(pergunta: str) -> bool:
+    """Pediu imagem E mandou buscar FORA ("procura na internet uma foto de X").
+
+    Ordem do dono (2026-07-31): a web também tem de abrir por pedido ESCRITO, não
+    só quando o acervo falha. Sem isto, quem quer explicitamente uma foto da
+    internet recebia a do livro e ficava sem saída — o vault sempre vence quando
+    tem algo, que é o certo no caso automático e errado quando foi pedido.
+    """
+    kws = textutils.palavras_chave(pergunta)
+    return bool(kws & PALAVRAS_FORMATO) and bool(kws & _MARCADORES_WEB)
 
 
 def precisa_antecedente(pergunta: str) -> bool:
@@ -71,7 +178,12 @@ def precisa_antecedente(pergunta: str) -> bool:
     if referencia_contexto(pergunta):
         return True
     kws = textutils.palavras_chave(pergunta)
-    nucleo = {k for k in kws if k not in _PALAVRAS_CONTINUACAO and not k.isdigit()}
+    nucleo = {
+        k for k in kws
+        if k not in _PALAVRAS_CONTINUACAO
+        and k not in PALAVRAS_FORMATO
+        and not k.isdigit()
+    }
     return not nucleo
 
 
@@ -235,7 +347,7 @@ class QueryOptimizer:
         limpa = pergunta.lower().strip().replace(".", "").replace(",", "")
         if limpa in STOP_WORDS or len(limpa) < 4:
             return False                        # caminho de continuação: sem LLM
-        if not (historico and referencia_contexto(pergunta)):
+        if not (historico and precisa_antecedente(pergunta)):
             # contexto="NENHUM": com o gate ligado o LLM é poupado; desligado, roda.
             return not settings.optimizer_gate
         return True
@@ -248,12 +360,21 @@ class QueryOptimizer:
                 return textutils.limpar_query(historico[-1][0]) or historico[-1][0]
             return limpa
 
-        # SÓ passa o histórico se a pergunta REFERENCIA o assunto anterior. Uma pergunta
+        # SÓ passa o histórico se a pergunta NÃO SE SUSTENTA SOZINHA. Uma pergunta
         # auto-contida ('como funciona o tensor RT?') não pode ver o turno de 'esp32' —
-        # o extrator misturava os dois numa query só ('tensor rt esp32'). Sem referência,
+        # o extrator misturava os dois numa query só ('tensor rt esp32'). Sem isso,
         # contexto="NENHUM": o assunto novo entra limpo.
+        #
+        # O teste é o `precisa_antecedente` (e não só o pronome) desde 2026-07-31: um
+        # pronome explícito é UMA das formas de depender do turno anterior, não a
+        # única. "tem imagem de um?" não tem pronome da lista e mesmo assim não se
+        # sustenta — no trace do dono o extrator custou 0ms porque nem foi chamado, a
+        # busca foi feita com "imagem" e a resposta saiu sobre outro assunto. As duas
+        # formas ("aponta pra trás" e "não tem núcleo próprio") já moravam juntas
+        # naquela função para decidir o histórico do GERADOR; a busca usava metade da
+        # régua.
         contexto = "NENHUM"
-        if historico and referencia_contexto(pergunta):
+        if historico and precisa_antecedente(pergunta):
             turnos = []
             for q, a in list(historico)[-2:]:
                 resumo = a[:150] + "..." if len(a) > 150 else a

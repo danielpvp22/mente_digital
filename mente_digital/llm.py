@@ -123,6 +123,27 @@ def _ggml_type(kv: str) -> Optional[int]:
     return tipo
 
 
+class InferenciaFalhou(RuntimeError):
+    """O worker de inferência morreu — o texto gerado (se houver) é LIXO, não resposta.
+
+    Existe por um estrago medido (idle de 2026-07-31): o worker levantou
+    `ValueError: Requested tokens (21277) exceed context window of 8192`, o `stream`
+    apenas logou e ENCERROU, e `collect()` devolveu "". Para todo chamador, isso era
+    indistinguível de "o modelo não tinha nada a dizer" — então:
+
+    - o ETL leu o vazio como "conversa sem conhecimento novo" e APAGOU 2 dias de dump;
+    - ao vivo, a stream vazia vira o sentinela de insuficiência: o pipeline escala para
+      a web, paga 3-12s de rede, falha de novo e o usuário ouve "não achei nada" —
+      uma falha técnica disfarçada de ausência de conhecimento;
+    - uma falha NO MEIO da fala devolvia o texto PARCIAL como se fosse a resposta
+      inteira, que então entrava no histórico e no dump que o ETL atomiza.
+
+    Herda de RuntimeError (nunca de CancelledError, que carrega o barge-in), pelo
+    mesmo motivo de `InferenciaPreemptada`: o handler de topo do turno
+    (`Agent._pipeline`) precisa distinguir cancelamento de falha.
+    """
+
+
 class InferenciaPreemptada(RuntimeError):
     """O decode foi abortado para ceder a GPU à inferência interativa.
 
@@ -532,8 +553,13 @@ class LlamaManager:
                     if item is _SENTINEL:
                         break
                     if isinstance(item, _WorkerError):
+                        # LEVANTA, não encerra em silêncio: encerrar fazia a falha chegar
+                        # ao chamador como string vazia, que todo mundo lia como "o modelo
+                        # não tinha o que dizer". Ver InferenciaFalhou para o estrago que
+                        # isso causou. O `finally` abaixo continua soltando a thread da GPU
+                        # e o lock — mesmo padrão do raise de preempção.
                         telemetry.error("LLM", "Erro no worker de inferência", item.exc)
-                        break
+                        raise InferenciaFalhou(str(item.exc)) from item.exc
                     # prefill_ms: do lock ao 1º chunk produzido pelo worker (engolir o
                     # prompt). Repartir isto do lock_wait/reload é o que abre a caixa-preta
                     # do TTFT de 7-9s na rota 'banco'. Medido no 1º item real (pré-filtro).

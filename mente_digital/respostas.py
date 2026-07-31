@@ -14,11 +14,13 @@ continuam sendo o MESMO objeto Agent em runtime. Nada aqui roda sem um Agent.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional, Tuple
 
 from mente_digital import figuras as figuras_mod
 from mente_digital import figuras_recorte
+from mente_digital import imagem_web
 from mente_digital import prompts
 from mente_digital import textutils
 from mente_digital import verbosidade
@@ -569,6 +571,56 @@ class Respostas:
             telemetry.track(
                 "FIGURAS", f"contexto: {len(carregadas)} candidata(s): {amostra}")
         return _FigurasInline([(embed, chaves) for embed, chaves, _ in carregadas])
+
+    async def _imagem_da_web(self, send: Sender, termos: str) -> bool:
+        """O dono pediu para ver e o acervo não tem: procura na internet.
+
+        Ordem deliberada — o vault SEMPRE primeiro. A foto do livro dele responde
+        melhor, já está no disco e não gasta rede; a web só entra no vazio, que é
+        exatamente o caso que ele viu na tela ("tem imagem de um?" sem imagem
+        nenhuma). Se também não houver na web, a resposta DIZ isso: pergunta feita
+        é pergunta que merece resposta, mesmo negativa.
+
+        O arquivo é baixado, sanitizado e servido pelo `/api/imagem/` — o navegador
+        nunca busca um domínio de fora (ver imagem_web e o comentário do front).
+        Fail-soft em bloco: qualquer erro vira a mesma frase honesta.
+
+        A limpeza do termo é AQUI, num ponto só: daqui ele sai para o buscador, para
+        o gate léxico e para a nota do acervo, e os três têm de ver a mesma coisa.
+        Sem ela o '?' da pergunta viajava até o Bing e virava `[[Camaleão?]]` no
+        vault (defeito visto pelo dono em 2026-07-31).
+        """
+        aviso = "\n\n(Não encontrei imagem disso no acervo do vault"
+        termos = imagem_web.limpar_pedido(termos)
+        if not settings.imagem_web_enabled or not termos:
+            await send({"tipo": "token", "texto": aviso + ".)"})
+            return False
+        try:
+            candidatos = await self.ctx.web.buscar_imagens(
+                termos, settings.imagem_web_candidatos)
+            achado = await imagem_web.primeira_util(candidatos, termos)
+        except Exception as exc:
+            telemetry.error("IMG_WEB", "Busca de imagem na web falhou", exc)
+            achado = None
+        if not achado:
+            await send({"tipo": "token", "texto": aviso + " nem na web.)"})
+            return False
+        rel, candidato = achado
+        # O crédito não é gentileza: o resto da resposta é do vault do dono e esta
+        # imagem não é. Sem dizer de onde veio, as duas coisas se confundem.
+        await send({"tipo": "token", "texto": "\n\n" + imagem_web.embed(rel)
+                    + "\n" + imagem_web.creditar(candidato)})
+        telemetry.track("IMG_WEB", f"imagem da web entregue para '{termos}': {rel}")
+        # ACERVO: a nota irmã é o que faz esta foto ser achada da PRÓXIMA vez sem
+        # rede. Em background — o dono já está vendo a imagem; gravar markdown não
+        # pode entrar no caminho da resposta.
+        self.ctx.track_task(asyncio.to_thread(
+            imagem_web.guardar_no_acervo, rel, candidato, termos,
+            datetime.now().strftime("%Y-%m-%d")))
+        if settings.imagem_web_cache_max > 0:
+            self.ctx.track_task(asyncio.to_thread(
+                imagem_web.limpar_antigas, settings.imagem_web_cache_max))
+        return True
 
     async def _mostrar_figuras(self, send: Sender, figuras: _FigurasInline,
                                ja_dito: str = "") -> int:
