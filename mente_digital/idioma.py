@@ -154,6 +154,53 @@ CORRECOES = (
     ("formiga de fungo", "fungus gnat", "gnat"),
     ("fungo-gnat", "fungus gnat", "gnat"),
     ("papel de fly", "papel pega-moscas", "flypaper"),
+    # --- Colheita de 2026-07-30: varredura com 5 lentes independentes sobre os
+    # ~10,8k átomos COM job-fonte, cada candidato passado por um refutador cético.
+    # 39 candidatos, 14 sobreviveram — e destes, só os abaixo foram aplicados.
+    #
+    # O CRITÉRIO DE CORTE, e ele é o que torna esta leva segura: só entra o termo
+    # que NÃO É palavra portuguesa em contexto nenhum (erro de grafia ou invenção
+    # do modelo). Esses não têm como corromper nota correta, mesmo que a palavra da
+    # prova apareça na página por acaso.
+    #
+    # O que sobreviveu à refutação mas FICOU DE FORA, porque a palavra errada é
+    # legítima em outro sentido e a troca cega estragaria nota boa — foi o próprio
+    # refutador que mediu o dano: "molde/moldes -> mofo" (corromperia 21 corretas),
+    # "estômato -> caule" (11), e ainda "bulbo", "estaca", "cortes", "broto",
+    # "cobertura", "ramificação", "pote", "cama", "banco". Precisam de regra mais
+    # estreita que um par de strings, não de mais confiança.
+    ("jardinadores", "jardineiros", "gardener"),
+    ("jardinador", "jardineiro", "gardener"),
+    ("amendamentos", "corretivos de solo", "amendment"),
+    ("amendamento", "corretivo de solo", "amendment"),
+    # `\b` já protege "colaborador": em "colaborador" o caractere antes de "borador"
+    # é 'a', que é \w, então não há fronteira de palavra e o padrão não casa.
+    ("boradores", "brocas", "borer"),
+    ("borador", "broca", "borer"),
+    ("rejuvenação", "rejuvenescimento", "rejuvenat"),
+    ("higrímetros", "higrômetros", "hygromet"),
+    ("higrímetro", "higrômetro", "hygromet"),
+    ("insecticidas", "inseticidas", "insecticide"),
+    ("insecticida", "inseticida", "insecticide"),
+    ("tincturas", "tinturas", "tincture"),
+    ("tinctura", "tintura", "tincture"),
+    ("catequistas", "lagartas", "caterpillar"),
+    ("catequista", "lagarta", "caterpillar"),
+    ("bolas de flores", "buds", "bud"),
+    ("bolas de flor", "buds", "bud"),
+    # SETE grafias da mesma palavra saíram do atomizador. Corrigir só a mais comum
+    # repararia 37% do defeito, então vão todas. O alvo é `balastro` — a forma que o
+    # próprio vault já usa 62 vezes, então a troca não introduz vocabulário novo.
+    # (O termo padrão em PT-BR é "reator"; isso é escolha de estilo do dono, não
+    # correção de erro, e por isso não foi tomada aqui.)
+    ("balastados", "balastros", "ballast"),
+    ("balastado", "balastro", "ballast"),
+    ("balastes", "balastros", "ballast"),
+    ("balasts", "balastros", "ballast"),
+    ("balastim", "balastro", "ballast"),
+    ("balastre", "balastro", "ballast"),
+    ("balaste", "balastro", "ballast"),
+    ("balast", "balastro", "ballast"),
 )
 
 
