@@ -1122,8 +1122,9 @@ class VectorStore:
                 break
         return fora
 
-    async def _anexos_colocados(self, docs: Sequence[object]) -> List[str]:
-        """As figuras ATTACH-ONLY da MESMA PÁGINA dos átomos que responderam.
+    async def _anexos_colocados(self, docs: Sequence[object],
+                                consulta: str = "") -> List[str]:
+        """As figuras da MESMA PÁGINA dos átomos que responderam.
 
         É a outra metade de "encontrável ≠ anexável". A figura sem legenda boa foi
         tirada da busca (`_buscar_figuras`) para não poluir; aqui ela volta pela
@@ -1158,20 +1159,69 @@ class VectorStore:
         # átomo do capítulo de COLHEITA que entrou no contexto por vizinhança e
         # arrastou as fotos da página dele. O átomo que realmente respondeu era
         # `controle_da_mildew` — e as figuras DA PÁGINA DELE seriam pertinentes.
+        # ...e só PÁGINA DE VERDADE. `docs[0]` pode ser um átomo auto-colhido, cuja
+        # `origem` é o BALDE ('TemaQuente', 'Conversa', 'Projeto-X.json') e não uma
+        # página — e aí a âncora se perde sem que nada apareça. Foi o que aconteceu em
+        # "o que são tricomas?" (2026-07-31): o melhor átomo era um TemaQuente, e as
+        # 49 figuras das páginas 53-54 que responderam ficaram todas de fora.
         origens = []
-        for d in docs[: max(1, settings.figuras_anexo_paginas)]:
+        for d in docs:
             o = str((getattr(d, "metadata", None) or {}).get("origem") or "").strip()
-            if o and o not in origens:
-                origens.append(o)
+            if not o or o in origens or not livro.e_origem_de_pagina(o):
+                continue
+            origens.append(o)
+            if len(origens) >= max(1, settings.figuras_anexo_paginas):
+                break
         if not origens:
             return []
+        # A FIGURA COM LEGENDA TAMBÉM ENTRA POR AQUI (2026-07-31). Antes só a
+        # attach-only vinha, e isso deixava de fora exatamente as boas: das 41 figuras
+        # de tricoma do acervo, UMA diz "tricoma" em português — as outras 40 dizem
+        # "glândulas resiníferas", que é como Cervantes chama a estrutura. Nenhuma
+        # busca por embedding alcança essas 40 partindo da palavra que o dono digitou,
+        # e nenhuma tabela de sinônimos escala para todo assunto do livro.
+        #
+        # A co-locação não precisa da palavra: se o átomo da página 54 respondeu, a
+        # foto da página 54 ilustra o que ele diz — em qualquer assunto, sem tabela.
+        # `figuras_anexo_so_attach_only=true` volta ao comportamento anterior.
+        onde = [{"origem": {"$in": origens}}]
+        if settings.figuras_anexo_so_attach_only:
+            onde.append({"attach_only": True})
+        else:
+            onde.append({"tipo": "figura"})
         try:
-            res = await asyncio.to_thread(
-                lambda: self._store.get(
-                    where={"$and": [{"attach_only": True},
-                                    {"origem": {"$in": origens}}]},
-                    include=["metadatas"],
+            # ORDENADAS PELA PERGUNTA, não pelo nome do arquivo. Uma página do livro tem
+            # até 13 fotos de assuntos diferentes e o teto deixa passar 2: escolher por
+            # ordem alfabética entrega a f1 sempre (foi o "mesmo rótulo de f1 a f13" que
+            # o dono viu). Aqui a página já garante o ASSUNTO — o ranking só decide qual
+            # das fotos dela ilustra melhor, então não há gate de distância nenhum: a
+            # figura certa pode não repetir uma palavra sequer da pergunta, que é o
+            # defeito inteiro que este caminho existe para contornar.
+            if consulta and not settings.figuras_anexo_so_attach_only:
+                res = await asyncio.to_thread(
+                    lambda: self._store.similarity_search_with_score(
+                        consulta, k=max(teto, 8), filter={"$and": onde})
                 )
+                ordenadas = sorted(res or [], key=lambda ds: ds[1])
+                # CORTE RELATIVO À MELHOR, o mesmo remédio do `figuras_margem_melhor`:
+                # o teto de 2 preenchia o segundo slot com a próxima da fila mesmo
+                # quando ela era muito pior. Medido em 2026-07-31: "o que são
+                # tricomas?" trazia a foto certa e, atrás dela, "uma tempestade de
+                # chuva forte deitou esse jardim". Os pares BONS ficam (mudas com
+                # deficiência de N; lâmpada HPS + seu corte transversal) porque neles
+                # a segunda está perto da primeira.
+                margem = settings.figuras_margem_melhor
+                if margem > 0 and ordenadas:
+                    limite = ordenadas[0][1] * margem
+                    ordenadas = [(d, s) for d, s in ordenadas if s <= limite]
+                saida = []
+                for doc, _score in ordenadas:
+                    src = str(((doc.metadata or {}).get("source")) or "")
+                    if src and src not in saida:
+                        saida.append(src)
+                return saida[:teto]
+            res = await asyncio.to_thread(
+                lambda: self._store.get(where={"$and": onde}, include=["metadatas"])
             )
         except Exception as exc:
             telemetry.error("FIGURAS", "Anexo por co-locação indisponível", exc)
@@ -1429,8 +1479,16 @@ class VectorStore:
             # A figura attach-only entra por AQUI e só por aqui: ela acompanha as
             # páginas que de fato responderam (as promovíveis, `s is not None`), e
             # não vale como fonte nem como contexto.
+            # ORDENADOS POR DISTÂNCIA para a âncora do anexo: `usar` sai na ordem em
+            # que o contexto foi montado (aterrados, depois confiantes, depois irmãos
+            # de página), que NÃO é a ordem de quão bem cada átomo respondeu. Medido em
+            # 2026-07-31: em "o que são tricomas?" a primeira página da lista era a 33
+            # (plantas-mãe, ácaros) e a que respondeu era a 54 — o anexo saía da página
+            # errada por causa da ordem, não do critério.
+            promovidos = sorted(
+                ((s, d) for s, d in usar if s is not None), key=lambda sd: sd[0])
             anexos = await self._anexos_colocados(
-                [d for s, d in usar if s is not None]) if usar else []
+                [d for _s, d in promovidos], consulta) if usar else []
             return LocalResult(texto, melhor, relevante, fontes, anexos)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)
@@ -1718,6 +1776,47 @@ class WebSearcher:
             return buscar_com_fallback(_um_backend, settings.web_backends)
 
         return await asyncio.to_thread(_fetch)
+
+    async def buscar_imagens(self, termo: str, max_results: int) -> list:
+        """Candidatos de IMAGEM na web (2026-07-31). Lista de dicts do ddgs.
+
+        Mesmo caminho do `_ddg`: máscara de PII antes de o termo sair (este e o
+        `_ddg` são as únicas portas de saída de texto do usuário) e fallback de
+        backend, porque um backend do DDG cair é rotina.
+
+        `safesearch="on"` é deliberado: o buscador de imagem é o único ponto do
+        projeto que traz PIXEL de fora, e o vault é de cultivo — uma consulta
+        ambígua não pode devolver qualquer coisa na tela do dono.
+
+        Não baixa nada: quem baixa, valida e sanitiza é o `imagem_web`.
+        """
+        if not termo:
+            return []
+        if settings.egressao_guarda:
+            termo, pii = egressao.mascarar_pii(termo)
+            if pii:
+                telemetry.warn("EGRESSAO", f"PII mascarada na busca de imagem: {', '.join(pii)}")
+
+        def _fetch() -> list:
+            from ddgs import DDGS
+
+            def _um_backend(backend: str) -> list:
+                with DDGS() as ddgs:
+                    try:
+                        return list(ddgs.images(
+                            termo, max_results=max_results, safesearch="on",
+                            backend=backend))
+                    except TypeError:
+                        return list(ddgs.images(
+                            termo, max_results=max_results, safesearch="on"))
+
+            return buscar_com_fallback(_um_backend, settings.web_backends)
+
+        try:
+            return await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            telemetry.warn("IMG_WEB", f"Busca de imagem falhou: {exc}")
+            return []
 
     async def _baixar_pagina(self, client, url: str) -> Optional[str]:
         """Baixa e extrai o texto principal de UMA página. Nunca levanta — devolve

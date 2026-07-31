@@ -655,6 +655,44 @@ class Settings(BaseSettings):
     # várias fotos; anexar todas vira parede de imagem. 0 desliga o anexo por
     # co-locação (a figura attach-only some de vez).
     figuras_anexo_max: int = 2
+    # A co-locação aceita a figura COM legenda, não só a attach-only (2026-07-31).
+    # Motivo medido: das 41 figuras de tricoma do acervo, UMA diz "tricoma" em
+    # português; as outras 40 dizem "glândulas resiníferas", o nome que o autor usa.
+    # Nenhum embedding parte de "tricoma" e chega nelas, e tabela de sinônimo não
+    # escala para todo assunto de um livro de 350 páginas. A página que respondeu já
+    # é a garantia de assunto — por isso a figura dela entra sem precisar repetir a
+    # palavra da pergunta. True volta ao comportamento anterior (só attach-only).
+    figuras_anexo_so_attach_only: bool = False
+    # --- IMAGEM DA WEB (2026-07-31) -------------------------------------------
+    # Quando o dono PEDE para ver algo e o acervo do vault não tem, procurar na
+    # internet em vez de só dizer que não tem. O acervo vem SEMPRE primeiro: a foto
+    # do livro dele é melhor resposta que a foto de um site qualquer, e não custa
+    # rede. A web só entra no vazio.
+    imagem_web_enabled: bool = True
+    # Quantos candidatos pedir ao buscador. Baixa-se do primeiro que sobreviver às
+    # defesas (host público, tamanho, reencode), então este número é a margem para
+    # link morto/hotlink barrado — não é quantas imagens aparecem.
+    imagem_web_candidatos: int = 5
+    # UMA imagem por resposta, e isso não é configurável de propósito: o pedido é
+    # "tem imagem disso?", não "faça uma galeria". Um campo `imagem_web_max` chegou
+    # a existir aqui e foi removido no mesmo dia — ninguém o lia, e config que não
+    # tem consumidor é promessa falsa para quem for calibrar o sistema depois.
+    imagem_web_max_mb: int = 5
+    imagem_web_timeout_segundos: float = 12.0
+    # Onde o arquivo baixado é guardado, RELATIVO ao vault — precisa ficar dentro
+    # dele porque é o `/api/imagem/` que serve, e essa rota tranca tudo fora da
+    # raiz do vault. Subpasta própria para nunca se misturar com as figuras dos
+    # livros: o que veio da internet fica identificável e apagável de uma vez.
+    imagem_web_subpasta: str = "Figuras/_web"
+    # ACERVO (ordem do dono, 2026-07-31: "não ficar dependente da web"): a imagem
+    # baixada ganha uma nota .md irmã e passa a fazer parte do vault. Sem a nota, o
+    # .webp é invisível — no vault quem é indexado é o markdown. Com ela, a foto
+    # buscada hoje é encontrada amanhã pela busca LOCAL, sem rede.
+    imagem_web_acervo: bool = True
+    # Teto de imagens guardadas (as mais recentes ficam); a nota some junto com a
+    # imagem. 0 = não limpa, que é o default JUSTAMENTE porque isto virou acervo:
+    # apagar por idade seria voltar a depender da web.
+    imagem_web_cache_max: int = 0
     # De QUANTAS páginas do contexto o anexo por co-locação pode puxar figura. O
     # anexo se justifica por "esta figura ilustra o trecho que o usuário está lendo",
     # e isso só vale para a página que RESPONDEU — não para as dezenas que entraram
@@ -662,7 +700,20 @@ class Settings(BaseSettings):
     # elegíveis, 6 de 6 perguntas receberam figura de outro assunto ("oídio" trouxe
     # "Curing: Passo a passo"; "HPS" trouxe "Salas de Cultivo com Tenda"). 1 = só a
     # página do melhor átomo. MENTE_FIGURAS_ANEXO_PAGINAS sobe se quiser mais.
-    figuras_anexo_paginas: int = 1
+    #
+    # 1 → 6 em 2026-07-31, e o que mudou foi o CRITÉRIO, não a coragem: em julho as
+    # figuras de uma página entravam por ordem de NOME (sempre a f1), então abrir o
+    # espaço só espalhava o erro. Agora elas são rankeadas contra a pergunta, e o
+    # espaço maior é o que deixa a certa aparecer. Medido em lote de 8 perguntas,
+    # 1 contra 3 contra 6 páginas:
+    #   tricomas  1 -> "insetos e ácaros" (errada) | 3 e 6 -> a foto dos tricomas
+    #   tripes    1 -> "moscas brancas" (errada)   | 3 e 6 -> "as tripas raspam a folha"
+    #   podar     1 -> ramificações (ok)           | 6 -> "podada ao remover o meristema"
+    #   HPS e deficiência de nitrogênio: certas nas três (a 1ª página já era boa)
+    # 6 nunca ficou pior que 1 no lote. Também conserta um efeito colateral do teto
+    # baixo: se as primeiras páginas não tiverem figura nenhuma, o anexo saía VAZIO
+    # mesmo havendo foto certa na página seguinte.
+    figuras_anexo_paginas: int = 6
     # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
     # Marcas (substring da proveniência), separadas por '|', em ordem de
     # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
