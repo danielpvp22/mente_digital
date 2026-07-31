@@ -49,7 +49,15 @@ async def test_gravar_no_dump_nao_toca_o_arquivo_de_producao():
 
 @pytest.mark.parametrize("ator", ["User", "IA"])
 async def test_os_dois_atores_escrevem_no_dump_isolado(ator):
+    """Os dois ramos do `append_chat_dump` gravam — e nenhum toca o arquivo do vault.
+
+    A assercao é sobre o TAMANHO do arquivo de produção, não sobre o conteúdo dele:
+    a 1ª versão deste teste procurava a string "Entendido" lá dentro, o que faz o
+    resultado depender do que o dono conversou. Teste não afere dado de usuário."""
+    antes = DUMP_DE_PRODUCAO.stat().st_size if DUMP_DE_PRODUCAO.exists() else None
+
     await etl.append_chat_dump(ator, "conteúdo de teste")
-    assert "Entendido" not in DUMP_DE_PRODUCAO.read_text(encoding="utf-8") \
-        if DUMP_DE_PRODUCAO.exists() else True
+
+    depois = DUMP_DE_PRODUCAO.stat().st_size if DUMP_DE_PRODUCAO.exists() else None
+    assert depois == antes
     assert Path(settings.arquivo_chat_dump).exists()

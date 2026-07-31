@@ -19,8 +19,6 @@ um "s" derruba o casamento — 'tricoma' não casava "## tricomas", 'bráctea' n
 por isso que existe `contem_alguma_flex`. Nota boa condenada é pior que nota ruim
 passando: a primeira o dono perde sem saber.
 """
-import re
-
 import pytest
 
 from mente_digital import etl, imagem_web, textutils
