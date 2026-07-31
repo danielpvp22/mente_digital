@@ -9,7 +9,7 @@
 🇺🇸 *Prefer English? There's a [condensed overview](README.en.md).*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-885_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-1378_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
@@ -32,15 +32,17 @@
 
 <div align="center">
 
-**⏱ A camada de 30 segundos** — seis números, todos medidos neste repositório:
+**⏱ A camada de 30 segundos** — oito números, todos medidos neste repositório:
 
 | | |
 |---:|:---|
-| **885 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
+| **1.378 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~12 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** (`eval/ab_modelos.py`) |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real (`eval/calibrar_gate.py`) |
-| **TTFT ≈ 1,1 s** | medido ao vivo numa resposta do vault (decode ≈ 85 tok/s), com timing por estágio em `/api/metrics` |
+| **27 s → 10-12 s** | turno com escalada web no modo live, depois da rodada de latência (deep-fetch em race, filler paralelo) |
+| **31,7 s → 12,4 s** | boot do servidor, em três passadas medidas (XTTS preguiçoso → pré-montagem em RAM → paralelismo) |
+| **1.736 figuras** | acervo visual buscável extraído dos livros por **layout semântico** do OCR (contra 777 da heurística de pixel) |
 | **8,9 / 10 GB** | o stack inteiro (Qwen3-8B + e5-base + KV `q8_0`) residente na VRAM da RTX 3080, com ~1,3 GB de folga |
 
 </div>
@@ -55,9 +57,10 @@
 | [Os dois planos](#-os-dois-planos-pergunta-e-comando) | [O plano de comando](#-o-plano-de-comando-a-palavra-mestre) | [Agentes proativos](#-agentes-proativos-a-responsabilidade-contínua) |
 | [Stack](#-stack-e-como-cada-peça-é-usada) | [Papel de cada módulo](#-papel-de-cada-módulo) | [Passo a passo](#-passo-a-passo-o-que-acontece-quando-você-fala) |
 | [A Malha](#-a-malha-um-grafo-sobre-as-suas-notas) | [O banco vetorial](#-o-banco-vetorial-como-ele-é-formado) | [Ciclo do conhecimento](#-o-ciclo-de-vida-do-conhecimento) |
-| [Por que cada formato](#-por-que-cada-formato) | [Skills demonstradas](#-skills-de-engenharia-demonstradas) | [Evolução](#-evolução-do-projeto) |
-| [War stories](#-war-stories-os-bugs-que-moldaram-a-arquitetura) | [Casos de uso](#-casos-de-uso) | [Outros contextos](#-além-do-assistente-pessoal) |
-| [Setup](#-setup--instalação) | [Configuração](#-configuração) | [API e protocolo](#-api-e-protocolo) |
+| [Ingestão de obras](#-ingestão-de-obras-livros-pdfs-e-figuras) | [Por que cada formato](#-por-que-cada-formato) | [Skills demonstradas](#-skills-de-engenharia-demonstradas) |
+| [Evolução](#-evolução-do-projeto) | [War stories](#-war-stories-os-bugs-que-moldaram-a-arquitetura) | [Casos de uso](#-casos-de-uso) |
+| [Outros contextos](#-além-do-assistente-pessoal) | [Setup](#-setup--instalação) | [Configuração](#-configuração) |
+| [API e protocolo](#-api-e-protocolo) | [Não-features](#-não-features-intencionais-e-pontos-em-aberto) | [Histórico completo](docs/EVOLUCAO_DO_PROJETO.md) |
 
 ---
 
@@ -69,7 +72,7 @@ Mas ele não só **responde**. Ele **age** (crie um lembrete, adicione à lista,
 
 A diferença para um "chatbot com RAG" está em teses que atravessam cada linha do código:
 
-**1. A base de conhecimento é sua, e é um vault Obsidian.** Não um banco vetorial opaco — arquivos `.md` que você lê, edita e versiona. O ChromaDB é um índice **derivado e descartável**; a fonte de verdade é o filesystem. Trocar o modelo de embedding é uma reindexação, não uma perda de dados.
+**1. A base de conhecimento é sua, e é um vault Obsidian.** Não um banco vetorial opaco — arquivos `.md` que você lê, edita e versiona. O ChromaDB é um índice **derivado e descartável**; a fonte de verdade é o filesystem. Trocar o modelo de embedding é uma reindexação, não uma perda de dados. E ela cresce por duas portas: a **sua curiosidade** (o ETL destila o que você perguntou) e a **ingestão de obras** — um PDF solto numa pasta vira centenas de átomos com proveniência de página e um acervo de figuras buscáveis, tudo no idle (ver [Ingestão de obras](#-ingestão-de-obras-livros-pdfs-e-figuras)).
 
 **2. O que importa não é a latência real, é a latência percebida.** A métrica que o sistema persegue não é TTFT (tempo até o primeiro *token*) e sim **TTFA — tempo até o primeiro *áudio***. Num assistente de voz, token que ninguém ouviu não existe. Streaming + chunking por frase + filler falado + guard prefixal existem todos para minimizar esse número — e ele é medido, gravado no SQLite e exposto em `/api/metrics`.
 
@@ -94,7 +97,7 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 | **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru (`chat_dump_bruto.md`, HTML) → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **885 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Qualidade de dados / DataOps** | **1.378 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
 | **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -105,8 +108,113 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 
 Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é uma feature real, com o comando de voz (`mestre, …`) ou o botão `.env` quando existe. As seções técnicas mais abaixo aprofundam o *como* e o *porquê*; aqui é o *o quê*.
 
+> 📖 A **história completa** — as cinco eras narradas, lidas commit a commit e PR a PR, com a curva de crescimento e o método que emerge dela — está em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md).
+
 <details open>
-<summary><b>🔊 Voz — engine XTTS-v2 (GPU, opt-in), números falados e correções (mais recente)</b></summary>
+<summary><b>🔎 Recall das figuras, imagem da web e o acervo que se audita (mais recente)</b></summary>
+
+A rodada que veio depois do acervo visual existir: **fazer a figura certa chegar**, buscar na web o que o vault não tem, e desconfiar do que o próprio acervo afirma.
+
+| Mudança | Resultado |
+|---|---|
+| **Busca exata em memória para figuras** | O dono pediu a foto de uma capivara e recebeu cannabis. Não era ranking, era **recall**: o hnswlib usa `ef = max(ef_search, n_results)` e `top_k=12` explora o grafo raso demais para alcançar um ponto **isolado** (uma capivara num acervo de cannabis tem poucos vizinhos). Medido em produção (1.861 figuras, 20 perguntas): `n_results=12` dava recall@10 **90,5%** e top-1 **70%**; com 500, **98,0%** e **90%**. `hnsw:search_ef` via `modify()` não teve efeito nenhum — testado em 6 valores |
+| **Imagem da web sem furar o pilar local** (`imagem_web.py`) | Quando o acervo não tem a foto, o assistente busca na internet. A parte difícil não é achar: o front **recusa de propósito** markdown de imagem com URL externa (nota envenenada faria o browser buscar servidor de fora). Então o **servidor** baixa, sanitiza e guarda; o chat recebe o mesmo wikilink de sempre, servido por `/api/imagem/`. O navegador continua falando só com o localhost |
+| **O acervo web se audita** | A revalidação já marcava `acervo_confere: NAO` no frontmatter — e **ninguém lia a marca**. Eram 5 de 45 notas: "solo argiloso" era uma miniatura de Rainbow Six Siege (casou o *solo* de *solo queue*), "estômato" um formulário de currículo. Corrigido no molde do `attach_only`: metadado gravado **só quando verdadeiro** (chave ausente não casa `where` no Chroma) e filtro nos **dois** caminhos de anexo — a busca e a co-locação, que seria a porta dos fundos perfeita para a figura que a busca acabou de barrar |
+| **A ordem do descarte importa** | Primeira versão filtrava a suspeita **depois** do corte relativo — então ela continuava sendo a `ordenadas[0]` e **ancorava a margem**: uma reprovada a 0,08 puxaria o limite para 0,09 e empurraria para fora a figura boa a 0,10. *O gate não pode deixar a figura que ele mesmo barrou decidir quem mais entra* |
+| **`n_ctx` 8192 → 16384**, com o custo medido | **76,0 KiB por token** medido em A/B controlado no mesmo processo: 8192 = 3.502 MiB de modelo+KV, 16384 = 4.110 MiB. Estimativa trocada por medição |
+| **O estouro de contexto que apagou dois dias de conversa** | Corrigido no idle — a falha silenciosa mais cara desta leva |
+
+</details>
+
+<details>
+<summary><b>🖼 Figuras, a enciclopédia e o custo em boot/VRAM</b></summary>
+
+O assistente ganhou **olhos**: as figuras dos livros viraram conhecimento buscável, e a imagem aparece no chat ao lado da frase que fala dela. Pagar por isso obrigou a repensar quando o TTS sobe e quanto o boot custa.
+
+| Mudança | Resultado esperado |
+|---|---|
+| **Detecção de figura por layout semântico** (`figuras_recorte.py`) — o DeepSeek-OCR com o token `<\|grounding\|>` devolve caixas rotuladas com a legenda já pareada, no lugar da heurística de pixel | **1.736 figuras contra 777.** A heurística exigia escolher entre perder diagrama de traço fino e promover tarja de design; sem entender a *página*, nenhum limiar separa as duas coisas |
+| **Espaço de busca próprio para figura** (`_buscar_figuras`, metadado `tipo`) com **gate adaptativo** — corte relativo à melhor figura *da própria pergunta* (1,10×) | A figura **ilustra, nunca ancora** (só é buscada quando o texto já achou candidato) mas **promove** maturidade. Disputando as mesmas vagas ela perdia (0,1239 fora de um top-40 cujo pior era 0,1373) ou vencia demais (16 das 40 vagas numa pergunta de poda) |
+| **O servidor anexa a imagem**, não o LLM (`2b8f2b0`) | Determinístico, custo zero de token, imune ao nível de verbosidade. Pedir ao modelo que copiasse o wikilink falhava sob o teto de tokens — a resposta consumia o teto e não sobrava espaço para um embed de ~105 chars |
+| **Figura inline** — entra depois da frase que a menciona, casada por palavra da legenda (`8f51d4f`) | Deixa de empilhar tudo no fim da resposta. Limiar **proporcional** ao tamanho da legenda |
+| **Cannabis Encyclopedia no vault** (`encyclopedia.py`, `obras.py`) — ingestão da edição web + **precedência declarada entre obras** | 30 capítulos, 1.817 figuras, 5.907 átomos, 1.087 notas da edição antiga aposentadas. A precedência exige relação **declarada nos dois sentidos** — a 1ª versão, que inferia da semelhança, aposentou 76 notas indevidamente em produção |
+| **Fusão em vez de escolha** (`fusao.py`) | Três testes cegos deram **17 a 10 para a base antiga**: o que faltava na nova era o **dado duro** ("5 a 14 dias", "±0,5 ponto") — ao fatiar mais fino, o modelo separou o número do contexto. A nova virou espinha dorsal e a antiga entrou dentro dela: **2.994 átomos enriquecidos** |
+| **Saneamento de idioma** (`idioma.py`, `vocabulario.py`, `reparo.py`) | Átomo em inglês é **invisível** para o gate (que exige interseção exata de tokens). 185 traduzidos, 1.443 legendas de figura passadas para PT — **aterramento léxico de 100 para 1.490** em 14 perguntas |
+| **8B nas passadas offline** (`llm.preparar_offline`) | O modelo do servidor foi escolhido por **latência**; a atomização não tem ninguém esperando e a VRAM está livre. O 4B truncava 5 átomos em 8 páginas; o 8B, **0 em 24 medições** |
+| **Turno digitado não fala** (`32474d9`, ContextVar `turno_falado`) | Em 19 turnos reais por texto, a síntese consumia **~95% do relógio** — áudio que ninguém ia ouvir. O sinal (`origem_voz`) já existia e nunca fora ligado à síntese |
+| **XTTS preguiçoso + pré-montado em RAM** (`8b6ea7e`, `2d7a93b`) | Sobe só quando o microfone abre. Do perfil por fase: dos **20,28 s** de load, **19,3 s são CPU/RAM e só 1,0 s precisa da GPU** — então monta-se em background e deixa só o `.to(cuda)` para a hora da voz |
+| **Boot 31,7 s → 12,4 s** (`fa81745`) | Whisper ∥ embeddings e a MALHA fora do caminho crítico. E `rede.porta_em_uso` (~0,2 ms) no topo do lifespan: o uvicorn só reserva a porta **depois** do lifespan, então um start duplicado carregava tudo (~45 s, ~4,7 GB) antes de descobrir que a porta estava ocupada |
+| **Ponte de vocabulário EN→PT** (`vocabulario.py`) | *"O que é topping"* trazia cobertura de pizza — o vault cobre o assunto com fartura, sob nomes sem **nenhum token** em comum com a palavra digitada. O e5 é multilíngue, então a metade *semântica* do gate atravessa idiomas; quem morre no jargão é a metade *léxica* |
+| **Gravação do turno inteiro** (`transcricao.py`, JSONL no `safe_send`) | Registra o que foi **enviado**, não o que o servidor acha que enviou. Revelou de imediato que **7 de 19** respostas batiam no teto de 90 tokens — numa delas o corte fez o pipeline escalar para a web e responder pior do que o vault sabia. Teto do nível curto: **90 → 128** |
+
+</details>
+
+<details>
+<summary><b>📚 Ingestão de obras — Fases 1 a 5 — e o painel de especialistas</b></summary>
+
+Duas frentes que se somaram: um **painel de especialistas** auditou o projeto e virou backlog, e o pedido *"seja expert neste livro"* virou um pipeline de ingestão completo — sempre **no idle**, nunca competindo com a conversa.
+
+**O painel (semanas 1 a 3):**
+
+| Mudança | Por quê |
+|---|---|
+| **Backup diário** de vault + SQLite (`backup.py`, retenção 14 dias, API `sqlite3.backup` consistente em WAL) | O vault era a **única cópia** do conhecimento destilado — o dump bruto morre na atomização, logo disco morto = base morta |
+| **Anti-injeção na persistência do ETL** | A colheita enfileirava texto cru de página web; um payload viraria átomo **permanente** do vault. O choke point ficou antes do LLM da síntese |
+| **Sigilo de verdade** (`MENTE_SIGILO_BLOQUEIA_WEB`, `ctx.sigilosas` por `conversa_id`) | Em modo confidencial a escalada web passa a ser **bloqueada** — só agora a promessa "fica só nesta sessão" é verdadeira. Validado por um **teste-invariante** que roda um turno sigiloso contra o DB real e afirma que nenhuma tabela de conteúdo cresce |
+| **CI de qualidade** — ruff, cobertura com **piso ratchet**, bandit, pip-audit | O CI deixa de ser só "os testes passam" |
+| **Erro falado + UI 100% local** | Erro de pipeline deixa de ser dead-air; `fonts.googleapis.com` saiu (contradizia o "sem telemetria de terceiros" e quebrava offline) |
+
+**As cinco fases da ingestão:**
+
+- **Fase 1 — livro digital** (`livro.py`): PDF → capítulos pelo TOC → jobs numa **fila durável em disco** (sobrevive a restart) → átomos com proveniência de página **+ uma nota-síntese por capítulo** (a atomização fragmenta o argumento; a síntese preserva a tese).
+- **Fase 2 — consolidação** (`consolidacao.py`): funde átomos quase-idênticos num canônico. Agrupamento **ancorado no representante** (sem corrente A~B~C em que C já derivou de assunto); os originais são **arquivados, nunca deletados**.
+- **Fase 3 — OCR do livro escaneado** (`ocr.py`): roda como **subprocesso, não import** (o modelo exige outra versão de Python/torch), com `ctx.liberar_vram()` descarregando LLM + XTTS + Whisper + embeddings e `restaurar_vram()` obrigatório no `finally` — sem ele **a voz voltaria muda em silêncio**. Retomada por página; **~2,8 s/página**, 628 páginas em ~20 min com fila contínua por semáforo.
+- **Fase 4 — colheita acadêmica** (`academico.py`): PDFs acadêmicos + **pasta vigiada** onde o arquivo *sempre* sai da entrada (digital → `processados/`, escaneado → `aguardando_ocr/`).
+- **Fase 5 — figuras** (`figuras.py`): extraídas em WebP (q80 = **2,2× menor** que o JPEG já embutido no PDF), vinculadas na síntese do capítulo e servidas por rota com `resolve()` + allowlist — **só wikilink é aceito no cliente**, porque markdown de imagem com URL externa numa nota envenenada faria o browser buscar servidor de fora.
+- **Triagem editorial** (`triagem.py`): capa, índice remissivo e créditos não viram átomo — decidido por **sinal medido** (densidade de entradas, razão de prosa), não por lista de páginas. Na dúvida, mantém.
+
+> **Guarda anti-desperdício:** na fila real, **de 3 livros, 2 já tinham camada de texto** — seriam ~4 h de GPU para um resultado pior que o embutido. E num PDF escaneado a "imagem embutida" é a própria página: Amabis gerou 627 "figuras" para 628 páginas. **286 MB de retratos de página** foram removidos do vault.
+
+</details>
+
+<details>
+<summary><b>🎙 Modo live — XTTS estável, latência e as travas de GPU</b></summary>
+
+A conversa por voz de ponta a ponta saiu do papel. **Turno com web: ~27 s → 10-12 s. Web fetch: ~11 s → ~3 s.**
+
+| Mudança | Resultado |
+|---|---|
+| **Race-first-K no deep-fetch** — dispara um pool, aceita os primeiros úteis, cancela o resto | O ganho principal da rodada. E os **perdedores viraram feature**: em vez de abortados no meio (o que "tem cara de bot"), terminam em background durante a fala e viram átomos `#conhecimento_novo` de graça |
+| **Carência do filler** (`MENTE_FILLER_CARENCIA_S`, 1,5 s) | Bug *causado* pela otimização anterior: com a web voltando em ~3 s, a ponte falada ("vou buscar…") **atropelava o próprio dado**. Se a busca termina na janela, o filler é pulado inteiro |
+| **`dividir_para_xtts`** — corta a frase abaixo do `gpt_max_audio_tokens` | Frase longa estourava o teto do GPT-2 interno do XTTS e disparava **device-side assert que corrompia o contexto CUDA e derrubava o llama.cpp junto**. O TTS matava o LLM |
+| **Serialização da inferência XTTS** (token de geração `_gen` + `_infer_lock`) | **Duas sínteses concorrentes** faziam o mesmo estrago, envenenando a GPU inteira. Agravante: o `clear()` do Event no início da síntese *ressuscitava* a thread órfã de um turno cortado |
+| **Meia-duplex** (`7fb3a9f`) — enquanto a IA fala, o mic não abre turno | A IA **respondia aos próprios fantasmas**: o microfone captava o eco da própria fala e o Whisper alucinava "e aí", "obrigado", "buponte", que abriam turnos novos. O único efeito permitido durante a fala é o comando de parada, por regex leve |
+| **Debounce do ETL idle** (`idle_grace_seconds`) + idle só sem sessão conectada | O ETL pesado (atomizar, indexar, reconstruir a malha, unload) rodava **no meio da conversa** e envenenava a pergunta seguinte |
+| **Instrumentação** — `tok/s` medido no **produtor** (imune ao TTS inline), `lock_wait`/`prefill`/`reload_frio`/`vram_peak`/`tts_synth` por frase, modo TRACE em JSONL | É o que permitiu atribuir a latência corretamente. A hipótese óbvia estava errada: **não era contenção GPU LLM↔XTTS** (o decode é rápido e fica ocioso durante a fala), era volume de síntese + web lenta + spill de VRAM no WDDM |
+
+</details>
+
+<details>
+<summary><b>🧱 Modularização, Consultoria TTFT e o teste real 2507</b></summary>
+
+Três coisas ao mesmo tempo: o projeto virou **publicável** (Apache-2.0, CI, Docker, README bilíngue), o deus-módulo foi **quebrado**, e o dono começou a **usar o assistente de verdade** — o que despejou uma fila numerada de defeitos.
+
+**A refatoração (`agent.py`: 2.472 → 506 linhas + 6 módulos).** Um commit por extração, código movido *verbatim* (funções puras, regexes e comentários-cicatriz preservados), com os 624 testes verdes em **cada** passo. `atomos.py`, `otimizador.py`, `LatencyTracker`→`telemetry.py`, `etl.py`, e os mixins `comandos_mestre.py`/`respostas.py` — que em runtime são o mesmo objeto `Agent` de sempre. Lição registrada: os monkeypatches de namespace passam a mirar a casa **nova** do símbolo, porque o rebind só afeta o namespace onde o código *lê* o símbolo.
+
+**A Consultoria TTFT — 12 otimizações aceitas de uma vez** (relatório com banca e ranking em [`docs/CONSULTORIA_TTFT.md`](docs/CONSULTORIA_TTFT.md)):
+
+- **Waterfall por estágio** (`vad_ms`/`extrator_ms`/`busca_ms`, p50/p95 em `/api/metrics`) — a instrumentação que arbitra qualquer otimização futura, e a que sustentou as rodadas seguintes.
+- **Dedup na escala do e5**: `MENTE_DEDUP_DIST_MAX` **0.08 → 0.01**. O 0.08 era escala MiniLM; no e5 marcaria 75% da base como duplicata e o `_ja_no_banco` descartava átomo legítimo **em silêncio**.
+- **Endpointing adaptativo** (fala curta encerra em 0,7 s), **filler ∥ busca web**, **1º chunk agressivo** (60 chars), **fase (b) do extrator** (recuperação vetorial em paralelo com o LLM), **fallback Whisper cuda→CPU**.
+- **Higiene do DB de teste** — a suíte estava escrevendo no SQLite **real**; três lacunas-fixture foram expurgadas do banco de produção.
+- **Bench com guardrails** (`eval/bench_ttfa.py`: sentinela nunca falado, rota esperada, waterfall preenchido) e o **preâmbulo comum de KV entregue desligado**, com kill criterion explícito: só cravar com A/B real ≥50 ms/turno.
+
+**O teste real (defeitos #32–#38):** o reindex do vault saindo do caminho crítico (`total=46055ms` no waterfall — *"o usuário repetia a pergunta 3× achando que travou"*); **~40 átomos vazados** do modo confidencial no disconnect; o veto declarativo (*"salva" é substring de "Salvador"*); a alucinação "Obrigado" do Whisper virando nota; backchannel ("ok", "aham") ativando o registro declarativo; barge-in com guard anti-eco no servidor (RMS 4× o VAD normal, porque sem AEC o próprio TTS captado pelo mic se auto-cortaria); e um átomo em vietnamita derrubando a busca inteira via `UnicodeEncodeError` no `cp1252` do Windows — donde a regra: **logging é instrumentação, nunca pode ter poder de quebrar o pipeline**.
+
+</details>
+
+<details>
+<summary><b>🔊 Voz — engine XTTS-v2 (GPU, opt-in), números falados e correções</b></summary>
 
 A camada de voz ganhou um **segundo motor** e uma leitura de números correta. Tudo atrás de flag, com o **Piper seguindo como default** — nada muda até você ligar.
 
@@ -275,7 +383,7 @@ Por que separar tão fisicamente? Porque as duas naturezas têm requisitos opost
 
 ## 🗝 O plano de comando: a palavra-mestre
 
-`mestre.py` (982 linhas, o 3º maior módulo) é o **fluxo isolado que aciona os agentes**. Ele é quase todo **puro e testável** — funções que recebem `(texto, agora)` e devolvem uma `Decisao`, com o instante de referência **injetado** para o teste ser determinístico.
+`mestre.py` (1.010 linhas, um dos maiores módulos) é o **fluxo isolado que aciona os agentes**. Ele é quase todo **puro e testável** — funções que recebem `(texto, agora)` e devolvem uma `Decisao`, com o instante de referência **injetado** para o teste ser determinístico.
 
 ```mermaid
 flowchart TD
@@ -340,7 +448,7 @@ O isolamento é rígido em ambos os sentidos: comando que o app não cobre é **
 
 ## 🔔 Agentes proativos: a responsabilidade contínua
 
-O ETL idle é **oportunista** (colhe quando dá). O `scheduler.py` (310 linhas) é o oposto: a **responsabilidade contínua** de um assistente tipo-Alexa — o que tem *hora marcada*. É um loop de background (retido em `ctx.track_task`) que lê a tabela **`agendamentos`** — **persistente, sobrevive a restart** — e dispara os vencidos.
+O ETL idle é **oportunista** (colhe quando dá). O `scheduler.py` (635 linhas) é o oposto: a **responsabilidade contínua** de um assistente tipo-Alexa — o que tem *hora marcada*. É um loop de background (retido em `ctx.track_task`) que lê a tabela **`agendamentos`** — **persistente, sobrevive a restart** — e dispara os vencidos.
 
 ```mermaid
 flowchart LR
@@ -406,67 +514,93 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 
 | Tecnologia | Papel | Como é usada **neste** projeto |
 |---|---|---|
-| **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~240 linhas e **zero lógica de domínio** — só wiring e rotas. |
+| **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~350 linhas e **zero lógica de domínio** — só wiring e rotas. |
 | **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
-| **Pydantic Settings** | Configuração | **189 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
-| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (529 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
-| **pytest** | Testes | **885 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
+| **Pydantic Settings** | Configuração | **282 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
+| **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (555 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
+| **pytest** | Testes | **1.378 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
 ## 🗂 Papel de cada módulo
 
-**~12.900 linhas de Python** em 34 módulos (de ~3.300 em 12), mais ~10.600 de testes e ~530 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
+**~21.000 linhas de Python** em 52 módulos (de ~3.300 em 12), mais ~18.500 de testes e ~555 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
 .                        # a RAIZ fica com o entrypoint + o resto em pastas
-├── main.py              # 242  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
+├── main.py              # 350  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
 ├── mente_digital/       # o PACOTE do app (lógica de domínio; importado por caminho absoluto)
-│   ├── config.py       # 789  Settings (Pydantic), 189 knobs + dicionário fonético do TTS
-│   ├── prompts.py      # 483  todos os prompts de sistema/tarefa + as tags Zettelkasten
-│   ├── state.py        # 335  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
-│   ├── llm.py          # 514  LlamaManager: GPU serializada, streaming, cancelamento, preempção
-│   ├── audio.py        # 429  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
-│   ├── tts_xtts.py     # 286  XttsService: engine TTS alternativo (XTTS-v2/coqui, GPU, opt-in)
+│   │ ── núcleo ────────────────────────────────────────────────────────────────
+│   ├── config.py       # 1268 Settings (Pydantic), 282 knobs + dicionário fonético do TTS
+│   ├── prompts.py      # 754  todos os prompts de sistema/tarefa + as tags Zettelkasten
+│   ├── state.py        # 430  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
+│   ├── llm.py          # 577  LlamaManager: GPU serializada, streaming, cancelamento, preempção
+│   ├── telemetry.py    # 1380 logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+│   ├── ws.py           # 502  LiveSession: VAD, barge-in, wake-word, meia-duplex, PUSH, fim de sessão
+│   ├── rede.py         # 51   checa a porta ANTES de carregar modelo (start duplicado morre em 0,2 s)
+│   │ ── voz ───────────────────────────────────────────────────────────────────
+│   ├── audio.py        # 470  SttService (Whisper) + TtsService (Piper + cache) + SentenceChunker
+│   ├── tts_xtts.py     # 441  XttsService: engine alternativo (XTTS-v2/coqui, GPU, opt-in, lazy)
 │   ├── verbalizar.py   # 144  verbalização de números PT-BR p/ fala (num2words, puro/testável)
-│   ├── rag.py          # 1509 EmbeddingProvider (e5 + prefixos) + VectorStore + MalhaIndex + WebSearcher
-│   ├── agent.py        # 662  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
-│   ├── comandos_mestre.py # 847 mixin "age": _fluxo_mestre + executores das três ondas
-│   ├── respostas.py    # 517  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
-│   ├── otimizador.py   # 249  QueryOptimizer + heurísticas puras da pergunta
-│   ├── atomos.py       # 276  atomização Zettelkasten pura (o Python impõe a estrutura)
-│   ├── etl.py          # 519  EtlProcessor do idle: fila web, conversa, proativa, snapshot
+│   │ ── conhecimento ──────────────────────────────────────────────────────────
+│   ├── rag.py          # 2056 EmbeddingProvider (e5) + VectorStore + MalhaIndex + WebSearcher + figuras
+│   ├── agent.py        # 738  o NÚCLEO: pipeline de resposta, roteamento de tools, re-exports
+│   ├── respostas.py    # 734  mixin "responde": contexto/web/stream, síntese, prefetch, promoção
+│   ├── otimizador.py   # 285  QueryOptimizer + heurísticas puras da pergunta
+│   ├── atomos.py       # 318  atomização Zettelkasten pura (o Python impõe a estrutura)
+│   ├── etl.py          # 1209 EtlProcessor do idle: fila web, conversa, proativa, ingestão, snapshot
+│   ├── vocabulario.py  # 94   ponte de jargão EN→PT para o aterramento léxico — puro
+│   ├── imagem_web.py   # 449  imagem da web servida LOCALMENTE (o servidor baixa; o
+│   │                   #      browser nunca fala com fora) + revalidação do acervo
+│   ├── textutils.py    # 145  normalização, keywords, aterramento léxico, Jaccard (100% puro)
+│   │ ── ação (o plano de comando) ─────────────────────────────────────────────
+│   ├── comandos_mestre.py # 854 mixin "age": _fluxo_mestre + executores das três ondas
+│   ├── mestre.py       # 1010 PALAVRA-MESTRE: plano de comando isolado e determinístico
 │   ├── tools.py        # 720  function calling aditivo: gate, roteador JSON, agentes de agenda/lista
-│   ├── mestre.py       # 982  PALAVRA-MESTRE: plano de comando isolado e determinístico
 │   ├── agenda.py       # 271  parser de tempo PT-BR puro (relativo/absoluto/recorrente)
-│   ├── scheduler.py    # 443  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
+│   ├── scheduler.py    # 635  SchedulerService: alarmes, watchers, briefing, pomodoro (persistente)
 │   ├── calendario.py   # 88   parser mínimo de .ics (100% local) — "o que tenho hoje"
-│   ├── verbosidade.py  # 139  governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+│   ├── verbosidade.py  # 162  governador de verbosidade: 1-frase, detalhe, ELI5, tutor
+│   │ ── ingestão de obras (ver seção própria) ─────────────────────────────────
+│   ├── livro.py        # 165  Fase 1: PDF digital → capítulos → jobs com proveniência — puro
+│   ├── ocr.py          # 298  Fase 3: livro escaneado (subprocesso + VRAM liberada e restaurada)
+│   ├── academico.py    # 91   Fase 4: colheita de PDFs acadêmicos + pasta vigiada — puro
+│   ├── figuras.py      # 352  Fase 5: extrai/comprime figura em WebP e vincula ao capítulo
+│   ├── figuras_recorte.py # 868 detecção por layout semântico do OCR (`<|grounding|>`)
+│   ├── encyclopedia.py # 409  livro publicado na WEB → o mesmo job da Fase 1 — puro
+│   ├── obras.py        # 76   precedência DECLARADA entre edições de uma obra — puro
+│   ├── fusao.py        # 155  funde a edição antiga DENTRO da nova, enriquecendo-a — puro
+│   ├── triagem.py      # 119  o que NÃO vira átomo (capa, índice, créditos), por sinal medido — puro
+│   ├── consolidacao.py # 53   Fase 2: funde átomos quase-idênticos num canônico — puro
+│   ├── idioma.py       # 214  detecta e reescreve em PT-BR o átomo que saiu em inglês — puro
+│   ├── reparo.py       # 416  reescreve o corpo de átomos truncados a partir do job-fonte — puro
+│   │ ── módulos-agente puros e guardas ────────────────────────────────────────
 │   ├── srs.py          # 25   repetição espaçada (Leitner) — puro
 │   ├── habitos.py      # 22   sequência de hábitos (streak) — puro
 │   ├── grafo.py        # 86   pontes/conexões do vault (surpresa por Jaccard) — puro
 │   ├── egressao.py     # 99   guarda anti-PII na query que vai à web (#6) — puro
-│   ├── vram.py         # 94   governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
+│   ├── vram.py         # 111  governador de VRAM + orçamento de tokens de fundo (#28/#29) — puro
 │   ├── antiinjecao.py  # 54   dropa "ignore as instruções…" do conteúdo web (#26) — puro
 │   ├── fio.py          # 47   Fio da Conversa: retomar um assunto anterior (#35) — puro
 │   ├── disjuntor.py    # 47   disjuntor anti-shadowban da busca web (#31) — puro
 │   ├── diapasao.py     # 41   perfil de COMO o dono prefere ser respondido (#36) — puro
 │   ├── contradicao.py  # 35   banda de "mesmo tema" do detector de contradição (#24) — puro
-│   ├── textutils.py    # 127  normalização, keywords, aterramento léxico, Jaccard (100% puro)
 │   ├── acesso.py       # 44   token (tempo constante) ou loopback-only + guarda de Origin — puro
-│   ├── ws.py           # 433  LiveSession: VAD, barge-in, wake-word "mestre", PUSH proativo, fim de sessão
-│   └── telemetry.py    # 1278 logs coloridos thread-safe + Database (SQLite, todas as tabelas)
+│   ├── backup.py       # 91   backup diário do trio insubstituível: vault + SQLite + .env
+│   └── transcricao.py  # 118  grava o turno inteiro em JSONL, no ponto único de saída
 ├── dados/               # TODO dado de runtime (gitignored) — nada disto vai pro git
 │   ├── modelos/         # LLM .gguf + voz Piper + whisper/ (binários fora do git)
 │   ├── Cerebro_Digital/ # vault Obsidian (as notas do dono)
 │   ├── banco_vetorial_cerebro/ # índice Chroma (derivado do vault)
+│   ├── ingestao/pendentes/     # fila DURÁVEL de jobs de capítulo (sobrevive a restart)
+│   ├── livros/entrada/         # pasta vigiada: solte um PDF aqui
 │   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
 │   └── chat_dump_bruto.md      # fila do ETL de conversa
-├── templates/           # index.html — a SPA inteira (529 linhas)
-├── tests/               # 885 testes em 91 arquivos, sem GPU, sem rede
-├── eval/                # benches e A/B (TTFA, embeddings, modelos)
-├── scripts/             # utilitários (import de histórico, reindex, certs, bench de STT)
-└── docs/                # CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
+├── templates/           # index.html — a SPA inteira (555 linhas)
+├── tests/               # 1.378 testes em 138 arquivos, sem GPU, sem rede
+├── eval/                # 16 harnesses de A/B e bench (TTFA, embeddings, modelos, qualidade de átomo)
+├── scripts/             # 29 utilitários (reindex, ingerir livro, OCR, reparo, certs, bench de STT)
+└── docs/                # EVOLUCAO_DO_PROJETO.md, CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
 ```
 
 <details>
@@ -476,7 +610,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 Único arquivo executável. No `lifespan`: cria as pastas, sobe o SQLite, monta o `AppContext`, instancia todos os serviços **e inicia o `SchedulerService`** como task retida. **A GPU carrega em background** (`track_task`) para o servidor aceitar conexões enquanto o modelo sobe; Whisper/Piper/embeddings vão para `asyncio.to_thread`. Zero lógica de domínio, por decisão explícita.
 
 ### `config.py` — o painel de controle
-Uma classe `Settings` (Pydantic) com **189 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
+Uma classe `Settings` (Pydantic) com **282 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
 
 ### `state.py` — estado compartilhado, sem lógica
 `AppContext` é o container de DI que vive em `app.state.ctx`. Contém `track_task` (referência forte contra o GC — ver [war stories](#2-as-tasks-que-o-garbage-collector-comia)), o `interactive_idle` (prioridade de GPU), `sessoes` (as conexões vivas, alvo do PUSH proativo) e a `SessionMemory`. Esta última cresceu com os agentes: além de histórico e fila de ETL, guarda o **estado de sessão** dos meta-comandos — `confidencial`, `confirmacao_pendente`, `ultima_reversivel`, `ultima_acao`, `ultimo_comando_mestre`, `revisao` (SRS), `tutor` — tudo `deque`/campo com vida só na RAM.
@@ -490,20 +624,23 @@ Uma classe `Settings` (Pydantic) com **189 campos**. **Todos os caminhos derivam
 ### `rag.py` — as fontes de conhecimento (hoje o maior arquivo do repo)
 `EmbeddingProvider` (singleton — hoje o **e5-base**, com os prefixos `query:`/`passage:` aplicados num **ponto só** (`_com_prefixos`), de onde Chroma, Malha e RAG efêmero herdam), `VectorStore` (Chroma, cosseno, reindex por `mtime`, purga de órfãos, dedup por `source` **e near-dup por Jaccard**), o **`MalhaIndex`** (o grafo do vault por conceito compartilhado — ver seção própria) e `WebSearcher` (DDG com fallback, cache, pre-fetch, e o **deep-fetch + RAG efêmero**: baixa o corpo das páginas, extrai com trafilatura, rankeia por cosseno e **não indexa nada**). Detalhes: `strip_frontmatter`, `split_markdown`, `resolve_device`.
 
-### `agent.py` — o núcleo do cérebro (662 linhas; era um deus-módulo de 2.472)
-`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com os 885 testes verdes em cada passo.
+### `agent.py` — o núcleo do cérebro (738 linhas; era um deus-módulo de 2.472)
+`Agent.pipeline_resposta` (cascata RAM→banco→web com guard anti-sentinela e **early-stop** #3) e o roteamento aditivo (`_rotear`/`_pipeline_tools`). A classe compõe dois mixins — `ComandosMestre` e `Respostas` — que em runtime são o mesmo objeto de sempre, e **re-exporta os nomes históricos** (main/ws/scripts/eval/testes seguem importando de `agent`). A modularização foi extração incremental, um módulo por commit, com a suíte inteira verde em cada passo.
 
 ### `comandos_mestre.py` / `respostas.py` — as duas metades do Agent
-`comandos_mestre.py` (847): o **plano de comando** — `_fluxo_mestre` orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor. `respostas.py` (353): os **geradores falados** — `_responder_contexto` (segura o áudio até provar que não é o sentinela), `_responder_web` (filler + escalada), `_responder_stream` (token→frase→TTS), `_sintese_sob_demanda` (map-reduce) e `_consolidar_fontes` (a promoção do `#conhecimento_novo`).
+`comandos_mestre.py` (854): o **plano de comando** — `_fluxo_mestre` orquestra `parse_composto`, undo/redo, confirmação, atalhos, rotinas, SRS, hábitos, revisão diária, tutor. `respostas.py` (734): os **geradores falados** — `_responder_contexto` (segura o áudio até provar que não é o sentinela, e **casa a figura inline** com a frase que a menciona), `_responder_web` (filler + escalada), `_responder_stream` (token→frase→TTS), `_sintese_sob_demanda` (map-reduce) e `_consolidar_fontes` (a promoção do `#conhecimento_novo`).
 
 ### `otimizador.py` / `atomos.py` / `etl.py` — interpretação, estrutura e idle
-`otimizador.py` (174): `QueryOptimizer` + as heurísticas puras da pergunta (referência ao turno anterior, tema de síntese, frase citada, lacuna pesquisável). `atomos.py` (276): a atomização **pura** — o LLM entrega a ideia, o Python impõe a estrutura (tags, `##`, frontmatter, wikilinks). `etl.py` (435): o `EtlProcessor` do idle — fila web, atomização da conversa, pesquisa proativa e snapshot da base, sempre cedendo a GPU.
+`otimizador.py` (285): `QueryOptimizer` + as heurísticas puras da pergunta (referência ao turno anterior, tema de síntese, frase citada, lacuna pesquisável, **`precisa_antecedente`** — o histórico só é prefixado em follow-up de verdade). `atomos.py` (318): a atomização **pura** — o LLM entrega a ideia, o Python impõe a estrutura (tags, `##`, frontmatter, wikilinks). `etl.py` (1209): o `EtlProcessor` do idle — fila web, atomização da conversa, pesquisa proativa, **a ingestão de obras** e snapshot da base, sempre cedendo a GPU.
+
+### Os módulos de ingestão de obras — ver [seção própria](#-ingestão-de-obras-livros-pdfs-e-figuras)
+`livro.py`, `ocr.py`, `academico.py`, `figuras.py`, `figuras_recorte.py`, `encyclopedia.py`, `obras.py`, `fusao.py`, `triagem.py`, `consolidacao.py`, `idioma.py`, `reparo.py`. Quase todos **puros**: recebem bytes/texto e devolvem estruturas; quem toca GPU e disco é o `EtlProcessor`, no idle. É o subsistema mais novo e o maior em número de módulos.
 
 ### `tools.py` — function calling **aditivo**
 "Aditivo" é a decisão arquitetural: pergunta de conhecimento **não paga nada** pela existência das ferramentas. O gate lexical `talvez_acao` filtra: só mensagem de **ação** chega ao roteador LLM (por **JSON**, não o tool-calling nativo). `calcular_seguro` compila AST com whitelist (nunca `eval`) e capa o expoente. As ferramentas: as básicas (calcular, hora, notas, buscar_web), os **agentes de agenda/lista** (lembrete, listar/cancelar, avisar_quando, briefing, itens de lista), a **captura rápida** (inbox GTD), o **health-check** (`status_sistema`) e a **auditoria** (`auditoria_hoje`). As de agenda/lista têm `registra_conhecimento=False`: seu turno **não** vira Zettelkasten.
 
 ### `mestre.py` — o plano de comando (ver [seção própria](#-o-plano-de-comando-a-palavra-mestre))
-982 linhas quase todas puras: `separar`, `parse_rapido`, `parse_composto`/`dividir_comandos`, `comando_desfazer`/`reverter`, `tem_correcao`/`parse_correcao`/`refazer_com`, `comando_confirmar`/`_abortar`, `parse_atalho`, `parse_gatilho`, `comando_conexoes`. O instante de referência é sempre injetado.
+1.010 linhas quase todas puras: `separar`, `parse_rapido`, `parse_composto`/`dividir_comandos`, `comando_desfazer`/`reverter`, `tem_correcao`/`parse_correcao`/`refazer_com`, `comando_confirmar`/`_abortar`, `parse_atalho`, `parse_gatilho`, `comando_conexoes`. O instante de referência é sempre injetado.
 
 ### `agenda.py` — o tempo em português, puro
 `parse_quando(texto, agora) -> (primeiro_disparo, recorrencia)` sem dependência nova. Relativo, absoluto e recorrente; o que não casa devolve `(None, None)`. `proximo_disparo` calcula a próxima ocorrência. Como `mestre.py`, o `agora` é injetado — 100% testável.
@@ -738,6 +875,57 @@ if local.relevante:                                  # 1. passou o gate
 
 ---
 
+## 📚 Ingestão de obras: livros, PDFs e figuras
+
+O ciclo acima cresce da **sua curiosidade**. Este subsistema resolve o problema oposto: *"seja expert neste livro"* — despejar uma obra inteira na base, de uma vez, **sem nunca competir com a conversa**. Um PDF solto em `dados/livros/entrada/` vira centenas de átomos com proveniência de página e um acervo de figuras buscáveis, tudo processado no idle.
+
+```mermaid
+flowchart TD
+    PDF["PDF na pasta vigiada<br/>dados/livros/entrada"] --> TEM{"tem camada<br/>de texto?"}
+    TEM -->|sim| CAP["livro.py<br/>capitulos pelo TOC<br/>-> jobs JSON"]
+    TEM -->|nao| OCR["ocr.py<br/>SUBPROCESSO<br/>libera TODA a VRAM<br/>~2,8s por pagina"]
+    OCR --> CAP
+    WEB["encyclopedia.py<br/>edicao publicada na web"] --> CAP
+    CAP --> FILA["fila DURAVEL em disco<br/>sobrevive a restart"]
+    FILA --> TRI["triagem.py<br/>capa/indice/creditos<br/>NAO viram atomo"]
+    TRI --> ATOM["atomizacao no IDLE<br/>modelo 8B offline<br/>cede a GPU sempre"]
+    ATOM --> POS["passadas de saneamento<br/>idioma.py / reparo.py<br/>consolidacao.py / fusao.py"]
+    POS --> VAULT["1 pasta por obra<br/>1 arquivo .md por atomo<br/>+ 1 sintese por capitulo"]
+    OCR -.->|"grounding"| FIG["figuras_recorte.py<br/>layout semantico"]
+    PDF -.-> FIG2["figuras.py<br/>imagem embutida -> WebP"]
+    FIG --> FIGV["nota de figura indexada<br/>tipo=figura, espaco proprio"]
+    FIG2 --> FIGV
+    FIGV --> VAULT
+```
+
+### As decisões que definem o subsistema
+
+**A fila é durável, em disco.** Um livro são dezenas de jobs de capítulo; o servidor pode reiniciar no meio. Os jobs são JSON em `dados/ingestao/pendentes/` e guardam o **texto integral** — reprocessar não pede o PDF de volta.
+
+**O OCR é subprocesso, não import.** O modelo de OCR exige uma combinação de Python/torch/CUDA incompatível com a env do app (que tem `transformers<5` travado pelo coqui). Rodar como processo separado resolve o conflito de dependência *e* dá isolamento de falha. Antes dele, `ctx.liberar_vram()` descarrega LLM, XTTS, Whisper e embeddings; `restaurar_vram()` no `finally` é **obrigatório** — STT e TTS não auto-carregam, então sem ele **a voz voltaria muda em silêncio**.
+
+**Um servidor por lote, não um processo por página.** A primeira versão pagava ~3 GB de carga de modelo *por página*. Trocar o CLI por um `llama-server` levantado uma vez e um POST por página levou a transcrição a **~2,8 s/página**; a fila contínua por semáforo (em vez de blocos) fechou 628 páginas em **~20 min**, com o `interactive_idle` checado a cada **página** — a GPU volta para a conversa em ~2 s.
+
+**A figura tem espaço de busca próprio.** Notas de figura recebem o metadado `tipo="figura"` e são buscadas com filtro do Chroma — que filtra **antes** da busca aproximada, dando recall exato no subconjunto. A regra: a figura **ilustra, nunca ancora** (só é consultada quando o texto já achou candidato), mas **promove** maturidade quando entra na resposta. O corte é **relativo à melhor figura da própria pergunta**, porque num acervo de 1.735 imagens um limiar absoluto nunca sabe desistir.
+
+**Nada é deletado; tudo é arquivado.** A consolidação de quase-duplicatas move os originais para o lado. A precedência entre edições exige relação **declarada nos dois sentidos** (`obras.py`) — inferir da semelhança aposentou 76 notas indevidamente em produção, porque um átomo sobre estômatos ficava a 0,07 de um de cannabis.
+
+**Fundir vale mais que escolher.** Quando a edição nova perdeu um teste cego para a antiga (17 a 10), o diagnóstico não foi "a nova é pior": era que o fatiamento mais fino separou o **dado duro** do seu contexto. `fusao.py` usa a nova como espinha dorsal e injeta o que só a antiga tinha — 2.994 átomos enriquecidos, zero reescritos do zero.
+
+### O que este subsistema ensinou sobre medir
+
+Três guardas nasceram de desperdício observado, e as três são baratas:
+
+| Guarda | O que evitou |
+|---|---|
+| **Checar camada de texto antes do OCR** | Na fila real, **de 3 livros, 2 já tinham texto** — seriam ~4 h de GPU para um resultado *pior* que o embutido |
+| **~1 imagem por página descarta o lote** | Num PDF escaneado a "imagem embutida" é a própria página: 627 "figuras" para 628 páginas. **286 MB de retratos de página** saíram do vault |
+| **Exigir prova no original antes de corrigir tradução** | Trocar "borboleta" por "bud" às cegas corrompia notas onde a palavra está certa ("coevolução borboleta-monarca"). Exigir o termo inglês no trecho-fonte derrubou o alcance de 22 para 8 notas — **as 14 de diferença eram estrago** |
+
+> **A ponte de idioma é a lição transferível.** Fonte em inglês produz átomo em inglês, e o gate de relevância exige interseção **exata** de tokens — um átomo em inglês não casa nenhum token de uma pergunta em português, perdendo metade do critério. O e5 é multilíngue, então a metade *semântica* atravessa idiomas; quem morre no jargão é a metade *léxica*. Daí três respostas em camadas: o prompt passou a exigir PT-BR **com o termo técnico original entre parênteses** (aterra nos dois idiomas, zero LLM extra), `idioma.py` reescreve o que já entrou torto, e `vocabulario.py` traduz o jargão da *pergunta* para os termos que o vault de fato usa.
+
+---
+
 ## 🎛 Por que cada formato
 
 **Três formatos, três naturezas de dado, nenhum forçado no papel do outro.** SQLite guarda fatos episódicos e estado de agentes; Markdown guarda conhecimento semântico curado; Chroma é índice derivado descartável.
@@ -841,7 +1029,7 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ### Testabilidade sem GPU
 
-**885 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
+**1.378 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
 
 > **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
@@ -849,7 +1037,9 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ## 📈 Evolução do projeto
 
-Cada marco resolveu um problema **observado**, não hipotético. Do monólito a um assistente que responde, age e cuida.
+Cada marco resolveu um problema **observado**, não hipotético. Do monólito a um assistente que responde, age, cuida e lê livros.
+
+> 📖 A narrativa completa das cinco eras — com a curva de crescimento dia a dia, os resultados negativos publicados e o método que emerge — está em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md). Aqui ficam os marcos.
 
 ```mermaid
 timeline
@@ -876,6 +1066,24 @@ timeline
         0d345c4 : Stack medido por A-B : e5-base 2x recall, Whisper turbo, KV q8_0
         0d345c4 : Modelo-base trocado : Qwen2.5 para Qwen3-8B, sentinela 33 para 8 pct
         0d345c4 : Voz e observabilidade : wake-word mestre, barge-in do dono, tok-s por resposta : 560 testes
+    section Modularizacao e TTFT
+        1183c8a : agent.py 2.472 linhas vira 6 modulos : verbatim, suite verde em cada passo
+        2e4741c : Consultoria TTFT : waterfall p50-p95 por estagio + 12 otimizacoes
+        b055ca3 : Publicavel : Apache-2.0, CI, Docker, README bilingue : 624 testes
+        112edb7 : Teste real 2507 : reindex fora do caminho critico, vazamento do sigilo, veto declarativo
+    section Modo live
+        d4a09ce : Turno web 27s para 10-12s : race-first-K no deep-fetch, filler paralelo
+        83894ce : XTTS serializado : sintese concorrente corrompia o contexto CUDA
+        7fb3a9f : Meia-duplex : a IA respondia ao eco da propria voz
+    section Ingestao de obras
+        2910cea : Painel de especialistas : backup diario, anti-injecao no ETL, sigilo de verdade
+        c76a74d : Fases 1 a 5 : livro digital, consolidacao, OCR, academico, figuras : 885 testes
+        7cc431f : Triagem editorial : capa e indice nao viram atomo, por sinal medido
+    section Figuras e boot
+        80b2e52 : 1.736 figuras por layout semantico : contra 777 da heuristica de pixel
+        0c1cf1f : Cannabis Encyclopedia : 5.907 atomos, precedencia declarada entre obras
+        6bcacb4 : Recuperacao consertada : orcamento da figura, expansao por pagina, lacunas
+        fa81745 : Boot 31,7s para 12,4s : XTTS lazy, pre-montagem em RAM, paralelismo : 1.226 testes
 ```
 
 <details>
@@ -892,6 +1100,18 @@ Reversibilidade de primeira classe: **Desfazer** (`bc548c7`) e **Corta-e-Corrige
 
 ### Onda 3 (Malha + produtividade) — `25429d8` → `51c1274`
 **A Trilha Graphify:** IDF no aterramento, dedup near-dup, hubs-primeiro na síntese, filtro de proximidade da vizinhança, e o Descobridor de Conexões por surpresa (`grafo.py`). **O cluster de produtividade completo:** SRS (Leitner), leitor de `.ics` local, Gatilhos condicionais, Revisão Diária, Diário de Hábitos (streak), Tutor Socrático, Rotinas Compostas, Pomodoro — e o comando **/ajuda** falável. **472 testes.** Medido na base real (12.778 átomos): a atomização serve bem ao grafo, e os thresholds de IDF são invariantes ao N.
+
+### Modularização e Consultoria TTFT — `1183c8a` → `2e4741c`
+**O projeto virou publicável e governável ao mesmo tempo.** Apache-2.0, CI rodando a suíte a cada PR (com `requirements-ci.txt` leve — os imports pesados são tardios e a suíte usa fakes), Docker e README bilíngue. E o deus-módulo caiu: `agent.py` de **2.472 → 506 linhas** mais 6 módulos coesos, um commit por extração, código movido *verbatim*, suíte verde em cada passo. A Consultoria TTFT trouxe as **12 otimizações aceitas** e, acima de tudo, o **waterfall p50/p95 por estágio** — a instrumentação que arbitra todas as rodadas seguintes. Duas correções de calibração perigosas saíram daí: o dedup `0.08 → 0.01` (escala MiniLM sobrevivendo no e5, descartando átomo legítimo em silêncio) e a **higiene do DB de teste** — a suíte estava escrevendo no SQLite real.
+
+### Modo live — `d4a09ce` → `7fb3a9f`
+**A conversa por voz de ponta a ponta.** Turno com web de **~27 s para 10-12 s**, com race-first-K no deep-fetch e filler em paralelo. Mas o valor está no que a medição *negou*: não era contenção GPU LLM↔XTTS (o decode fica ocioso durante a fala) — era volume de síntese, web lenta e spill de VRAM no WDDM. Três travas de GPU nasceram aqui, todas do mesmo device-side assert que **envenenava a placa inteira**: frase longa estourando o teto do GPT-2 interno do XTTS, duas sínteses concorrentes, e o `clear()` que ressuscitava thread órfã. E a correção mais divertida: **meia-duplex**, porque a IA estava respondendo ao eco da própria voz transcrito pelo Whisper.
+
+### Painel de especialistas e ingestão de obras — `2910cea` → `7cc431f`
+**A base ganhou rede de segurança e uma porta de entrada em lote.** Do painel: backup diário (o vault era a única cópia do conhecimento destilado), anti-injeção na persistência do ETL, sigilo que **bloqueia a escalada web** — validado por um teste-invariante contra o DB real — e CI com ruff, cobertura com piso, bandit e pip-audit. Depois, as **cinco fases** da ingestão de obras (ver [seção própria](#-ingestão-de-obras-livros-pdfs-e-figuras)), com a restrição do dono virando lei: coleta e atomização **só no idle**.
+
+### Figuras, enciclopédia e boot — `80b2e52` → `fa81745`
+**O assistente ganhou olhos, e a conta chegou.** A detecção de figuras trocou heurística de pixel por **layout semântico do OCR** (1.736 contra 777) e cada elo entre "a figura existe" e "aparece na tela" foi um bug separado: o SQLite estourando na indexação, a figura perdendo/vencendo demais na disputa por vagas, o embed indo parar **na fala**, a legenda em inglês não discriminando magnésio de manganês. Em paralelo, a Cannabis Encyclopedia entrou inteira (5.907 átomos) e três correções de **recuperação** — orçamento da figura, expansão por página, lacunas achadas pela fonte — valeram mais que horas medindo qualidade de átomo. O custo em VRAM e boot forçou a última rodada: turno digitado não fala, XTTS preguiçoso e pré-montado em RAM, **boot de 31,7 s para 12,4 s**.
 
 ### Modelos e Voz — `0d345c4`
 **O stack de modelos deixou de ser herdado e passou a ser medido.** Embedding MiniLM→**e5-base** (**~2× no ranqueamento**, A/B em `eval/ab_embeddings.py`), STT→**`large-v3-turbo`**, **KV-cache `q8_0`** — e o modelo-base finalmente **comparado e trocado** (`Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, `eval/ab_modelos.py --no-think`): o Qwen3 lê muito melhor os átomos (sentinela com contexto **33%→8%**) por ~9% menos `tok/s` — num assistente cujo pilar é **anti-alucinação**, ler o contexto vale mais que 9% de decode. Adotá-lo exigiu dois botões e um **filtro de streaming**: ele abre toda resposta com `<think>…</think>` e, sem removê-lo, o TTS **falaria a marcação**. Trocar o embedding não foi só mudar uma string: exigiu prefixos `query:`/`passage:` num **ponto só**, reindex do vault (`scripts/reindexar.py`) e **recalibrar o gate** (0.55→0.16, derivado em `eval/calibrar_gate.py`) — porque a escala de distância é função do modelo. Na voz: **wake-word "mestre"** (o live dorme e só acorda pela palavra — a voz de outros deixa de disparar) e **barge-in gateado** (fundo curto não corta mais). E o instrumento que faltava: **timing por estágio** — `tok/s` e STT por resposta. **560 testes**, e ~21 GB de GGUFs mortos fora do disco.
@@ -910,7 +1130,14 @@ Reversibilidade de primeira classe: **Desfazer** (`bc548c7`) e **Corta-e-Corrige
 
 **A correção, em camadas:** aterramento **léxico** (o chunk menciona a keyword) **OU** confiança **semântica** (`rag_score_confident`); RAM filtrada por tema (nada de herdar o assunto anterior); extrator enxuto (`limpar_query`); e a rede de segurança que escala **sem "falar" o sentinela**. A Onda 3 endureceu o aterramento com o **IDF da Malha**: casar uma keyword **genérica** não basta mais — foi assim que o caso "o que é RAG?" parou de puxar uma nota-piada pessoal sobre Tarkov.
 
-**Botão de calibração:** cada pergunta loga `[LOCAL] melhor_dist=... relevante=...`. Ajuste `MENTE_RAG_SCORE_CONFIDENT` (default `0.8`) — **menor = mais rígido (mais web)**. `MENTE_RAG_DEBUG=true` mostra cada chunk.
+**Botão de calibração:** cada pergunta loga `[LOCAL] melhor_dist=... relevante=...`. Ajuste `MENTE_RAG_SCORE_CONFIDENT` — **menor = mais rígido (mais web)**. `MENTE_RAG_DEBUG=true` mostra cada chunk.
+
+> ⚠️ **A escala do botão é função do embedding — os dois são um par.** Os defaults de `config.py` formam um conjunto **coerente porém superado**: MiniLM + prefixos vazios + gate `0.8`. O conjunto **adotado** (e5-base + `query:`/`passage:` + gate `0.16`, derivado por `eval/calibrar_gate.py`) vive apenas no [`.env.example`](.env.example). Duas consequências, e a segunda é a perigosa:
+>
+> 1. Rodar **sem copiar o `.env`** te dá silenciosamente o embedding **antigo** — ~2× pior no ranqueamento — e um gate `0.8` mais frouxo até que o `0.55` que era o valor operacional da própria era MiniLM.
+> 2. Editar **um só** dos dois cria a combinação incoerente. Pôr `MENTE_EMBEDDING_MODEL=e5` sem baixar o gate deixa quase todo chunk "confiante"; baixar o gate para `0.16` sem trocar o embedding **rejeita quase tudo** e manda cada pergunta para a web. Esse segundo caso é exatamente a assinatura do [bug L2 vs cosseno](#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno): um limiar medido numa escala, aplicado a distâncias de outra.
+>
+> Mesma lição do dedup `0.08 → 0.01`: *ao trocar o embedding, recalibre **todos** os limiares de distância junto.* A rede de segurança existe — o **fingerprint da coleção** (`_fingerprint_ok`) detecta embedding/prefixo divergentes e reconstrói o índice do vault — mas ele guarda o *índice*, não os *limiares*.
 
 ### 2. As tasks que o garbage collector comia
 
@@ -944,6 +1171,54 @@ Dois bugs da era dos agentes, o mesmo tema: **respeitar fronteiras**. Primeiro, 
 ### 7. O ranking de pontes que só achava o óbvio
 
 O Descobridor de Conexões, na 1ª versão, rankeava pontes por `min(df)/coocorrência` — e surfava par-de-temas-grandes trivial ("python↔vram"). O conserto foi trocar a métrica por **surpresa** = `1 − Jaccard` das vizinhanças de conceito: domínios **disjuntos** primeiro. O top real virou "modelo whisper↔modelo yolo", "custo↔sensor de torque" — conexões que valem uma fala proativa. *Medido na base real de 12.778 átomos, não no papel.*
+
+### 8. Os 46 segundos de congelamento — trabalho de fundo no caminho crítico
+
+**Sintoma:** *"o usuário repetia a mesma pergunta 3× achando que travou"*. O waterfall não deixou dúvida: `rota=tool:salvar_nota total=46055ms`.
+
+**Causa raiz:** salvar uma nota por ferramenta disparava `VectorStore.sync()` **na hora** — re-embedando chunks e reconstruindo a MALHA inteira sobre ~13k átomos, **na GPU serializada, durante a conversa**. Cada peça isolada era razoável; juntas, no turno, eram um freeze.
+
+**Correção:** `marcar_vault_sujo` + sync no idle pós-conversa, mesmo padrão do ETL. Tradeoff explícito e aceito: a nota entra no índice só no próximo idle — no disco e no Obsidian ela já está lá na hora. *A lição não é "reindex é caro"; é que **qualquer** trabalho de fundo que toque a GPU precisa de um dono que o adie, e o gate certo é a sessão, não a operação.*
+
+### 9. O TTS que matava o LLM — device-side assert e o Event que ressuscitava threads
+
+Duas manifestações do mesmo estrago, com semanas de diferença. Primeiro, uma frase longa estourava o `gpt_max_audio_tokens` do GPT-2 interno do XTTS. Depois, **duas sínteses concorrentes** no mesmo contexto CUDA. Nos dois casos o assert corrompia o contexto e **derrubava o llama.cpp, o Whisper e o processo junto** — o motor de voz matando o motor de texto.
+
+O detalhe que só aparece em quem debugou: a proteção original usava um `threading.Event`, e o `clear()` no início de `synth_base64` **ressuscitava a thread órfã** de um turno que tinha sido cortado. Trocado por token de geração monotônico + lock de inferência: uma síntese por vez, e a geração antiga sabe que é antiga.
+
+> *Corolário arquitetural:* na 3080 compartilhada, "cada modelo no seu `to_thread`" não é isolamento. O contexto CUDA é **um só por processo**, e um assert dele não é um erro que se captura — é o processo inteiro.
+
+### 10. A IA respondendo aos próprios fantasmas
+
+**Sintoma:** no modo live, o assistente abria turnos sozinho, respondendo a "e aí", "obrigado", "buponte".
+
+**Causa raiz:** sem cancelamento de eco (AEC), o microfone capta o áudio que o próprio sistema está tocando. O Whisper, alimentado com esse eco degradado, **alucina** enunciados curtos — e cada alucinação virava um turno, que virava resposta, que virava mais eco.
+
+**Correção em duas camadas:** meia-duplex (enquanto a IA fala, o mic não abre turno) e `parece_alucinacao` (`no_speech_prob` alto + enunciado curto = fantasma). O único efeito permitido durante a fala é o comando de parada, por **regex leve, sem LLM** — senão a interrupção também dependeria do que está travado.
+
+### 11. O vazamento de VRAM que eram duas cópias do app
+
+**Sintoma:** o dono via a VRAM subir sozinha e o detector de vazamento do app não acusava nada — *e com razão*.
+
+**Causa raiz:** o uvicorn só reserva a porta **depois** que o lifespan termina, e o lifespan é onde tudo carrega. Um segundo `python main.py` carregava LLM, Whisper, embeddings, ChromaDB, MALHA e a pré-montagem do XTTS (~45 s, ~4,7 GB), escrevia "Mente Digital online", **só então** descobria a porta ocupada — e ficava zumbi segurando a GPU. Das três linhas "online" no log, **duas eram de processos que nunca atenderam uma requisição**. Duas cópias × 4,67 GB + 1,42 GB de desktop = **10,76 GB numa placa de 10,24 GB**.
+
+**Correção:** um bind de teste de ~0,2 ms no **topo** do lifespan. *Do ponto de vista de cada processo o uso estava normal — é por isso que o instrumento não viu. Métrica per-process não enxerga contenção entre processos.*
+
+### 12. A corrida de import que matou o RAG em silêncio
+
+Auto-infligido, e o mais traiçoeiro de todos. Ao mover a pré-montagem do XTTS para background, duas threads passaram a importar árvores que **se cruzam** (torch/coqui de um lado; sentence-transformers → transformers → torch → sympy → mpmath do outro). O CPython entregou à segunda thread um módulo visto **pela metade**.
+
+O app subia "saudável em **9,2 s**" — **sem RAG nenhum**. A única pista era um WARN. E os 9,2 s eram falsos: sem embeddings o Chroma nunca abria e a MALHA nunca era construída, então o "boot rápido" era só o boot que não fez o trabalho.
+
+**Correção: ordem, não lock.** Pré-importar as árvores na mesma thread antes de paralelizar. E a régua que ficou: *conferir se o boot "otimizado" ainda produz as **mesmas linhas de log** — tempo menor com menos trabalho feito não é otimização.*
+
+### 13. Medi a coisa errada por horas
+
+Onze commits para colocar um livro no vault, e cinco testes cegos deram **31 a 18 para a base antiga**. A reação instintiva — a atomização nova está pior, volte a calibrar o prompt — estava errada.
+
+O gargalo não era a **qualidade dos átomos**, era **como o contexto era montado**: as notas de figura comiam 40% do orçamento de 12k chars, e o fatiamento mais fino tinha separado o dado duro do seu contexto. Duas correções de recuperação — teto de orçamento para figura e expansão por página — **zero GPU, zero átomo reescrito** — viraram o placar para 10 a 4 a favor da nova.
+
+A causa da confusão foi metodológica e ficou registrada: os testes de qualidade rodavam por `buscar_conteudos`, medindo **recuperação crua**, enquanto o usuário recebe o resultado de `search`, que passa por gate, dedup e orçamento. *Teste de qualidade de base tem de passar pelo caminho de **produção** — senão você otimiza um sistema que ninguém usa.*
 
 ---
 
@@ -1019,10 +1294,10 @@ GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale 
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 885 testes, sem GPU e sem rede
+pytest                    # 1.378 testes, sem GPU e sem rede
 ```
 
-O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: **885 passed**.
+O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: a suíte inteira em ~11 s.
 
 > **Ambiente:** o projeto roda na env conda `llama-omni`. O `python` no PATH do Windows costuma ser o atalho falso da Microsoft Store — use o caminho absoluto:
 > `C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pytest`
@@ -1031,11 +1306,11 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 ## 🔧 Configuração
 
-**189 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
+**282 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `MENTE_RAG_SCORE_CONFIDENT` | `0.8` | **O principal botão.** Distância abaixo da qual um match vale sem casar keyword. Menor = mais rígido = mais web. ⚠️ **A escala depende do embedding:** com o `e5-base` adotado, o valor calibrado é **`0.16`** (o e5 comprime as distâncias numa banda estreita) |
+| `MENTE_RAG_SCORE_CONFIDENT` | `0.8` no código · **`0.16` no `.env.example`** | **O principal botão.** Distância abaixo da qual um match vale sem casar keyword. Menor = mais rígido = mais web. ⚠️ **Casado com o embedding:** `0.16` vale para o `e5-base` (que comprime as distâncias numa banda estreita), `0.55` valia para o MiniLM. Nunca mude um sem o outro |
 | `MENTE_RAG_DEBUG` | `false` | Loga cada chunk recuperado (distância/fonte/trecho) |
 | `MENTE_ATERRAMENTO_IDF_MIN` | `1.5` | IDF mínimo da keyword para valer como aterramento léxico (Malha). Conserta o "RAG→Tarkov" |
 | `MENTE_EARLY_STOP_CASCATA` | `true` | A cascata para na 1ª fonte confiante (RAM respondeu → banco nem consulta) |
@@ -1055,6 +1330,13 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 | `MENTE_MESTRE_WAKE` | `false` | Wake-word: o live começa **dormente** e só a palavra-mestre acorda (+ `MENTE_MESTRE_SLEEP_SECONDS`, 15 s) |
 | `MENTE_LLM_NO_THINK` / `MENTE_LLM_STRIP_THINK` | `false` | **Obrigatórios com Qwen3:** desligam o raciocínio e removem o bloco `<think>…</think>` do stream. Sem o strip, o TTS **fala a marcação**. No-op em modelos sem `<think>` |
 | `MENTE_SPECULATIVE_ENABLED` | `false` | **Desligado com número** — ver [evolução](#-evolução-do-projeto) |
+| `MENTE_DEDUP_DIST_MAX` | `0.01` | Distância abaixo da qual um átomo novo é considerado duplicata. Era `0.08` (escala MiniLM) — no e5 marcava 75% da base como dup e descartava átomo legítimo **em silêncio** |
+| `MENTE_TTS_ENGINE` | `piper` | `xtts` liga a voz neural clonável na GPU (sobe **preguiçosamente**, só quando o microfone abre) |
+| `MENTE_FILLER_CARENCIA_S` | `1.5` | Silêncio antes de qualquer ponte falada — com a web voltando em ~3 s, o filler atropelava o próprio dado |
+| `MENTE_EARLY_STOP_CASCATA` | `true` | A cascata para na 1ª fonte confiante (RAM respondeu → banco nem consulta) |
+| `MENTE_RAG_IRMAOS_SO_PAGINA` | `true` | A expansão por página só vale quando `origem` é mesmo uma página de livro — sem isso, 54% do índice cai num balde grande demais |
+| `MENTE_SIGILO_BLOQUEIA_WEB` | `true` | Em modo confidencial, **bloqueia** a escalada web (a promessa "fica só nesta sessão" de verdade) |
+| `MENTE_PESQUISA_AGENDADA_INTERVALO_SEGUNDOS` | `0` (off) | Pesquisa proativa por relógio, sem depender de sessão. Ex.: `7200` = a cada 2 h |
 
 ---
 
@@ -1157,7 +1439,7 @@ A cascata RAM → banco → web é o fluxo mental de um atendente. **Ceticismo p
 <details>
 <summary><b>6. Kiosk, embarcado e acessibilidade</b></summary>
 
-**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (189 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
+**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (282 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
 
 </details>
 
@@ -1175,7 +1457,7 @@ O `EtlProcessor` **já é um worker de background completo** e o `SchedulerServi
 
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 885 testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 1.378 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 
@@ -1197,9 +1479,11 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 
 | Ponto | Situação |
 |---|---|
-| **Números de TTFT/TTFA publicados** | O instrumento **melhorou** — agora mede `tok/s` do decode e o tempo de STT, expostos em `/api/metrics` — e há medições pontuais no Patch Notes. Mas ainda falta publicar uma **tabela de médias por rota**. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
+| **Números de TTFT/TTFA publicados** | O instrumento está **completo** — waterfall por estágio com p50/p95 em `/api/metrics`, `tok/s` medido no produtor, e o turno inteiro gravado em JSONL. Há medições pontuais fartas no Patch Notes. Falta publicar uma **tabela de médias por rota** a partir do waterfall real. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
+| **A base nova vs. a antiga** | A fusão levou o placar de 17-10 contra para 5-3 a favor num teste cego — mas o próprio commit registra que **"a troca está no ruído"** (n=8, juiz único). Falta um protocolo de avaliação com mais perguntas e mais de um avaliador antes de cravar o ganho |
+| **O stack adotado só existe no `.env.example`** | Os defaults de `config.py` são o conjunto **coerente porém superado** da era MiniLM (embedding, prefixos e gate `0.8`); o adotado (e5-base + prefixos + `0.16`) só está no `.env.example`. Quem roda sem `.env` usa o embedding antigo sem saber, e quem edita **um** dos dois cria a combinação incoerente. O certo é promover os três defaults **juntos** — ver a [war story do Cache Hit falso](#1-o-cache-hit-falso--o-gate-que-confundia-ter-contexto-com-ter-contexto-relevante) |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
-| **CI** | ✅ **Resolvido.** GitHub Actions roda os 885 testes a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
+| **CI** | ✅ **Resolvido.** GitHub Actions roda a suíte inteira a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
 | **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |
 | **Voz (#F3/#F5) sem teste de microfone** | Wake-word e barge-in gateado passam nos testes de lógica e foram validados no servidor real, mas o teste com **voz humana** — e com outra pessoa falando por perto — só o dono pode fazer. Roteiro em `docs/TESTE_MANUAL.md` |
 | **Licença** | ✅ **Resolvido.** Apache-2.0, com cláusula de patente — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) |
