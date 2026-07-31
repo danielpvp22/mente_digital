@@ -1311,6 +1311,12 @@ class VectorStore:
             if settings.figuras_no_contexto:
                 validos = [(s, d) for s, d in validos
                            if str((d.metadata or {}).get("tipo") or "") != "figura"]
+            # A melhor distância SÓ DE TEXTO, depois de a figura sair do canal. Não dá
+            # para reusar `melhor` (linha acima) no gate de página do anexo: ele é o
+            # mínimo ANTES deste filtro, então numa pergunta por imagem ele é a própria
+            # figura — a comparação viraria a figura contra ela mesma e o gate nunca
+            # dispararia. Ver o bloco 'GATE DE PÁGINA' adiante.
+            melhor_texto = min((s for s, _ in validos), default=None)
             chaves = textutils.palavras_chave(termos)
             # ATERRAMENTO PONDERADO POR IDF (G3): o aterramento antigo era um OR sem peso —
             # uma keyword comum (que escapou do STOP) casava a nota errada. Agora só a
@@ -1510,8 +1516,28 @@ class VectorStore:
             # errada por causa da ordem, não do critério.
             promovidos = sorted(
                 ((s, d) for s, d in usar if s is not None), key=lambda sd: sd[0])
+            # GATE DE PÁGINA: a co-locação só vale se a página veio por mérito.
+            # Quando a melhor FIGURA vence com folga o melhor TEXTO, a pergunta é sobre
+            # uma imagem e os átomos de texto entraram por acidente léxico — anexar as
+            # figuras DELES é herdar o acidente. Caso real (2026-07-31): "poderia me
+            # mostrar uma tartaruga marinha?" casou "tartaruga MARINHA" com "algas
+            # MARINHAS" (adubo, na Cannabis Encyclopedia) e trouxe a figura do
+            # fertilizante ao lado da tartaruga.
+            # O gate é de PÁGINA e não de figura porque a figura co-locada pode
+            # legitimamente estar longe da pergunta — é o defeito que este caminho
+            # existe para contornar. Medido em 9 sondas, sem sobreposição: co-locação
+            # boa (tricomas, podar, deficiência de N, clones, hidroponia) tem razão
+            # texto/figura entre 0,76 e 1,01; ruim (tartaruga, torre Eiffel, pinguim,
+            # Coliseu) entre 1,16 e 1,37. n=9 é pequeno — daí o botão.
+            razao = settings.figuras_anexo_texto_ratio
+            texto_perdeu = (razao > 0 and figuras and melhor_texto is not None
+                            and melhor_texto > figuras[0][0] * razao)
+            if texto_perdeu:
+                telemetry.track("FIGURAS",
+                                f"Co-locação pulada: melhor texto {melhor_texto:.4f} perde "
+                                f"da melhor figura {figuras[0][0]:.4f}.")
             anexos = await self._anexos_colocados(
-                [d for _s, d in promovidos], consulta) if usar else []
+                [d for _s, d in promovidos], consulta) if (usar and not texto_perdeu) else []
             return LocalResult(texto, melhor, relevante, fontes, anexos)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)

@@ -758,6 +758,17 @@ class Settings(BaseSettings):
     # baixo: se as primeiras páginas não tiverem figura nenhuma, o anexo saía VAZIO
     # mesmo havendo foto certa na página seguinte.
     figuras_anexo_paginas: int = 6
+    # GATE DE PÁGINA da co-locação: pula o anexo quando o melhor átomo de TEXTO é mais
+    # de N× pior que a melhor FIGURA da busca. Nesse regime a pergunta é sobre uma
+    # imagem e o texto foi recuperado por acidente léxico — "tartaruga MARINHA" casou
+    # "algas MARINHAS" (adubo) e o fertilizante veio junto com a tartaruga (2026-07-31).
+    # O gate é de PÁGINA, não de figura: a figura co-locada pode estar legitimamente
+    # longe da pergunta, que é o defeito que aquele caminho existe para contornar —
+    # cortar por distância de figura removeu os tricomas glandulares certos e as fotos
+    # de poda corretas (medido: consertava 1 caso e quebrava 2).
+    # Medido em 9 sondas, sem sobreposição: co-locação boa 0,76–1,01; ruim 1,16–1,37.
+    # n=9 é pequeno; 0 desliga o gate e volta ao comportamento anterior.
+    figuras_anexo_texto_ratio: float = 1.08
     # --- PRECEDÊNCIA ENTRE OBRAS (2026-07-27) ---------------------------------
     # Marcas (substring da proveniência), separadas por '|', em ordem de
     # preferência. Consultada SÓ em empate de quase-duplicata — ver obras.py.
