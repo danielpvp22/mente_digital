@@ -4,12 +4,12 @@
 
 ### Assistente Omni **100% local** — voz e texto, sem nuvem, sem API key, sem telemetria de terceiros.
 
-*Um segundo cérebro que fala: conversa por voz, responde a partir das **suas** notas do Obsidian, recorre à web só quando precisa — **age** por comando falado (lembretes, listas, rotinas), **cuida** de coisas sozinho (alarmes, briefings, pomodoro) e, enquanto você não olha, destila o que aprendeu em novas notas atômicas.*
+*Um segundo cérebro que fala: conversa por voz, responde a partir das **suas** notas do Obsidian e dos **seus livros**, recorre à web só quando precisa — **age** por comando falado (lembretes, listas, rotinas), **cuida** de coisas sozinho (alarmes, briefings, pomodoro) e, enquanto você não olha, destila o que aprendeu em novas notas atômicas.*
 
-📐 **[Arquitetura completa / deep-dive técnico →](ARQUITETURA.md)**  ·  🇺🇸 [English overview](README.en.md)
+📐 **[Arquitetura completa / deep-dive técnico →](ARQUITETURA.md)**  ·  📖 [Como o projeto evoluiu](docs/EVOLUCAO_DO_PROJETO.md)  ·  🇺🇸 [English overview](README.en.md)
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-885_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-1226_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
@@ -24,16 +24,18 @@
 
 <div align="center">
 
-**⏱ A camada de 30 segundos** — seis números, todos medidos neste repositório:
+**⏱ A camada de 30 segundos** — oito números, todos medidos neste repositório:
 
 | | |
 |---:|:---|
-| **885 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~10 s — é literalmente o job de CI |
+| **1.226 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~11 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real |
-| **TTFT ≈ 1,1 s** | medido ao vivo numa resposta do vault (decode ≈ 85 tok/s) |
-| **8,9 / 10 GB** | o stack inteiro (Qwen3-8B + e5-base + KV `q8_0`) residente na VRAM da 3080, ~1,3 GB de folga |
+| **27 s → 10-12 s** | turno com escalada web no modo live, depois da rodada de latência |
+| **31,7 s → 12,4 s** | boot do servidor, em três passadas medidas |
+| **1.736 figuras** | acervo visual buscável extraído dos livros — contra 777 da heurística que ele substituiu |
+| **8,9 / 10 GB** | o stack inteiro (Qwen3-8B + e5-base + KV `q8_0`) residente na VRAM da 3080 |
 
 </div>
 
@@ -78,11 +80,11 @@ Mas ele não só **responde**. Ele **age** (lembrete, lista, nota, rotina — po
 
 O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o código:
 
-1. **A base é sua, e é um vault Obsidian.** Arquivos `.md` que você lê, edita e versiona; o ChromaDB é um índice **derivado e descartável**. Trocar o embedding é uma reindexação, não perda de dado.
-2. **A métrica é a latência *percebida*, não a real.** O sistema persegue **TTFA** (tempo até o 1º *áudio*), não TTFT — token que ninguém ouviu não existe. Medido e exposto em `/api/metrics`.
-3. **Anti-alucinação é controle de fluxo, não prompt.** O "não sei" é um **sinal interno**: o sistema segura o áudio, detecta o sentinela em streaming, descarta e escala para a web sem vazar uma sílaba.
-4. **Comando ≠ conversa, e a fronteira é física.** Uma frase que começa por `"mestre, …"` entra num fluxo **isolado e determinístico** (regex antes de LLM) e **nunca vira conhecimento**.
-5. **O sistema trabalha quando ninguém olha.** Um ETL idle destila conversas e pesquisas em notas atômicas; um scheduler persistente dispara os alarmes — ambos cedendo a GPU para a conversa ao vivo.
+1. **A base é sua, e é um vault Obsidian.** Arquivos `.md` que você lê, edita e versiona; o ChromaDB é um índice **derivado e descartável**. Trocar o embedding é uma reindexação, não perda de dado. → [detalhe](ARQUITETURA.md#-o-banco-vetorial-como-ele-é-formado)
+2. **A métrica é a latência *percebida*, não a real.** O sistema persegue **TTFA** (tempo até o 1º *áudio*), não TTFT — token que ninguém ouviu não existe. → [detalhe](ARQUITETURA.md#latência-percebida--latência-real)
+3. **Anti-alucinação é controle de fluxo, não prompt.** O "não sei" é um **sinal interno**: o sistema segura o áudio, detecta o sentinela em streaming, descarta e escala para a web sem vazar uma sílaba. → [detalhe](ARQUITETURA.md#anti-alucinação-como-controle-de-fluxo)
+4. **Comando ≠ conversa, e a fronteira é física.** Uma frase que começa por `"mestre, …"` entra num fluxo **isolado e determinístico** (regex antes de LLM) e **nunca vira conhecimento**. → [detalhe](ARQUITETURA.md#-o-plano-de-comando-a-palavra-mestre)
+5. **O sistema trabalha quando ninguém olha.** Um ETL idle destila conversas, pesquisas e **livros inteiros** em notas atômicas; um scheduler persistente dispara os alarmes — ambos cedendo a GPU para a conversa ao vivo. → [detalhe](ARQUITETURA.md#-o-ciclo-de-vida-do-conhecimento)
 
 > Pacote modularizado (**V2**) de um MVP monolítico, estendido por três "ondas" de agentes com **zero dependência nova**. Quase toda heurística carrega no comentário o bug real que ela conserta.
 
@@ -95,12 +97,13 @@ O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o códi
 
 | Competência de Eng. de Dados | Onde vive neste repositório |
 |---|---|
-| **Pipeline de ETL incremental** (ingestão → transformação → carga) | `etl.py` — destila conversas e páginas web em unidades atômicas e as carrega em duas engines |
-| **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
+| **Pipeline de ETL incremental** (ingestão → transformação → carga) | `etl.py` — destila conversas, páginas web e livros em unidades atômicas e as carrega em duas engines |
+| **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru → limpo/conformado (extração, triagem, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
+| **Ingestão em lote com fila durável** | um PDF vira dezenas de jobs JSON em disco que **sobrevivem a restart**, drenados no idle ([Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras)) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **885 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
-| **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
+| **Qualidade de dados / DataOps** | **1.226 testes sem GPU nem rede** em CI (+ ruff, cobertura com piso, bandit, pip-audit), dedup por Jaccard, proveniência em frontmatter |
+| **Decisão orientada por métrica** | 16 harnesses de A/B em `eval/` — ranqueamento **2×**, erro do modelo **33%→8%** — e features **desligadas** quando os dados não sustentam |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
 
@@ -124,7 +127,7 @@ flowchart LR
         ETL["EtlProcessor<br/>roda no idle"]
     end
     subgraph DADOS["Fontes de verdade"]
-        VAULT["Vault Obsidian<br/>.md + Malha"]
+        VAULT["Vault Obsidian<br/>.md + Malha + figuras"]
         SQL["SQLite<br/>turnos + agendamentos"]
     end
     MIC -->|"WS binario"| WS
@@ -144,20 +147,23 @@ flowchart LR
 
 A **primeira bifurcação** é a arquitetura inteira em uma imagem: **começou por "mestre"? é comando** (plano determinístico) — **senão, é pergunta** (plano de conhecimento). As setas cheias são o caminho crítico; as pontilhadas, trabalho de fundo que nunca disputa a GPU com você.
 
-**→ Detalhe módulo a módulo, os diagramas de cada fluxo, as *war stories* e cada decisão de design em [`ARQUITETURA.md`](ARQUITETURA.md).**
+**→ Detalhe módulo a módulo em [`ARQUITETURA.md`](ARQUITETURA.md#-papel-de-cada-módulo) · o [passo a passo de um turno](ARQUITETURA.md#-passo-a-passo-o-que-acontece-quando-você-fala) · os [dois planos](ARQUITETURA.md#-os-dois-planos-pergunta-e-comando).**
 
 ---
 
 ## ✨ Principais capacidades
 
-- **Dois planos separados** — *pergunta* (RAG em cascata RAM→banco→web, com guard anti-alucinação) e *comando* (palavra-mestre, regex-first, isolado do conhecimento).
-- **Voz de baixa latência** — streaming token→frase→áudio, chunking por frase, filler falado; Piper (CPU, default) ou XTTS-v2 (GPU, opt-in), com verbalização PT-BR de números.
-- **Agentes que agem** — lembretes/alarmes, listas, rotinas compostas, captura rápida (GTD), SRS, hábitos, pomodoro — tudo por voz, reversível (desfazer/corrigir/confirmar).
-- **Agentes que cuidam** — scheduler persistente (sobrevive a restart) com alarmes, *watchers* ("me avise quando X"), briefing diário e push falado.
-- **Ciclo de vida do conhecimento** — notas nascem `#conhecimento_novo` e só "amadurecem" quando você de fato as reusa; a base cresce da sua curiosidade.
-- **A Malha** — GraphRAG sobre o vault (aterramento por IDF, hubs, pontes por surpresa) **sem biblioteca de grafo**.
+| | O quê | Aprofundar |
+|---|---|---|
+| 🔀 | **Dois planos separados** — *pergunta* (RAG em cascata RAM→banco→web, com guard anti-alucinação) e *comando* (palavra-mestre, regex-first, isolado do conhecimento) | [Os dois planos](ARQUITETURA.md#-os-dois-planos-pergunta-e-comando) |
+| 🎙 | **Voz de baixa latência** — streaming token→frase→áudio, filler falado, barge-in, meia-duplex contra o próprio eco; Piper (CPU, default) ou XTTS-v2 (GPU, opt-in) | [Stack de voz](ARQUITETURA.md#núcleo-de-ia) |
+| 🗝 | **Agentes que agem** — lembretes, listas, rotinas compostas, captura rápida (GTD), SRS, hábitos, pomodoro — tudo por voz, reversível (desfazer/corrigir/confirmar) | [A palavra-mestre](ARQUITETURA.md#-o-plano-de-comando-a-palavra-mestre) |
+| 🔔 | **Agentes que cuidam** — scheduler persistente (sobrevive a restart) com alarmes, *watchers* ("me avise quando X"), briefing diário e push falado | [Agentes proativos](ARQUITETURA.md#-agentes-proativos-a-responsabilidade-contínua) |
+| 🔄 | **Ciclo de vida do conhecimento** — notas nascem `#conhecimento_novo` e só "amadurecem" quando você de fato as reusa; a base cresce da sua curiosidade | [O ciclo](ARQUITETURA.md#-o-ciclo-de-vida-do-conhecimento) |
+| 📚 | **Ingestão de obras** — solte um PDF numa pasta: capítulos, OCR do escaneado, triagem editorial e **1.736 figuras buscáveis**, tudo processado no idle | [Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras) |
+| 🕸 | **A Malha** — GraphRAG sobre o vault (aterramento por IDF, hubs, pontes por surpresa) **sem biblioteca de grafo** | [A Malha](ARQUITETURA.md#-a-malha-um-grafo-sobre-as-suas-notas) |
 
-> Histórico completo de features (patch notes das três ondas) e o *porquê* de cada uma em [`ARQUITETURA.md`](ARQUITETURA.md#-patch-notes).
+> Patch notes de cada feature em [`ARQUITETURA.md`](ARQUITETURA.md#-patch-notes) · os bugs que moldaram a arquitetura em [war stories](ARQUITETURA.md#-war-stories-os-bugs-que-moldaram-a-arquitetura) · a história completa em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md).
 
 ---
 
@@ -169,13 +175,13 @@ Nenhuma escolha é "a lib popular" — cada uma resolve a restrição do alvo: *
 |---|---|---|
 | LLM | **llama-cpp-python** + **Qwen3-8B** `Q4_K_M` | GPU serializada por `ThreadPoolExecutor(max_workers=1)`; streaming com cancelamento |
 | STT | **faster-whisper** (`large-v3-turbo`) | Na CPU por padrão — sai da GPU para o embedding entrar |
-| TTS | **Piper** (ONNX, default) / **XTTS-v2** (GPU, opt-in) | Zero-VRAM na CPU; uma síntese por frase |
+| TTS | **Piper** (ONNX, default) / **XTTS-v2** (GPU, opt-in, carga preguiçosa) | Zero-VRAM na CPU; uma síntese por frase |
 | Embeddings | **e5-base** (`sentence-transformers`) | Singleton, injetado no VectorStore **e** no deep-fetch web |
 | Índice | **ChromaDB** (cosseno) + **A Malha** (código próprio) | Índice derivado; reindex incremental por `mtime` |
 | Persistência | **SQLite** | Turnos, latências, agendamentos, estado dos agentes; migrações idempotentes |
 | Servidor | **FastAPI** + **WebSocket** | Full-duplex (pré-condição de barge-in e do push proativo) |
 
-> ~12.900 linhas de Python em 34 módulos + **885 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
+> ~19.700 linhas de Python em 51 módulos + **1.226 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
 
 ---
 
@@ -196,21 +202,23 @@ set FORCE_CMAKE=1
 pip install -r requirements.txt   # reprodutível: pip install -c requirements.lock.txt -r requirements.txt
 
 python scripts/baixar_modelos.py  # baixa o LLM (GGUF) e a voz Piper (--xtts p/ voz clonada)
-copy .env.example .env            # e ajuste (vault, token da LAN, calibração)
+copy .env.example .env            # NÃO pule este passo — ver o aviso abaixo
 
 python main.py                    # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar.
+> ⚠️ **Copie o `.env.example`.** O default de `MENTE_RAG_SCORE_CONFIDENT` no código (`0.8`) é da escala do embedding *antigo*; o valor calibrado para o e5-base atual é **`0.16`** e vive no `.env.example`. Sem ele o gate de relevância fica frouxo demais e quase tudo é tratado como "contexto confiável" — [o porquê](ARQUITETURA.md#1-o-cache-hit-falso--o-gate-que-confundia-ter-contexto-com-ter-contexto-relevante).
 
-**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, modelo comentado em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
+Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar (~12 s até online).
+
+**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, 268 parâmetros documentados em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                            # 885 testes, sem GPU e sem rede (~10 s)
+pytest                            # 1.226 testes, sem GPU e sem rede (~11 s)
 ```
 
-**→ Setup detalhado (CUDA, Docker, `.env`, download dos modelos) em [`ARQUITETURA.md`](ARQUITETURA.md#-setup--instalação).**
+**→ Setup detalhado (CUDA, Docker, `.env`, download dos modelos) em [`ARQUITETURA.md`](ARQUITETURA.md#-setup--instalação) · calibração em [`docs/CALIBRACAO.md`](docs/CALIBRACAO.md).**
 
 ---
 
@@ -219,6 +227,7 @@ pytest                            # 885 testes, sem GPU e sem rede (~10 s)
 | Documento | Conteúdo |
 |---|---|
 | **[ARQUITETURA.md](ARQUITETURA.md)** | O deep-dive: papel de cada módulo, fluxos, war stories, casos de uso, API, configuração |
+| **[docs/EVOLUCAO_DO_PROJETO.md](docs/EVOLUCAO_DO_PROJETO.md)** | Como o projeto chegou aqui: as cinco eras, lidas commit a commit e PR a PR |
 | [docs/CALIBRACAO.md](docs/CALIBRACAO.md) | Como calibrar o gate de relevância e os botões dos agentes |
 | [docs/CONSULTORIA_TTFT.md](docs/CONSULTORIA_TTFT.md) | Rodada de latência TTFT/TTFA (banca, ranking, implementação) |
 | [docs/TESTE_MANUAL.md](docs/TESTE_MANUAL.md) | Roteiro de verificação (o que exige microfone) |
