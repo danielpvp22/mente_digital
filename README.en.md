@@ -7,7 +7,7 @@
 *A second brain that talks: converses by voice, answers from **your** Obsidian notes and **your books**, falls back to the web only when it must — **acts** on spoken commands (reminders, lists, routines), **takes care** of things on its own (alarms, briefings, pomodoro), and, while you're not looking, distills what it learned into new atomic notes.*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Tests](https://img.shields.io/badge/tests-1226_no_GPU_no_network-success)
+![Tests](https://img.shields.io/badge/tests-1378_no_GPU_no_network-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
 ![Cloud](https://img.shields.io/badge/cloud-zero-critical)
@@ -28,7 +28,7 @@ Eight numbers, all measured in this repository:
 
 | | |
 |---:|:---|
-| **1,226 tests** | the whole suite runs with **no GPU and no network**, in ~11 s — it is literally the CI job |
+| **1,378 tests** | the whole suite runs with **no GPU and no network**, in ~12 s — it is literally the CI job |
 | **33% → 8%** | rate of "I don't know" *with the context in hand*, switching `Qwen2.5-7B` → `Qwen3-8B` — decided by an **in-repo A/B harness** (`eval/ab_modelos.py`) |
 | **~2×** | RAG ranking quality from the embedding swap (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | relevance gate **recalibrated from data** against the real knowledge base (`eval/calibrar_gate.py`) |
@@ -63,11 +63,11 @@ Microphone → server-side VAD (RMS) → Whisper (`large-v3-turbo`) → query op
 
 ## Module map
 
-Thin wiring in `main.py` (lifespan builds the services and injects an `AppContext`); no domain module knows about the WebSocket — the pipeline receives a `send(dict) -> bool` callback. **~19,700 lines of Python across 51 modules.**
+Thin wiring in `main.py` (lifespan builds the services and injects an `AppContext`); no domain module knows about the WebSocket — the pipeline receives a `send(dict) -> bool` callback. **~21,000 lines of Python across 52 modules.**
 
 | Module | Role |
 |---|---|
-| `config.py` | All settings (Pydantic, `MENTE_*` env prefix) — 268 knobs, including the English→PT-BR phonetic dictionary for TTS |
+| `config.py` | All settings (Pydantic, `MENTE_*` env prefix) — 282 knobs, including the English→PT-BR phonetic dictionary for TTS |
 | `state.py` | DI container + bounded session memory (`deque`s with `maxlen`) |
 | `llm.py` | The **only door to the GPU**: single-worker executor, cooperative preemption, lock released only after the thread truly finished |
 | `audio.py` / `tts_xtts.py` | STT (faster-whisper), TTS (Piper on CPU by default; XTTS-v2 on GPU, opt-in and lazily loaded), and the streaming sentence chunker |
@@ -93,7 +93,7 @@ Plus eleven tiny **pure agent modules** (spaced repetition, habit streaks, graph
 - **Decisions by measurement, not fashion.** Model, embedding and quantization choices each came from an in-repo A/B harness — and features get turned *off* with numbers too: speculative decoding (no win on short prompts, shape crash on long context), a concept-graph expansion built, measured three times and disabled, HyDE measured and rejected (better distances, *worse* answers — which invalidated the metric being optimized).
 - **Measurement bugs are treated as first-class bugs.** An eval harness that had "right" and "wrong" inverted; a TTFT comparison whose fixed ordering produced the opposite conclusion; a language detector with 463 false positives. Each got its own fix commit.
 - **Security awareness at the edges.** PII masking on outbound web queries, prompt-injection stripping on inbound web content (including at the *persistence* choke point — a payload would otherwise become a permanent vault note), a confidential mode that keeps a turn RAM-only *and blocks web escalation*, an audit trail for mutating actions, and fallback paths for practically every failure.
-- **Testability as a design constraint.** 1,226 tests with no GPU and no network: lazy heavy imports, pure modules with injected clocks, fakes that honor the real contracts (including preemption) and a contract test that binds fake signatures to the real ones.
+- **Testability as a design constraint.** 1,378 tests with no GPU and no network: lazy heavy imports, pure modules with injected clocks, fakes that honor the real contracts (including preemption) and a contract test that binds fake signatures to the real ones.
 
 ---
 
@@ -139,7 +139,7 @@ Configuration is `.env`-driven (`MENTE_*` prefix) — every knob is documented i
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                # 1,226 tests, no GPU, no network — CI installs requirements-ci.txt only
+pytest                # 1,378 tests, no GPU, no network — CI installs requirements-ci.txt only
 ```
 
 ---

@@ -18,10 +18,10 @@ pip install -r requirements-dev.txt     # deps de teste (pytest, pytest-asyncio)
 pytest                                   # suíte roda sem GPU/rede (usa fakes)
 ```
 
-Servidor em `http://localhost:8000`. A suíte `pytest` (pasta `tests/`) tem **1.226 testes em
-125 arquivos** cobrindo a lógica pura e sensível — gate de relevância, buffer anti-sentinela,
+Servidor em `http://localhost:8000`. A suíte `pytest` (pasta `tests/`) tem **1.378 testes em
+138 arquivos** cobrindo a lógica pura e sensível — gate de relevância, buffer anti-sentinela,
 chunker, latência, cada agente das três ondas, a ingestão de obras — com fakes de LLM/TTS/store
-(sem GPU nem rede, ~11 s). O CI (`.github/workflows/tests.yml`) roda **ruff + pytest com piso de
+(sem GPU nem rede, ~12 s). O CI (`.github/workflows/tests.yml`) roda **ruff + pytest com piso de
 cobertura (`--cov-fail-under=77`) + bandit + pip-audit** a cada PR, instalando só o
 `requirements-ci.txt` (sem torch/llama-cpp/chromadb — os imports pesados são tardios).
 
@@ -78,6 +78,7 @@ Subsistema que resolve *"seja expert neste livro"*: um PDF em `dados/livros/entr
 
 ### Infra e observabilidade recentes
 
+- **[imagem_web.py](mente_digital/imagem_web.py)** — imagem da WEB servida LOCALMENTE. O front RECUSA de propósito markdown de imagem com URL externa (nota envenenada pela web faria o browser buscar servidor de fora); a regra não é contornada — o SERVIDOR baixa, sanitiza e guarda, e o chat recebe o mesmo wikilink de sempre por `/api/imagem/`. Inclui a REVALIDAÇÃO do acervo: `acervo_suspeito` é gravado no metadado só quando VERDADEIRO (chave ausente não casa `where` no Chroma) e filtrado nos DOIS caminhos de anexo — busca e co-locação. A ORDEM importa: descartar a suspeita ANTES do corte relativo, senão ela ancora a margem e empurra a figura boa para fora.
 - **[transcricao.py](mente_digital/transcricao.py)** — grava o turno inteiro em JSONL dentro do `safe_send`, porque ele é a ÚNICA porta de saída para o front: registra o que foi ENVIADO, não o que o servidor acha que enviou. Revelou de imediato que 7 de 19 respostas batiam no teto de tokens.
 - **[rede.py](mente_digital/rede.py)** — `porta_em_uso` (~0,2ms, testa por BIND e não por `connect`) no TOPO do lifespan. O uvicorn só reserva a porta DEPOIS do lifespan, então um start duplicado carregava o stack inteiro (~45s, ~4,7 GB), escrevia "online" e só então descobria a porta ocupada — ficando zumbi com a GPU presa.
 - **[backup.py](mente_digital/backup.py)** — backup diário do trio insubstituível (vault + SQLite + `.env`), retenção 14 dias, via API `sqlite3.backup` (consistente em WAL). O vault é a ÚNICA cópia do conhecimento destilado: o dump bruto morre na atomização.

@@ -9,7 +9,7 @@
 🇺🇸 *Prefer English? There's a [condensed overview](README.en.md).*
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-1226_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-1378_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
@@ -36,7 +36,7 @@
 
 | | |
 |---:|:---|
-| **1.226 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~11 s — é literalmente o job de CI |
+| **1.378 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~12 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** (`eval/ab_modelos.py`) |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375, `eval/ab_embeddings.py`) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real (`eval/calibrar_gate.py`) |
@@ -97,7 +97,7 @@ A diferença para um "chatbot com RAG" está em teses que atravessam cada linha 
 | **Modelagem em camadas** (bruto → limpo → pronto, no espírito *bronze/silver/gold*) | dado cru (`chat_dump_bruto.md`, HTML) → limpo/conformado (extração, dedup, atomização com proveniência) → pronto (indexado e ranqueado) |
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **1.226 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Qualidade de dados / DataOps** | **1.378 testes sem GPU nem rede** em CI, dedup por Jaccard, proveniência/linhagem em frontmatter |
 | **Decisão orientada por métrica** | harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -111,7 +111,23 @@ Histórico de lançamentos em ordem inversa (mais novo primeiro). Cada item é u
 > 📖 A **história completa** — as cinco eras narradas, lidas commit a commit e PR a PR, com a curva de crescimento e o método que emerge dela — está em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md).
 
 <details open>
-<summary><b>🖼 Figuras, a enciclopédia e o custo em boot/VRAM (mais recente)</b></summary>
+<summary><b>🔎 Recall das figuras, imagem da web e o acervo que se audita (mais recente)</b></summary>
+
+A rodada que veio depois do acervo visual existir: **fazer a figura certa chegar**, buscar na web o que o vault não tem, e desconfiar do que o próprio acervo afirma.
+
+| Mudança | Resultado |
+|---|---|
+| **Busca exata em memória para figuras** | O dono pediu a foto de uma capivara e recebeu cannabis. Não era ranking, era **recall**: o hnswlib usa `ef = max(ef_search, n_results)` e `top_k=12` explora o grafo raso demais para alcançar um ponto **isolado** (uma capivara num acervo de cannabis tem poucos vizinhos). Medido em produção (1.861 figuras, 20 perguntas): `n_results=12` dava recall@10 **90,5%** e top-1 **70%**; com 500, **98,0%** e **90%**. `hnsw:search_ef` via `modify()` não teve efeito nenhum — testado em 6 valores |
+| **Imagem da web sem furar o pilar local** (`imagem_web.py`) | Quando o acervo não tem a foto, o assistente busca na internet. A parte difícil não é achar: o front **recusa de propósito** markdown de imagem com URL externa (nota envenenada faria o browser buscar servidor de fora). Então o **servidor** baixa, sanitiza e guarda; o chat recebe o mesmo wikilink de sempre, servido por `/api/imagem/`. O navegador continua falando só com o localhost |
+| **O acervo web se audita** | A revalidação já marcava `acervo_confere: NAO` no frontmatter — e **ninguém lia a marca**. Eram 5 de 45 notas: "solo argiloso" era uma miniatura de Rainbow Six Siege (casou o *solo* de *solo queue*), "estômato" um formulário de currículo. Corrigido no molde do `attach_only`: metadado gravado **só quando verdadeiro** (chave ausente não casa `where` no Chroma) e filtro nos **dois** caminhos de anexo — a busca e a co-locação, que seria a porta dos fundos perfeita para a figura que a busca acabou de barrar |
+| **A ordem do descarte importa** | Primeira versão filtrava a suspeita **depois** do corte relativo — então ela continuava sendo a `ordenadas[0]` e **ancorava a margem**: uma reprovada a 0,08 puxaria o limite para 0,09 e empurraria para fora a figura boa a 0,10. *O gate não pode deixar a figura que ele mesmo barrou decidir quem mais entra* |
+| **`n_ctx` 8192 → 16384**, com o custo medido | **76,0 KiB por token** medido em A/B controlado no mesmo processo: 8192 = 3.502 MiB de modelo+KV, 16384 = 4.110 MiB. Estimativa trocada por medição |
+| **O estouro de contexto que apagou dois dias de conversa** | Corrigido no idle — a falha silenciosa mais cara desta leva |
+
+</details>
+
+<details>
+<summary><b>🖼 Figuras, a enciclopédia e o custo em boot/VRAM</b></summary>
 
 O assistente ganhou **olhos**: as figuras dos livros viraram conhecimento buscável, e a imagem aparece no chat ao lado da frase que fala dela. Pagar por isso obrigou a repensar quando o TTS sobe e quanto o boot custa.
 
@@ -500,22 +516,22 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 |---|---|---|
 | **FastAPI** | Servidor | `lifespan` constrói o `AppContext`, injeta tudo e sobe o `SchedulerService` como task de background. O `main.py` tem ~350 linhas e **zero lógica de domínio** — só wiring e rotas. |
 | **WebSocket** | Transporte ao vivo | Full-duplex é **pré-condição do barge-in** (o microfone sobe enquanto o áudio desce) **e do PUSH proativo** (o scheduler empurra o alarme por este mesmo canal). |
-| **Pydantic Settings** | Configuração | **268 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
+| **Pydantic Settings** | Configuração | **282 parâmetros** com prefixo `MENTE_`, todos com default derivado de `BASE_DIR`. Calibrar o sistema — inclusive todos os botões dos agentes — **nunca** exige editar código. |
 | **HTML/CSS/JS puro** | Frontend | SPA de arquivo único (555 linhas), sem framework e sem build. A fila de áudio tem 3 linhas — porque o wire é WAV base64. Uma bolha própria com 🔔 abre para as mensagens `{tipo: proativo}`. |
-| **pytest** | Testes | **1.226 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
+| **pytest** | Testes | **1.378 testes que rodam sem GPU e sem rede** (de 80), com fakes de LLM/TTS/store e clock injetado — é exatamente o que o CI roda a cada PR. Testabilidade aqui é restrição de design, não add-on. |
 
 ---
 
 ## 🗂 Papel de cada módulo
 
-**~19.700 linhas de Python** em 51 módulos (de ~3.300 em 12), mais ~16.100 de testes e ~555 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
+**~21.000 linhas de Python** em 52 módulos (de ~3.300 em 12), mais ~18.500 de testes e ~555 de frontend. Nenhum módulo de domínio conhece o WebSocket: o pipeline recebe um callback `send(dict) -> bool` e é só isso que ele sabe do mundo exterior.
 
 ```
 .                        # a RAIZ fica com o entrypoint + o resto em pastas
 ├── main.py              # 350  entrypoint: `python main.py` (ou `uvicorn main:app`) — wiring do lifespan, scheduler, rotas + WS
 ├── mente_digital/       # o PACOTE do app (lógica de domínio; importado por caminho absoluto)
 │   │ ── núcleo ────────────────────────────────────────────────────────────────
-│   ├── config.py       # 1216 Settings (Pydantic), 268 knobs + dicionário fonético do TTS
+│   ├── config.py       # 1268 Settings (Pydantic), 282 knobs + dicionário fonético do TTS
 │   ├── prompts.py      # 754  todos os prompts de sistema/tarefa + as tags Zettelkasten
 │   ├── state.py        # 430  AppContext (DI) + SessionMemory (histórico + estado dos agentes)
 │   ├── llm.py          # 577  LlamaManager: GPU serializada, streaming, cancelamento, preempção
@@ -534,6 +550,8 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 │   ├── atomos.py       # 318  atomização Zettelkasten pura (o Python impõe a estrutura)
 │   ├── etl.py          # 1209 EtlProcessor do idle: fila web, conversa, proativa, ingestão, snapshot
 │   ├── vocabulario.py  # 94   ponte de jargão EN→PT para o aterramento léxico — puro
+│   ├── imagem_web.py   # 449  imagem da web servida LOCALMENTE (o servidor baixa; o
+│   │                   #      browser nunca fala com fora) + revalidação do acervo
 │   ├── textutils.py    # 145  normalização, keywords, aterramento léxico, Jaccard (100% puro)
 │   │ ── ação (o plano de comando) ─────────────────────────────────────────────
 │   ├── comandos_mestre.py # 854 mixin "age": _fluxo_mestre + executores das três ondas
@@ -579,9 +597,9 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 │   ├── telemetria_etl.db       # SQLite: histórico, latência, agendamentos
 │   └── chat_dump_bruto.md      # fila do ETL de conversa
 ├── templates/           # index.html — a SPA inteira (555 linhas)
-├── tests/               # 1.226 testes em 125 arquivos, sem GPU, sem rede
+├── tests/               # 1.378 testes em 138 arquivos, sem GPU, sem rede
 ├── eval/                # 16 harnesses de A/B e bench (TTFA, embeddings, modelos, qualidade de átomo)
-├── scripts/             # 25 utilitários (reindex, ingerir livro, OCR, reparo, certs, bench de STT)
+├── scripts/             # 29 utilitários (reindex, ingerir livro, OCR, reparo, certs, bench de STT)
 └── docs/                # EVOLUCAO_DO_PROJETO.md, CALIBRACAO.md, CONSULTORIA_TTFT.md, TESTE_MANUAL.md
 ```
 
@@ -592,7 +610,7 @@ Nenhuma escolha aqui é "a lib popular". Cada uma resolve uma restrição concre
 Único arquivo executável. No `lifespan`: cria as pastas, sobe o SQLite, monta o `AppContext`, instancia todos os serviços **e inicia o `SchedulerService`** como task retida. **A GPU carrega em background** (`track_task`) para o servidor aceitar conexões enquanto o modelo sobe; Whisper/Piper/embeddings vão para `asyncio.to_thread`. Zero lógica de domínio, por decisão explícita.
 
 ### `config.py` — o painel de controle
-Uma classe `Settings` (Pydantic) com **268 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
+Uma classe `Settings` (Pydantic) com **282 campos**. **Todos os caminhos derivam de `BASE_DIR`** — o repositório roda de qualquer diretório após um clone. Cada campo é sobrescrevível por `MENTE_*`. Guarda o `DICIONARIO_FONETICO` (inglês→PT-BR) que impede o Piper de soletrar "software" com fonética portuguesa, e os botões de todos os agentes (intervalos de SRS, mínimos de atalho/conexão, gate da malha, etc.). `ensure_dirs()` roda no startup, **nunca no import**.
 
 ### `state.py` — estado compartilhado, sem lógica
 `AppContext` é o container de DI que vive em `app.state.ctx`. Contém `track_task` (referência forte contra o GC — ver [war stories](#2-as-tasks-que-o-garbage-collector-comia)), o `interactive_idle` (prioridade de GPU), `sessoes` (as conexões vivas, alvo do PUSH proativo) e a `SessionMemory`. Esta última cresceu com os agentes: além de histórico e fila de ETL, guarda o **estado de sessão** dos meta-comandos — `confidencial`, `confirmacao_pendente`, `ultima_reversivel`, `ultima_acao`, `ultimo_comando_mestre`, `revisao` (SRS), `tutor` — tudo `deque`/campo com vida só na RAM.
@@ -1011,7 +1029,7 @@ O sentinela é um **sinal de controle *in-band*** num canal de linguagem natural
 
 ### Testabilidade sem GPU
 
-**1.226 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
+**1.378 testes, sem GPU e sem rede** (de 80). Só é possível por causa da arquitetura: o port `send`; import lazy do `llama_cpp`; `textutils`/`agenda`/`mestre`/`srs`/`habitos`/`grafo`/`calendario` **puros** com dados e "agora" injetados; clock injetado; o RAG efêmero degradando sem embeddings. A **cobertura foi escolhida por risco**: gate, buffer anti-sentinela, chunker, latência, parse de tools, fallback web, ciclo do conhecimento, **e cada agente das três ondas** (desfazer, encadeamento, confirmação, atalho, scheduler, SRS, hábitos, tutor, conexões…) — e testes de **propriedade** (Hypothesis) que varrem as máquinas de estado de streaming (`_FiltroThink`, `SentenceChunker`) com partições aleatórias de tokens.
 
 > **Meta-skill:** cada heurística carrega no comentário **o bug que ela conserta**. É convenção obrigatória no `CLAUDE.md`. Nenhuma dessas defesas pode ser removida por engano num refactor — a razão está no arquivo.
 
@@ -1276,7 +1294,7 @@ GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale 
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                    # 1.226 testes, sem GPU e sem rede
+pytest                    # 1.378 testes, sem GPU e sem rede
 ```
 
 O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatamente essa suíte a cada PR e push no master — mas instala só o [`requirements-ci.txt`](requirements-ci.txt): sem `llama-cpp-python` (que compila por minutos), sem torch, sem chromadb. Os imports pesados são tardios e a suíte usa fakes, então ~10 pacotes leves bastam — validado numa venv limpa: a suíte inteira em ~11 s.
@@ -1288,7 +1306,7 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 ## 🔧 Configuração
 
-**268 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
+**282 parâmetros** vivem em [`config.py`](mente_digital/config.py), sobrescrevíveis por `.env` com prefixo `MENTE_`. **Calibrar o sistema nunca exige editar código.** Guia completo em `docs/CALIBRACAO.md`. Os mais úteis:
 
 | Variável | Default | Efeito |
 |---|---|---|
@@ -1421,7 +1439,7 @@ A cascata RAM → banco → web é o fluxo mental de um atendente. **Ceticismo p
 <details>
 <summary><b>6. Kiosk, embarcado e acessibilidade</b></summary>
 
-**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (268 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
+**Sem nuvem = sem latência de rede, sem custo por request, sem SLA de terceiro.** A **matriz de degradação graciosa** é o requisito central de embarcado; **`maxlen` nas deques + LRU** permite rodar por dias sem creep de RAM; e **toda a config é `.env`** (282 knobs): o *mesmo* código atende hardwares diferentes. O `BASE_DIR` relativo fecha o "empacota e vai".
 
 </details>
 
@@ -1439,7 +1457,7 @@ O `EtlProcessor` **já é um worker de background completo** e o `SchedulerServi
 
 </details>
 
-> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 1.226 testes é a evidência empírica de que a abstração vaza pouco.**
+> **Nota que reforça a fronteira do port:** migrar de LLM local para API (ou vLLM/ExLlamaV3) toca **apenas** o `LlamaManager`. O resto só conhece `stream()` e `collect()` — e a prova está no `conftest.py`: o `FakeLlama` tem exatamente **dois métodos**. **A suíte de 1.378 testes é a evidência empírica de que a abstração vaza pouco.**
 
 ---
 

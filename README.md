@@ -9,7 +9,7 @@
 📐 **[Arquitetura completa / deep-dive técnico →](ARQUITETURA.md)**  ·  📖 [Como o projeto evoluiu](docs/EVOLUCAO_DO_PROJETO.md)  ·  🇺🇸 [English overview](README.en.md)
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-1226_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-1378_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
@@ -28,7 +28,7 @@
 
 | | |
 |---:|:---|
-| **1.226 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~11 s — é literalmente o job de CI |
+| **1.378 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~12 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real |
@@ -102,7 +102,7 @@ O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o códi
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Ingestão em lote com fila durável** | um PDF vira dezenas de jobs JSON em disco que **sobrevivem a restart**, drenados no idle ([Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras)) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **1.226 testes sem GPU nem rede** em CI (+ ruff, cobertura com piso, bandit, pip-audit), dedup por Jaccard, proveniência em frontmatter |
+| **Qualidade de dados / DataOps** | **1.378 testes sem GPU nem rede** em CI (+ ruff, cobertura com piso, bandit, pip-audit), dedup por Jaccard, proveniência em frontmatter |
 | **Decisão orientada por métrica** | 16 harnesses de A/B em `eval/` — ranqueamento **2×**, erro do modelo **33%→8%** — e features **desligadas** quando os dados não sustentam |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
@@ -161,6 +161,7 @@ A **primeira bifurcação** é a arquitetura inteira em uma imagem: **começou p
 | 🔔 | **Agentes que cuidam** — scheduler persistente (sobrevive a restart) com alarmes, *watchers* ("me avise quando X"), briefing diário e push falado | [Agentes proativos](ARQUITETURA.md#-agentes-proativos-a-responsabilidade-contínua) |
 | 🔄 | **Ciclo de vida do conhecimento** — notas nascem `#conhecimento_novo` e só "amadurecem" quando você de fato as reusa; a base cresce da sua curiosidade | [O ciclo](ARQUITETURA.md#-o-ciclo-de-vida-do-conhecimento) |
 | 📚 | **Ingestão de obras** — solte um PDF numa pasta: capítulos, OCR do escaneado, triagem editorial e **1.736 figuras buscáveis**, tudo processado no idle | [Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras) |
+| 🖼 | **Imagem que chega à tela** — a figura entra depois da frase que fala dela; se o acervo não tem, o **servidor** busca na web, baixa e serve localmente — o browser nunca fala com fora | [Patch Notes](ARQUITETURA.md#-patch-notes) |
 | 🕸 | **A Malha** — GraphRAG sobre o vault (aterramento por IDF, hubs, pontes por surpresa) **sem biblioteca de grafo** | [A Malha](ARQUITETURA.md#-a-malha-um-grafo-sobre-as-suas-notas) |
 
 > Patch notes de cada feature em [`ARQUITETURA.md`](ARQUITETURA.md#-patch-notes) · os bugs que moldaram a arquitetura em [war stories](ARQUITETURA.md#-war-stories-os-bugs-que-moldaram-a-arquitetura) · a história completa em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md).
@@ -181,7 +182,7 @@ Nenhuma escolha é "a lib popular" — cada uma resolve a restrição do alvo: *
 | Persistência | **SQLite** | Turnos, latências, agendamentos, estado dos agentes; migrações idempotentes |
 | Servidor | **FastAPI** + **WebSocket** | Full-duplex (pré-condição de barge-in e do push proativo) |
 
-> ~19.700 linhas de Python em 51 módulos + **1.226 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
+> ~21.000 linhas de Python em 52 módulos + **1.378 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
 
 ---
 
@@ -211,11 +212,11 @@ python main.py                    # ou: uvicorn main:app --host 0.0.0.0 --port 8
 
 Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar (~12 s até online).
 
-**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, 268 parâmetros documentados em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
+**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, 282 parâmetros documentados em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                            # 1.226 testes, sem GPU e sem rede (~11 s)
+pytest                            # 1.378 testes, sem GPU e sem rede (~12 s)
 ```
 
 **→ Setup detalhado (CUDA, Docker, `.env`, download dos modelos) em [`ARQUITETURA.md`](ARQUITETURA.md#-setup--instalação) · calibração em [`docs/CALIBRACAO.md`](docs/CALIBRACAO.md).**
