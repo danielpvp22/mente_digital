@@ -207,7 +207,7 @@ copy .env.example .env            # NÃO pule este passo — ver o aviso abaixo
 python main.py                    # ou: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-> ⚠️ **Copie o `.env.example`.** O default de `MENTE_RAG_SCORE_CONFIDENT` no código (`0.8`) é da escala do embedding *antigo*; o valor calibrado para o e5-base atual é **`0.16`** e vive no `.env.example`. Sem ele o gate de relevância fica frouxo demais e quase tudo é tratado como "contexto confiável" — [o porquê](ARQUITETURA.md#1-o-cache-hit-falso--o-gate-que-confundia-ter-contexto-com-ter-contexto-relevante).
+> ⚠️ **Copie o `.env.example` — o stack adotado mora nele, não nos defaults do código.** `config.py` ainda traz o conjunto da era anterior (MiniLM + prefixos vazios + gate `0.8`); o adotado (e5-base + prefixos `query:`/`passage:` + gate `0.16`) está no `.env.example`. Rodar sem ele te dá silenciosamente o embedding antigo, **~2× pior no ranqueamento**. E cuidado ao editar *um só*: embedding e gate são **um par**, porque a escala da distância é função do modelo — trocar um sem o outro é a classe de bug que já derrubou o RAG deste projeto inteiro uma vez ([o porquê](ARQUITETURA.md#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno)).
 
 Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar (~12 s até online).
 

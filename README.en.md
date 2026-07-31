@@ -127,7 +127,7 @@ pip install -r requirements.txt
 cp .env.example .env                             # don't skip — see the note below
 ```
 
-> ⚠️ **Copy `.env.example`.** The in-code default for `MENTE_RAG_SCORE_CONFIDENT` (`0.8`) belongs to the *previous* embedding model's distance scale; the calibrated value for today's e5-base is **`0.16`**, and it only lives in `.env.example`. Running without it leaves the relevance gate far too loose.
+> ⚠️ **Copy `.env.example` — the adopted stack lives there, not in the code defaults.** `config.py` still ships the previous era's coherent set (MiniLM + empty prefixes + gate `0.8`); the adopted one (e5-base + `query:`/`passage:` prefixes + gate `0.16`) is in `.env.example`. Running without it silently gives you the **old embedding, ~2× worse at ranking**. And never change one without the other: distance scale is a function of the model, so a threshold measured on one embedding applied to another is the exact signature of the L2-vs-cosine bug that once took this project's retrieval down entirely.
 
 Download the models (not in the repo): the LLM (`Qwen3-8B` GGUF `Q4_K_M`) and the Piper voice (`pt_BR-cadu-medium.onnx` **and** its `.onnx.json`) go into `dados/modelos/`; Whisper and the embedding model download themselves on first run. The vault can start empty. Then:
 
