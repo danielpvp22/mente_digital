@@ -614,10 +614,91 @@ class _FingerprintMudou(RuntimeError):
     erro nenhum no Chroma). Levantada no open() para reusar o caminho do #33."""
 
 
+class _IndiceFiguras:
+    """As figuras em RAM para busca EXATA — HNSW é maquinário errado para 1.861 itens.
+
+    O DEFEITO MEDIDO (2026-07-31, índice de produção com 24.925 chunks e 1.861 figuras):
+    a busca aproximada com `where={"tipo":"figura"}` erra o PRIMEIRO colocado em 30% das
+    perguntas. "tem foto de uma capivara?" tem a nota certa a 0,1319 e o Chroma devolvia
+    0,1673 — a capivara não aparecia nem no top-300. A causa é mecânica: o hnswlib usa
+    `ef = max(ef_search, n_results)`, e pedir 12 resultados explora o grafo raso demais
+    para alcançar um ponto ISOLADO (uma capivara num acervo de cannabis tem poucos
+    vizinhos no grafo). Com `n_results=1000` ela reaparece em 1º lugar.
+
+    ⚠ O docstring antigo de `_buscar_figuras` afirmava "recall exato dentro do
+    subconjunto (20/20 contra força bruta)". Isso valia para 1.735 figuras e deixou de
+    valer; medir de novo depois de crescer a base é o que pegou.
+
+    A curva medida (recall@10 / top-1 exato / ms por query):
+        n_results=12 (o que estava no ar) .... 90,5% / 70% / 18,6 ms
+        n_results=500 ....................... 98,0% / 90% / 50,4 ms
+        n_results=2000 (exaustivo) .......... 100%  / 100% / 140,1 ms
+        ESTA CLASSE ......................... 100%  / 100% / **0,22 ms**
+
+    Ou seja: exato E 85x mais rápido que o aproximado, por 5,7 MB de RAM. Faz sentido
+    porque 1.861 vetores cabem numa multiplicação de matriz; o índice aproximado existe
+    para milhões, e aqui só atrapalha.
+    """
+    __slots__ = ("_matriz", "_docs")
+
+    def __init__(self, matriz, docs) -> None:
+        self._matriz = matriz          # (n, dim), já normalizada por linha
+        self._docs = docs
+
+    def __len__(self) -> int:
+        return len(self._docs)
+
+    def buscar(self, vetor, k: int) -> List[Tuple[float, object]]:
+        """As `k` figuras mais próximas, por cosseno. Exato, sem aproximação."""
+        import numpy as np
+
+        v = np.asarray(vetor, dtype="float32")
+        norma = float(np.linalg.norm(v))
+        if norma == 0.0:
+            return []
+        distancias = 1.0 - (self._matriz @ (v / norma))
+        k = max(1, min(k, len(self._docs)))
+        # argpartition e não sort: só o topo importa, e ordenar 1.861 à toa é o
+        # tipo de desperdício que some no benchmark e aparece no TTFT.
+        topo = np.argpartition(distancias, k - 1)[:k]
+        return sorted(((float(distancias[i]), self._docs[i]) for i in topo),
+                      key=lambda par: par[0])
+
+
+def montar_indice_figuras(store) -> Optional[_IndiceFiguras]:
+    """Lê as figuras do Chroma e monta a matriz. Fail-soft: None mantém o caminho antigo.
+
+    Síncrona — o chamador já está em `asyncio.to_thread`. Custo medido: 76 ms para as
+    1.861, uma vez por `sync()`.
+    """
+    try:
+        import numpy as np
+
+        col = store._collection
+        got = col.get(where={"tipo": "figura"}, include=["embeddings", "metadatas", "documents"])
+        embs = got.get("embeddings")
+        if embs is None or len(embs) == 0:
+            return None
+        matriz = np.asarray(embs, dtype="float32")
+        matriz /= (np.linalg.norm(matriz, axis=1, keepdims=True) + 1e-12)
+        docs = [_DocSimples(t or "", m or {})
+                for t, m in zip(got.get("documents") or [], got.get("metadatas") or [])]
+        if len(docs) != matriz.shape[0]:
+            return None          # desalinhado: melhor o caminho antigo que a figura errada
+        return _IndiceFiguras(matriz, docs)
+    except Exception as exc:
+        telemetry.error("FIGURAS", "Índice exato de figuras indisponível (seguindo no ANN)", exc)
+        return None
+
+
 class VectorStore:
     def __init__(self, embeddings: EmbeddingProvider) -> None:
         self._embeddings = embeddings
         self._store = None
+        # Índice EXATO das figuras, montado sob demanda e zerado a cada `sync`. Lazy
+        # porque o custo (76 ms medidos) não deve entrar no boot de quem nunca pede
+        # imagem — e a primeira pergunta com figura já o paga uma vez só.
+        self._idx_figuras: Optional["_IndiceFiguras"] = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
         self.malha = MalhaIndex()
         # A malha é montada em DOIS caminhos (fim do open e fim do sync) e, desde que o
@@ -806,6 +887,12 @@ class VectorStore:
             await self.open()
         if self._store is None:
             return
+        # INVALIDA O ÍNDICE EXATO DE FIGURAS logo na entrada, e não nos pontos em que o
+        # sync grava: `sync` tem várias saídas antecipadas ("nada novo", erro, lock), e
+        # esquecer UMA delas deixaria a figura nova invisível até o próximo restart —
+        # falha silenciosa, do tipo que só aparece semanas depois. Invalidar aqui custa
+        # no máximo uma remontagem de 76 ms por sync, mesmo quando nada mudou.
+        self._idx_figuras = None
         try:
             async with self._write_lock:
                 existing = await asyncio.to_thread(
@@ -1010,6 +1097,30 @@ class VectorStore:
             self._store.similarity_search_with_score, consulta, k
         )
 
+    async def _figuras_candidatas(self, consulta: str) -> List[Tuple[object, float]]:
+        """Os candidatos brutos, no formato (doc, score) do Chroma.
+
+        Prefere o índice EXATO em memória (`_IndiceFiguras`) e cai no ANN se ele não
+        existir — base sem figura, numpy ausente, store fake nos testes. O fallback é o
+        que estava no ar até 2026-07-31, então o pior caso é o status quo.
+        """
+        if settings.figuras_busca_exata:
+            if self._idx_figuras is None:
+                self._idx_figuras = await asyncio.to_thread(montar_indice_figuras, self._store)
+                if self._idx_figuras is not None:
+                    telemetry.track("FIGURAS",
+                                    f"Índice exato de figuras montado ({len(self._idx_figuras)}).")
+            if self._idx_figuras is not None:
+                vetor = await asyncio.to_thread(
+                    self._embeddings.instance.embed_query, consulta)
+                achados = self._idx_figuras.buscar(vetor, settings.figuras_top_k)
+                return [(doc, dist) for dist, doc in achados]
+        return await asyncio.to_thread(
+            lambda: self._store.similarity_search_with_score(
+                consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
+            )
+        )
+
     async def _buscar_figuras(self, consulta: str, chaves: set) -> List[Tuple[float, object]]:
         """Figuras que passam o gate, num espaço de busca SÓ delas.
 
@@ -1017,8 +1128,13 @@ class VectorStore:
         mesmas vagas, a figura perdia: uma a 0,1239 ficava fora de um top-40 cujo pior
         era 0,1373, porque a busca aproximada não a alcançava no meio de 33k chunks.
         (2) Quando ganhava, ganhava demais: "como podar a planta" tomava 16 das 40
-        vagas. Com `where={"tipo": "figura"}` o Chroma filtra ANTES da ANN e o recall
-        dentro do subconjunto é exato (20/20 contra força bruta nos 1.735 vetores).
+        vagas. Por isso o `where={"tipo": "figura"}`.
+
+        ⚠ CORREÇÃO DE 2026-07-31: este docstring afirmava que, com o filtro, "o recall
+        dentro do subconjunto é exato (20/20 contra força bruta nos 1.735 vetores)".
+        DEIXOU DE SER VERDADE ao crescer a base — medido em 1.861 figuras, o ANN erra o
+        PRIMEIRO colocado em 30% das perguntas. Hoje a busca é EXATA e em memória (ver
+        `_IndiceFiguras`), com o ANN como fallback.
 
         QUANTAS entram é do gate, não de cota: mesma régua do texto (aterramento
         léxico OU confiança semântica). Pergunta que não pede imagem devolve zero;
@@ -1031,11 +1147,7 @@ class VectorStore:
             return []
         limiar = settings.figuras_score_confident or settings.rag_score_confident
         try:
-            res = await asyncio.to_thread(
-                lambda: self._store.similarity_search_with_score(
-                    consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
-                )
-            )
+            res = await self._figuras_candidatas(consulta)
         except Exception as exc:
             telemetry.error("FIGURAS", "Busca de figuras falhou (seguindo só com texto)", exc)
             return []

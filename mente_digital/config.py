@@ -667,6 +667,18 @@ class Settings(BaseSettings):
     # Quantas figuras CONSIDERAR (candidatas, antes do gate). Não é cota: é o tamanho
     # da busca. Quantas de fato entram depende do gate e do orçamento de chars.
     figuras_top_k: int = 12
+    # BUSCA EXATA DE FIGURA, em memória, no lugar do índice aproximado do Chroma.
+    # Medido em 2026-07-31 (1.861 figuras em 24.925 chunks): o ANN com
+    # `where={"tipo":"figura"}` erra o PRIMEIRO colocado em 30% das perguntas, porque o
+    # hnswlib usa `ef = max(ef_search, n_results)` e pedir 12 explora o grafo raso
+    # demais para alcançar um ponto isolado — "tem foto de uma capivara?" tinha a nota
+    # certa a 0,1319 e recebia 0,1673, com a capivara fora até do top-300.
+    #   n_results=12 (o que estava no ar) .. recall@10 90,5% · top-1 70% · 18,6 ms
+    #   n_results=2000 (exaustivo no ANN) .. recall@10 100%  · top-1 100% · 140,1 ms
+    #   busca exata em memória ............. recall@10 100%  · top-1 100% · **0,22 ms**
+    # Exata E 85x mais rápida, por 5,7 MB de RAM: 1.861 vetores cabem numa matriz, e o
+    # índice aproximado existe para milhões. Desligar volta ao ANN (o status quo).
+    figuras_busca_exata: bool = True
     # Limiar da figura. 0 = herda o rag_score_confident (mesma régua do texto). Existe
     # separado porque a nota de figura é curta e descritiva: a distância dela não é
     # comparável à de um átomo de prosa, então pode precisar de calibração própria.
