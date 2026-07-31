@@ -584,8 +584,14 @@ class Respostas:
         O arquivo é baixado, sanitizado e servido pelo `/api/imagem/` — o navegador
         nunca busca um domínio de fora (ver imagem_web e o comentário do front).
         Fail-soft em bloco: qualquer erro vira a mesma frase honesta.
+
+        A limpeza do termo é AQUI, num ponto só: daqui ele sai para o buscador, para
+        o gate léxico e para a nota do acervo, e os três têm de ver a mesma coisa.
+        Sem ela o '?' da pergunta viajava até o Bing e virava `[[Camaleão?]]` no
+        vault (defeito visto pelo dono em 2026-07-31).
         """
         aviso = "\n\n(Não encontrei imagem disso no acervo do vault"
+        termos = imagem_web.limpar_pedido(termos)
         if not settings.imagem_web_enabled or not termos:
             await send({"tipo": "token", "texto": aviso + ".)"})
             return False

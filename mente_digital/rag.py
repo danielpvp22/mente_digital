@@ -57,12 +57,29 @@ _META_VERSAO = 4
 # desprezível perto do de processar o dump. Ver `dump_paginado`.
 _DUMP_LOTE = 5000
 
+# Marca de PROVENIÊNCIA posta por `_irmaos_de_pagina`. Existe porque `score is None`
+# sozinho não distingue as duas coisas que entram sem distância — ver `rotular_contexto`.
+IRMAO_DE_PAGINA = "_irmao_de_pagina"
+
+
 def rotular_contexto(score: Optional[float], doc) -> str:
     """Prefixa o chunk com O QUE ELE É antes de mandar ao LLM. Puro/testável.
 
     Sem rótulo, um vizinho tangencial chega indistinguível de um átomo que responde
-    — exatamente a alucinação que o pipeline combate. `score is None` marca o vizinho
-    da malha (entrou por conceito, não por distância).
+    — exatamente a alucinação que o pipeline combate. `score is None` marca o que
+    entrou SEM distância, mas não diz por qual porta.
+
+    DUAS PORTAS ENTRAM SEM DISTÂNCIA, e elas não valem o mesmo. O vizinho da malha
+    entrou por conceito compartilhado (evidência fraca: medido em 2026-07-31, o
+    ranking por IDF ganha 2,3% das vagas contra o próximo match vetorial). O IRMÃO DE
+    PÁGINA entrou por co-locação POR CONSTRUÇÃO — é a mesma página do mesmo livro do
+    átomo que respondeu, a evidência mais forte do pipeline depois do match.
+
+    O bug que isto corrige (medido em 205 perguntas reais do `chat_history`, com
+    `malha_expandir=false`, ou seja, ZERO vizinhos de malha existindo): o contexto
+    ainda levava 3,96 blocos por pergunta rotulados "[Malha - relacionado]" — todos
+    irmãos de página. A evidência mais forte chegava ao modelo anunciada como a mais
+    fraca, e o rótulo existe exatamente para dizer qual é qual.
 
     A FIGURA avisa ao modelo que a imagem JÁ SERÁ MOSTRADA ao usuário (o servidor a
     anexa — ver `respostas._mostrar_figuras`). Antes este rótulo pedia que ele
@@ -72,6 +89,8 @@ def rotular_contexto(score: Optional[float], doc) -> str:
     link."""
     conteudo = doc.page_content
     if score is None:
+        if (getattr(doc, "metadata", None) or {}).get(IRMAO_DE_PAGINA):
+            return f"[Mesma página - completa o trecho que respondeu] {conteudo}"
         return f"[Malha - relacionado] {conteudo}"
     if str((doc.metadata or {}).get("tipo") or "") == "figura":
         return ("[Figura do acervo — a imagem já é mostrada ao usuário; descreva o que "
@@ -1113,7 +1132,11 @@ class VectorStore:
         for texto, md in zip(res.get("documents") or [], res.get("metadatas") or []):
             if not texto or texto in vistos:
                 continue
-            doc = _DocSimples(texto, md or {})
+            # Dicionário NOVO, não mutação do que veio do Chroma: a marca é nossa e
+            # não deve vazar para quem mais leia esse metadado. Sem ela o rótulo cai
+            # em "[Malha - relacionado]" e o irmão chega como vizinho solto — ver
+            # `rotular_contexto`.
+            doc = _DocSimples(texto, {**(md or {}), IRMAO_DE_PAGINA: True})
             if e_nota_de_figura(doc):
                 continue
             vistos.add(texto)

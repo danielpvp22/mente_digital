@@ -93,6 +93,46 @@ def contem_alguma(texto: str, chaves: set[str]) -> bool:
     return bool(set(tokens(texto)) & chaves)
 
 
+def radical(token: str) -> str:
+    """Tira o plural PT/ES do token. Puro. Aproximação deliberada, não um stemmer.
+
+    Existe porque `contem_alguma` casa TOKEN INTEIRO, e um "s" derruba o casamento:
+    medido em 2026-07-31 sobre as 40 notas de imagem da web, a régua marcou como
+    suspeitas `'tricoma'` contra o título "## tricomas" e `'bráctea'` contra
+    "## Brácteas, las hojas..." — 5 falsos positivos em 40, TODOS dessa família.
+
+    Não é um stemmer de verdade de propósito: sobra-radicalizar ("gás"→"ga") é
+    inofensivo aqui porque os DOIS lados passam pela mesma função, então o erro é
+    simétrico. O risco assimétrico seria o contrário — rejeitar nota boa —, que é
+    exatamente o defeito que isto corrige.
+    """
+    t = normaliza(token)
+    if len(t) <= 3:
+        return t
+    for fim, troca in (("oes", "ao"), ("aes", "ao"), ("aos", "ao"), ("ns", "m")):
+        if t.endswith(fim) and len(t) - len(fim) + len(troca) > 2:
+            return t[: -len(fim)] + troca
+    if t.endswith("is") and len(t) > 4:          # animais -> animal
+        return t[:-2] + "l"
+    if t.endswith("es") and len(t) > 4:          # flores -> flor
+        return t[:-2]
+    if t.endswith("s"):                          # tricomas -> tricoma
+        return t[:-1]
+    return t
+
+
+def contem_alguma_flex(texto: str, chaves: set[str]) -> bool:
+    """Como `contem_alguma`, mas comparando RADICAIS (tolera plural).
+
+    Separada de propósito, e não um parâmetro da outra: `contem_alguma` governa o
+    aterramento léxico do `VectorStore.search` sobre ~24 mil notas, e afrouxá-la
+    mudaria o gate inteiro sem medição. Quem quiser a tolerância, pede por ela.
+    """
+    if not chaves:
+        return False
+    return bool({radical(t) for t in tokens(texto)} & {radical(c) for c in chaves})
+
+
 def remover_tag(conteudo: str, tag: str) -> str:
     """Remove uma tag Obsidian (#algo) do texto, sem tocar no resto. Puro/testável.
 

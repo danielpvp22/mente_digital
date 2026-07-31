@@ -92,7 +92,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
 os.chdir(RAIZ)   # o pydantic lê o .env relativo ao CWD (ver ocr_agora.py)
 
-from mente_digital import atomos, livro, prompts, rag, reparo, textutils  # noqa: E402
+from mente_digital import atomos, imagem_web, livro, prompts, rag, reparo, textutils  # noqa: E402
 from mente_digital.config import settings  # noqa: E402
 from mente_digital.llm import LlamaManager, preparar_offline  # noqa: E402
 from mente_digital.telemetry import telemetry  # noqa: E402
@@ -790,6 +790,37 @@ def _legenda_pobre(nota: Nota) -> bool:
     return reparo.palavras_de_conteudo(nota.corpo) < MIN_PALAVRAS_LEGENDA
 
 
+def _isca_da_web(nota: Nota) -> bool:
+    """Nota do acervo de imagem da WEB: fica INTACTA. Puro/testável.
+
+    Mesma família do `_legenda_pobre`, e por isso mora ao lado dele: nota sem
+    material honesto não vai ao modelo. A diferença é que aqui o material PARECE
+    existir — a nota tem um título de 6 palavras e passa folgado no
+    MIN_PALAVRAS_LEGENDA. Só que esse título é a ISCA DE CLIQUE da página de onde
+    a foto veio, escrita por um estranho para vender o clique, não para descrever
+    a imagem. Depois do `corpo_de_figura` é TUDO que sobra da nota: o termo que o
+    dono buscou está no frontmatter e nunca chega ao prompt.
+
+    O estrago é medido, não temido (2026-07-31, print do dono + as 40 notas de
+    `Figuras/_web/` conferidas uma a uma contra o backup `links_20260731_034923`):
+    a passada reescreveu as 40; 23 saíram com um HUB global do vault
+    (`[[Cultivo]]`, `[[YOLO]]`, `[[Detecção de Objetos]]`) e 26 perderam o termo
+    buscado. Uma foto de camaleão arquivada sob `[[Cultivo]]` num vault de
+    cannabis não é feiura de grafo: é candidata a ser anexada como FIGURA numa
+    pergunta de cultivo — a mesma família da aranha que virou `[[Detecção de
+    Objetos]]`. Duas causas somadas, ambas por construção:
+      1. `escolher_candidatos` oferece `idx.top_global` a TODA nota, e sem
+         casamento léxico o hub é o que sobra no topo da lista;
+      2. `mesclar` descarta link atual com freq 1 — e o termo buscado é, por
+         natureza, solteiro (só esta nota fala de camaleão).
+
+    Deixar a nota intacta a devolve para `[[Camaleão]] [[Imagem da Web]]`, que é
+    honesto: uma foto de camaleão REALMENTE não conecta a um vault de cultivo, e
+    desconectada é melhor que falsamente conectada.
+    """
+    return nota.origem.strip().startswith(imagem_web.ORIGEM_PREFIXO)
+
+
 def _compartilhados(nota: Nota, conectores: Set[str]) -> int:
     """Quantos links da nota LIGAM alguma coisa (conector: nem solteiro, nem hub)."""
     return sum(1 for c in nota.conceitos if _norm(c) in conectores)
@@ -808,6 +839,8 @@ def _selecionar(notas: List[Nota], conectores: Set[str], args, feitos: Set[str])
         alvos = [n for n in alvos if not n.e_figura]
     # Figura sem legenda de verdade não vai ao modelo (mede-se, não se adivinha).
     alvos = [n for n in alvos if not (n.e_figura and _legenda_pobre(n))]
+    # Acervo de imagem da web: o "corpo" é título de isca, não legenda (`_isca_da_web`).
+    alvos = [n for n in alvos if not _isca_da_web(n)]
     if args.so_sem_malha:
         alvos = [n for n in alvos if not n.conceitos]
     if args.so_desconectadas:
@@ -921,6 +954,12 @@ def main() -> int:
         pobres = sum(1 for n in figuras if _legenda_pobre(n))
         print(f"         {pobres:,} delas ficam de fora: legenda com < {MIN_PALAVRAS_LEGENDA} "
               "palavras de conteúdo não é material para conceituar")
+    # Fora do `if figuras`: a exclusão vale mesmo numa passada só de texto, e
+    # exclusão silenciosa é como se descobre tarde demais o que a passada não fez.
+    iscas = sum(1 for n in notas if _isca_da_web(n))
+    if iscas:
+        print(f"         {iscas:,} nota(s) do acervo de imagem da WEB ficam de fora: "
+              "o corpo delas é título de isca da página, não legenda (`_isca_da_web`)")
     if args.so_metricas:
         print("\n(só-métricas: nada foi chamado nem escrito)")
         return 0

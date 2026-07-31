@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from mente_digital import academico
 from mente_digital import antiinjecao
 from mente_digital import consolidacao
 from mente_digital import figuras as figuras_mod
+from mente_digital import imagem_web
 from mente_digital import rag
 from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
@@ -40,6 +42,32 @@ from mente_digital.otimizador import lacuna_pesquisavel
 from mente_digital.rag import NENHUM, strip_frontmatter
 from mente_digital.state import AppContext
 from mente_digital.telemetry import db, telemetry
+
+# Leitura da nota de acervo web (ver `EtlProcessor.revalidar_acervo_web`). O prefixo vem
+# de `imagem_web.ORIGEM_PREFIXO` e não é recopiado aqui: é CONTRATO de texto com quem
+# escreve a nota, e duas cópias divergem no primeiro dia em que alguém mudar uma delas.
+_TERMO_DO_ACERVO = re.compile(re.escape(imagem_web.ORIGEM_PREFIXO) + r"\s*'([^']+)'")
+_TITULO_H2 = re.compile(r"^##\s+(.+?)\s*$", re.M)
+_CAMPO_CONFERE = re.compile(r"^acervo_confere: (\w+)\s*$", re.M)
+# Linhas do corpo DERIVADAS do próprio termo buscado. Precisam sair antes de julgar: a
+# de crédito repete o termo em prosa e a Malha o repete como wikilink, então mantê-las
+# faz o termo casar consigo mesmo. Medido: com o corpo inteiro a revalidação pegou 0 das
+# 4 imagens erradas; subtraindo estas duas, pega 4.
+_DERIVADAS_DO_TERMO = ("**Malha Neural:**", imagem_web.CREDITO_PREFIXO)
+
+
+def _evidencia_independente(texto: str) -> str:
+    """O que a nota diz que NÃO foi copiado do termo buscado. Puro/testável.
+
+    Sobra o que é evidência de verdade: a descrição do VLM, quando existe, e qualquer
+    texto que a página tenha trazido. Subtrai em vez de listar o que serve porque o
+    formato da nota ainda muda — linha nova entra como evidência por padrão, e o
+    esquecimento erra para o lado seguro (aceitar), não para o de condenar nota boa.
+    """
+    return "\n".join(
+        ln for ln in strip_frontmatter(texto).splitlines()
+        if not any(d in ln for d in _DERIVADAS_DO_TERMO)
+    )
 
 
 async def append_chat_dump(ator: str, texto: str) -> None:
@@ -1070,6 +1098,70 @@ class EtlProcessor:
             await self.ctx.vectorstore.sync()
             telemetry.track("ETL_PROATIVO", f"Pesquisa proativa: {feitas} lacuna(s) trazida(s) ao banco.")
 
+    async def revalidar_acervo_web(self) -> None:
+        """No idle, reconfere se cada imagem colhida da web é o que a nota AFIRMA ser.
+
+        Por que existe: o gate que julga o candidato ANTES de baixar
+        (`imagem_web.casa_com_o_pedido`) só passou a rodar em 2026-07-31. O que entrou
+        antes dele nunca foi julgado — e das 40 notas de `Figuras/_web/`, **4 (10%)**
+        mostram outra coisa: 'polvo' é um calendário do EBT da Flórida, 'estômato' é um
+        formulário de currículo em espanhol, 'solo argiloso' é uma miniatura do Rainbow
+        Six Siege (o buscador casou o "solo" de *solo queue*). Elas estão INDEXADAS e
+        podem ser anexadas como figura numa resposta.
+
+        Barata de propósito, e é isso que a torna adequada ao idle: NÃO usa LLM, NÃO usa
+        VLM, NÃO usa rede — é comparação léxica sobre o título que a nota já carrega. O
+        Qwen2.5-VL-7B pega as mesmas 4, mas custa 7,9 GB de VRAM (numa placa de 10) e
+        0,87 s por imagem; aqui são microssegundos e a GPU segue livre para a conversa.
+
+        Não apaga nem reescreve nada: marca `acervo_confere: NAO` no frontmatter, que é
+        metadado (não entra no corpo indexado) e deixa a decisão com o dono. Marcar é
+        reversível; apagar imagem por heurística não é.
+        """
+        if not settings.idle_revalidar_acervo:
+            return
+        pasta = imagem_web.pasta_do_acervo()
+        if not pasta.is_dir():
+            return
+        try:
+            notas = sorted(pasta.glob("*.md"))
+            marcadas, conferidas = await asyncio.to_thread(self._revalidar_notas, notas)
+        except OSError as exc:
+            telemetry.error("ETL_ACERVO", "Revalidação do acervo web falhou", exc)
+            return
+        if conferidas:
+            telemetry.track("ETL_ACERVO",
+                            f"Acervo web revalidado: {conferidas} nota(s), "
+                            f"{marcadas} marcada(s) como suspeita(s).")
+
+    def _revalidar_notas(self, notas: List[Path]) -> Tuple[int, int]:
+        """O laço síncrono da revalidação (roda em `to_thread`). Devolve (marcadas, lidas)."""
+        marcadas = conferidas = 0
+        for md in notas:
+            try:
+                texto = md.read_text(encoding="utf-8")
+            except OSError:
+                continue      # nota sumindo no meio do idle não derruba o ciclo
+            m = _TERMO_DO_ACERVO.search(texto)
+            titulo = _TITULO_H2.search(texto)
+            if not (m and titulo):
+                continue
+            conferidas += 1
+            ok = imagem_web.confere_o_acervo(
+                m.group(1), titulo.group(1), _evidencia_independente(texto))
+            marca = "sim" if ok else "NAO"
+            if not ok:
+                marcadas += 1
+            atual = _CAMPO_CONFERE.search(texto)
+            if atual and atual.group(1) == marca:
+                continue      # idempotente: sem reescrita, sem mexer no mtime do reindex
+            novo = (_CAMPO_CONFERE.sub(f"acervo_confere: {marca}", texto, count=1)
+                    if atual else
+                    texto.replace("tipo: figura", f"tipo: figura\nacervo_confere: {marca}", 1))
+            if novo != texto:
+                md.write_text(novo, encoding="utf-8")
+        return marcadas, conferidas
+
     async def pesquisa_temas_quentes(self) -> None:
         """#4: no idle, RE-PESQUISA na web os temas que o usuário mais REUSA do vault (o
         estágio Banco respondeu de fato) para trazer NOVIDADE. É o ESPELHO da lacuna:
@@ -1146,6 +1238,10 @@ class EtlProcessor:
         `ensure_loaded` (no stream) religa: seguro nas duas direções."""
         await self.process_queue(itens)
         await self.summarize_dump()
+        # ANTES das pesquisas de propósito: é a única rotina do idle que não toca o LLM
+        # (léxico puro, milissegundos), então roda enquanto a GPU ainda está quente com o
+        # trabalho anterior, em vez de esperar a fila de inferência.
+        await self.revalidar_acervo_web()
         await self.pesquisa_proativa()
         await self.pesquisa_temas_quentes()
         await self._sincronizar_vault_pendente()

@@ -44,6 +44,76 @@ _EXT = ".webp"
 # Importado do rag para não haver dois User-Agents divergindo com o tempo.
 from mente_digital.rag import _HEADERS_FETCH  # noqa: E402
 
+# CONTRATO de texto do campo `origem:` das notas deste acervo. Vive aqui, e não
+# copiado no script, porque `scripts/melhorar_links.py` PRECISA reconhecer estas
+# notas para não passar o rolo nelas (ver `_isca_da_web` lá) — duas cópias da
+# mesma string é como o defeito de 2026-07-31 voltaria sem ninguém ver.
+ORIGEM_PREFIXO = "Web — busca de imagem por"
+# A linha de crédito no CORPO da nota. Constante porque a revalidação (`etl`) precisa
+# SUBTRAÍ-LA antes de julgar: ela repete o termo buscado, então deixá-la no texto faz o
+# termo casar consigo mesmo e a checagem vira tautologia (pegou 0 de 4 até isto existir).
+CREDITO_PREFIXO = "Imagem obtida na web em uma busca por"
+
+# Verbo de ORDEM com que o dono abre o pedido ("mostra X", "procura Y"). Ele é do
+# PEDIDO, não do assunto: mandá-lo ao buscador é procurar a palavra 'mostra' na
+# web — e foi o que aconteceu ("Timelapse MOSTRA tempestade de neve" casou o gate
+# léxico pelo verbo, não pelo tema). Só a 1ª palavra é olhada.
+_VERBOS_DE_ORDEM = {
+    "mostra", "mostre", "mostrar", "exibe", "exiba", "exibir", "ve", "vê", "veja",
+    "ver", "busca", "busque", "buscar", "procura", "procure", "procurar",
+    "pesquisa", "pesquise", "pesquisar", "acha", "ache", "achar", "encontra",
+    "encontre", "encontrar", "quero", "queria",
+}
+_ARTIGOS = {"um", "uma", "o", "a", "os", "as"}
+# '?' e '!' NUNCA fazem parte de um termo de busca; o resto é pontuação de borda.
+_PONTUACAO_INTERNA_RE = re.compile(r"[?!]+")
+_BORDA = " \t\r\n.,;:—–-\"'“”‘’"
+
+
+def limpar_pedido(termos: str) -> str:
+    """O pedido do dono -> o TERMO que pode ir ao buscador. Puro/testável.
+
+    Defeito real que isto conserta (2026-07-31, print do Obsidian): a pergunta
+    "tem imagem de um camaleão?" produzia o termo `camaleão?` e o '?' ia ao Bing
+    junto — e depois virava o conceito `[[Camaleão?]]` na Malha, um nó do grafo
+    que nenhuma outra nota jamais escreveria. Medido nas 40 notas já gravadas:
+    34 termos estavam sujos — 18 com pontuação ('polvo?') e 16 abertos por um verbo
+    de ordem ('mostra girafa'). Só 6 chegaram limpos ao buscador.
+
+    Duas limpezas, nesta ordem: a pontuação some sempre; o verbo de ordem some só
+    quando é a PRIMEIRA palavra e sobra assunto depois dele. Nunca devolve vazio —
+    sem termo o `casa_com_o_pedido` deixa passar qualquer imagem, então limpar
+    demais é pior que não limpar (mesma cautela do gate).
+    """
+    bruto = (termos or "").strip()
+    limpo = _PONTUACAO_INTERNA_RE.sub(" ", bruto)
+    limpo = re.sub(r"\s+", " ", limpo).strip(_BORDA).strip()
+    partes = limpo.split(" ")
+    # Um verbo só: "procura busca" não é pedido de imagem de nada, e comer os dois
+    # deixaria o termo vazio — o guarda do `or bruto` abaixo cobre, mas comer um de
+    # cada vez é o que mantém "mostra ver" (assunto improvável, porém legítimo).
+    if len(partes) > 1 and partes[0].lower() in _VERBOS_DE_ORDEM:
+        partes = partes[1:]
+        if len(partes) > 1 and partes[0].lower() in _ARTIGOS:
+            partes = partes[1:]
+    return " ".join(partes).strip() or bruto
+
+
+def conceito_do_termo(termos: str) -> str:
+    """O termo buscado -> o CONCEITO da Malha. Puro/testável.
+
+    Não usa `.title()`: ele destrói o que o vault já escreve certo — 'pH solo'
+    virava `[[Ph Solo]]` (um nó novo, ao lado do `[[pH]]` que já existe) e
+    'lâmpada LED cultivo' virava `[[Lâmpada Led Cultivo]]`. Regra: maiúscula só na
+    inicial, e só quando a PRIMEIRA palavra é toda minúscula — quem já tem
+    maiúscula (sigla, nome próprio) sabe se escrever melhor do que esta função.
+    """
+    termo = limpar_pedido(termos)
+    if not termo:
+        return "Imagem"
+    primeira = termo.split(" ", 1)[0]
+    return termo[0].upper() + termo[1:] if primeira.islower() else termo
+
 
 def nome_do_cache(url: str) -> str:
     """Nome estável do arquivo para uma URL. Puro/testável."""
@@ -80,6 +150,12 @@ def host_publico(url: str) -> bool:
 
 def _pasta() -> Path:
     return Path(settings.caminho_obsidian) / settings.imagem_web_subpasta
+
+
+def pasta_do_acervo() -> Path:
+    """Onde as imagens da web moram. Público para quem revalida de fora (`etl`) não
+    precisar remontar o caminho e sair do config quando a subpasta mudar."""
+    return _pasta()
 
 
 def _sanitizar(bruto: bytes) -> Optional[bytes]:
@@ -198,6 +274,39 @@ def casa_com_o_pedido(candidato: dict, termos: str) -> bool:
     return textutils.contem_alguma(alvo, chaves)
 
 
+def confere_o_acervo(termo: str, titulo: str, descricao: str = "") -> bool:
+    """A nota guardada ainda bate com o que foi PEDIDO? Puro/testável.
+
+    É o `casa_com_o_pedido` virado do avesso: aquele julga o CANDIDATO antes de
+    baixar; este julga a NOTA que já está no vault. Precisa existir separado porque
+    o gate de busca só passou a rodar em 2026-07-31 — o que entrou antes dele nunca
+    foi julgado, e ninguém volta para conferir.
+
+    Medido nas 40 notas de `Figuras/_web/` (2026-07-31): o TÍTULO da página, que a
+    nota já carrega desde a ingestão, denuncia as 4 imagens que não mostram o que a
+    nota afirma — sem VLM, sem GPU, sem rede:
+        'polvo'          -> "## Florida EBT Reload Schedule – Find Out Now!"
+        'estômato'       -> "## Formato de Hoja de Vida Minerva 1003"
+        'solo argiloso'  -> "## $10,000 CONSOLE TOURNEY – Rainbow Six Siege"
+        'coral cerebral' -> "## Foto de Cérebro De Mra Coronal 3d Sagital"
+    O Qwen2.5-VL-7B também as pega (4/4), mas custa 7,9 GB de VRAM e 0,87 s por
+    imagem; a comparação léxica custa microssegundos. Onde o barato empata com o
+    caro, o caro perde.
+
+    A descrição entra como reforço quando existe (nem toda nota tem): basta UM dos
+    dois mencionar o termo. Sem keyword utilizável, aceita — mesma escolha do
+    `casa_com_o_pedido`: melhor deixar passar do que condenar por falha do
+    normalizador.
+    """
+    chaves = textutils.palavras_chave(termo or "")
+    if not chaves:
+        return True
+    alvo = f"{titulo or ''} {descricao or ''}"
+    # `_flex` e não `contem_alguma`: sem tolerância a plural, 'tricoma' não casa
+    # "## tricomas" e a nota boa é condenada por um "s" (5 falsos positivos em 40).
+    return textutils.contem_alguma_flex(alvo, chaves)
+
+
 async def primeira_util(candidatos: Sequence[dict], termos: str = "") -> Optional[tuple]:
     """Tenta os candidatos em ordem e devolve (caminho_relativo, candidato).
 
@@ -256,7 +365,17 @@ def nota_do_acervo(rel: str, candidato: dict, termos: str, agora: str) -> str:
     A proveniência diz WEB e guarda a URL: quando esta nota aparecer numa resposta,
     dá para saber que não é o livro do dono falando — e apagar todo o acervo web de
     uma vez é remover uma pasta.
+
+    A MALHA sai do termo BUSCADO, nunca do título da página. O título é isca de
+    clique escrita por um estranho ("Características, tipos, cuidados e muito mais
+    do camaleão") e conceituar por ele arquiva a foto sob `[[Características]]`,
+    `[[Cuidados]]`, `[[Tipos]]` — três nós que não descrevem imagem nenhuma. O
+    termo é a única coisa nesta nota que o DONO disse.
+
+    `limpar_pedido` roda aqui também, e não só em quem chama: assim a nota fica
+    certa mesmo que uma futura porta de entrada esqueça de limpar. É idempotente.
     """
+    termos = limpar_pedido(termos)
     titulo = (str((candidato or {}).get("title") or termos or "imagem")).strip()
     titulo = re.sub(r"\s+", " ", titulo)[:120]
     fonte = str((candidato or {}).get("source") or "").strip()
@@ -266,7 +385,7 @@ def nota_do_acervo(rel: str, candidato: dict, termos: str, agora: str) -> str:
     seguro = re.sub(r"[\[\]{}<>|\r\n]", " ", titulo).strip() or "imagem da web"
     return (
         "---\n"
-        f"origem: Web — busca de imagem por '{termos}'\n"
+        f"origem: {ORIGEM_PREFIXO} '{termos}'\n"
         f"origem_url: {pagina}\n"
         f"origem_site: {fonte}\n"
         f"colhido_em: {agora}\n"
@@ -275,9 +394,9 @@ def nota_do_acervo(rel: str, candidato: dict, termos: str, agora: str) -> str:
         f"## {seguro}\n"
         f"{seguro}\n"
         f"![[{rel}]]\n"
-        f"Imagem obtida na web em uma busca por '{termos}'"
+        f"{CREDITO_PREFIXO} '{termos}'"
         + (f", em {fonte}." if fonte else ".") + "\n"
-        f"**Malha Neural:** [[{termos.strip().title() or 'Imagem'}]] [[Imagem da Web]]\n"
+        f"**Malha Neural:** [[{conceito_do_termo(termos)}]] [[Imagem da Web]]\n"
         "#zettelkasten_atomico #conhecimento_novo\n"
     )
 

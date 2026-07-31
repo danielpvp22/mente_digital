@@ -590,9 +590,44 @@ class Settings(BaseSettings):
     # na inspeção, os vizinhos vêm do assunto certo e da pergunta errada (fine-tuning
     # de YOLO numa pergunta sobre TensorRT). A ablação de formato explica o porquê: a
     # linha da Malha vale 0.010 de distância (vs 0.029 do assunto no título) — ela quase
-    # não carrega sinal. Ligue com MENTE_MALHA_EXPANDIR=true para experimentar; o
-    # candidato a consertá-la é filtrar o vizinho por similaridade com a PERGUNTA
-    # (rag.rankear_por_similaridade, já existe), exigindo conceito raro E proximidade.
+    # não carrega sinal.
+    #
+    # 2026-07-31 — RE-MEDIDA a pedido ("afina a seleção de vizinhos, 93 pra 8"), em
+    # 196 perguntas REAIS do chat_history, sobre a base atual (24.495 átomos). O
+    # candidato a conserto (rankear o vizinho pela PERGUNTA) FOI testado e não paga:
+    #
+    #   Régua: o vizinho não entra num vácuo — ele disputa o rag_context_char_budget
+    #   com o PRÓXIMO match vetorial que o top-k não pegou. Juiz = a distância de
+    #   cosseno do próprio gate (validada: erro 0.00000 contra o score do Chroma).
+    #   "VENCE" = % das vagas em que o vizinho está mais perto da pergunta que o
+    #   match que ele desloca. 50% = empate; abaixo disso a vaga estaria melhor
+    #   com o match, que sai de graça só subindo o top_k.
+    #
+    #   seleção do vizinho (só TEXTO; ver a nota de figura abaixo)      VENCE
+    #   ---------------------------------------------------------------------
+    #   top-8 por soma de IDF (é o que `MalhaIndex.vizinhos` faz hoje)    2,3%
+    #   top-8 por distância à PERGUNTA                                   16,8%
+    #   idem + gate absoluto do sistema (dq < rag_score_confident)       25,0%
+    #   idem + corte relativo 1,10x do melhor match                      21,4%
+    #   idem + exigir >=2 conceitos raros compartilhados                  9,3%
+    #   idem + restringir ao mesmo domínio (obra/balde)                  13,8%
+    #
+    #   Nenhuma cruza 50%. Ranquear pela pergunta ajuda muito (2,3% -> 25%) e ainda
+    #   assim perde: o vizinho de TEXTO simplesmente não é melhor que o átomo que
+    #   ele desloca. Somar critério (>=2 conceitos, mesmo domínio) PIORA — corta
+    #   junto os poucos vizinhos bons. Custo do lado de lá: +928 chars de contexto
+    #   na média (+2.592 no p90) = ~+63 ms de prefill no p50, ~+176 ms no p90.
+    #
+    #   E o teto de 8 não é o gargalo: sob a semeadura REAL (o contexto inteiro, ~29
+    #   átomos, não uma nota só) o pool de vizinhos a 1 salto tem mediana de 1.639,
+    #   p95 2.492, máx 4.109 — não 93. Afinar 8 dentro de 1.639 é o problema, e o
+    #   ranking que se tentou afinar já é o que menos separa.
+    #
+    #   Cuidado ao re-medir: com `rag_expandir_pagina` no ar o orçamento JÁ enche
+    #   sozinho. Ligando o botão, dos 7,59 vizinhos propostos por pergunta só 2,67
+    #   entram, e em 105 das 205 perguntas o contexto não muda UM caractere.
+    #
+    # Ligue com MENTE_MALHA_EXPANDIR=true para experimentar.
     malha_expandir: bool = False
     # Teto de vizinhos. Eles entram DEPOIS dos matches reais e disputam o que sobra do
     # rag_context_char_budget — na prática o orçamento corta antes deste número.
@@ -607,9 +642,18 @@ class Settings(BaseSettings):
     # (fine-tuning de YOLO numa pergunta sobre TensorRT). Agora, além do conceito raro
     # (malha_idf_min), o vizinho só entra se a similaridade de cosseno do seu texto com a
     # PERGUNTA for >= este mínimo (usa o embedding já carregado, rankear_por_similaridade).
-    # Assim a expansão exige conceito raro E proximidade — o conserto que torna
-    # malha_expandir=true viável (meça o TTFT/qualidade ao religar). 0 desliga o filtro
-    # (volta a aceitar todo vizinho). Sem embeddings (testes), o filtro é pulado.
+    # 0 desliga o filtro (volta a aceitar todo vizinho). Sem embeddings (testes), pulado.
+    #
+    # ATENÇÃO — 0,5 NÃO FILTRA NADA. Medido em 2026-07-31 nas 196 perguntas reais: com
+    # e5 e os prefixos query:/passage:, o pool inteiro (299.309 pares pergunta-vizinho)
+    # tem similaridade MÍNIMA de 0,677 — nenhum vizinho, nem o pior, cai abaixo de 0,5.
+    # Ligar o botão com este valor dá resultado IDÊNTICO a não ter filtro (mesmas vagas,
+    # mesmos 3.086 chars). É o mesmo esquecimento do MENTE_DEDUP_DIST_MAX: limiar herdado
+    # de outra escala de embedding, que passa a marcar tudo (ou nada) e não avisa.
+    # A escala certa é a do gate: sim >= 1 - rag_score_confident (0,16 -> 0,84).
+    # E mesmo calibrado ele NÃO salva a expansão — é a linha "gate absoluto" da tabela
+    # do malha_expandir acima, que chega a 25% de vitória e continua perdendo do match
+    # que desloca. Este campo é um botão de experimento, não "o conserto".
     malha_sim_min: float = 0.5
     # --- FIGURAS EM ESPAÇO PRÓPRIO (2026-07-26) -------------------------------
     # Por que existe: no banco cheio (33k chunks) a nota de figura PERDIA a vaga no
@@ -1052,6 +1096,16 @@ class Settings(BaseSettings):
     # o tema; o valor é a NOVIDADE que a web traz (o dedup por átomo descarta o já-sabido),
     # então a base "amadurece" nos temas favoritos, não só nos buracos. Desligue p/ pausar.
     idle_pesquisa_temas: bool = True
+    # REVALIDAÇÃO DO ACERVO WEB no idle: reconfere se a imagem colhida da web é o que a
+    # nota AFIRMA ser, comparando o termo buscado com o título da página que a nota já
+    # guarda. Existe porque o gate de busca (`imagem_web.casa_com_o_pedido`) só passou a
+    # rodar em 2026-07-31 e o que entrou antes nunca foi julgado: das 40 notas de
+    # `Figuras/_web/`, 4 (10%) mostram outra coisa — 'polvo' é um calendário do EBT da
+    # Flórida, 'solo argiloso' é uma miniatura do Rainbow Six Siege. Elas estão indexadas
+    # e podem ser anexadas como figura. É a única rotina do idle que NÃO usa GPU nem rede
+    # (léxico puro, microssegundos); o Qwen2.5-VL-7B pega as mesmas 4 por 7,9 GB de VRAM.
+    # Só MARCA (`acervo_confere: NAO` no frontmatter) — nunca apaga: marcar é reversível.
+    idle_revalidar_acervo: bool = True
     # Quantos temas quentes re-pesquisar por ciclo (extra, DEPOIS das lacunas). Baixo de
     # propósito: buraco genuíno (lacuna) tem prioridade sobre refrescar o que já se sabe.
     idle_temas_max: int = 2
