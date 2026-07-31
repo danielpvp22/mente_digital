@@ -33,6 +33,14 @@ atexit.register(shutil.rmtree, _TMP_DB_DIR, ignore_errors=True)  # não vazar tm
 # `settings` no primeiro track() e a suíte inteira despejaria em dados/logs/mente.log.
 os.environ["MENTE_LOG_ARQUIVO_HABILITADO"] = "false"
 os.environ["MENTE_TRANSCRICAO_TURNOS"] = os.path.join(_TMP_DB_DIR, "turnos_teste.jsonl")
+# CHAT DUMP (2026-07-31): mesmo motivo, e o vazamento era o mais caro dos três. O dump
+# não é log — é a FILA que o `EtlProcessor.summarize_dump` consome no idle e atomiza
+# como nota PERMANENTE no vault do dono. Dois testes do caminho declarativo gravavam
+# "**Mente Digital:** Entendido, registrei." no dados/chat_dump_bruto.md REAL a cada
+# rodada da suíte; na próxima passada de idle aquilo viraria átomo Zettelkasten.
+# Cinto (aqui) E suspensório (o `_isola_do_env` aponta para tmp_path por teste): este
+# redirect cobre quem lê o caminho no IMPORT, a fixture cobre quem lê por chamada.
+os.environ["MENTE_ARQUIVO_CHAT_DUMP"] = os.path.join(_TMP_DB_DIR, "chat_dump_teste.md")
 
 from typing import List, Optional, Tuple
 
@@ -81,6 +89,11 @@ def _isola_do_env(monkeypatch, tmp_path):
                        ("dir_arquivo_consolidacao", "_arq_cons"), ("backup_dir", "backups"),
                        ("trace_dir", "traces")):
         monkeypatch.setattr(_settings, campo, str(tmp_path / sub), raising=False)
+    # ...e o mesmo para o ARQUIVO de dump: o laço acima cobria só DIRETÓRIOS, e era por
+    # essa fresta que o caminho declarativo ("registrei") escrevia no dump de produção.
+    # Aqui é por TESTE (tmp_path), então um teste nem enxerga o que o outro gravou.
+    monkeypatch.setattr(_settings, "arquivo_chat_dump",
+                        str(tmp_path / "chat_dump.md"), raising=False)
     yield
 
 
@@ -199,4 +212,3 @@ def make_send():
 def textos_de_tokens(enviados: List[dict]) -> str:
     """Concatena o texto de todas as mensagens do tipo 'token'."""
     return "".join(m["texto"] for m in enviados if m.get("tipo") == "token")
-
