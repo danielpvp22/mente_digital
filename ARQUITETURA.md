@@ -1132,12 +1132,11 @@ Reversibilidade de primeira classe: **Desfazer** (`bc548c7`) e **Corta-e-Corrige
 
 **Botão de calibração:** cada pergunta loga `[LOCAL] melhor_dist=... relevante=...`. Ajuste `MENTE_RAG_SCORE_CONFIDENT` — **menor = mais rígido (mais web)**. `MENTE_RAG_DEBUG=true` mostra cada chunk.
 
-> ⚠️ **A escala do botão é função do embedding — os dois são um par.** Os defaults de `config.py` formam um conjunto **coerente porém superado**: MiniLM + prefixos vazios + gate `0.8`. O conjunto **adotado** (e5-base + `query:`/`passage:` + gate `0.16`, derivado por `eval/calibrar_gate.py`) vive apenas no [`.env.example`](.env.example). Duas consequências, e a segunda é a perigosa:
+> ⚠️ **A escala do botão é função do embedding — os dois são um par indivisível.** Hoje os defaults de `config.py` são o stack **adotado** (e5-base + `query:`/`passage:` + gate `0.16`, derivado por `eval/calibrar_gate.py`), mas nem sempre foram: por três semanas o código trazia o conjunto da era MiniLM enquanto o valor real vivia só no `.env.example`, e quem clonava sem copiar o `.env` rodava o embedding antigo — ~2× pior no ranqueamento — **em silêncio**.
 >
-> 1. Rodar **sem copiar o `.env`** te dá silenciosamente o embedding **antigo** — ~2× pior no ranqueamento — e um gate `0.8` mais frouxo até que o `0.55` que era o valor operacional da própria era MiniLM.
-> 2. Editar **um só** dos dois cria a combinação incoerente. Pôr `MENTE_EMBEDDING_MODEL=e5` sem baixar o gate deixa quase todo chunk "confiante"; baixar o gate para `0.16` sem trocar o embedding **rejeita quase tudo** e manda cada pergunta para a web. Esse segundo caso é exatamente a assinatura do [bug L2 vs cosseno](#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno): um limiar medido numa escala, aplicado a distâncias de outra.
+> O que promoveu os quatro **juntos** foi perceber que promover só o gate seria pior que a doença: `0.16` aplicado às distâncias do MiniLM **rejeita quase tudo** e manda cada pergunta para a web; e o simétrico, gate `0.8` com e5, aceita quase tudo e ressuscita o Cache Hit falso. É exatamente a assinatura do [bug L2 vs cosseno](#3-o-gate-que-rejeitava-tudo--l2-vs-cosseno) — um limiar medido numa escala, aplicado a distâncias de outra.
 >
-> Mesma lição do dedup `0.08 → 0.01`: *ao trocar o embedding, recalibre **todos** os limiares de distância junto.* A rede de segurança existe — o **fingerprint da coleção** (`_fingerprint_ok`) detecta embedding/prefixo divergentes e reconstrói o índice do vault — mas ele guarda o *índice*, não os *limiares*.
+> Mesma lição do dedup `0.08 → 0.01`: *ao trocar o embedding, recalibre **todos** os limiares de distância junto.* Existe rede de segurança para o **índice** — o fingerprint da coleção (`_fingerprint_ok`) detecta embedding/prefixo divergentes e o reconstrói do vault — mas **não** para os limiares. A suíte, que assumia a escala antiga em nove testes, passou a derivar as distâncias sintéticas do limiar vigente (`dist_confiante`/`dist_longe` no conftest), então a próxima troca não a quebra.
 
 ### 2. As tasks que o garbage collector comia
 
@@ -1310,7 +1309,7 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `MENTE_RAG_SCORE_CONFIDENT` | `0.8` no código · **`0.16` no `.env.example`** | **O principal botão.** Distância abaixo da qual um match vale sem casar keyword. Menor = mais rígido = mais web. ⚠️ **Casado com o embedding:** `0.16` vale para o `e5-base` (que comprime as distâncias numa banda estreita), `0.55` valia para o MiniLM. Nunca mude um sem o outro |
+| `MENTE_RAG_SCORE_CONFIDENT` | `0.16` | **O principal botão.** Distância abaixo da qual um match vale sem casar keyword. Menor = mais rígido = mais web. ⚠️ **Casado com o embedding:** `0.16` vale para o `e5-base` (que comprime as distâncias numa banda estreita), `0.55` valia para o MiniLM. Nunca mude um sem o outro |
 | `MENTE_RAG_DEBUG` | `false` | Loga cada chunk recuperado (distância/fonte/trecho) |
 | `MENTE_ATERRAMENTO_IDF_MIN` | `1.5` | IDF mínimo da keyword para valer como aterramento léxico (Malha). Conserta o "RAG→Tarkov" |
 | `MENTE_EARLY_STOP_CASCATA` | `true` | A cascata para na 1ª fonte confiante (RAM respondeu → banco nem consulta) |
@@ -1325,8 +1324,8 @@ O CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) roda exatame
 | `MENTE_WEB_FETCH_ENABLED` | `true` | Deep-fetch. `false` = kill switch de rede (só snippets) |
 | `MENTE_KV_CACHE_TYPE` | `f16` | `q8_0` corta ~metade da VRAM de KV (**adotado** aqui). **Exige `flash_attn=True`** |
 | `MENTE_WHISPER_MODEL` | `small` | **Adotado:** `large-v3-turbo` (qualidade ~`large-v3`). Use `MENTE_WHISPER_DEVICE=cuda` se sobrar VRAM |
-| `MENTE_EMBEDDING_MODEL` | MiniLM | **Adotado:** `intfloat/multilingual-e5-base` (~2× no ranqueamento). ⚠️ Trocar **exige reindexar** o vault e recalibrar o gate |
-| `MENTE_EMBEDDING_QUERY_PREFIX` / `_PASSAGE_PREFIX` | vazios | `"query: "` / `"passage: "` para a família e5 — sem eles o e5 perde boa parte da qualidade |
+| `MENTE_EMBEDDING_MODEL` | `intfloat/multilingual-e5-base` | O adotado (~2× no ranqueamento vs. o MiniLM anterior). ⚠️ Trocar **exige recalibrar o gate**; o reindex do vault é automático (fingerprint) |
+| `MENTE_EMBEDDING_QUERY_PREFIX` / `_PASSAGE_PREFIX` | `"query: "` / `"passage: "` | Exigidos pela família e5 — sem eles o modelo perde boa parte da qualidade. Esvazie se voltar a um modelo sem prefixo |
 | `MENTE_MESTRE_WAKE` | `false` | Wake-word: o live começa **dormente** e só a palavra-mestre acorda (+ `MENTE_MESTRE_SLEEP_SECONDS`, 15 s) |
 | `MENTE_LLM_NO_THINK` / `MENTE_LLM_STRIP_THINK` | `false` | **Obrigatórios com Qwen3:** desligam o raciocínio e removem o bloco `<think>…</think>` do stream. Sem o strip, o TTS **fala a marcação**. No-op em modelos sem `<think>` |
 | `MENTE_SPECULATIVE_ENABLED` | `false` | **Desligado com número** — ver [evolução](#-evolução-do-projeto) |
@@ -1481,7 +1480,7 @@ O Mente Digital é um **appliance mono-usuário**: a tese é "100% local, a sua 
 |---|---|
 | **Números de TTFT/TTFA publicados** | O instrumento está **completo** — waterfall por estágio com p50/p95 em `/api/metrics`, `tok/s` medido no produtor, e o turno inteiro gravado em JSONL. Há medições pontuais fartas no Patch Notes. Falta publicar uma **tabela de médias por rota** a partir do waterfall real. Continua a lacuna mais visível num projeto cuja tese é latência percebida |
 | **A base nova vs. a antiga** | A fusão levou o placar de 17-10 contra para 5-3 a favor num teste cego — mas o próprio commit registra que **"a troca está no ruído"** (n=8, juiz único). Falta um protocolo de avaliação com mais perguntas e mais de um avaliador antes de cravar o ganho |
-| **O stack adotado só existe no `.env.example`** | Os defaults de `config.py` são o conjunto **coerente porém superado** da era MiniLM (embedding, prefixos e gate `0.8`); o adotado (e5-base + prefixos + `0.16`) só está no `.env.example`. Quem roda sem `.env` usa o embedding antigo sem saber, e quem edita **um** dos dois cria a combinação incoerente. O certo é promover os três defaults **juntos** — ver a [war story do Cache Hit falso](#1-o-cache-hit-falso--o-gate-que-confundia-ter-contexto-com-ter-contexto-relevante) |
+| **O stack adotado só existia no `.env.example`** | ✅ **Resolvido.** Os quatro defaults (embedding, os dois prefixos e o gate) foram promovidos **juntos** para `config.py` — promover só o gate teria sido pior que a doença. A suíte, que assumia a escala antiga em nove testes, passou a derivar as distâncias do limiar vigente. Fica o cuidado permanente: embedding e limiares são um par |
 | **Escolha do modelo** | ✅ **Resolvido.** Deixou de ser herdado: `Coder-Uncensored` → `Qwen2.5-7B-Instruct` → **`Qwen3-8B`**, cada passo por **A/B com contexto fixo** (`eval/ab_modelos.py`) e com o número na mão. Falta só um benchmark público de PT-BR |
 | **CI** | ✅ **Resolvido.** GitHub Actions roda a suíte inteira a cada PR e push no master ([`tests.yml`](.github/workflows/tests.yml)), instalando só as deps leves ([`requirements-ci.txt`](requirements-ci.txt)) — o `llama-cpp-python` fica de fora de propósito, os imports tardios permitem a suíte inteira sem ele. Badge no topo |
 | **Calibração dos agentes na base real** | O gate do RAG **foi** recalibrado contra a base real na troca do embedding (`eval/calibrar_gate.py`), mas os botões da Onda 3 (`ATERRAMENTO_IDF_MIN`, `MALHA_SIM_MIN`, os mínimos de atalho/conexão) ainda faltam ajustar contra uso prolongado — ver `docs/CALIBRACAO.md` |

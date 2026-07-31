@@ -127,7 +127,7 @@ pip install -r requirements.txt
 cp .env.example .env                             # don't skip — see the note below
 ```
 
-> ⚠️ **Copy `.env.example` — the adopted stack lives there, not in the code defaults.** `config.py` still ships the previous era's coherent set (MiniLM + empty prefixes + gate `0.8`); the adopted one (e5-base + `query:`/`passage:` prefixes + gate `0.16`) is in `.env.example`. Running without it silently gives you the **old embedding, ~2× worse at ranking**. And never change one without the other: distance scale is a function of the model, so a threshold measured on one embedding applied to another is the exact signature of the L2-vs-cosine bug that once took this project's retrieval down entirely.
+> ⚠️ **The embedding and the relevance gate are one pair — never change one without the other.** The defaults already ship the adopted stack (e5-base + `query:`/`passage:` prefixes + gate `0.16`), so `.env` is for *your* paths and calibration, not for fixing the defaults. But if you swap the embedding model, **recalibrate the gate with it**: distance scale is a function of the model, and a threshold measured on one embedding applied to another is the exact signature of the L2-vs-cosine bug that once took this project's retrieval down entirely. The index takes care of itself — a fingerprint detects the swap and rebuilds from the vault; the thresholds don't.
 
 Download the models (not in the repo): the LLM (`Qwen3-8B` GGUF `Q4_K_M`) and the Piper voice (`pt_BR-cadu-medium.onnx` **and** its `.onnx.json`) go into `dados/modelos/`; Whisper and the embedding model download themselves on first run. The vault can start empty. Then:
 
