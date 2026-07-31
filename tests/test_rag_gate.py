@@ -7,7 +7,7 @@ pergunta (aterramento léxico) OU (b) é semanticamente muito próximo
 from mente_digital.config import settings
 from mente_digital.rag import NENHUM, VectorStore
 
-from conftest import FakeDoc, FakeStore
+from conftest import FakeDoc, FakeStore, dist_confiante, dist_longe
 
 
 def _store_com(resultados):
@@ -24,18 +24,20 @@ def _construir_malha(vs, corpus):
 
 
 async def test_aterrado_por_keyword_e_relevante():
-    # score longe do "confiante" (0.8), mas o texto MENCIONA a entidade
+    # score longe do "confiante", mas o texto MENCIONA a entidade
     doc = FakeDoc("O TensorFlow acelera inferência", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])
+    vs = _store_com([(doc, dist_longe())])
     res = await vs.search("tensorflow rt")
     assert res.relevante is True
     assert "TensorFlow" in res.texto
 
 
 async def test_confiante_por_distancia_sem_keyword():
-    # texto NÃO cita 'tensorflow', mas a distância é baixa -> confiante
+    # texto NÃO cita 'tensorflow', mas a distância é baixa -> confiante.
+    # `dist_confiante()` em vez de um número cru: o que o teste afirma é "abaixo do
+    # gate", não "0.4" — que era um valor da escala do MiniLM.
     doc = FakeDoc("framework de aprendizado profundo", {"confidence": 1.0})
-    vs = _store_com([(doc, 0.4)])
+    vs = _store_com([(doc, dist_confiante())])
     res = await vs.search("tensorflow")
     assert res.relevante is True
     assert res.texto != NENHUM
@@ -44,11 +46,11 @@ async def test_confiante_por_distancia_sem_keyword():
 async def test_parecido_mas_fora_do_tema_nao_e_relevante():
     # nem keyword nem distância confiante -> NÃO conta como contexto (vai pra web)
     doc = FakeDoc("Uma receita de bolo de cenoura", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])
+    vs = _store_com([(doc, dist_longe())])
     res = await vs.search("tensorflow")
     assert res.relevante is False
     assert res.texto == NENHUM
-    assert res.melhor_dist == 1.2
+    assert res.melhor_dist == dist_longe()
 
 
 async def test_acima_do_score_max_e_descartado():
@@ -60,7 +62,7 @@ async def test_acima_do_score_max_e_descartado():
 
 
 async def test_query_vazia_retorna_nenhum():
-    vs = _store_com([(FakeDoc("x"), 0.1)])
+    vs = _store_com([(FakeDoc("x"), dist_confiante())])
     res = await vs.search("")
     assert res.texto == NENHUM
     assert res.relevante is False
@@ -85,7 +87,7 @@ async def test_idf_keyword_hub_deixa_de_aterrar(monkeypatch):
     # "base" (hub, idf ~0.1) é a ÚNICA keyword e o score não é confiante -> não aterra.
     monkeypatch.setattr(settings, "aterramento_idf_min", 1.0)
     doc = FakeDoc("A base de dados fica no servidor", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])
+    vs = _store_com([(doc, dist_longe())])
     _construir_malha(vs, _CORPUS_IDF)
     res = await vs.search("base")
     assert res.relevante is False       # aterrava só por hub -> agora vai pra web
@@ -96,7 +98,7 @@ async def test_idf_keyword_rara_ainda_aterra(monkeypatch):
     # "tensorrt" (raro, idf ~2.3) segue valendo como evidência de aterramento.
     monkeypatch.setattr(settings, "aterramento_idf_min", 1.0)
     doc = FakeDoc("tensorrt acelera a inferencia do modelo", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])
+    vs = _store_com([(doc, dist_longe())])
     _construir_malha(vs, _CORPUS_IDF)
     res = await vs.search("tensorrt")
     assert res.relevante is True
@@ -108,7 +110,7 @@ async def test_idf_sem_malha_mantem_or_simples(monkeypatch):
     # nunca fica mais rígido do que dá para calibrar (ex.: testes/boot sem índice).
     monkeypatch.setattr(settings, "aterramento_idf_min", 1.0)
     doc = FakeDoc("A base de dados fica no servidor", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])       # malha NÃO construída
+    vs = _store_com([(doc, dist_longe())])       # malha NÃO construída
     res = await vs.search("base")
     assert res.relevante is True        # OR booleano original preservado
 
@@ -117,7 +119,7 @@ async def test_idf_desligado_por_zero(monkeypatch):
     # idf_min<=0 desliga a ponderação: volta ao OR simples mesmo com a malha montada.
     monkeypatch.setattr(settings, "aterramento_idf_min", 0.0)
     doc = FakeDoc("A base de dados fica no servidor", {"confidence": 1.0})
-    vs = _store_com([(doc, 1.2)])
+    vs = _store_com([(doc, dist_longe())])
     _construir_malha(vs, _CORPUS_IDF)
     res = await vs.search("base")
     assert res.relevante is True
@@ -126,12 +128,13 @@ async def test_idf_desligado_por_zero(monkeypatch):
 # --- Dedup near-duplicate do contexto (G6) -----------------------------------
 # Dois átomos com o MESMO conjunto de tokens (paráfrase/reordenação) contam como um —
 # o segundo não gasta orçamento de contexto. Distintos entram os dois. Usa confiança
-# semântica (score < 0.8) para os candidatos, então o teste não depende do aterramento.
+# semântica (score < rag_score_confident) para os candidatos, então o teste não
+# depende do aterramento — ver `dist_confiante` no conftest.
 async def test_dedup_near_remove_parafrase(monkeypatch):
     monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.9)
     d1 = FakeDoc("o gato preto subiu no telhado alto", {"confidence": 1.0})
     d2 = FakeDoc("no telhado alto subiu o gato preto", {"confidence": 1.0})  # mesmos tokens
-    vs = _store_com([(d1, 0.30), (d2, 0.31)])
+    vs = _store_com([(d1, dist_confiante(0.4)), (d2, dist_confiante(0.5))])
     res = await vs.search("tema")
     assert res.texto.count("[Local") == 1       # só um dos dois entrou
 
@@ -140,7 +143,7 @@ async def test_dedup_near_mantem_distintos(monkeypatch):
     monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.9)
     d1 = FakeDoc("o gato preto dorme durante o dia", {"confidence": 1.0})
     d2 = FakeDoc("o cachorro branco corre pela manha", {"confidence": 1.0})
-    vs = _store_com([(d1, 0.30), (d2, 0.40)])
+    vs = _store_com([(d1, dist_confiante(0.4)), (d2, dist_confiante(0.6))])
     res = await vs.search("tema")
     assert res.texto.count("[Local") == 2       # átomos distintos: os dois entram
 
@@ -149,7 +152,7 @@ async def test_dedup_near_desligado_mantem_ambos(monkeypatch):
     monkeypatch.setattr(settings, "rag_dedup_near_jaccard", 0.0)   # desligado
     d1 = FakeDoc("o gato preto subiu no telhado alto", {"confidence": 1.0})
     d2 = FakeDoc("no telhado alto subiu o gato preto", {"confidence": 1.0})
-    vs = _store_com([(d1, 0.30), (d2, 0.31)])
+    vs = _store_com([(d1, dist_confiante(0.4)), (d2, dist_confiante(0.5))])
     res = await vs.search("tema")
     assert res.texto.count("[Local") == 2       # sem near-dedup, ambos entram
 
@@ -161,7 +164,7 @@ def test_defaults_de_calibracao_intactos():
     from mente_digital.config import Settings
 
     padrao = Settings(_env_file=None)
-    assert padrao.rag_score_confident == 0.8
+    assert padrao.rag_score_confident == 0.16   # escala do e5-base (calibrar_gate.py)
     assert padrao.rag_score_max == 1.5
     assert padrao.aterramento_idf_min == 1.5        # G3
     assert padrao.rotear_definicional_web is True   # Part A

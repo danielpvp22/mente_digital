@@ -75,6 +75,11 @@ def test_rotulo_distingue_texto_e_vizinho_da_malha():
 async def test_gate_admite_so_as_figuras_confiantes(monkeypatch):
     # corte relativo desligado: aqui é o limiar ABSOLUTO que está sob teste
     monkeypatch.setattr(settings, "figuras_margem_melhor", 0.0)
+    # Limiar CRAVADO (mesmo idioma do teste irmão logo abaixo). Antes ele herdava o
+    # `rag_score_confident` e as distâncias eram lidas contra o default do código —
+    # o que amarrava este teste à escala do embedding vigente. O que está sob teste é
+    # "abaixo do limiar entra, acima do rag_score_max não", não qual é o limiar.
+    monkeypatch.setattr(settings, "figuras_score_confident", 0.5)
     vs = rag.VectorStore(embeddings=None)
     vs._store = StoreComFiltro([
         (_fig("boa", "clorose entre as nervuras"), 0.10),
@@ -82,7 +87,6 @@ async def test_gate_admite_so_as_figuras_confiantes(monkeypatch):
         (_fig("ruim", "assunto totalmente outro"), 1.60),   # acima do rag_score_max
     ])
     aprovadas = await vs._buscar_figuras("clorose", set())
-    # limiar herda rag_score_confident (0.8): passam a de 0.10 e a de 0.30
     assert [round(s, 2) for s, _ in aprovadas] == [0.10, 0.30]
     assert vs._store.filtros == [{"tipo": "figura"}]
 
