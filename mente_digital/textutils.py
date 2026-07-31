@@ -46,6 +46,52 @@ def fracao_cjk(s: str) -> float:
     return sum(1 for c in sem_espaco if _CJK_RE.match(c)) / len(sem_espaco)
 
 
+def lotes_de_texto(texto: str, budget: int, sep: str = "\n\n") -> list[str]:
+    """Fatia um texto longo em LOTES que cabem em `budget` chars, cortando só nas
+    fronteiras de `sep` (no dump da conversa, `\\n\\n` é a fronteira de turno).
+
+    Por que existe (idle de 2026-07-31): o `summarize_dump` mandava o dump INTEIRO
+    ao LLM. Ele acumulara 2 dias sem ser limpo (118 turnos, ~57k chars) e a chamada
+    morreu com `Requested tokens (21277) exceed context window of 8192` — e o erro,
+    virando resposta vazia, fez o ETL concluir "nada a reter" e APAGAR o dump.
+
+    Truncar seria uma linha, mas jogaria conversa fora; a régua aqui é NADA SE PERDE:
+    todo char de entrada sai em exatamente um lote. Um bloco maior que o orçamento
+    (uma resposta gigante sem linha em branco) é partido no meio — feio, mas preferível
+    a descartá-lo ou a estourar o n_ctx de novo.
+
+    Puro/testável, como `verbalizar` e `agenda.parse_quando` — sem settings embutido,
+    o orçamento é INJETADO por quem chama.
+    """
+    if budget <= 0:
+        raise ValueError("budget de lote precisa ser positivo")
+    if not texto.strip():
+        return []
+    lotes: list[str] = []
+    atual: list[str] = []
+    tam = 0
+    for bloco in texto.split(sep):
+        # Bloco que sozinho não cabe: parte em pedaços do tamanho do orçamento. Fecha
+        # o lote em curso antes, para não intercalar pedaço com bloco inteiro.
+        if len(bloco) > budget:
+            if atual:
+                lotes.append(sep.join(atual))
+                atual, tam = [], 0
+            lotes.extend(bloco[i:i + budget] for i in range(0, len(bloco), budget))
+            continue
+        # +len(sep) porque o join vai recolocar o separador entre os blocos.
+        custo = len(bloco) + (len(sep) if atual else 0)
+        if atual and tam + custo > budget:
+            lotes.append(sep.join(atual))
+            atual, tam = [], 0
+            custo = len(bloco)
+        atual.append(bloco)
+        tam += custo
+    if atual:
+        lotes.append(sep.join(atual))
+    return [lote for lote in lotes if lote.strip()]
+
+
 def sem_acento(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 

@@ -99,6 +99,7 @@ class FakeLlama:
         self.tokens = tokens
         self.preempcoes = 0
         self._preemptar_proximo = False
+        self._falhar_proximo = False
 
     def preempt(self) -> int:
         self.preempcoes += 1
@@ -109,8 +110,20 @@ class FakeLlama:
         no meio de uma síntese de ETL)."""
         self._preemptar_proximo = True
 
+    def armar_falha(self) -> None:
+        """A PRÓXIMA stream MORRE no meio (simula o worker de inferência caindo —
+        estouro de n_ctx, OOM de VRAM). Diferente da preempção: ali o trabalho é
+        reagendado, aqui houve ERRO e o texto parcial é lixo."""
+        self._falhar_proximo = True
+
     async def stream(self, prompt: str, **kwargs):
-        from mente_digital.llm import InferenciaPreemptada
+        from mente_digital.llm import InferenciaFalhou, InferenciaPreemptada
+
+        if self._falhar_proximo:
+            self._falhar_proximo = False
+            if self.tokens:
+                yield self.tokens[0]          # chegou a emitir um pedaço...
+            raise InferenciaFalhou("falha simulada no worker")   # ...e morreu
 
         if kwargs.get("preemptible") and self._preemptar_proximo:
             self._preemptar_proximo = False
@@ -186,3 +199,4 @@ def make_send():
 def textos_de_tokens(enviados: List[dict]) -> str:
     """Concatena o texto de todas as mensagens do tipo 'token'."""
     return "".join(m["texto"] for m in enviados if m.get("tipo") == "token")
+

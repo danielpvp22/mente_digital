@@ -332,6 +332,20 @@ class Settings(BaseSettings):
     optimizer_overlap: bool = True
     max_tokens_sintese: int = 1600
     max_tokens_resumo: int = 1800
+    # ORÇAMENTO DE ENTRADA das tarefas de fundo (idle). Existe por um estouro REAL:
+    # em 2026-07-31 o `summarize_dump` mandou o dump inteiro (118 turnos acumulados
+    # em 2 dias, ~57k chars) e a chamada morreu com "Requested tokens (21277) exceed
+    # context window of 8192" — n_ctx é 8192 e o prompt sozinho pedia ~19,4k tokens.
+    # 6000 chars é a mesma escala já calibrada do `ingestao_lote_chars`/`sintese_lote_chars`:
+    # a ~3,2 chars/token (medido no dump real) dá ~1,9k tokens de entrada, deixando
+    # folga larga para o system prompt e para os 1600-1800 tokens de saída. O texto
+    # que passa disso é FATIADO (textutils.lotes_de_texto), nunca truncado — cada
+    # lote vira sua própria chamada e os átomos se somam.
+    etl_lote_chars: int = 6000
+    # Teto do prompt do Diapasão (#36). Aqui truncar é CERTO, não preguiça: o perfil
+    # descreve COMO falar com o usuário agora, então o fim da conversa é o que importa
+    # — o corte pega a CAUDA. Fatiar em lotes daria N perfis para reconciliar sem ganho.
+    etl_perfil_max_chars: int = 6000
     # Governador de verbosidade (#7): pergunta factual curta (≤ N palavras, sem pista de
     # "explica") ganha uma resposta de UMA frase, com teto de tokens menor — menos GPU,
     # menos latência de fala. Pedido de explicação usa max_tokens_resposta cheio.

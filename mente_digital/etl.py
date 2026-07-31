@@ -235,6 +235,13 @@ class EtlProcessor:
             except InferenciaPreemptada:
                 telemetry.track("IDLE", "Varredura de contradição cedeu a GPU.")
                 return
+            except Exception as exc:
+                # Único sítio do projeto onde uma falha do LLM escaparia para cima (o
+                # `_salvar_atomos` que chama isto não tem try). Encerra a varredura em
+                # vez de seguir: se o modelo quebrou, o próximo par quebra igual — e a
+                # varredura é bônus, nunca pode derrubar a atomização que a hospeda.
+                telemetry.error("IDLE", "Varredura de contradição falhou", exc)
+                return
             checados += 1
             motivo = contradicao.parse_veredito(veredito)
             if motivo:
@@ -924,21 +931,35 @@ class EtlProcessor:
                 pendentes.pop(0)
                 continue
             dados = "\n\n".join(limpos)
-            try:
-                conteudo = await self.ctx.llama.collect(
-                    prompts.prompt_sintese(tema, dados),
-                    max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
-                    system_prompt=prompts.SYS_SINTESE,
-                    preemptible=True,   # background: a pergunta do usuário passa na frente
-                )
-            except InferenciaPreemptada:
+            # EM LOTES que cabem no n_ctx (2026-07-31): a colheita enfileira o CORPO de
+            # uma página inteira, até `web_fetch_max_chars` (20.000 chars) — o prompt
+            # único podia estourar o contexto do mesmo jeito que o dump da conversa.
+            sinteses: List[str] = []
+            preemptado = False
+            for lote in textutils.lotes_de_texto(dados, settings.etl_lote_chars):
+                await self._esperar_idle()    # a série é longa: cede a vez a cada lote
+                try:
+                    sinteses.append(await self.ctx.llama.collect(
+                        prompts.prompt_sintese(tema, lote),
+                        max_tokens=self._max_fundo(settings.max_tokens_sintese),  # #29
+                        system_prompt=prompts.SYS_SINTESE,
+                        preemptible=True,   # background: a pergunta do usuário passa na frente
+                    ))
+                except InferenciaPreemptada:
+                    preemptado = True
+                    break
+                except Exception as exc:
+                    # Para a série, mas guarda o que já saiu: meia página retida é melhor
+                    # que nenhuma, e o dedup por átomo limpa a sobreposição de um retry.
+                    telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar lote de '{tema}'", exc)
+                    break
+            if preemptado:
                 telemetry.track("ETL_POST_CHAT", f"'{tema}' cedeu a GPU — será retomado no idle.")
                 continue                      # item continua em pendentes[0]
-            except Exception as exc:
-                telemetry.error("ETL_POST_CHAT", f"Falha ao sintetizar '{tema}'", exc)
-                pendentes.pop(0)              # falha real: não retenta em loop
+            pendentes.pop(0)                  # consumido: erro real não retenta em loop
+            conteudo = "\n\n".join(s for s in sinteses if s.strip())
+            if not conteudo:
                 continue
-            pendentes.pop(0)
             try:
                 total += await self._salvar_atomos(conteudo, "Sintese", "ETL_POST_CHAT")
             except Exception as exc:
@@ -966,22 +987,50 @@ class EtlProcessor:
         if len(conteudo) < 50:
             return
 
-        await self._esperar_idle()
-        telemetry.track("IDLE", "Atomizando histórico da conversa (Zettelkasten)...")
-        try:
-            atomos = await self.ctx.llama.collect(
-                prompts.prompt_sintese_conversa(conteudo),
-                max_tokens=self._max_fundo(settings.max_tokens_resumo),  # #29
-                system_prompt=prompts.SYS_SINTESE_CONVERSA,
-                preemptible=True,   # background: a pergunta do usuário passa na frente
-            )
-        except InferenciaPreemptada:
-            # Sair aqui é seguro E é o ponto: o dump só é limpo mais abaixo, depois de
-            # salvar. Cedemos a GPU sem tocar em nada, e a conversa inteira continua no
-            # arquivo para a próxima passada de idle.
-            telemetry.track("IDLE", "Atomização cedeu a GPU — dump preservado p/ a próxima.")
-            return
-        atomos = atomos.strip()
+        # EM LOTES que cabem no n_ctx (idle de 2026-07-31): o dump acumula entre as
+        # passadas — quando uma atomização é preemptada ou não salva nada, a conversa
+        # fica para a próxima. Ele chegou a 2 dias (118 turnos, ~57k chars) e a chamada
+        # única morreu com "Requested tokens (21277) exceed context window of 8192".
+        # Fatiar preserva a conversa inteira; truncar a jogaria fora.
+        lotes = textutils.lotes_de_texto(conteudo, settings.etl_lote_chars)
+        telemetry.track("IDLE", f"Atomizando histórico da conversa (Zettelkasten): "
+                                f"{len(conteudo)} chars em {len(lotes)} lote(s).")
+        partes: List[str] = []
+        falhou = False
+        for lote in lotes:
+            # Cede a vez ANTES de cada lote, não só uma vez no começo: numa conversa
+            # longa são várias chamadas, e o usuário pode voltar no meio da série.
+            await self._esperar_idle()
+            try:
+                parte = await self.ctx.llama.collect(
+                    prompts.prompt_sintese_conversa(lote),
+                    max_tokens=self._max_fundo(settings.max_tokens_resumo),  # #29
+                    system_prompt=prompts.SYS_SINTESE_CONVERSA,
+                    preemptible=True,   # background: a pergunta do usuário passa na frente
+                )
+            except InferenciaPreemptada:
+                # Sair aqui é seguro E é o ponto: o dump só é limpo mais abaixo, depois de
+                # salvar. Cedemos a GPU sem tocar em nada, e a conversa inteira continua no
+                # arquivo para a próxima passada de idle.
+                telemetry.track("IDLE", "Atomização cedeu a GPU — dump preservado p/ a próxima.")
+                return
+            except Exception as exc:
+                telemetry.error("IDLE", "Falha ao atomizar um lote da conversa", exc)
+                falhou = True
+                continue
+            parte = parte.strip()
+            if not parte:
+                # Resposta VAZIA não é "nada a reter" — o prompt manda escrever o literal
+                # 'NADA' nesse caso. Vazio significa que o decode MORREU (hoje o worker do
+                # llm.py loga e encerra a stream), e foi exatamente essa confusão que fez
+                # o estouro de contexto ser lido como small talk e APAGAR o dump.
+                telemetry.warn("IDLE", "Lote da conversa voltou vazio do LLM — tratado como falha.")
+                falhou = True
+                continue
+            if parte.upper().strip(".!\n ") != "NADA":
+                partes.append(parte)
+
+        atomos = "\n\n".join(partes)
 
         async def _limpar_dump() -> None:
             try:
@@ -989,9 +1038,23 @@ class EtlProcessor:
             except OSError as exc:
                 telemetry.error("IDLE", "Erro ao limpar dump", exc)
 
+        if falhou:
+            # NUNCA limpa com falha em jogo. O que deu certo é salvo mesmo assim (nada
+            # se perde nos dois sentidos): o dedup por átomo de `_salvar_atomos` descarta
+            # o repetido quando a próxima passada reprocessar o dump inteiro.
+            if atomos:
+                salvos = await self._salvar_atomos(atomos, "Conversa", "IDLE_CONVERSA")
+                if salvos:
+                    await self.ctx.vectorstore.sync()
+                    telemetry.warn("IDLE", f"Conversa atomizada em PARTE ({salvos} átomo(s)) — "
+                                           "dump preservado p/ retry.")
+                    return
+            telemetry.warn("IDLE", "Atomização da conversa falhou — dump preservado p/ retry.")
+            return
+
         # O prompt manda responder só 'NADA' quando não há conhecimento a reter
         # (conversa de small talk). Nesse caso não cria nota — mas limpa o dump.
-        if not atomos or atomos.upper().strip(".!\n ") == "NADA":
+        if not atomos:
             await _limpar_dump()
             telemetry.track("IDLE", "Conversa sem conhecimento novo a reter.")
             return
@@ -1020,7 +1083,12 @@ class EtlProcessor:
         await self._esperar_idle()
         try:
             resp = await self.ctx.llama.collect(
-                prompts.prompt_perfil_conversa(conteudo, self.ctx.perfil_conversa or ""),
+                # CAUDA, não o começo (teto de 2026-07-31): este prompt recebia o MESMO
+                # dump inteiro que estourou o n_ctx no `summarize_dump`. Aqui truncar é a
+                # escolha certa, não a preguiçosa — o perfil descreve como falar com o
+                # usuário AGORA, e é o fim da conversa que carrega isso.
+                prompts.prompt_perfil_conversa(conteudo[-settings.etl_perfil_max_chars:],
+                                               self.ctx.perfil_conversa or ""),
                 max_tokens=self._max_fundo(settings.max_tokens_perfil),  # #29
                 system_prompt=prompts.SYS_DIAPASAO,
                 preemptible=True,
