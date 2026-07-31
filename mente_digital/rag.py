@@ -307,6 +307,18 @@ def metadados_da_nota(path: str, conteudo: str, mtime: float) -> dict:
     # significa "buscável", que é o comportamento delas hoje.
     if meta["tipo"] == "figura" and prompts.TAG_FIGURA_ANEXO in conteudo:
         meta["attach_only"] = True
+    # ACERVO SUSPEITO: figura colhida da web cuja IMAGEM não é o que a nota afirma ser.
+    # A revalidação do idle (`EtlProcessor.revalidar_acervo_web`) marca
+    # `acervo_confere: NAO` no frontmatter, mas até 2026-07-31 ninguém lia a marca —
+    # exatamente o estágio em que o `attach_only` já esteve ("declaração e não
+    # comportamento"). São 5 das 45 notas do acervo, e é o que faz uma pergunta sobre
+    # 'polvo' trazer um calendário do EBT da Flórida e 'solo argiloso' trazer uma
+    # miniatura de Rainbow Six Siege (o buscador casou o "solo" de *solo queue*).
+    # Gravado só quando VERDADEIRO, pelo mesmo motivo do attach_only: chave ausente
+    # não casa `where` no Chroma, e ausência aqui significa "confere ou nunca avaliada"
+    # — que é o comportamento buscável de toda nota de figura de livro.
+    if str(fm.get("acervo_confere", "")).strip().upper() == "NAO":
+        meta["acervo_suspeito"] = True
     return meta
 
 
@@ -1166,6 +1178,11 @@ class VectorStore:
             # não casaria NENHUMA delas (chave ausente não casa) e a busca de
             # figura zeraria de uma vez. O custo é gastar slots do top_k.
             if not (doc.metadata or {}).get("attach_only")
+            # SUSPEITA NÃO DISPUTA VAGA (2026-07-31): a revalidação do idle já sabe
+            # que a imagem não é o que a nota diz; deixá-la concorrer é entregar a
+            # figura errada com a confiança da certa. Filtro em Python pelo mesmo
+            # motivo do attach_only — a maioria das notas não tem o campo.
+            and not (doc.metadata or {}).get("acervo_suspeito")
             and score < settings.rag_score_max
             and (score < limiar or textutils.contem_alguma(doc.page_content, chaves))
         ]
@@ -1338,6 +1355,13 @@ class VectorStore:
                         consulta, k=max(teto, 8), filter={"$and": onde})
                 )
                 ordenadas = sorted(res or [], key=lambda ds: ds[1])
+                # SUSPEITA SAI ANTES DO CORTE RELATIVO (2026-07-31). A ordem importa:
+                # descartada depois, ela ainda seria `ordenadas[0]` e ANCORARIA a
+                # margem abaixo — uma reprovada em 0,08 puxaria o limite para 0,09 e
+                # empurraria para fora a figura BOA em 0,10. O gate não pode deixar a
+                # figura que ele mesmo barrou decidir quem mais entra.
+                ordenadas = [(d, s) for d, s in ordenadas
+                             if not (d.metadata or {}).get("acervo_suspeito")]
                 # CORTE RELATIVO À MELHOR, o mesmo remédio do `figuras_margem_melhor`:
                 # o teto de 2 preenchia o segundo slot com a próxima da fila mesmo
                 # quando ela era muito pior. Medido em 2026-07-31: "o que são
@@ -1363,6 +1387,8 @@ class VectorStore:
             return []
         saida: List[str] = []
         for md in (res or {}).get("metadatas", []) or []:
+            if (md or {}).get("acervo_suspeito"):
+                continue          # mesma marca, mesmo descarte (ver acima)
             src = str((md or {}).get("source") or "")
             if src and src not in saida:
                 saida.append(src)
