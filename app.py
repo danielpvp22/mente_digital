@@ -659,6 +659,13 @@ def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None
             # pode ligar o idle no meio do trabalho do dono.
             continue
         acao = maquina.tick(sem_input, time.time())
+        if acao:
+            # Rastro OBRIGATÓRIO. Isto age sozinho, na ausência do dono, e mexe na
+            # GPU: um ciclo que não deixa linha nenhuma no log é indepurável quando
+            # ele fizer a coisa errada — e o único jeito de saber que fez a certa é
+            # reencenar a espera inteira.
+            print(f"[OCIOSO] {acao} (sem input ha {sem_input:.0f}s, estado={maquina.estado.value})",
+                  flush=True)
         if acao == "perguntar":
             viu = bandeja.avisar(
                 "Mente Digital",
