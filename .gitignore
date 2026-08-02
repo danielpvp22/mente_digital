@@ -135,3 +135,17 @@ dados/marca/
 # Logs de runtime/diagnostico do app -- artefato, nunca codigo.
 dados/*.log
 dados/*.log.err
+
+# Cliente Android (fase 1). O que entra no git é o CÓDIGO; o resto é gerado.
+# ⚠ `local.properties` guarda o caminho do SDK da MÁQUINA — versioná-lo quebra o
+# build de qualquer outro computador com um erro confuso de caminho.
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/*.iml
+# Os mipmaps são DESENHADOS por mente_digital/marca.py (scripts/gerar_mipmaps.py):
+# mesma razão do .ico do desktop — o desenho é o código, o PNG é artefato, e um
+# binário commitado é a primeira coisa a divergir da paleta.
+android/app/src/main/res/mipmap-*/

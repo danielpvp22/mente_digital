@@ -1,6 +1,35 @@
 # Plano — App Android nativo (Kotlin)
 
-**Data:** 2026-08-02 · **Estado:** desenhado, não iniciado · **Branch de referência:** `feat/ocr-livro-escaneado-fase3`
+**Data:** 2026-08-02 · **Estado:** **Fase 1 CONSTRUÍDA** (`android/`) · **Branch de referência:** `feat/ocr-livro-escaneado-fase3`
+
+> ## ⚠ CORREÇÃO MEDIDA NA EXECUÇÃO DA FASE 1 (2026-08-02)
+>
+> **Este plano está ERRADO sobre o que o cliente vê quando o token não confere.**
+> §1.1 e o Risco R5 afirmam que o cliente "verá apenas um close 1008". Sondado o
+> servidor de verdade com um handshake cru:
+>
+> ```
+> token certo  -> HTTP/1.1 101 Switching Protocols
+> token errado -> HTTP/1.1 403 Forbidden
+> sem token    -> HTTP/1.1 403 Forbidden
+> ```
+>
+> O gate roda **antes** do `accept()` (main.py:538-548), então o uvicorn nunca faz
+> o upgrade: o `websocket.close(1008)` do lado do servidor vira uma **recusa de
+> handshake HTTP**. No OkHttp isso chega em `onFailure` com `response.code == 403`
+> — `onClosed` **jamais** é chamado, e um app que só tratasse 1008 ficaria
+> reconectando em laço eterno sem nunca dizer que o problema é o token.
+>
+> Corrigido em `ClienteMente.onFailure`, com teste de integração que roda contra o
+> servidor real (`ConformidadeServidorTest`). A recomendação de usar `/api/health`
+> para desambiguar (R5) continua válida e foi implementada.
+>
+> **Outra correção, de versões:** §7 dizia "NÃO VERIFIQUEI versões". Fixadas e
+> compiladas nesta máquina: Gradle 9.4.1, **AGP 9.2.1**, Kotlin 2.0.0, Compose BOM
+> 2024.02.01, OkHttp 4.12.0, compileSdk 35, minSdk 24, JDK 21 (o JBR do Studio).
+> ⚠ Com AGP 9 **não se aplica o plugin `org.jetbrains.kotlin.android`** — ele já
+> vem embutido, e aplicá-lo por fora falha com *"Cannot add extension with name
+> 'kotlin'"*. `kotlinOptions` também sai junto.
 
 Este documento levanta o protocolo REAL do servidor (com arquivo:linha) e propõe o
 plano de execução do cliente Android. Nada aqui altera código do servidor: o app
