@@ -339,6 +339,54 @@ async def energia_endpoint(request: Request):
     })
 
 
+@app.post("/api/idle", dependencies=[Depends(exigir_acesso)])
+async def idle_endpoint(request: Request):
+    """Dispara e INTERROMPE a consolidação de fundo, sob comando da casca.
+
+    Existe porque o gatilho novo é a inatividade do DONO (teclado e mouse parados
+    na máquina inteira — ver `ocioso.py`), não a inatividade do chat, que o
+    `ws._check_inatividade` já cobre. Quem observa isso é o app.py; aqui fica só
+    o braço que executa.
+
+    ⚠ O contrato do "parar" é `liberar o que o IDLE ocupou -- o app segue pronto`
+    (decisão do dono, 2026-08-02), e NÃO "desligar tudo". Por isso guardamos se o
+    LLM já estava carregado ANTES de o idle começar: se estava, ele fica; se o
+    idle é que o subiu, ele volta a sair. Sem essa memória, parar o idle deixaria
+    a máquina em estado diferente do que estava, e a próxima pergunta pagaria os
+    7,3 s de religamento que ele não pediu."""
+    ctx = get_ctx(request)
+    corpo = await request.json() if await request.body() else {}
+    acao = (corpo.get("acao") or "estado").strip().lower()
+    estado = request.app.state
+
+    tarefa = getattr(estado, "idle_task", None)
+    rodando = tarefa is not None and not tarefa.done()
+
+    if acao == "rodar":
+        if rodando:
+            return JSONResponse(content={"estado": "rodando", "ja_estava": True})
+        estado.idle_llm_estava_pronto = ctx.llama.ready
+        estado.idle_task = ctx.track_task(ctx.etl.run_idle([]))
+        telemetry.track("IDLE", "Consolidação disparada pela ociosidade do dono.")
+        return JSONResponse(content={"estado": "rodando", "ja_estava": False})
+
+    if acao == "parar":
+        if not rodando:
+            return JSONResponse(content={"estado": "parado", "ja_estava": True})
+        tarefa.cancel()
+        # Devolve SÓ o que o idle pegou. `ensure_loaded`/`unload` são idempotentes,
+        # então reafirmar o estado anterior é seguro mesmo se nada tiver mudado.
+        if not getattr(estado, "idle_llm_estava_pronto", True) and ctx.llama.ready:
+            await ctx.llama.unload()
+            await asyncio.to_thread(energia.enxugar)
+        telemetry.track("IDLE", "Consolidação interrompida — o dono voltou ao teclado.")
+        return JSONResponse(content={"estado": "parado", "ja_estava": False,
+                                     "medida": energia.medir()})
+
+    return JSONResponse(content={"estado": "rodando" if rodando else "parado",
+                                 "medida": energia.medir()})
+
+
 @app.get("/api/imagem/{caminho:path}", dependencies=[Depends(exigir_acesso)])
 async def imagem_do_vault(caminho: str):
     """Serve uma figura do vault para o chat (Fase 5b). SÓ imagem, SÓ dentro do
