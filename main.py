@@ -509,6 +509,95 @@ async def facetas_do_vault(request: Request):
     return JSONResponse(content=vault_filtros.contar_facetas(cache["itens"]))
 
 
+def _rel_do_vault(source: str) -> str:
+    """O `source` do índice reduzido ao caminho relativo que a tela usa."""
+    bruto = (source or "").replace("\\", "/")
+    raiz = str(Path(settings.caminho_obsidian)).replace("\\", "/").rstrip("/") + "/"
+    return bruto[len(raiz):] if bruto.startswith(raiz) else bruto
+
+
+def _chaves_da_malha(caminho: str) -> tuple[str, ...]:
+    """As grafias sob as quais uma nota pode estar na malha.
+
+    ⚠ MEDIDO no vault do dono (2026-08-02), porque eu tinha suposto errado: o
+    `source` gravado no índice (rag.py:273) é o caminho **ABSOLUTO com barras
+    normais** — `D:/projetos/.../Cerebro_Digital/Conhecimento_Novo/nota.md`. Mas
+    a tela trafega as duas formas: o modo "recentes" devolve caminho RELATIVO
+    (montado do `rglob`) e o semântico devolve o `source` cru, absoluto. As duas
+    chegam aqui, e as duas têm de achar a nota.
+
+    Procurar só a forma recebida devolvia `nos: 0` — nem a semente — e a tela
+    dizia "esta nota não tem vizinhos fortes". Falha SILENCIOSA e convincente:
+    a mensagem é plausível, então ninguém desconfia do índice."""
+    bruto = caminho.strip().strip('"')
+    formas: list[str] = []
+
+    def _juntar(valor: str) -> None:
+        for s in (valor, valor.replace("\\", "/"), valor.replace("/", "\\")):
+            if s and s not in formas:
+                formas.append(s)
+
+    _juntar(bruto)
+    try:
+        raiz = Path(settings.caminho_obsidian)
+        alvo = Path(bruto)
+        _juntar(str(alvo.relative_to(raiz)) if alvo.is_absolute() else str(raiz / bruto))
+    except (ValueError, OSError):          # fora do vault, ou caminho inválido
+        pass
+    return tuple(formas)
+
+
+@app.get("/api/vault/grafo", dependencies=[Depends(exigir_acesso)])
+async def grafo_da_nota(caminho: str, saltos: int = 1, max_nos: int = 40,
+                        request: Request = None):
+    """A vizinhança de uma nota na malha de conceitos — o grafo do modo avançado.
+
+    LOCAL, não global: 24.850 notas não formam desenho legível em renderizador
+    nenhum. A pergunta que esta tela responde é "com o que ESTA nota conversa?".
+
+    O corte por IDF é `settings.malha_idf_min` (4.0), o MESMO que a expansão de
+    contexto usa (rag.py:1616) — e pela mesma razão, escrita no docstring da
+    `MalhaIndex`: [[Python]] está em 101 átomos, [[DuckDB]] em 34. Sem o corte, o
+    primeiro salto traria todo mundo que menciona um conceito-hub e o desenho
+    seria idêntico para qualquer semente."""
+    ctx = get_ctx(request)
+    malha = getattr(ctx.vectorstore, "malha", None)
+    if malha is None or malha.n_atomos == 0:
+        # Distinto de "nota sem vizinhos": a malha some com o processo e é
+        # remontada em segundo plano no boot. A tela precisa poder dizer
+        # "ainda montando" em vez de "esta nota não conversa com nada".
+        return JSONResponse(content={"nos": [], "arestas": [], "malha_pronta": False,
+                                     "truncado": False, "alcancados": 0,
+                                     "arestas_totais": 0})
+
+    saltos = max(1, min(int(saltos or 1), 2))
+    max_nos = max(2, min(int(max_nos or 40), 120))
+    # Teto de arestas proporcional ao de nós. Num tema denso os vizinhos são todos
+    # ligados entre si (~700 arestas para 39 nós, medido em "fotossíntese") e o
+    # desenho vira um disco sólido. 2,5× dá trama sem virar mancha.
+    max_arestas = int(max_nos * 2.5)
+    for chave in _chaves_da_malha(caminho):
+        g = await asyncio.to_thread(malha.vizinhanca, chave, saltos, max_nos,
+                                    settings.malha_idf_min, max_arestas)
+        if g["nos"]:
+            break
+    else:                                   # nenhuma grafia bateu
+        g = {"nos": [], "arestas": [], "truncado": False, "alcancados": 0,
+             "arestas_totais": 0}
+
+    cache = await asyncio.to_thread(_varrer_vault)
+    for no in g["nos"]:
+        # O id vem na grafia do ÍNDICE (absoluta); o cache é indexado pelo caminho
+        # RELATIVO, que é também o que a tela reenvia ao clicar num vizinho.
+        rel = _rel_do_vault(no["id"])
+        meta = cache["por_caminho"].get(rel) or {}
+        no.update({"caminho": rel,
+                   "nome": meta.get("nome") or Path(rel).stem,
+                   "familia": meta.get("familia", "")})
+    g["malha_pronta"] = True
+    return JSONResponse(content=g)
+
+
 @app.get("/api/notas", dependencies=[Depends(exigir_acesso)])
 async def buscar_notas(q: str = "", k: int = 30, pasta: str = "", origem: str = "",
                        dias: int = 0, request: Request = None):

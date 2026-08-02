@@ -478,6 +478,16 @@ class MalhaIndex:
             self._por_conceito, self._conceitos_de, df_min, coocorrencia_max, limite
         )
 
+    def vizinhanca(self, semente: str, saltos: int, max_nos: int, idf_min: float,
+                   max_arestas: int = 0) -> dict:
+        """Grafo LOCAL em volta de uma nota (painel avançado). Delega ao `grafo`,
+        pela mesma razão que `pontes`: lógica de grafo é pura e não mora na camada
+        de dados. Malha não construída devolve grafo vazio, não erro."""
+        return grafo.vizinhanca_local(
+            self._por_conceito, self._conceitos_de, self.idf,
+            semente, saltos, max_nos, idf_min, max_arestas,
+        )
+
     def centralidade(self, sources: List[str]) -> dict:
         """Score de centralidade de cada `source` DENTRO do conjunto dado (G7).
 

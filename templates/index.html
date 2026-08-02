@@ -241,6 +241,30 @@
         .av-leitor-top { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--linha); flex-shrink: 0; }
         .av-leitor-top .nome { flex: 1; font-size: .9rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #av-leitor-corpo { flex: 1; overflow-y: auto; padding: 16px 16px calc(24px + var(--safe-b)); font-size: .93rem; line-height: 1.65; }
+        /* Grafo da vizinhança. SVG inline desenhado à mão: as duas páginas do
+           graphify puxam o vis-network do unpkg.com, e servir CDN quebraria o
+           pilar "100% local" — offline elas nem renderizam. Para 1-2 saltos são
+           dezenas de nós, e um layout radial não precisa de biblioteca. */
+        #av-grafo { flex: 1; overflow: auto; display: flex; flex-direction: column;
+                    padding: 8px 8px calc(16px + var(--safe-b)); }
+        /* ⚠ ESTA LINHA NÃO É REDUNDANTE. O atributo `hidden` só esconde porque a
+           folha do navegador traz `[hidden]{display:none}` — e QUALQUER regra de
+           autor com `display` vence, por especificidade. Sem isto o grafo ficava
+           permanentemente visível empilhado sob o texto da nota, e o botão parecia
+           não fazer nada. Medido no navegador em 2026-08-02: `hidden: true` com
+           `getComputedStyle().display === 'flex'`. */
+        #av-grafo[hidden] { display: none; }
+        #av-grafo svg { width: 100%; height: auto; flex: 1; min-height: 0; }
+        #av-grafo .aresta { stroke: var(--acc); fill: none; }
+        #av-grafo .no { cursor: pointer; }
+        #av-grafo .no circle { stroke: var(--bg); stroke-width: 2; transition: .15s; }
+        #av-grafo .no:hover circle { stroke: var(--txt); }
+        #av-grafo .no text { fill: var(--txt2); font-size: 7px; pointer-events: none;
+                             text-anchor: middle; }
+        #av-grafo .no.semente text { fill: var(--txt); font-weight: 600; font-size: 8px; }
+        #av-grafo .legenda { font-size: .72rem; color: var(--txt2); text-align: center;
+                             padding: 6px 4px 2px; flex-shrink: 0; }
+        #av-btn-grafo.on { background: var(--acc-fraco); color: var(--acc); }
 
         /* ========================= boas-vindas ============================ */
         #welcome-screen {
@@ -535,8 +559,16 @@
             <div class="av-leitor-top">
                 <button class="icon-btn" onclick="fecharNota()" title="Voltar"><svg class="ico" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
                 <span class="nome" id="av-leitor-nome"></span>
+                <!-- O grafo é uma VISTA da nota aberta, não uma quarta aba: a
+                     pergunta que ele responde ("com o que ISTO conversa?") só
+                     existe depois de escolher uma nota. -->
+                <button class="icon-btn" id="av-btn-grafo" onclick="alternarGrafo()"
+                        title="Ver a vizinhança desta nota na malha">
+                    <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="17" r="2.4"/><circle cx="19" cy="17" r="2.4"/><path d="M12 7.4L5.9 14.9M12 7.4l6.1 7.5M7.4 17h9.2"/></svg>
+                </button>
             </div>
             <div id="av-leitor-corpo"></div>
+            <div id="av-grafo" hidden></div>
         </div>
     </div>
 
@@ -1062,6 +1094,9 @@
         document.addEventListener('keydown', e => {
             if (e.key !== 'Escape') return;
             if (isLiveMode) encerrarLiveMode(false);
+            // Esc desfaz UMA camada por vez: com o grafo aberto ele volta ao texto
+            // da nota, não fecha o leitor inteiro (que perderia o lugar).
+            else if (!document.getElementById('av-grafo').hidden) mostrarGrafo(false);
             else if (document.getElementById('av-leitor').classList.contains('on')) fecharNota();
             else if (document.getElementById('avancado').classList.contains('active')) alternarAvancado();
             else if (document.getElementById('sidebar').classList.contains('open')) fecharSidebar();
@@ -1273,8 +1308,12 @@
             } catch (err) { lista.innerHTML = '<div class="av-vazio">Falha ao buscar.</div>'; }
         }
 
+        let notaAberta = null;
+
         async function abrirNota(caminho) {
             const leitor = document.getElementById('av-leitor');
+            notaAberta = caminho;
+            mostrarGrafo(false);          // trocar de nota sempre volta ao texto
             document.getElementById('av-leitor-nome').textContent = caminho.split('/').pop();
             document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Abrindo…</div>';
             leitor.classList.add('on');
@@ -1289,7 +1328,154 @@
                 document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Não consegui abrir esta nota.</div>';
             }
         }
-        function fecharNota() { document.getElementById('av-leitor').classList.remove('on'); }
+        function fecharNota() {
+            document.getElementById('av-leitor').classList.remove('on');
+            mostrarGrafo(false);
+            notaAberta = null;
+        }
+
+        // ---------------------- grafo da vizinhança ----------------------
+        // SVG desenhado aqui, sem biblioteca. As duas páginas do graphify puxam
+        // `vis-network` do unpkg.com: servi-las quebraria o pilar "100% local" e,
+        // offline, elas nem renderizam. Para 1-2 saltos (dezenas de nós) um layout
+        // radial resolve — e é determinístico, ao contrário de um force layout,
+        // que redesenha diferente a cada abertura e impede reconhecer a forma.
+        const G = { W: 400, H: 400, RAIO: [0, 118, 178], PONTO: [9, 6, 4.5] };
+
+        function mostrarGrafo(ligado) {
+            document.getElementById('av-grafo').hidden = !ligado;
+            document.getElementById('av-leitor-corpo').style.display = ligado ? 'none' : '';
+            document.getElementById('av-btn-grafo').classList.toggle('on', ligado);
+        }
+
+        function alternarGrafo() {
+            const alvo = document.getElementById('av-grafo').hidden;
+            mostrarGrafo(alvo);
+            if (alvo) desenharGrafo(notaAberta);
+        }
+
+        function corDoSalto(s) { return s === 0 ? 'var(--acc3)' : s === 1 ? 'var(--acc2)' : 'var(--acc1)'; }
+
+        function posicoesDoGrafo(nos, arestas) {
+            // Radial, mas por PARENTESCO: a semente no centro, o 1º salto num anel
+            // em volta dela, e cada nó de 2º salto num leque em volta do SEU PAI.
+            //
+            // Um anel global para o 2º salto (a primeira versão) desenhava um grafo
+            // que MENTIA: com uma semente de um vizinho só, os 38 netos ficavam num
+            // círculo centrado na semente e todas as linhas convergiam no filho —
+            // que passava a parecer o centro do assunto, enquanto a nota aberta
+            // parecia periférica. Visto no navegador em 2026-08-02.
+            const porSalto = {};
+            nos.forEach(n => (porSalto[n.salto] = porSalto[n.salto] || []).push(n));
+            const pos = {};
+            (porSalto[0] || []).forEach(n => (pos[n.id] = { x: 0, y: 0 }));
+
+            const anel1 = porSalto[1] || [];
+            anel1.forEach((n, i) => {
+                const a = (i / anel1.length) * 2 * Math.PI - Math.PI / 2;
+                pos[n.id] = { x: G.RAIO[1] * Math.cos(a), y: G.RAIO[1] * Math.sin(a) };
+            });
+
+            // Pai de cada neto: a primeira aresta que o liga a alguém já posicionado.
+            const filhos = {};
+            (porSalto[2] || []).forEach(n => {
+                const liga = arestas.find(a => (a.de === n.id && pos[a.para]) || (a.para === n.id && pos[a.de]));
+                const pai = liga ? (liga.de === n.id ? liga.para : liga.de) : null;
+                (filhos[pai] = filhos[pai] || []).push(n);
+            });
+            Object.keys(filhos).forEach(pai => {
+                const base = pos[pai] || { x: 0, y: 0 };
+                // O leque aponta para FORA (do centro para o pai): é o que impede os
+                // netos de cair por cima do miolo do desenho.
+                const fora = Math.atan2(base.y, base.x) || -Math.PI / 2;
+                const grupo = filhos[pai], n = grupo.length;
+                // Um pai com muitos filhos precisa da volta inteira; com poucos, um
+                // leque estreito lê melhor do que um círculo quase vazio.
+                const abertura = Math.min(2 * Math.PI, 0.55 * n + 0.9);
+                const r = G.RAIO[2] * (n > 12 ? 1 : 0.72);
+                grupo.forEach((f, i) => {
+                    const a = fora - abertura / 2 + (n === 1 ? abertura / 2 : (i / (n - 1)) * abertura);
+                    pos[f.id] = { x: base.x + r * Math.cos(a), y: base.y + r * Math.sin(a) };
+                });
+            });
+
+            // ENQUADRAMENTO: o leque pode sair do quadro. Em vez de chutar raios que
+            // caibam sempre, mede-se o que foi desenhado e encaixa-se na viewBox.
+            const ps = Object.values(pos);
+            if (!ps.length) return pos;
+            const xs = ps.map(p => p.x), ys = ps.map(p => p.y);
+            const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+            const m = 34, k = Math.min((G.W - 2 * m) / Math.max(x1 - x0, 1),
+                                       (G.H - 2 * m) / Math.max(y1 - y0, 1), 1.6);
+            Object.keys(pos).forEach(id => {
+                pos[id] = {
+                    x: G.W / 2 + (pos[id].x - (x0 + x1) / 2) * k,
+                    y: G.H / 2 + (pos[id].y - (y0 + y1) / 2) * k,
+                };
+            });
+            return pos;
+        }
+
+        async function desenharGrafo(caminho) {
+            const box = document.getElementById('av-grafo');
+            if (!caminho) { box.innerHTML = '<div class="av-vazio">Abra uma nota primeiro.</div>'; return; }
+            box.innerHTML = '<div class="av-vazio">Montando o grafo…</div>';
+            let d;
+            try {
+                const p = new URLSearchParams({ caminho, saltos: 2, max_nos: 40 });
+                const res = await fetch('/api/vault/grafo?' + p.toString(), { headers: apiHeaders() });
+                d = await res.json();
+            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao montar o grafo.</div>'; return; }
+
+            if (!d.malha_pronta) {
+                // Distinto de "sem vizinhos": a malha vive em RAM e é remontada em
+                // segundo plano no boot. Dizer "não tem vizinho" aqui seria mentira.
+                box.innerHTML = '<div class="av-vazio">A malha de conceitos ainda está sendo montada. Tente daqui a pouco.</div>';
+                return;
+            }
+            if (d.nos.length <= 1) {
+                box.innerHTML = '<div class="av-vazio">Esta nota não tem vizinhos fortes na malha.'
+                              + '<br><span style="opacity:.7">Só contam conceitos RAROS — compartilhar um conceito genérico não é evidência de vizinhança.</span></div>';
+                return;
+            }
+
+            const pos = posicoesDoGrafo(d.nos, d.arestas);
+            const pesoMax = Math.max(...d.arestas.map(a => a.peso), 1);
+            const rotular = d.nos.length <= 16;      // acima disso os rótulos se atropelam
+            const partes = [`<svg viewBox="0 0 ${G.W} ${G.H}" preserveAspectRatio="xMidYMid meet" role="img">`];
+            d.arestas.forEach(a => {
+                const p1 = pos[a.de], p2 = pos[a.para];
+                if (!p1 || !p2) return;              // ponta cortada pelo teto de nós
+                const op = (0.22 + 0.6 * (a.peso / pesoMax)).toFixed(2);
+                partes.push(`<line class="aresta" x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}"`
+                    + ` x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" stroke-opacity="${op}"`
+                    + ` stroke-width="${(0.5 + 1.6 * (a.peso / pesoMax)).toFixed(2)}">`
+                    + `<title>${escapeHtml(a.conceito)}</title></line>`);
+            });
+            d.nos.forEach(n => {
+                const p = pos[n.id], r = G.PONTO[Math.min(n.salto, 2)];
+                const curto = n.nome.length > 18 ? n.nome.slice(0, 17) + '…' : n.nome;
+                partes.push(`<g class="no${n.salto === 0 ? ' semente' : ''}" data-caminho="${escapeHtml(n.caminho)}">`
+                    + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" fill="${corDoSalto(n.salto)}"/>`
+                    + ((rotular || n.salto === 0)
+                        ? `<text x="${p.x.toFixed(1)}" y="${(p.y + r + 8).toFixed(1)}">${escapeHtml(curto)}</text>` : '')
+                    + `<title>${escapeHtml(n.nome)}${n.familia ? ' · ' + escapeHtml(n.familia) : ''}</title></g>`);
+            });
+            partes.push('</svg>');
+
+            // Contar SEM silêncio: um grafo que descarta metade dos vizinhos calado
+            // se lê como "é só isso que existe".
+            let legenda = d.truncado
+                ? `${d.nos.length - 1} de ${d.alcancados} vizinhos em até 2 saltos`
+                : `${d.nos.length - 1} vizinhos em até 2 saltos`;
+            if (d.arestas_totais > d.arestas.length)
+                legenda += ` · ${d.arestas.length} das ${d.arestas_totais} ligações`;
+            partes.push(`<div class="legenda">${legenda} · clique num ponto para abrir</div>`);
+            box.innerHTML = partes.join('');
+            box.querySelectorAll('.no').forEach(g => {
+                g.addEventListener('click', () => abrirNota(g.dataset.caminho));
+            });
+        }
 
         // --- aba 3: diagnóstico ---
         async function renderSistema() {
