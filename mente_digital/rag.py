@@ -967,12 +967,16 @@ class VectorStore:
                     telemetry.track("DB", "VectorDB já sincronizado (nada novo).")
                     return
 
-                # remove versões velhas dos arquivos modificados (evita duplicata)
+                # remove versões velhas dos arquivos modificados (evita duplicata).
+                # Só quem JÁ estava no índice remove algo — e contamos, porque essa
+                # contagem é metade do veredito "o índice mudou?" logo abaixo.
+                removidos = 0
                 for path, _ in pendentes:
                     if path in indexado:
                         await asyncio.to_thread(
                             lambda p=path: self._store.delete(where={"source": p})
                         )
+                        removidos += 1
 
                 splits = []
                 for path, mtime in pendentes:
@@ -991,6 +995,28 @@ class VectorStore:
                         )
                     )
 
+                # PENDENTE ETERNO (medido em 2026-08-02): uma nota que não produz
+                # chunk nenhum — arquivo de 0 byte, só frontmatter, só espaço — nunca
+                # é gravada, logo nunca ganha entrada no índice, logo volta a ser
+                # `pendente` no boot seguinte. PARA SEMPRE. Com isso o atalho "nada
+                # novo" acima nunca dispara e o `sync` sempre chegava até aqui e
+                # reconstruía a malha à toa: 2,4 s por sync, 2 syncs por boot, todo
+                # boot. O vault do dono tinha 9 desses (7 notas vazias, 1 átomo de
+                # livro truncado, 1 stub de figura), e apagá-los não resolveria — o
+                # importador de figuras gera mais.
+                #
+                # O conserto NÃO é fingir que o arquivo foi indexado (isso mentiria
+                # para a purga de órfãos e para a próxima comparação de mtime). É
+                # reconhecer que, sem nada gravado E sem nada removido, o índice está
+                # IDÊNTICO ao de antes — e reconstruir a malha sobre um índice
+                # idêntico não pode produzir malha diferente.
+                if not splits and not removidos:
+                    telemetry.track(
+                        "DB",
+                        f"{len(pendentes)} arquivo(s) sem conteúdo indexável "
+                        f"(0 chunks, nada removido) — índice inalterado, malha preservada.",
+                    )
+                    return
                 for i in range(0, len(splits), settings.chroma_batch):
                     await asyncio.to_thread(
                         self._store.add_documents, splits[i : i + settings.chroma_batch]

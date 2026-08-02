@@ -91,8 +91,11 @@
         .janela-btn.sair:hover { background: #E81123; color: #fff; }
 
         /* ========================= sidebar ================================= */
+        /* `top: var(--barra-h)`: na janela nativa os primeiros 42px são a barra de
+           título própria. Com top:0 a lateral passava POR BAIXO dela e o cabeçalho
+           "Conversas" ficava cortado. No navegador a variável é 0 e nada muda. */
         #sidebar {
-            position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 86vw);
+            position: fixed; top: var(--barra-h); left: 0; bottom: 0; width: min(320px, 86vw);
             background: var(--sup); border-right: 1px solid var(--linha);
             transform: translateX(-101%); transition: transform .3s var(--curva);
             z-index: 3000; display: flex; flex-direction: column; padding-top: var(--safe-t);
@@ -108,7 +111,12 @@
         }
         #btn-novo-chat:hover { background: var(--sup3); }
         .hist-label { font-size: .7rem; color: var(--txt2); padding: 8px 14px 4px; letter-spacing: .06em; text-transform: uppercase; }
-        .history-item { padding: 11px 14px; border-radius: 12px; cursor: pointer; transition: background .15s; overflow: hidden; }
+        /* `flex-shrink: 0` NÃO é detalhe: a lista é um flex-column de altura fixa, e
+           item de flex ENCOLHE por padrão. Com 30 conversas dentro, o navegador
+           comprimia todas até os títulos se sobreporem — invisível enquanto o título
+           era de uma linha só, escancarado quando virou duas (2026-08-02). */
+        .history-item { padding: 11px 14px; border-radius: 12px; cursor: pointer;
+                        transition: background .15s; overflow: hidden; flex-shrink: 0; }
         .history-item:hover { background: var(--sup2); }
         .history-item.active { background: var(--acc-fraco); }
         /* Título de conversa em DUAS linhas, não uma. Em uma linha o titulo vinha
