@@ -96,7 +96,13 @@ def instalar(raiz: Path, argumentos: str = "--standby") -> Path:
     destino = caminho_atalho()
     destino.parent.mkdir(parents=True, exist_ok=True)
     conteudo = script_vbs(interpretador(), str(raiz / "app.py"), str(raiz), argumentos)
-    destino.write_text(conteudo, encoding="utf-8")
+    # ⚠ UTF-16, não UTF-8. O Windows Script Host lê `.vbs` como ANSI a menos que
+    # haja BOM de UTF-16 — em UTF-8 os acentos dos comentários chegam como lixo
+    # (visto em 2026-08-02: "MODO ECONOMIA â€” sobe o assistente"). Aqui isso só
+    # sujaria comentário, mas o dia em que uma string acentuada entrar no script
+    # o logon quebra em silêncio, e falha de script de inicialização não aparece
+    # em lugar nenhum que o dono veja. UTF-16 é o formato que o WSH garante.
+    destino.write_bytes(conteudo.encode("utf-16"))
     return destino
 
 

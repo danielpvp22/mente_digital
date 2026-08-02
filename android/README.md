@@ -57,12 +57,36 @@ os mesmos pontinhos do desktop. É o "watcher" pelo avesso: em vez de o PC vigia
 a rede esperando o celular, o **celular avisa o PC** — sem porta extra, sem
 descoberta, sem processo vigiando.
 
-## Os quatro arquivos que importam
+Do outro lado, o PC também dorme **sozinho** depois de 20 min sem uso
+(`mente_digital/standby.py`) e avisa as sessões abertas — então o chip de energia
+aqui vira "Descansando" sem ninguém tocar em nada. Para o servidor já nascer de
+plantão junto com o Windows: `python app.py --instalar-inicio` no PC.
+
+### As utilidades da casca (o menu da bandeja, num telefone sem bandeja)
+
+Aperte **voltar** quando não houver mais para onde voltar dentro da página:
+
+| item | o que faz |
+|---|---|
+| **Modo economia** | Solta os modelos e devolve a máquina — o PC fica livre. Vai para a tela de repouso; acordar é um toque. |
+| **Consolidar agora / Parar** | `/api/idle` — a destilação de fundo, igual ao item da bandeja. |
+| **Recarregar a interface** | Recarrega a SPA sem reiniciar o app. |
+| **Servidor…** | Trocar endereço ou token (antes não havia caminho de volta). |
+| **Sair** | Fecha o app; o servidor fica como está. |
+
+⚠ **O que NÃO está aí, de propósito:** chat, histórico, avançado, tema e o
+próprio chip de energia continuam sendo da SPA. Duplicar aqui um botão que o
+`index.html` já desenha criaria duas verdades sobre o mesmo estado — o erro que
+este app inteiro foi refeito para não cometer.
+
+## Os arquivos que importam
 
 | arquivo | papel |
 |---|---|
-| `MainActivity.kt` | config → boot → WebView. Nada além disso. |
-| `Servidor.kt` | `/api/health` e `/api/energia`, mais os marcos da tela de boot (puros). |
+| `MainActivity.kt` | config → boot → WebView → repouso. Nada além disso. |
+| `Servidor.kt` | `/api/health` e `/api/energia`/`/api/idle`, mais os marcos da tela de boot (puros). |
+| `ui/FolhaUtilidades.kt` | as utilidades da casca, no botão voltar. |
+| `ui/TelaDormindo.kt` | a tela de repouso — o espelho da que o `app.py` mostra. |
 | `PonteAndroid.kt` | `window.MenteAndroid`: abre o microfone nativo e entrega o quadro cru à SPA. |
 | `Gravador.kt` | `AudioRecord` 16 kHz mono, fatiado em **1024 amostras**. |
 
@@ -88,10 +112,11 @@ chamada. Agrupar mudaria o VAD do servidor sem nada falhar.
 .\gradlew.bat :app:testDebugUnitTest
 ```
 
-22 testes puros: os marcos da tela de boot (os mesmos de `tests/test_app_boot.py`),
-a detecção de standby, montagem de endereço, e o **contrato da ponte** — que
-inclui o decodificador JS do `index.html` portado linha a linha, para provar que
-a página remonta exatamente as amostras que o microfone capturou.
+30 testes puros: os marcos da tela de boot (os mesmos de `tests/test_app_boot.py`),
+a detecção de standby, a leitura de `/api/energia`, montagem de endereço, e o
+**contrato da ponte** — que inclui o decodificador JS do `index.html` portado
+linha a linha, para provar que a página remonta exatamente as amostras que o
+microfone capturou.
 
 ## Verificado rodando (emulador Pixel 6, API 35)
 
@@ -103,7 +128,8 @@ VRAM), o modo live abrindo com o orbe, e o microfone nativo alimentando a págin
 
 - **Aparelho físico** e **fala humana** — o emulador não capta áudio, então o
   barge-in e o cancelamento de eco não foram exercitados com voz.
-- **O caminho de standby ao vivo**: a lógica tem teste, mas nunca foi observada
-  acordando um PC realmente descansando.
+- **A folha de utilidades e a tela de repouso RODANDO no aparelho.** O ciclo do
+  lado do servidor (dormir sozinho, avisar a sessão, religar ao enviar) foi
+  medido ao vivo em 2026-08-02, mas pela página do navegador, não pelo app.
 - **Doze**: o serviço em primeiro plano sobe, mas nunca enfrentou a tela apagada
   por horas.

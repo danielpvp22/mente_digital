@@ -77,8 +77,24 @@ def test_instalar_e_remover_num_appdata_de_mentira(monkeypatch, tmp_path):
     assert inicializacao.instalado() is False
     destino = inicializacao.instalar(Path(r"D:\projetos\mente_digital"))
     assert destino.exists() and inicializacao.instalado() is True
-    assert "app.py" in destino.read_text(encoding="utf-8")
+    assert "app.py" in destino.read_text(encoding="utf-16")
 
     assert inicializacao.remover() is True
     assert inicializacao.instalado() is False
     assert inicializacao.remover() is False        # idempotente
+
+
+def test_o_arquivo_sai_em_utf16_com_bom(monkeypatch, tmp_path):
+    """⚠ O Windows Script Host lê `.vbs` como ANSI a menos que haja BOM de
+    UTF-16. Gravado em UTF-8 (o primeiro palpite, e o que estava aqui em
+    2026-08-02), os acentos chegavam como lixo — "MODO ECONOMIA â€” sobe o
+    assistente". Só sujava comentário, mas o dia em que uma string acentuada
+    entrar no script o logon quebra EM SILÊNCIO: falha de script de
+    inicialização não aparece em lugar nenhum que o dono veja."""
+    monkeypatch.setattr(inicializacao.os, "name", "nt")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    destino = inicializacao.instalar(Path(r"D:\projetos\mente_digital"))
+    bruto = destino.read_bytes()
+    assert bruto[:2] == b"\xff\xfe"                       # BOM de UTF-16 LE
+    assert "MODO ECONOMIA" in bruto.decode("utf-16")
