@@ -719,6 +719,33 @@ def _api(base: str, rota: str, acao: str, token: str) -> dict:
         return {}
 
 
+def _acordar_se_dormindo(base: str, token: str) -> bool:
+    """Abrir a janela num servidor de plantão RELIGA os modelos. Devolve se pediu.
+
+    Sem isto, o modo economia criava um beco: com o `--standby` instalado no
+    logon, abrir o app pelo atalho de sempre encontrava a porta ocupada, entrava
+    no caminho "janela num servidor que já existe" e a tela de boot ficava
+    esperando LLM e Whisper que ninguém tinha mandado carregar — até os 150 s do
+    botão de escape. Ninguém abre o assistente para NÃO usá-lo; abrir é o pedido.
+
+    O POST vai para outra thread porque ele só volta com tudo carregado (~30 s), e
+    quem chama aqui é o poller que precisa desenhar a barra nesse meio-tempo."""
+    import urllib.request
+
+    alvo = base.rstrip("/") + "/api/health"
+    try:
+        with urllib.request.urlopen(alvo, timeout=2.5) as r:   # nosec B310 - http(s) fixo
+            corpo = json.loads(r.read().decode("utf-8"))
+    except Exception:                              # noqa: BLE001 - servidor ainda subindo
+        return False
+    if not corpo.get("descansando"):
+        return False
+    print("[APP] o servidor estava de plantão — religando os modelos.", flush=True)
+    threading.Thread(target=_api, args=(base, "/api/energia", "ligar", token),
+                     daemon=True, name="religar").start()
+    return True
+
+
 def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None:
     """Observa a inatividade do DONO e conduz o ciclo de consolidação.
 
@@ -1043,6 +1070,10 @@ def main() -> int:
     def _iniciar_fundo() -> None:
         """Depois do boot: sobe a bandeja e o laço de ociosidade. Encadeado ao
         `_acompanhar_boot` para não competir com o carregamento dos modelos."""
+        # Fora do `--standby` (que vai DORMIR daqui a pouco), abrir a janela num
+        # servidor de plantão significa querer usá-lo. Ver `_acordar_se_dormindo`.
+        if not args.standby:
+            _acordar_se_dormindo(url, settings.access_token)
         _acompanhar_boot(janela, ponte, ler_marcos, alvo_host, alvo_porta)
         # A bandeja sobe ANTES do standby: no `--standby` ela é a única porta de
         # entrada (a janela nasce oculta), então esperar o fim do ciclo para criá-la
