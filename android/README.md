@@ -8,47 +8,93 @@ nativa — não há protocolo próprio, nem "endpoint mobile".
 Plano completo (com `arquivo:linha` de cada afirmação sobre o servidor):
 [`docs/PLANO_APP_ANDROID.md`](../docs/PLANO_APP_ANDROID.md).
 
+---
+
+## Abrir no Android Studio
+
+1. **File → Open** e escolha a pasta **`android/`** (não a raiz do repositório —
+   é aqui que está o `settings.gradle.kts`).
+2. Espere o *Gradle sync*. O Android Studio cria o `local.properties` com o
+   caminho do seu SDK sozinho; ele **não** é versionado de propósito, porque o
+   caminho é da máquina.
+3. **Run ▶**. Não há passo de geração, nem script para rodar antes: os ícones já
+   estão no repositório.
+
+**Requisitos** (o Android Studio instala pelo *SDK Manager* se faltar):
+Android SDK **platform 35** · JDK **21** (o `jbr` embutido no Studio serve).
+
+Versões fixadas e **compiladas de verdade** nesta máquina — não são chute:
+Gradle 9.4.1 · AGP 9.2.1 · Kotlin 2.0.0 · Compose BOM 2024.02.01 · OkHttp 4.12.0
+· compileSdk 35 · minSdk 24.
+
+> ⚠ Com **AGP 9** *não* se aplica o plugin `org.jetbrains.kotlin.android`: ele já
+> vem embutido, e aplicá-lo por fora falha com *"Cannot add extension with name
+> 'kotlin'"*. `kotlinOptions` também deixou de existir.
+
+### Pela linha de comando
+
+```powershell
+cd android
+$env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
+.\gradlew.bat :app:assembleDebug
+```
+
+---
+
+## Testar na prática
+
+1. Abra o Mente Digital no PC (`python app.py`, ou `python main.py` só para o
+   servidor).
+2. Instale e abra o app.
+3. Na tela de configuração, preencha o **endereço** e o **token**
+   (`MENTE_ACCESS_TOKEN` do seu `.env`) e toque em **Testar conexão** — ele bate
+   em `/api/health`, que não tem gate, e mostra quais serviços subiram.
+
+| Onde o app roda | Endereço a usar |
+|---|---|
+| **Emulador** | `http://10.0.2.2:8000` — é como ele enxerga este PC. `localhost` seria o próprio Android. |
+| **Celular na mesma Wi-Fi** | `http://<ip-do-pc>:8000` (o servidor já escuta em `0.0.0.0`) |
+
+Depois é **Salvar e entrar**. O token fica no `EncryptedSharedPreferences` e não
+é pedido de novo.
+
+### Emulador pela linha de comando
+
+```powershell
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd <nome> -no-snapshot
+& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
+```
+
+---
+
 ## O que a Fase 1 entrega
 
-- Tela de configuração: endereço + token, com **testar** batendo em `/api/health`
-  (a única rota sem gate) e mostrando o mapa de serviços prontos.
-- Chat por texto ponta a ponta, com a resposta streamando token a token e as
-  fontes por baixo da bolha.
-- Lista de conversas (`/api/conversas`) e reabertura de uma conversa.
+- Configuração com teste de conexão e mapa de serviços.
+- Chat por texto ponta a ponta, resposta streamando token a token, fontes por
+  baixo da bolha.
+- Lista de conversas (`/api/conversas`) e reabertura de uma conversa — o mesmo
+  histórico do desktop.
 - Reconexão com backoff (1 s × 1,6, teto 15 s), reenviando `set_conversa`.
-- Token em `EncryptedSharedPreferences` — e um aviso na tela se o cofre do
+- Token em `EncryptedSharedPreferences`, com aviso na tela se o cofre do
   aparelho não estiver disponível.
 
 **Não entrega áudio**, e isso não é lacuna: turno digitado é mudo por default no
 servidor (`falar_turno_digitado=False`), então um app só de texto não recebe
 mensagem `audio` nenhuma. Voz é a Fase 2.
 
-## Compilar
+---
 
-Precisa do Android SDK (platform 35) e de um JDK 21 — o do Android Studio serve.
-
-```powershell
-python scripts\gerar_mipmaps.py    # 1x depois de clonar: desenha os ícones
-cd android
-$env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
-.\gradlew.bat :app:assembleDebug
-```
-
-O `local.properties` (caminho do SDK) **não é versionado** — o Android Studio o
-cria ao abrir o projeto, ou escreva à mão:
-`sdk.dir=C\:\\Users\\<voce>\\AppData\\Local\\Android\\Sdk`.
-
-## Testar
+## Testar (código)
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest
 ```
 
-25 testes puros (parser do protocolo, montagem de endereço, backoff) que rodam
-na JVM, sem emulador.
+25 testes puros (parser do protocolo, montagem de endereço, backoff) que rodam na
+JVM, sem emulador.
 
-Mais 4 testes de **conformidade contra o servidor de verdade**, que se pulam
-sozinhos sem as variáveis de ambiente:
+Mais 4 de **conformidade contra o servidor de verdade**, que se pulam sozinhos
+sem as variáveis de ambiente:
 
 ```powershell
 $env:MENTE_BASE="http://127.0.0.1:8000"
@@ -57,23 +103,31 @@ $env:MENTE_TOKEN="<o token do .env>"
 ```
 
 Eles existem porque o servidor **ignora quadro desconhecido em silêncio**
-(ws.py:426-502 não tem `else`): um campo com o nome errado passaria em todo teste
-de unidade e simplesmente não funcionaria. Foi um deles que descobriu que token
-errado devolve **HTTP 403 no handshake**, e não o close 1008 que o plano previa.
+(`ws.py:426-502` não tem `else`): um campo com o nome errado passa em todo teste
+de unidade e simplesmente não funciona. Dois defeitos reais saíram daí — ver
+abaixo.
 
-## O que NÃO foi verificado
+---
 
-⚠ **O app nunca rodou.** Não há imagem de sistema nem AVD nesta máquina, e nenhum
-aparelho conectado — instalar exigiria baixar ~1,5 GB de imagem do emulador. O que
-está provado é: compila (APK de 9,1 MB), os 29 testes passam, e a camada de
-protocolo conversa com o servidor real. A **interface** (Compose) não foi vista
-por olho nenhum.
+## Defeitos que só apareceram RODANDO (e o que ensinaram)
 
-Primeiro passo para provar o resto:
+1. **Token errado devolve HTTP 403, não close 1008.** O gate roda antes do
+   `accept()`, então o uvicorn nem faz o upgrade. O plano dizia 1008; o app que
+   só tratasse isso reconectaria em laço para sempre. Corrigido em
+   `ClienteMente.onFailure`.
+2. **Conversa reabria VAZIA.** Os campos de `/api/conversa/{id}` são `q`/`a`/`t`,
+   e eu havia escrito `pergunta`/`resposta` por dedução. Como `optString`
+   devolve `""` para chave ausente, não havia exceção nem log — só tela em
+   branco. O teste de integração passava porque só checava que a chamada era
+   *aceita*: **teste de integração que não olha o conteúdo prova só que o
+   servidor atendeu o telefone.**
+3. **A barra do app ficava por baixo da barra de status.** Com `targetSdk 35` o
+   Android 15 força *edge-to-edge*, e sem `statusBarsPadding()` os botões do topo
+   não recebiam toque nenhum.
 
-```powershell
-adb install app\build\outputs\apk\debug\app-debug.apk
-```
+## O que ainda não foi verificado
 
-No emulador o endereço do PC é `http://10.0.2.2:8000`; num aparelho na LAN, o IP
-da máquina.
+- Aparelho **físico** (só emulador Pixel 6, API 35).
+- **Reconexão** de verdade (derrubar o servidor no meio e ver o backoff agir).
+- Tema **escuro** — o app segue o do sistema, e o emulador estava no claro.
+- Push `proativo` chegando com o app aberto.

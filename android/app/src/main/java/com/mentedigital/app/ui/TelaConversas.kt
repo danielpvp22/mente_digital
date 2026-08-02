@@ -25,7 +25,11 @@ import com.mentedigital.app.ChatViewModel
 fun TelaConversas(vm: ChatViewModel, aoVoltar: () -> Unit) {
     LaunchedEffect(Unit) { vm.carregarConversas() }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // Ver o comentário em TelaChat: targetSdk 35 força edge-to-edge no Android 15.
+    Column(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding().navigationBarsPadding()
+    ) {
         Row(
             Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 12.dp, vertical = 10.dp),

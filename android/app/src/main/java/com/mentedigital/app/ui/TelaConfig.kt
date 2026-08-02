@@ -36,6 +36,7 @@ fun TelaConfig(vm: ChatViewModel, aoConcluir: () -> Unit) {
 
     Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding().navigationBarsPadding().imePadding()
             .verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -49,6 +50,10 @@ fun TelaConfig(vm: ChatViewModel, aoConcluir: () -> Unit) {
             value = base, onValueChange = { base = it; resultado = null },
             label = { Text("Endereço do servidor") },
             placeholder = { Text("192.168.0.10:8000") },
+            // A dica existe porque é o erro nº 1 de quem testa no emulador: lá
+            // `localhost` é o PRÓPRIO Android, não o PC. Sem ela o teste falha
+            // com "servidor inalcançável" e a causa parece ser o app.
+            supportingText = { Text("No emulador use 10.0.2.2 — é como ele enxerga este PC.") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(

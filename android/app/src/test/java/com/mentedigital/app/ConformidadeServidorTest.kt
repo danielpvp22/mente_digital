@@ -44,19 +44,36 @@ class ConformidadeServidorTest {
     }
 
     @Test
-    fun `conversas exigem o token no HEADER`() {
+    fun `conversas exigem o token no HEADER e os CAMPOS casam`() {
         assumeTrue("sem MENTE_BASE — teste de integração pulado", !base.isNullOrBlank())
         assumeTrue("servidor sem token configurado", token.isNotBlank())
-        // Com o token certo, no header `X-Mente-Token` (main.py:243). Não asserto
-        // que a lista tem itens — um vault sem conversas é estado legítimo; o que
-        // se prova aqui é que a chamada é ACEITA.
-        val comToken = ApiMente { Conf(base!!, token) }.conversas()
-        // E sem token: o gate recusa, e a camada devolve lista vazia em vez de
-        // estourar. Se este assert falhar com o token errado ACEITO, o gate está
-        // aberto — que é bem mais grave que a tela vazia.
-        val semToken = ApiMente { Conf(base!!, "errado") }.conversas()
-        assertTrue("o servidor aceitou um token errado em /api/conversas", semToken.isEmpty())
-        assertTrue("chamada com token válido falhou (veio ${comToken.size})", comToken.size >= 0)
+
+        // Sem token: o gate recusa e a camada devolve vazio em vez de estourar.
+        // Se este assert cair com o token errado ACEITO, o gate está aberto — o
+        // que é bem mais grave que uma tela vazia.
+        assertTrue("o servidor aceitou um token errado em /api/conversas",
+            ApiMente { Conf(base!!, "errado") }.conversas().isEmpty())
+
+        val api = ApiMente { Conf(base!!, token) }
+        val convs = api.conversas()
+        assumeTrue("servidor sem histórico — nada a validar", convs.isNotEmpty())
+
+        // ⚠ A VERSÃO ANTERIOR DESTE TESTE SÓ CHECAVA QUE A CHAMADA ERA ACEITA, e
+        // por isso passou verde enquanto o app reabria toda conversa VAZIA: os
+        // campos são `q`/`a`/`t` e eu havia escrito `pergunta`/`resposta`. Como
+        // `optString` devolve "" para chave ausente, não havia exceção nem log —
+        // só telas em branco. Quem pegou foi abrir a tela no emulador.
+        //
+        // Um teste de integração que não olha o CONTEÚDO não prova conformidade,
+        // prova só que o servidor atendeu o telefone.
+        assertTrue("conversa sem id: ${convs.first()}", convs.first().id.isNotBlank())
+        assertTrue("conversa sem título: ${convs.first()}", convs.first().titulo.isNotBlank())
+
+        val turnos = convs.asSequence().map { api.conversa(it.id) }.firstOrNull { it.isNotEmpty() }
+        assertTrue("nenhuma conversa devolveu turnos — os nomes dos campos mudaram?",
+            turnos != null)
+        assertTrue("turno com pergunta E resposta vazias: ${turnos!!.first()}",
+            turnos.first().pergunta.isNotBlank() || turnos.first().resposta.isNotBlank())
     }
 
     @Test

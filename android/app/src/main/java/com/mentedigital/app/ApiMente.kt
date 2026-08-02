@@ -74,12 +74,17 @@ class ApiMente(private val conf: () -> Conf) {
         } catch (e: Exception) {
             return emptyList()
         }
+        // ⚠ NOMES MEDIDOS contra o servidor, não supostos (2026-08-02):
+        //     /api/conversas      -> {"id", "titulo", "fim", "n"}
+        // Eu tinha escrito "conversa_id"/"timestamp" por dedução, e o
+        // `optString` devolve "" para chave ausente — ou seja, a tela ficava
+        // sem data e ninguém via erro nenhum.
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { o ->
                 Conversa(
-                    id = o.optString("conversa_id").ifEmpty { o.optString("id") },
-                    titulo = o.optString("titulo").ifEmpty { o.optString("pergunta") },
-                    quando = o.optString("timestamp").ifEmpty { o.optString("data") },
+                    id = o.optString("id"),
+                    titulo = o.optString("titulo"),
+                    quando = o.optString("fim").take(16).replace("T", " "),
                 )
             }
         }.filter { it.id.isNotEmpty() }
@@ -93,8 +98,13 @@ class ApiMente(private val conf: () -> Conf) {
         } catch (e: Exception) {
             return emptyList()
         }
+        // ⚠ O DEFEITO QUE A TELA PEGOU: os campos são `q`/`a`/`t`, não
+        //     `pergunta`/`resposta`. Com os nomes errados, `optString` devolvia
+        //     "" para os dois, a conversa reabria VAZIA e nada falhava — nem
+        //     exceção, nem log. Foi preciso abrir uma conversa no emulador para
+        //     ver. Medido: {"q": "...", "a": "...", "t": "2026-08-02T17:18:55"}.
         return (0 until arr.length()).mapNotNull { i ->
-            arr.optJSONObject(i)?.let { Turno(it.optString("pergunta"), it.optString("resposta")) }
+            arr.optJSONObject(i)?.let { Turno(it.optString("q"), it.optString("a")) }
         }
     }
 

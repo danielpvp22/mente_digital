@@ -30,7 +30,15 @@ fun TelaChat(vm: ChatViewModel, aoAbrirConversas: () -> Unit, aoAbrirConfig: () 
         if (vm.bolhas.isNotEmpty()) lista.animateScrollToItem(vm.bolhas.lastIndex)
     }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // ⚠ `statusBarsPadding()` NÃO é enfeite: com `targetSdk = 35` o Android 15
+    // FORÇA edge-to-edge, e sem isto a barra do app fica POR BAIXO da barra de
+    // status — o relógio some e os botões do topo não recebem toque nenhum.
+    // Visto no emulador (API 35) em 2026-08-02: "Conversas" simplesmente não
+    // respondia, porque o toque ia para a barra do sistema.
+    Column(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+    ) {
         BarraTopo(vm, aoAbrirConversas, aoAbrirConfig)
 
         if (vm.status.isNotEmpty()) {

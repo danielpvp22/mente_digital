@@ -145,7 +145,10 @@ android/build/
 android/app/build/
 android/.idea/
 android/*.iml
-# Os mipmaps são DESENHADOS por mente_digital/marca.py (scripts/gerar_mipmaps.py):
-# mesma razão do .ico do desktop — o desenho é o código, o PNG é artefato, e um
-# binário commitado é a primeira coisa a divergir da paleta.
-android/app/src/main/res/mipmap-*/
+android/.kotlin/
+# ⚠ Os mipmaps SÃO versionados, ao contrário do .ico do desktop — e a exceção é
+# deliberada. Lá o Python gera o ícone na subida do próprio app; aqui quem compila
+# é o GRADLE, que não roda Python. Deixá-los fora do git faria o projeto falhar no
+# primeiro build depois de clonar, com um "resource not found" que não diz o que
+# fazer. Continuam GERADOS por scripts/gerar_mipmaps.py (a fonte é marca.py);
+# rode-o de novo se a marca mudar.
