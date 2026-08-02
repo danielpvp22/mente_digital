@@ -97,19 +97,39 @@ async def _boot(ctx: AppContext) -> None:
     # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
     # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
     # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
+    # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
+    # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
+    # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
+    # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
+    preguicoso = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
     if settings.boot_paralelo:
         await asyncio.to_thread(_preimportar_arvores)
+        # O XTTS SAI NA FRENTE. Perfilado em 2026-08-02: ele é a tarefa mais LONGA
+        # do boot (11,9 s de CPU com o torch já importado) e era despachada por
+        # ÚLTIMO — então o "pronto" esperava por ela sozinha, depois de todo o resto
+        # ter acabado. Malha e sync, que pareciam o gargalo, custam 2,49 s + 4,12 s e
+        # terminam bem antes; e eles NÃO podem sair na frente, porque `open()` recusa
+        # sem embeddings (rag.py:807), `reconstruir_malha` sem store (rag.py:875) e
+        # `sync` idem (rag.py:898) — corrente dura. Quem podia adiantar era o XTTS,
+        # que não depende de nada disso.
+        #
+        # ⚠ É a MESMA ordem que causou o bug de 2026-07-29 (`KeyError:
+        # 'mpmath.functions.orthogonal'` — app "saudável" e SEM RAG NENHUM, com um
+        # WARN de pista). A diferença que a torna segura está uma linha acima: o
+        # `_preimportar_arvores` JÁ rodou, então `transformers/torch/sympy/mpmath`
+        # estão inteiros em `sys.modules` e as duas threads não disputam import.
+        # É literalmente a régua escrita no docstring daquela função.
+        # Como a falha era SILENCIOSA, o teste é o log: `[MALHA] Índice de conceitos`
+        # tem de aparecer com ~16.475 conceitos.
+        if preguicoso and settings.tts_preparar_ram_no_boot:
+            telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
+            ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
         await asyncio.gather(
             asyncio.to_thread(ctx.stt.load),
             asyncio.to_thread(ctx.vectorstore.load_embeddings),
         )
     else:
         await asyncio.to_thread(ctx.stt.load)
-    # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
-    # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
-    # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
-    # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
-    preguicoso = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
     if not preguicoso:
         await asyncio.to_thread(ctx.tts.load)
     # RAG: embeddings (singleton, já carregados acima no caminho paralelo) -> abre o
@@ -138,12 +158,14 @@ async def _boot(ctx: AppContext) -> None:
     # metade por outra thread. Como o load_embeddings é AWAITADO, depois dele a árvore
     # pesada já está inteira em `sys.modules` e o import do XTTS não disputa nada.
     # O sintoma era traiçoeiro: fail-soft, app "saudável" e SEM RAG, só com um WARN.
-    if preguicoso and settings.tts_preparar_ram_no_boot:
+    if preguicoso and settings.tts_preparar_ram_no_boot and not settings.boot_paralelo:
         # Em segundo plano: monta o modelo em RAM (as 19,3s de CPU medidas) para que o
         # microfone só pague o ~1s do device. Sem isto a 1ª fala espera o load inteiro.
+        # Com `boot_paralelo` ele JÁ foi despachado lá em cima, na frente de tudo —
+        # aqui é só o caminho serial, que não tem o pré-import a proteger a ordem.
         telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
         ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
-    elif preguicoso:
+    elif preguicoso and not settings.tts_preparar_ram_no_boot:
         telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
 
 
