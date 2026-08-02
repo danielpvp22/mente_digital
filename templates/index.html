@@ -1014,15 +1014,84 @@
                 if (source) source.disconnect();
                 if (streamGlobal) streamGlobal.getTracks().forEach(t => t.stop());
                 if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+                if (window.MenteAndroid) window.MenteAndroid.pararMicrofone();
             } catch (e) { console.warn("teardown de áudio", e); }
             processor = source = streamGlobal = audioCtx = null;
             if (enviarFim) wsEnviar({ tipo: "end_session" });
         }
 
+        // ---------- captura de microfone: UMA lógica, DUAS origens ----------
+        // F5 (barge-in só do dono, Tier 1): só interrompe o narrador com voz ALTA
+        // e SUSTENTADA. Limiar maior (0.08 -> 0.12) descarta ruído/voz de fundo mais
+        // baixa; exigir BARGE_FRAMES seguidos ("mais uma chance") descarta estalos
+        // curtos. NÃO distingue a SUA voz de outra igualmente alta/perto — isso é o
+        // Tier 2 (speaker-ID), adiado. (~64ms/frame @16kHz -> 4 frames ≈ 250ms.)
+        const BARGE_RMS = 0.12, BARGE_FRAMES = 4;
+        let bargeFrames = 0;
+
+        // Um quadro de 1024 amostras, normalizado em -1..1. Vem do
+        // `ScriptProcessor` no navegador e da PONTE NATIVA no app Android — e é
+        // processado pelo MESMO código nos dois casos, de propósito: duplicar o
+        // barge-in daria duas noções de "voz alta" com o mesmo nome, que
+        // envelheceriam separadas.
+        function processarQuadroMic(inputData) {
+            if (!isLiveMode) return;
+            let sum = 0; for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
+            const avg = sum / inputData.length;
+
+            // O orbe respira com a SUA voz enquanto ouve. É o mesmo número já
+            // calculado para o barge-in — custo zero, e transforma a animação
+            // decorativa em resposta real ao microfone.
+            if (!iaFalando) {
+                const orbEl = document.getElementById('live-orb');
+                if (orbEl) orbEl.style.setProperty('--nivel', Math.min(1, avg * 9).toFixed(2));
+            }
+
+            if (iaFalando) {                          // barge-in gateado (F5)
+                bargeFrames = avg > BARGE_RMS ? bargeFrames + 1 : 0;
+                if (bargeFrames >= BARGE_FRAMES) {
+                    bargeFrames = 0;
+                    audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+                    iaFalando = false; atualizarEstadoOrb('listening');
+                    wsEnviar({ tipo: "barge_in" });
+                }
+            } else {
+                bargeFrames = 0;
+                if (wsAberto() && !microfoneMudo) {
+                    const pcm16 = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+                    ws.send(pcm16.buffer);
+                }
+            }
+        }
+
+        // A ponte do app Android chama isto com UM quadro de 1024 amostras em
+        // base64 (PCM16 little-endian), na mesma cadência de 64 ms do
+        // ScriptProcessor. Existe porque `getUserMedia` exige contexto seguro e o
+        // servidor sobe em HTTP — no app nativo quem grava é o `AudioRecord`, que
+        // só depende da permissão RECORD_AUDIO. Mesmo padrão do `window.pywebview`
+        // que a barra de título já usa: uma casca, uma capacidade.
+        window.__micAndroid = function (b64) {
+            try {
+                const bin = atob(b64);
+                const n = bin.length >> 1;
+                const f = new Float32Array(n);
+                for (let i = 0; i < n; i++) {
+                    let v = (bin.charCodeAt(i * 2 + 1) << 8) | bin.charCodeAt(i * 2);
+                    if (v >= 0x8000) v -= 0x10000;      // int16 com sinal
+                    f[i] = v / 32768;
+                }
+                processarQuadroMic(f);
+            } catch (e) { console.warn("quadro do microfone nativo ilegível", e); }
+        };
+
         async function toggleLiveMode() {
             if (isLiveMode) { encerrarLiveMode(false); return; }
 
-            if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            // `window.MenteAndroid` dispensa o contexto seguro: no app nativo quem
+            // grava é o AudioRecord (permissão RECORD_AUDIO), não o getUserMedia.
+            if (!window.MenteAndroid && !window.isSecureContext
+                && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                 toast("Voz precisa de HTTPS fora do localhost. Use o chat por texto no celular.");
                 return;
             }
@@ -1039,51 +1108,23 @@
             atualizarEstadoOrb('listening');
 
             try {
+                if (window.MenteAndroid) {
+                    // App Android: quem grava é o AudioRecord nativo, que chama
+                    // `window.__micAndroid` a cada quadro de 1024 amostras. O
+                    // resto (RMS, barge-in, envio) é o MESMO código do navegador.
+                    if (!window.MenteAndroid.iniciarMicrofone()) {
+                        toast("Microfone não autorizado.");
+                        encerrarLiveMode(false);
+                    }
+                    return;
+                }
                 streamGlobal = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } });
                 audioCtx = new AudioContext({ sampleRate: 16000 });
                 source = audioCtx.createMediaStreamSource(streamGlobal);
                 gainNode = audioCtx.createGain(); gainNode.gain.value = 0;
                 processor = audioCtx.createScriptProcessor(1024, 1, 1);
                 source.connect(processor); processor.connect(gainNode); gainNode.connect(audioCtx.destination);
-
-                const orbEl = document.getElementById('live-orb');
-
-                // F5 (barge-in só do dono, Tier 1): só interrompe o narrador com voz ALTA
-                // e SUSTENTADA. Limiar maior (0.08 -> 0.12) descarta ruído/voz de fundo mais
-                // baixa; exigir BARGE_FRAMES seguidos ("mais uma chance") descarta estalos
-                // curtos. NÃO distingue a SUA voz de outra igualmente alta/perto — isso é o
-                // Tier 2 (speaker-ID), adiado. Ajuste os dois números conforme o seu ambiente
-                // (~64ms/frame @16kHz -> 4 frames ≈ 250ms de fala contínua).
-                const BARGE_RMS = 0.12, BARGE_FRAMES = 4;
-                let bargeFrames = 0;
-                processor.onaudioprocess = function (e) {
-                    if (!isLiveMode) return;
-                    const inputData = e.inputBuffer.getChannelData(0);
-                    let sum = 0; for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
-                    let avg = sum / inputData.length;
-
-                    // O orbe respira com a SUA voz enquanto ouve. É o mesmo número já
-                    // calculado para o barge-in — custo zero, e transforma a animação
-                    // decorativa em resposta real ao microfone.
-                    if (!iaFalando) orbEl.style.setProperty('--nivel', Math.min(1, avg * 9).toFixed(2));
-
-                    if (iaFalando) {                          // barge-in gateado (F5)
-                        bargeFrames = avg > BARGE_RMS ? bargeFrames + 1 : 0;
-                        if (bargeFrames >= BARGE_FRAMES) {
-                            bargeFrames = 0;
-                            audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-                            iaFalando = false; atualizarEstadoOrb('listening');
-                            wsEnviar({ tipo: "barge_in" });
-                        }
-                    } else {
-                        bargeFrames = 0;
-                        if (wsAberto() && !microfoneMudo) {
-                            const pcm16 = new Int16Array(inputData.length);
-                            for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
-                            ws.send(pcm16.buffer);
-                        }
-                    }
-                };
+                processor.onaudioprocess = e => processarQuadroMic(e.inputBuffer.getChannelData(0));
             } catch (err) {
                 toast("Microfone não autorizado.");
                 encerrarLiveMode(false);

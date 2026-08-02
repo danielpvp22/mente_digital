@@ -2,11 +2,17 @@ package com.mentedigital.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
 
 // A MESMA paleta do index.html e da casca desktop — o app é a quarta casca da
 // mesma interface, não um produto com identidade própria.
@@ -62,3 +68,23 @@ fun TemaMenteDigital(escuro: Boolean = true, conteudo: @Composable () -> Unit) {
 /** O tema do sistema, para quando o app oferecer a escolha ao dono. */
 @Composable
 fun sistemaPrefereEscuro(): Boolean = isSystemInDarkTheme()
+
+/**
+ * O wordmark: "MENTE" em texto normal, "DIGITAL" preenchido pelo degradê — o
+ * mesmo da barra de título do PC e da tela de boot.
+ *
+ * Vive aqui, e não numa tela, porque só as duas telas NATIVAS (configuração e
+ * boot) o desenham. Dentro do app quem desenha tudo é a SPA.
+ */
+@Composable
+fun Wordmark(tamanho: Int = 12) {
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onBackground)) { append("MENTE") }
+            withStyle(SpanStyle(brush = Degrade)) { append("DIGITAL") }
+        },
+        fontSize = tamanho.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 2.2.sp,
+    )
+}

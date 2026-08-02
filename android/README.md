@@ -1,37 +1,34 @@
-# Mente Digital — cliente Android (Fase 1)
+# Mente Digital — app Android
 
-Cliente **magro** do mesmo servidor de sempre. Nenhum modelo roda no telefone: o
-vault tem ~27 GB e o LLM é um Qwen3 local na 3080. O app fala o **mesmo**
-WebSocket `/ws/chat_live` e as mesmas rotas `/api` que o navegador e a janela
-nativa — não há protocolo próprio, nem "endpoint mobile".
+**Um clone do `app.py`.** Mesma anatomia, na mesma ordem: uma tela de boot nativa
+com progresso real, e depois a **mesma SPA** (`templates/index.html`) num WebView.
 
-Plano completo (com `arquivo:linha` de cada afirmação sobre o servidor):
-[`docs/PLANO_APP_ANDROID.md`](../docs/PLANO_APP_ANDROID.md).
+Este app **não desenha interface nenhuma**. Foi a correção de rumo de
+2026-08-02: a primeira versão recriou o chat em Compose e nunca ficaria igual —
+porque era outra coisa. O `index.html` diz no próprio comentário que serve TRÊS
+cascas (aba de navegador, janela nativa, container) e que é *"a base do port
+Android"*. A casca aqui é isto: uma janela, uma tela de boot e uma ponte.
 
----
+O que vem de graça por ser o mesmo arquivo: barra lateral de conversas, chips de
+VRAM/RAM, "Consolidar", painel avançado (fontes, navegador do vault com filtros,
+grafo da malha), palavra-mestre, modo live com o orbe, tema claro/escuro — e
+tudo o que for construído amanhã, sem tocar em Kotlin.
 
 ## Abrir no Android Studio
 
-1. **File → Open** e escolha a pasta **`android/`** (não a raiz do repositório —
-   é aqui que está o `settings.gradle.kts`).
-2. Espere o *Gradle sync*. O Android Studio cria o `local.properties` com o
-   caminho do seu SDK sozinho; ele **não** é versionado de propósito, porque o
-   caminho é da máquina.
-3. **Run ▶**. Não há passo de geração, nem script para rodar antes: os ícones já
-   estão no repositório.
+1. **File → Open** na pasta **`android/`** (não na raiz — o `settings.gradle.kts`
+   está aqui).
+2. Espere o *Gradle sync*. O `local.properties` é criado pelo Studio; não é
+   versionado, porque o caminho do SDK é da máquina.
+3. **Run ▶**. Não há passo de geração.
 
-**Requisitos** (o Android Studio instala pelo *SDK Manager* se faltar):
-Android SDK **platform 35** · JDK **21** (o `jbr` embutido no Studio serve).
+Requisitos: Android SDK **platform 35** e JDK **21** (o `jbr` do Studio serve).
+Versões fixadas e compiladas de verdade: Gradle 9.4.1 · AGP 9.2.1 · Kotlin 2.0.0
+· Compose BOM 2024.02.01 · OkHttp 4.12.0 · compileSdk 35 · minSdk 24.
 
-Versões fixadas e **compiladas de verdade** nesta máquina — não são chute:
-Gradle 9.4.1 · AGP 9.2.1 · Kotlin 2.0.0 · Compose BOM 2024.02.01 · OkHttp 4.12.0
-· compileSdk 35 · minSdk 24.
-
-> ⚠ Com **AGP 9** *não* se aplica o plugin `org.jetbrains.kotlin.android`: ele já
-> vem embutido, e aplicá-lo por fora falha com *"Cannot add extension with name
-> 'kotlin'"*. `kotlinOptions` também deixou de existir.
-
-### Pela linha de comando
+> ⚠ Com **AGP 9** não se aplica `org.jetbrains.kotlin.android` — já vem
+> embutido, e aplicá-lo por fora falha com *"Cannot add extension with name
+> 'kotlin'"*. `kotlinOptions` some junto.
 
 ```powershell
 cd android
@@ -39,95 +36,74 @@ $env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
 .\gradlew.bat :app:assembleDebug
 ```
 
----
+## Usar
 
-## Testar na prática
+Com o Mente Digital aberto no PC, na tela de configuração:
 
-1. Abra o Mente Digital no PC (`python app.py`, ou `python main.py` só para o
-   servidor).
-2. Instale e abra o app.
-3. Na tela de configuração, preencha o **endereço** e o **token**
-   (`MENTE_ACCESS_TOKEN` do seu `.env`) e toque em **Testar conexão** — ele bate
-   em `/api/health`, que não tem gate, e mostra quais serviços subiram.
-
-| Onde o app roda | Endereço a usar |
+| Onde o app roda | Endereço |
 |---|---|
-| **Emulador** | `http://10.0.2.2:8000` — é como ele enxerga este PC. `localhost` seria o próprio Android. |
-| **Celular na mesma Wi-Fi** | `http://<ip-do-pc>:8000` (o servidor já escuta em `0.0.0.0`) |
+| **Emulador** | `http://10.0.2.2:8000` — é como ele enxerga o PC |
+| **Celular na Wi-Fi** | `http://<ip-do-pc>:8000` (o servidor escuta em `0.0.0.0`) |
 
-Depois é **Salvar e entrar**. O token fica no `EncryptedSharedPreferences` e não
-é pedido de novo.
+O token é o `MENTE_ACCESS_TOKEN` do `.env`. **Testar conexão** bate em
+`/api/health` (única rota sem gate) e mostra os serviços — é o que separa
+"servidor inalcançável" de "token errado".
 
-### Emulador pela linha de comando
+### O PC em standby
 
-```powershell
-& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd <nome> -no-snapshot
-& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
-```
+Se o servidor responder com os modelos soltos, o app manda
+`/api/energia {ligar}` e a espera acontece na tela de boot, com o mesmo anel e
+os mesmos pontinhos do desktop. É o "watcher" pelo avesso: em vez de o PC vigiar
+a rede esperando o celular, o **celular avisa o PC** — sem porta extra, sem
+descoberta, sem processo vigiando.
 
----
+## Os quatro arquivos que importam
 
-## O que a Fase 1 entrega
+| arquivo | papel |
+|---|---|
+| `MainActivity.kt` | config → boot → WebView. Nada além disso. |
+| `Servidor.kt` | `/api/health` e `/api/energia`, mais os marcos da tela de boot (puros). |
+| `PonteAndroid.kt` | `window.MenteAndroid`: abre o microfone nativo e entrega o quadro cru à SPA. |
+| `Gravador.kt` | `AudioRecord` 16 kHz mono, fatiado em **1024 amostras**. |
 
-- Configuração com teste de conexão e mapa de serviços.
-- Chat por texto ponta a ponta, resposta streamando token a token, fontes por
-  baixo da bolha.
-- Lista de conversas (`/api/conversas`) e reabertura de uma conversa — o mesmo
-  histórico do desktop.
-- Reconexão com backoff (1 s × 1,6, teto 15 s), reenviando `set_conversa`.
-- Token em `EncryptedSharedPreferences`, com aviso na tela se o cofre do
-  aparelho não estiver disponível.
+### Por que existe uma ponte de microfone
 
-**Não entrega áudio**, e isso não é lacuna: turno digitado é mudo por default no
-servidor (`falar_turno_digitado=False`), então um app só de texto não recebe
-mensagem `audio` nenhuma. Voz é a Fase 2.
+`getUserMedia` só funciona em contexto seguro e o servidor sobe em HTTP — a
+própria SPA barra o botão de voz por isso (`index.html:1025`). No app nativo a
+restrição não vale: quem grava é o `AudioRecord`, que só depende de
+`RECORD_AUDIO`.
 
----
+⚠ **A ponte entrega só o quadro cru.** RMS, barge-in, mudo e envio continuam
+sendo o mesmo JavaScript que o navegador e a janela do PC rodam
+(`processarQuadroMic`). Reimplementar isso em Kotlin daria duas noções de "voz
+alta" com o mesmo nome, envelhecendo separadas.
 
-## Testar (código)
+⚠ **Um quadro por chamada, nunca um lote.** `vad_min_frames` no servidor conta
+MENSAGENS do WebSocket (`ws.py:379, 393-394`), e a página faz um `ws.send` por
+chamada. Agrupar mudaria o VAD do servidor sem nada falhar.
+
+## Testar
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest
 ```
 
-25 testes puros (parser do protocolo, montagem de endereço, backoff) que rodam na
-JVM, sem emulador.
+22 testes puros: os marcos da tela de boot (os mesmos de `tests/test_app_boot.py`),
+a detecção de standby, montagem de endereço, e o **contrato da ponte** — que
+inclui o decodificador JS do `index.html` portado linha a linha, para provar que
+a página remonta exatamente as amostras que o microfone capturou.
 
-Mais 4 de **conformidade contra o servidor de verdade**, que se pulam sozinhos
-sem as variáveis de ambiente:
+## Verificado rodando (emulador Pixel 6, API 35)
 
-```powershell
-$env:MENTE_BASE="http://127.0.0.1:8000"
-$env:MENTE_TOKEN="<o token do .env>"
-.\gradlew.bat :app:testDebugUnitTest --tests "*ConformidadeServidorTest*"
-```
+Tela de configuração, boot, a SPA idêntica ao desktop ("Olá", cards, chips de
+VRAM), o modo live abrindo com o orbe, e o microfone nativo alimentando a página
+(`microfone aberto pela SPA` + `16000Hz mono PCM16, quadros de 1024 amostras`).
 
-Eles existem porque o servidor **ignora quadro desconhecido em silêncio**
-(`ws.py:426-502` não tem `else`): um campo com o nome errado passa em todo teste
-de unidade e simplesmente não funciona. Dois defeitos reais saíram daí — ver
-abaixo.
+## Ainda NÃO verificado
 
----
-
-## Defeitos que só apareceram RODANDO (e o que ensinaram)
-
-1. **Token errado devolve HTTP 403, não close 1008.** O gate roda antes do
-   `accept()`, então o uvicorn nem faz o upgrade. O plano dizia 1008; o app que
-   só tratasse isso reconectaria em laço para sempre. Corrigido em
-   `ClienteMente.onFailure`.
-2. **Conversa reabria VAZIA.** Os campos de `/api/conversa/{id}` são `q`/`a`/`t`,
-   e eu havia escrito `pergunta`/`resposta` por dedução. Como `optString`
-   devolve `""` para chave ausente, não havia exceção nem log — só tela em
-   branco. O teste de integração passava porque só checava que a chamada era
-   *aceita*: **teste de integração que não olha o conteúdo prova só que o
-   servidor atendeu o telefone.**
-3. **A barra do app ficava por baixo da barra de status.** Com `targetSdk 35` o
-   Android 15 força *edge-to-edge*, e sem `statusBarsPadding()` os botões do topo
-   não recebiam toque nenhum.
-
-## O que ainda não foi verificado
-
-- Aparelho **físico** (só emulador Pixel 6, API 35).
-- **Reconexão** de verdade (derrubar o servidor no meio e ver o backoff agir).
-- Tema **escuro** — o app segue o do sistema, e o emulador estava no claro.
-- Push `proativo` chegando com o app aberto.
+- **Aparelho físico** e **fala humana** — o emulador não capta áudio, então o
+  barge-in e o cancelamento de eco não foram exercitados com voz.
+- **O caminho de standby ao vivo**: a lógica tem teste, mas nunca foi observada
+  acordando um PC realmente descansando.
+- **Doze**: o serviço em primeiro plano sobe, mas nunca enfrentou a tela apagada
+  por horas.
