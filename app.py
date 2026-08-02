@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 # O relógio do boot começa AQUI, na primeira linha executável do processo — antes
 # dos imports pesados, do uvicorn e da janela. É a melhor aproximação que o próprio
@@ -171,12 +172,21 @@ class Ponte:
         # SEGUNDOS_ATE_OFERECER_SAIDA). Lido pelo poller, que roda noutra thread —
         # atribuição de bool em CPython é atômica, não precisa de lock.
         self._entrada_forcada = False
+        # Modo `--standby`: o poller PARA aqui depois de mandar o servidor dormir, e
+        # só segue quando alguém pede para acordar (botão da tela ou "Abrir" na
+        # bandeja). Event e não bool porque a espera é longa e ociosa — um sleep em
+        # laço acordaria a CPU a cada tique por horas, exatamente o oposto do que o
+        # modo economia existe para fazer.
+        self._acordar = threading.Event()
 
     # Todo MÉTODO público daqui vira função no `window.pywebview.api` — então só
     # entram os que o front realmente chama. O Python lê `_janela`/`_entrada_forcada`
     # direto (mesmo módulo), sem precisar de setter exposto ao JS.
     def forcar_entrada(self) -> None:
         self._entrada_forcada = True
+
+    def acordar(self) -> None:
+        self._acordar.set()
 
     def minimizar(self) -> None:
         if self._janela:
@@ -324,13 +334,20 @@ body.saindo{opacity:0;transition:opacity .32s ease}
 @keyframes pulsa{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
 
 /* Escape da degradação graciosa: aparece só se um serviço não subir no tempo. */
-#escape{display:none;flex-direction:column;align-items:center;gap:10px;
+#escape,#dormindo{display:none;flex-direction:column;align-items:center;gap:10px;
   animation:entrar .4s ease}
-#escape.on{display:flex}
-#escape p{font-size:.78rem;color:var(--txt2);text-align:center;max-width:400px;line-height:1.5}
-#escape button{background:none;border:1px solid var(--linha);color:var(--txt);
+#escape.on,#dormindo.on{display:flex}
+#escape p,#dormindo p{font-size:.78rem;color:var(--txt2);text-align:center;max-width:400px;line-height:1.5}
+#escape button,#dormindo button{background:none;border:1px solid var(--linha);color:var(--txt);
   padding:9px 20px;border-radius:22px;font-size:.82rem;cursor:pointer;transition:.18s}
-#escape button:hover{background:color-mix(in srgb, var(--txt) 10%, transparent);border-color:var(--acc)}
+#escape button:hover,#dormindo button:hover{background:color-mix(in srgb, var(--txt) 10%, transparent);border-color:var(--acc)}
+/* Modo economia: o anel apaga em vez de sumir — a janela continua sendo a mesma
+   coisa, só que em repouso. Esconder tudo daria a impressão de app fechado. */
+body.dormindo #anel,body.dormindo #trilho,body.dormindo #servicos{opacity:.22;
+  transition:opacity .4s ease}
+body.dormindo #anel{animation:none}
+#dormindo button.destaque{border-color:var(--acc);color:var(--txt);
+  background:color-mix(in srgb, var(--acc) 14%, transparent)}
 
 #rodape{position:absolute;bottom:14px;left:0;right:0;text-align:center;
   font-size:.68rem;color:var(--txt2);opacity:.55}
@@ -365,6 +382,11 @@ body.saindo{opacity:0;transition:opacity .32s ease}
   <div id="escape">
     <p id="escape-txt"></p>
     <button onclick="forcar()">Entrar assim mesmo</button>
+  </div>
+  <!-- Modo economia (`--standby`): o servidor está de pé e os modelos, soltos. -->
+  <div id="dormindo">
+    <p id="dormindo-txt"></p>
+    <button class="destaque" onclick="acordar()">Acordar o assistente</button>
   </div>
 </div>
 <div id="rodape">100% local · nada sai desta máquina</div>
@@ -402,6 +424,26 @@ function forcar(){
   document.getElementById('escape').classList.remove('on');
   document.getElementById('estagio').textContent = 'Entrando…';
   api('forcar_entrada');
+}
+
+// Modo economia. Chamado do Python quando o `--standby` solta os modelos: a
+// janela não vira outra tela, ela apaga — o assistente continua de pé, só não
+// está ocupando a máquina.
+function dormir(e){
+  document.body.classList.add('dormindo');
+  document.getElementById('anel').classList.remove('indeterminado');
+  document.getElementById('estagio').textContent = 'Descansando';
+  document.getElementById('detalhe').textContent = e.detalhe || '';
+  document.getElementById('escape').classList.remove('on');
+  document.getElementById('dormindo-txt').textContent = e.texto || '';
+  document.getElementById('dormindo').classList.add('on');
+}
+function acordar(){
+  document.body.classList.remove('dormindo');
+  document.getElementById('dormindo').classList.remove('on');
+  document.getElementById('estagio').textContent = 'Acordando…';
+  document.getElementById('anel').classList.add('indeterminado');
+  api('acordar');
 }
 function sairDoBoot(){ document.body.classList.add('saindo'); }
 </script>
@@ -600,10 +642,17 @@ def _porta_responde(host: str, porta: int) -> bool:
 # --------------------------------------------------------------------------- #
 # Orquestração                                                                 #
 # --------------------------------------------------------------------------- #
-def _acompanhar_boot(janela, ponte: Ponte, url: str, ler_marcos, host: str, porta: int) -> None:
-    """Roda numa thread do pywebview: acompanha os marcos, alimenta a tela de
-    boot e só troca para o app quando TUDO está pronto."""
+def _acompanhar_boot(janela, ponte: Ponte, ler_marcos, host: str, porta: int,
+                     t0: Optional[float] = None) -> None:
+    """Roda numa thread do pywebview: acompanha os marcos e alimenta a tela de boot
+    até TUDO ficar pronto (ou o dono forçar a entrada).
+
+    `t0` existe por causa do religar do modo economia: a MESMA tela serve para o
+    boot frio e para acordar do standby, e no segundo caso cronometrar desde o
+    início do processo mostraria "pronto em 8.400s" — o número certo ali é quanto
+    durou o RELIGAR, não há quanto tempo o app está aberto."""
     ponte._janela = janela
+    inicio = _T0 if t0 is None else t0
     ultimo = None
     while True:
         prontos, pendentes = ler_marcos()
@@ -613,7 +662,7 @@ def _acompanhar_boot(janela, ponte: Ponte, url: str, ler_marcos, host: str, port
         # depois dos imports e da criação da janela, e medir a partir dele daria um
         # número menor que a espera real do dono. O que a tela mostra é
         # duplo-clique -> utilizável, que é o único número que ele sente.
-        decorridos = int(time.time() - _T0)
+        decorridos = int(time.time() - inicio)
         faltam = [rot for chave, rot, _ in MARCOS if not prontos.get(chave)]
         # Quando só o trabalho de FUNDO falta, o detalhe nomeia o que está rodando
         # ("Malha e índice", "Voz para a RAM") em vez de repetir o rótulo do marco:
@@ -637,9 +686,12 @@ def _acompanhar_boot(janela, ponte: Ponte, url: str, ler_marcos, host: str, port
                 return
             ultimo = evento
         if tudo_pronto or ponte._entrada_forcada:
-            break
+            return
         time.sleep(0.35)
 
+
+def _entrar_no_app(janela, url: str) -> None:
+    """Troca a tela de boot pela interface de verdade."""
     try:
         janela.evaluate_js("sairDoBoot()")
         time.sleep(0.33)                            # deixa o fade terminar
@@ -685,7 +737,24 @@ def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None
         segundos_de_resposta=15.0,
     )
     bandeja._maquina = maquina        # o item "Agora não" do menu responde por aqui
+    tique = 0
     while not parar.wait(3.0):
+        # A cada ~30 s, pergunta ao servidor em que estado ele está. Isto existe
+        # porque o servidor agora dorme SOZINHO (watcher de economia): sem a leitura,
+        # o ícone da bandeja continuaria aceso sobre uma máquina liberada, e o menu
+        # ofereceria "Descansar" para quem já descansa.
+        tique += 1
+        if tique % 10 == 1:
+            estado = _api(base, "/api/energia", "estado", token)
+            if estado:
+                bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
+        # Com o servidor dormindo, consolidar seria contraditório: o ETL religaria o
+        # modelo (e só ele — `restaurar_vram` não é chamado por esse caminho), então
+        # o vault seria indexado SEM embeddings e a economia teria durado nada. Quem
+        # cresce a base com o PC livre é a pesquisa agendada do scheduler, que tem os
+        # próprios guardas.
+        if not bandeja.ligado:
+            continue
         sem_input = ocioso.segundos_sem_input()
         if sem_input is None:
             # "Não sei" é tratado como PRESENÇA. Uma leitura que falhou jamais
@@ -725,6 +794,13 @@ def _argumentos() -> argparse.Namespace:
                    help="só o servidor, sem interface (equivale a `python main.py`).")
     p.add_argument("--navegador", action="store_true",
                    help="abre no navegador padrão em vez da janela nativa.")
+    p.add_argument("--standby", action="store_true",
+                   help="sobe o servidor, SOLTA os modelos e fica de plantão na bandeja "
+                        "(janela oculta). É o modo de iniciar junto com o Windows.")
+    p.add_argument("--instalar-inicio", action="store_true",
+                   help="registra o app na pasta Inicializar do Windows (modo standby).")
+    p.add_argument("--remover-inicio", action="store_true",
+                   help="desfaz o --instalar-inicio.")
     p.add_argument("--largura", type=int, default=430)
     p.add_argument("--altura", type=int, default=900)
     p.add_argument("--com-moldura", action="store_true",
@@ -732,8 +808,37 @@ def _argumentos() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _gerir_inicio_automatico(args) -> Optional[int]:
+    """Instala/remove o início com o Windows e ENCERRA. Devolve o código de saída,
+    ou None quando não era esse o pedido.
+
+    Sai em vez de seguir para a janela de propósito: quem digita `--instalar-inicio`
+    quer configurar o sistema, não abrir o assistente."""
+    if not (args.instalar_inicio or args.remover_inicio):
+        return None
+    from mente_digital import inicializacao
+
+    if args.remover_inicio:
+        havia = inicializacao.remover()
+        print(f"[APP] início automático {'removido' if havia else 'já não estava instalado'}: "
+              f"{inicializacao.caminho_atalho()}")
+        return 0
+    try:
+        destino = inicializacao.instalar(BASE_DIR)
+    except Exception as exc:                       # noqa: BLE001 - pedido explícito: falha aparece
+        print(f"[APP] não consegui instalar o início automático: {exc}")
+        return 1
+    print(f"[APP] início automático instalado: {destino}")
+    print("[APP] no próximo logon o servidor sobe em modo economia (modelos soltos) "
+          "e fica na bandeja. Para desfazer: python app.py --remover-inicio")
+    return 0
+
+
 def main() -> int:
     args = _argumentos()
+    saida = _gerir_inicio_automatico(args)
+    if saida is not None:
+        return saida
 
     from mente_digital import rede
     from mente_digital.config import settings
@@ -806,6 +911,11 @@ def main() -> int:
         width=geo["largura"], height=geo["altura"],
         x=geo["x"], y=geo["y"],
         min_size=(360, 560),
+        # `--standby` nasce ESCONDIDA: o modo existe para o logon do Windows, e uma
+        # janela aparecendo sozinha toda vez que o PC liga seria o oposto de discreto.
+        # A bandeja é a porta de entrada — e, como a janela existe (só não se vê),
+        # abri-la depois custa zero em vez dos ~36 s de um boot novo.
+        hidden=args.standby,
         frameless=not args.com_moldura,
         easy_drag=False,          # só a .pywebview-drag-region arrasta — ver docstring
         background_color="#0B0B0D",
@@ -842,9 +952,19 @@ def main() -> int:
             janela.restore()
         except Exception as exc:                   # noqa: BLE001
             print(f"[APP] não consegui trazer a janela: {exc}")
+        # Abrir a janela em standby É o pedido de acordar. Exigir um segundo clique
+        # ("agora clique em Acordar") seria burocracia: ninguém abre o assistente
+        # para olhar a tela de repouso dele.
+        ponte._acordar.set()
 
     def _energia() -> None:
-        estado = _api(url, "/api/energia", "desligar" if bandeja.ligado else "ligar", settings.access_token)
+        ligando = not bandeja.ligado
+        if ligando:
+            # Religar pela bandeja durante o `--standby` também tira o poller da
+            # espera; sem isto o servidor acordaria e a janela ficaria eternamente
+            # na tela de repouso, esperando um clique que já aconteceu.
+            ponte._acordar.set()
+        estado = _api(url, "/api/energia", "ligar" if ligando else "desligar", settings.access_token)
         bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
 
     def _consolidar() -> None:
@@ -883,15 +1003,58 @@ def main() -> int:
     if hasattr(janela.events, "resized"):
         janela.events.resized += lambda *a: arredondar_janela(janela)
 
+    def _dormir_e_esperar() -> None:
+        """O ciclo do `--standby`: solta os modelos e espera alguém querer o assistente.
+
+        A ordem é dormir DEPOIS do boot completo, e não em vez dele, de propósito.
+        Descarregar um serviço que ainda está subindo é corrida com o próprio load —
+        `liberar_vram` só solta o que está `ready`, então o que estivesse no meio do
+        caminho ficaria carregado e a economia seria parcial e imprevisível. Pagar o
+        boot uma vez, no logon, e só então soltar tudo deixa a máquina num estado
+        conhecido: modelos fora, servidor de pé."""
+        resposta = _api(url, "/api/energia", "desligar", settings.access_token)
+        medida = resposta.get("depois") or {}
+        vram = medida.get("vram_mb")
+        detalhe = f"PC livre · {vram / 1024:.1f} GB de VRAM em uso".replace(".", ",") if vram else "PC livre"
+        bandeja.marcar(ligado=False)
+        try:
+            janela.evaluate_js("dormir(%s)" % json.dumps({
+                "detalhe": detalhe,
+                "texto": "O assistente está de plantão e a máquina, liberada. "
+                         "Ele volta quando você abrir — do PC ou do celular.",
+            }))
+        except Exception as exc:                   # noqa: BLE001 - janela oculta/fechada
+            print(f"[APP] não consegui pintar a tela de repouso: {exc}")
+        print("[APP] standby: modelos soltos, servidor de plantão.", flush=True)
+
+        ponte._acordar.wait()
+        ponte._acordar.clear()
+        # O POST vai para OUTRA thread e o poller volta a rodar JÁ. Chamá-lo aqui
+        # congelaria a tela de boot pelos ~30 s do religamento — a barra parada no
+        # mesmo número é indistinguível de app travado, e é exatamente o defeito que
+        # a tela de progresso existe para não ter.
+        threading.Thread(
+            target=_api, args=(url, "/api/energia", "ligar", settings.access_token),
+            daemon=True, name="religar",
+        ).start()
+        bandeja.marcar(ligado=True)
+        _acompanhar_boot(janela, ponte, ler_marcos, alvo_host, alvo_porta, t0=time.time())
+
     def _iniciar_fundo() -> None:
         """Depois do boot: sobe a bandeja e o laço de ociosidade. Encadeado ao
         `_acompanhar_boot` para não competir com o carregamento dos modelos."""
-        _acompanhar_boot(janela, ponte, url_abrir, ler_marcos, alvo_host, alvo_porta)
+        _acompanhar_boot(janela, ponte, ler_marcos, alvo_host, alvo_porta)
+        # A bandeja sobe ANTES do standby: no `--standby` ela é a única porta de
+        # entrada (a janela nasce oculta), então esperar o fim do ciclo para criá-la
+        # deixaria o app inalcançável para sempre.
         if bandeja.iniciar():
             threading.Thread(
                 target=_laco_ocioso, args=(url, settings.access_token, bandeja, parar_laco),
                 daemon=True, name="ocioso",
             ).start()
+        if args.standby:
+            _dormir_e_esperar()
+        _entrar_no_app(janela, url_abrir)
 
     webview.start(
         _iniciar_fundo, (),

@@ -317,6 +317,12 @@ async def health(request: Request):
         "tarefas_de_fundo": fundo,
         "motor_voz": settings.tts_engine,
         "voz_preguicosa": preguicoso,
+        # MODO ECONOMIA, dito com todas as letras. O app do celular deduzia standby de
+        # `llm == false`, e isso é AMBÍGUO no caso mais comum de todos: durante o boot
+        # normal o LLM também está em false, e o app mandava um `ligar` por cima de um
+        # carregamento já em curso. Aqui a diferença entre "ainda não subiu" e "soltei
+        # de propósito" é um campo, não uma inferência.
+        "descansando": ctx.descansando,
     })
 
 
@@ -345,8 +351,12 @@ async def energia_endpoint(request: Request):
         liberados = await ctx.liberar_vram()
         await asyncio.to_thread(energia.enxugar)
         depois = energia.medir()
-        request.app.state.descansando = True
+        ctx.descansando = True
         telemetry.track("ENERGIA", f"Descansando a pedido do dono ({', '.join(sorted(liberados)) or 'nada a soltar'}).")
+        # As OUTRAS cascas precisam saber. Com a janela do PC e o celular abertos ao
+        # mesmo tempo, quem não clicou continuaria mostrando "Ligado" e, pior, pularia
+        # o religar-antes-de-enviar — a resposta viria com o RAG cego, sem aviso.
+        await _avisar_energia(ctx, "descansando", depois)
         return JSONResponse(content={
             "estado": "descansando", "liberados": sorted(liberados),
             "antes": antes, "depois": depois, "liberou": energia.delta(antes, depois),
@@ -356,16 +366,34 @@ async def energia_endpoint(request: Request):
         antes = energia.medir()
         await ctx.restaurar_vram()      # STT, TTS e embeddings — o LLM é lazy
         await ctx.llama.ensure_loaded()
-        request.app.state.descansando = False
+        ctx.descansando = False
+        # Religar É uso: sem isto o watcher de economia veria "20 min sem turno" e
+        # mandaria dormir logo depois de o celular ter acabado de acordar o PC.
+        ctx.marcar_uso()
         telemetry.track("ENERGIA", "Religado a pedido do dono.")
+        depois = energia.medir()
+        await _avisar_energia(ctx, "ligado", depois)
         return JSONResponse(content={
-            "estado": "ligado", "antes": antes, "depois": energia.medir(),
+            "estado": "ligado", "antes": antes, "depois": depois,
         })
 
     return JSONResponse(content={
-        "estado": "descansando" if getattr(request.app.state, "descansando", False) else "ligado",
+        "estado": "descansando" if ctx.descansando else "ligado",
         "depois": energia.medir(),
     })
+
+
+async def _avisar_energia(ctx: AppContext, estado: str, medida: dict) -> None:
+    """Empurra a mudança de energia às sessões vivas, via scheduler (dono do push).
+    Fail-soft: sem scheduler (teste, container mínimo) o app segue — o chip só não
+    atualiza sozinho na outra casca."""
+    sched = getattr(ctx, "scheduler", None)
+    if sched is None:
+        return
+    try:
+        await sched.avisar_energia(estado, medida)
+    except Exception as exc:                        # noqa: BLE001 - aviso, nunca fatal
+        telemetry.warn("ENERGIA", f"Não consegui avisar as sessões: {exc}")
 
 
 @app.post("/api/idle", dependencies=[Depends(exigir_acesso)])

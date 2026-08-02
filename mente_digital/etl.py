@@ -1304,6 +1304,16 @@ class EtlProcessor:
         usuário mandou algo, o pipeline o limpou e o unload é pulado (o próprio pipeline
         religou/manteve o modelo). Se descarregar e a mensagem chegar logo depois,
         `ensure_loaded` (no stream) religa: seguro nas duas direções."""
+        # A marca é AQUI e não em quem chama porque são três chamadores (fim de
+        # conversa, /api/idle e teste) e o watcher de economia precisa que nenhum
+        # deles esqueça: dormir no meio de uma atomização joga fora o trabalho feito.
+        self.ctx.idle_em_andamento = True
+        try:
+            await self._run_idle(itens)
+        finally:
+            self.ctx.idle_em_andamento = False
+
+    async def _run_idle(self, itens: List[Tuple[str, str]]) -> None:
         await self.process_queue(itens)
         await self.summarize_dump()
         # ANTES das pesquisas de propósito: é a única rotina do idle que não toca o LLM

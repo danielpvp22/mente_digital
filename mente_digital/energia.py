@@ -115,6 +115,22 @@ def delta(antes: dict, depois: dict) -> dict:
     return saida
 
 
+def resumo(d: dict) -> str:
+    """O `delta` em uma frase, para o log do watcher que dorme sozinho.
+
+    Só entra o que CAIU: métrica ausente (sem CUDA, sem /proc) ou que subiu no
+    intervalo fica de fora em vez de aparecer como "-0,1 GB" — o dono lê esta
+    linha para conferir que a economia aconteceu, e ruído negativo faz duvidar de
+    uma medição que está certa. Nada mensurável devolve "nada mensurável", que é
+    uma afirmação honesta e diferente de "0 GB". Puro/testável."""
+    partes = []
+    for chave, rotulo in (("vram_mb", "VRAM"), ("ram_commit_mb", "RAM")):
+        valor = d.get(chave)
+        if valor is not None and valor > 0:
+            partes.append(f"{valor / 1024:.1f} GB de {rotulo}".replace(".", ","))
+    return " e ".join(partes) if partes else "nada mensurável"
+
+
 # --------------------------------------------------------------------------- #
 # Enxugar                                                                      #
 # --------------------------------------------------------------------------- #

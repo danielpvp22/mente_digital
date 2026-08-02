@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, List, Optional, Set, Tuple
@@ -230,6 +231,27 @@ class AppContext:
     etl: "EtlProcessor" = None            # type: ignore[assignment]
     scheduler: "SchedulerService" = None  # type: ignore[assignment]
 
+    # MODO ECONOMIA (2026-08-02): os modelos estão soltos e a máquina livre — o
+    # servidor segue de pé atendendo /api, mas LLM/Whisper/voz/embeddings saíram da
+    # VRAM. Vive AQUI, e não em `app.state`, porque quem decide dormir sozinho é o
+    # scheduler (que só enxerga o ctx) e quem responde "como você está?" é a rota
+    # /api/energia: dois donos do mesmo booleano é como um deles fica desatualizado.
+    descansando: bool = False
+    # O ETL do idle está rodando? Marcado por `EtlProcessor.run_idle` (ponto único —
+    # ele é disparado de três lugares: fim de conversa, rota /api/idle e testes). O
+    # watcher de economia lê isto para não descarregar o modelo POR CIMA de uma
+    # atomização em curso: soltar a VRAM debaixo do ETL não economiza nada, só perde
+    # o trabalho que ele já tinha feito.
+    idle_em_andamento: bool = False
+    # Relógio (monotônico) do último turno INTERATIVO — o que o watcher de economia
+    # usa para decidir que ninguém está usando.
+    #
+    # ⚠ Por que atividade e não "não há sessão": todo o resto do trabalho de fundo
+    # (ingestão, OCR, consolidação) usa `ctx.sessoes` vazio como sinal de ócio, e
+    # isso funciona porque são jobs que só rodam com o app FECHADO. O standby é o
+    # oposto: ele existe justamente para o app aberto o dia inteiro, onde a sessão
+    # nunca fecha. Com a régua da sessão ele jamais dispararia.
+    ultima_interacao: float = field(default_factory=time.monotonic)
     # #29: orçamento de tokens de fundo, recalibrado pelo scheduler a cada tick a
     # partir da VRAM livre. None = sem leitura (sem CUDA) -> o fundo usa o max_tokens
     # configurado normalmente.
@@ -261,12 +283,31 @@ class AppContext:
         # Interação nova = adia o idle de conhecimento pendente (debounce). Sem isto, o ETL
         # agendado ao fim da conversa ANTERIOR pousaria na GPU durante ESTE turno.
         self.adiar_idle_conhecimento()
+        self.marcar_uso()
         try:
             yield
         finally:
             self._interativos = max(0, self._interativos - 1)
             if self._interativos == 0:
                 self.interactive_idle.set()
+            # Também na SAÍDA: o relógio do standby conta do FIM do turno. Marcar só na
+            # entrada faria uma resposta longa (síntese de tema, map-reduce) envelhecer
+            # enquanto ainda estava sendo gerada.
+            self.marcar_uso()
+
+    def marcar_uso(self) -> None:
+        """"Alguém está usando isto agora" — rearma o relógio do modo economia.
+
+        Chamado de todo caminho que significa uso real: turno interativo (acima),
+        religar pela rota de energia e abertura de conexão. Não é chamado por
+        trabalho de FUNDO: o ETL/crawler rodando não é motivo para segurar a VRAM
+        depois que ele terminar."""
+        self.ultima_interacao = time.monotonic()
+
+    def segundos_sem_uso(self, agora: Optional[float] = None) -> float:
+        """Há quanto tempo ninguém interage. `agora` injetado para o teste não
+        depender do relógio (mesmo padrão de `agenda.parse_quando`)."""
+        return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
 
     def agendar_idle_conhecimento(self, itens: list) -> None:
         """Enfileira os itens do fim de conversa e (re)arma o timer de carência (debounce).

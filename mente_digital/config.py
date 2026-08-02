@@ -1121,6 +1121,22 @@ class Settings(BaseSettings):
     # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
     # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
     idle_descarregar_modelo: bool = True
+
+    # --- MODO ECONOMIA automático (2026-08-02) ---------------------------------
+    # Minutos SEM turno de conversa até o servidor soltar TUDO sozinho (LLM, Whisper,
+    # voz e embeddings) e ficar de plantão só respondendo /api — o "standby" que
+    # libera ~5 GB de VRAM e ~7 GB de RAM para o dono usar o PC.
+    #
+    # Por que existe: o app foi feito para ficar ABERTO o dia inteiro, então "não há
+    # sessão conectada" (a régua de todo o resto do trabalho de fundo) nunca acontece
+    # — com a janela aberta, `ctx.sessoes` jamais esvazia. A régua aqui é ATIVIDADE:
+    # o relógio conta do último turno interativo (ver AppContext.ultima_interacao),
+    # não da última conexão.
+    #
+    # Acordar é automático em todo caminho de uso: mandar mensagem religa antes de
+    # enviar (index.html), o celular religa na tela de boot (/api/energia) e a bandeja
+    # tem o item de sempre. 0 desliga o watcher (só dorme no botão).
+    idle_standby_minutos: int = 20
     # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
     # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
     # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.

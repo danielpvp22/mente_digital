@@ -968,6 +968,17 @@
                     audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
                     iaFalando = false; if (isLiveMode) atualizarEstadoOrb('listening');
                 }
+                else if (data.tipo === "energia") {
+                    // O SERVIDOR mudou de energia por conta própria (watcher de economia,
+                    // 20 min sem uso) ou por ordem de OUTRA casca (celular, bandeja).
+                    // Sem receber isso, esta página seguiria acreditando em 'ligado' e
+                    // pularia o religar-antes-de-enviar — a resposta sairia com o RAG
+                    // cego, bem formada e sem contexto, que é o defeito silencioso que
+                    // o `enviarTexto` existe para evitar.
+                    if (energiaOcupada) return;   // este cliente está no meio do próprio clique
+                    pintarEnergia(data.estado, medidaDe(data.medida));
+                    if (data.estado === 'descansando') toast("PC liberado — a próxima pergunta religa.");
+                }
                 else if (data.tipo === "fontes") {
                     // Proveniência da resposta que acabou de sair (modo avançado).
                     // Substitui em vez de acumular: a pergunta é "de onde veio ESTA
