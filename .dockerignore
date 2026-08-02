@@ -1,12 +1,39 @@
 # O que NUNCA entra na imagem: segredos, dados do dono e artefatos derivados.
 # Modelos/vault/bancos entram por bind mount em runtime (docker-compose.yml).
+#
+# ⚠ Semântica: .dockerignore NÃO é .gitignore. Um padrão sem `**` casa só na RAIZ
+# do contexto — `__pycache__/` deixava passar mente_digital/__pycache__,
+# tests/__pycache__ e amigos. Medido: o contexto era 175,6 MB / 1.051 arquivos e
+# caiu para 11,3 MB / 121 com as linhas `**/` abaixo (1.051→121 arquivos).
 .env
+# Os backups do .env são o MESMO segredo com outro nome (.env.bak-20260730 tem um
+# MENTE_ACCESS_TOKEN real dentro). O .gitignore já os barra explicitamente
+# ("nunca versionar"); aqui eles estavam entrando na imagem — um token de acesso
+# assado numa layer, que sobrevive a qualquer `docker push`.
+.env.*
+# ...menos o exemplo: é documentação, e é onde está escrito que o container
+# precisa do MENTE_ACCESS_TOKEN para o chat funcionar.
+!.env.example
 .git
 .github
 .claude
 .venv
+# Bytecode: a forma `**/` é a que pega os aninhados (ver aviso no topo).
 __pycache__/
 *.pyc
+**/__pycache__
+**/*.pyc
+# Caches de ferramenta de dev — nada disso roda dentro do container.
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.vscode/
+# Suíte e bancada: rodam na env conda do host, não na imagem. Conferido que
+# nenhum módulo de runtime (main.py, app.py, mente_digital/) importa daqui.
+tests/
+eval/
 # Dados do dono/derivados (vault, Chroma, modelos, SQLite, dump) — TODOS sob dados/,
 # entram por bind mount em runtime, nunca na imagem. backups/ idem (nunca na imagem).
 dados/

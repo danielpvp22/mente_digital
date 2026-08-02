@@ -117,3 +117,11 @@ eval/spike/
 
 # estado retomável da passada de links (gerado)
 scripts/melhorar_links.estado.json
+
+# Casca de aplicativo (app.py) — NUNCA versionar.
+# O perfil do WebView2 guarda o localStorage da SPA, e é lá que o
+# MENTE_ACCESS_TOKEN fica depois da primeira abertura com ?token=. Commitá-lo
+# vazaria o segredo exatamente como o .env.bak vazaria (ver .dockerignore).
+# app_janela.json é só geometria, mas é estado de máquina, não código.
+dados/app_webview/
+dados/app_janela.json
