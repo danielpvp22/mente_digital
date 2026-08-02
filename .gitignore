@@ -125,6 +125,12 @@ scripts/melhorar_links.estado.json
 # app_janela.json é só geometria, mas é estado de máquina, não código.
 dados/app_webview/
 dados/app_janela.json
+# O .ico da marca é GERADO por mente_digital/marca.py na subida (~40 ms). O
+# desenho é que é o código; o binário é artefato — e um .ico commitado seria a
+# única cópia da marca que ninguém sabe editar, e a primeira a divergir da
+# paleta. ⚠ dados/ é ignorado ENTRADA POR ENTRADA: sem esta linha, o diretório
+# novo nasceria versionável (foi o defeito nº 5 de 2026-08-02).
+dados/marca/
 
 # Logs de runtime/diagnostico do app -- artefato, nunca codigo.
 dados/*.log

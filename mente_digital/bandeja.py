@@ -7,49 +7,25 @@ a janela, custa zero. E a bandeja é o único lugar onde a notificação do modo
 ocioso pode aparecer com a janela minimizada — que é justamente o caso em que ela
 precisa aparecer.
 
-O ícone é DESENHADO aqui em vez de virar um .ico no repo: são 30 linhas de PIL
-(que já é dependência, por causa do reencode de imagem da web) contra um binário
-versionado que ninguém sabe editar depois. E desenhá-lo deixa a cor do ícone
-seguir a mesma paleta da interface por construção.
+O desenho do ícone MUDOU DE CASA (2026-08-02): era um orbe próprio, feito aqui;
+agora é a marca de `marca.py`, a MESMA da barra de tarefas e do favicon. O motivo
+de desenhar em código em vez de versionar um binário continua valendo (a cor
+segue a paleta da interface por construção) — o que não valia era ter dois
+desenhos diferentes chamados "o ícone do app", que divergiriam na primeira
+troca de paleta.
 """
 from __future__ import annotations
 
 import threading
 from typing import Callable, Optional
 
-# Mesma paleta do gradiente da interface (index.html e a tela de boot do app.py).
-AZUL = (66, 133, 244)
-ROXO = (155, 114, 203)
-ROSA = (217, 101, 112)
-CINZA = (110, 114, 120)          # o mesmo ícone, apagado, quando está descansando
-
-
-def _interpolar(a: tuple, b: tuple, t: float) -> tuple:
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
-
 
 def desenhar_icone(tamanho: int = 64, ativo: bool = True):
-    """O orbe da interface, em miniatura. Puro: devolve uma imagem, sem tocar em
-    bandeja nenhuma — é o que permite testá-lo sem ambiente gráfico."""
-    from PIL import Image, ImageDraw
+    """A marca, em miniatura. Puro: devolve uma imagem, sem tocar em bandeja
+    nenhuma — é o que permite testá-la sem ambiente gráfico."""
+    from mente_digital import marca
 
-    img = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    margem = max(1, tamanho // 16)
-    raio = (tamanho - 2 * margem) / 2
-    centro = tamanho / 2
-    # Gradiente por anéis concêntricos, de fora para dentro. Simples e suficiente
-    # num ícone de 16-64 px, onde qualquer coisa mais fina não se distingue.
-    passos = max(8, int(raio))
-    for i in range(passos, 0, -1):
-        t = i / passos
-        if ativo:
-            cor = _interpolar(AZUL, ROXO, t) if t > 0.5 else _interpolar(ROXO, ROSA, t * 2)
-        else:
-            cor = _interpolar(CINZA, (60, 62, 66), t)
-        r = raio * t
-        d.ellipse([centro - r, centro - r, centro + r, centro + r], fill=cor + (255,))
-    return img
+    return marca.desenhar_marca(tamanho, ativo=ativo)
 
 
 class Bandeja:
