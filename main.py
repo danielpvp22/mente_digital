@@ -259,6 +259,25 @@ async def home(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """A marca do app na aba do navegador — o MESMO `.ico` da barra de tarefas.
+
+    Sem gate, como a rota `/`: um ícone não revela nada que a SPA servida ali do
+    lado já não revele. O arquivo é gerado sob demanda em `dados/marca/` (não é
+    versionado — ver marca.py); a geração custa ~40 ms e só acontece uma vez.
+    """
+    from fastapi.responses import FileResponse
+
+    from mente_digital import marca
+
+    alvo = await asyncio.to_thread(marca.caminho_ico, BASE_DIR)
+    if not alvo.exists():                       # geração falhou; segue sem ícone
+        raise HTTPException(status_code=404, detail="não encontrado")
+    return FileResponse(alvo, media_type="image/x-icon",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/api/health")
 async def health(request: Request):
     """Prontidão de cada serviço — a ÚNICA /api sem gate de acesso, de propósito.
