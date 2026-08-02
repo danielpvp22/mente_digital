@@ -1013,7 +1013,33 @@ O stack atual inteiro sobe com um comando — o experimento TensorRT-LLM é outr
 docker compose up --build     # 1º build compila o llama-cpp-python com CUDA (~10 min)
 ```
 
-GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale o *NVIDIA Container Toolkit*. Modelos, vault e bancos continuam no **host** (bind mounts) — rebuild nunca toca os seus dados, e o `.env` entra como variável de ambiente sem ser copiado para a imagem. ⚠️ *Recém-adicionado: a sintaxe é validada, mas o build completo com GPU ainda não foi batido de ponta a ponta — se algo falhar, o caminho venv acima segue sendo o oficial.*
+#### ⚠️ Sem `MENTE_ACCESS_TOKEN` o chat não funciona — e o sintoma engana
+
+Não é conselho de segurança, é mecânica do gate ([`acesso.py`](mente_digital/acesso.py)): **sem token configurado ele só libera loopback, e dentro do container o cliente nunca é loopback.** A conexão chega pela bridge, então `request.client.host` é o gateway (~`172.17.0.1`), não `127.0.0.1`. O que você vê: a página **abre normalmente** (a rota `/` não tem gate nenhum) e parece viva — mas toda `/api` responde 401 e o WebSocket fecha com 1008. Chat mudo, sem mensagem de erro óbvia.
+
+Os dois passos, os dois obrigatórios:
+
+1. **defina o token no `.env`** — a linha vem comentada no [`.env.example`](.env.example):
+   ```bash
+   MENTE_ACCESS_TOKEN=<48 hex aleatórios>
+   ```
+2. **abra a página UMA vez com o token na URL:**
+   ```
+   http://localhost:8000/?token=SEU_TOKEN
+   ```
+   O front guarda em `localStorage` ([`templates/index.html`](templates/index.html)) e daí em diante manda o token sozinho no WebSocket, nas rotas `/api` e nas figuras. **Pular esse primeiro acesso deixa o `localStorage` vazio e o 401 continua** — inclusive se o token estiver certo no `.env`.
+
+Relaxar o gate para a faixa da bridge não é opção: o IP do gateway é o mesmo para qualquer aparelho da LAN que alcance a porta publicada, então tratá-lo como loopback abriria o vault inteiro para a rede local. Para uso só nesta máquina, publique a porta como `127.0.0.1:8000:8000` (comentário no compose).
+
+#### O que o compose neutraliza do seu `.env`
+
+O `.env` é injetado via `env_file`, mas o bloco `environment:` tem precedência e sobrescreve quatro coisas que são verdade no Windows e mentira dentro do container: `MENTE_TTS_ENGINE` volta para **piper** (o `xtts` puxaria torch+coqui e ~1,4 GB de VRAM), `MENTE_OCR_BIN`/`MENTE_OCR_TMP_DIR` são **esvaziados** (apontam para `C:\...\llama-server.exe` e `R:\ocr`, que no Linux viraria um diretório com esse nome literal dentro de `/app`), `MENTE_BACKUP_DIR` vai para `/app/dados/backups` (o default `/app/backups` cai na camada gravável e some no `down`) e a pesquisa agendada fica em **0** (senão o container sairia sozinho para a web a cada 2h escrevendo notas no vault do host).
+
+> 🐛 Achado ao revisar isto: a env var da pesquisa agendada está escrita **errada** no `.env` e no `.env.example`. O campo em `config.py` é `pesquisa_agendada_intervalo_seconds`, logo a variável é `MENTE_PESQUISA_AGENDADA_INTERVALO_SECONDS`; a grafia `..._SEGUNDOS` não casa com campo nenhum e o `extra="ignore"` do pydantic a engole calada. Ou seja, **quem acha que ligou a pesquisa agendada com `..._SEGUNDOS=7200` está com ela desligada** (medido: `SEGUNDOS=1234` → `0`; `SECONDS=4321` → `4321`).
+
+GPU: no Windows, o Docker Desktop (WSL2) já expõe a NVIDIA; em Linux, instale o *NVIDIA Container Toolkit*. Modelos, vault e bancos continuam no **host** (bind mounts) — rebuild nunca toca os seus dados, e nem o `.env` nem seus backups (`.env.bak-*`, que contêm o token) são copiados para a imagem. O `healthcheck` bate em `/api/health`, a única `/api` sem gate, e só marca *healthy* quando os modelos **e** o trabalho de fundo terminaram. As dependências são instaladas com [`requirements.lock.txt`](requirements.lock.txt) como *constraint*, então dois builds em datas diferentes dão a mesma árvore.
+
+⚠️ *Estado da validação (2026-08-02): a sintaxe do compose passa (`docker compose config`, sem daemon), a precedência do `environment:` sobre o `env_file` foi conferida no YAML renderizado, o contexto de build foi medido (175,6 MB → 11,3 MB) e os 206 pins do lock foram checados um a um na API do PyPI (todos com artefato cp310/Linux). **O `docker build` com GPU continua sem ser batido de ponta a ponta** — se algo falhar, o caminho venv acima segue sendo o oficial.*
 
 ### Testes
 

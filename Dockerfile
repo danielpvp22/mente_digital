@@ -18,10 +18,24 @@ ENV PATH=/opt/venv/bin:$PATH
 RUN pip install --no-cache-dir --upgrade pip
 # Camada própria para a parte cara: o llama-cpp-python compila por vários minutos
 # e só precisa recompilar quando o requirements.txt mudar.
+#
+# O lock entra como CONSTRAINT (-c), não como -r: o requirements.txt usa ranges
+# (>=) e já quebrou por resolução nova — o caso documentado no cabeçalho do lock é
+# coqui-tts x transformers>=5 ("isin_mps_friendly" removido). Sem o lock, um build
+# feito hoje e outro daqui a um mês instalam árvores diferentes, e a imagem deixa
+# de ser reprodutível justamente onde ela deveria ser o retrato do que funciona.
+# Vale para o llama-cpp-python também: o requirements.txt pede >=0.2.70, então um
+# build limpo pegaria a MAIS NOVA — o oposto do que o comentário lá manda fazer
+# (o prompt-lookup crashava em contexto longo até a 0.3.34, e subir a versão exige
+# passar no eval/retest_speculative.py primeiro). O lock prende em 0.3.34.
+# Constraint é INERTE para pacote que ninguém instala, então os pins de origem
+# Windows do lock não atrapalham em Linux — e os 206 pins foram conferidos um a um
+# na API do PyPI: todos têm artefato para cp310/Linux (201 wheel, 5 sdist).
 COPY requirements.txt /tmp/requirements.txt
+COPY requirements.lock.txt /tmp/requirements.lock.txt
 RUN CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}" \
     FORCE_CMAKE=1 \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+    pip install --no-cache-dir -c /tmp/requirements.lock.txt -r /tmp/requirements.txt
 
 FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive

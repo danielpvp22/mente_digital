@@ -3,6 +3,29 @@
 #
 #   docker compose up --build     # 1º build compila o llama-cpp-python (~10 min)
 #
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ ⚠ LEIA ANTES DE SUBIR: SEM `MENTE_ACCESS_TOKEN` O CHAT NÃO FUNCIONA.       │
+# │                                                                           │
+# │ Não é preferência de segurança, é mecânica do gate (mente_digital/         │
+# │ acesso.py): sem token configurado ele só libera LOOPBACK, e dentro do      │
+# │ container o cliente NUNCA é loopback — a conexão chega pela bridge, então  │
+# │ `request.client.host` é o gateway (~172.17.0.1), não 127.0.0.1. O sintoma  │
+# │ engana: a página ABRE (a rota `/` não tem gate nenhum) e parece viva, mas  │
+# │ toda `/api` devolve 401 e o WebSocket fecha com 1008 — chat MORTO.         │
+# │                                                                           │
+# │ Os dois passos, os dois obrigatórios:                                     │
+# │  1. defina `MENTE_ACCESS_TOKEN=<48 hex aleatórios>` no seu .env            │
+# │     (o .env.example distribui essa linha COMENTADA — descomente-a);        │
+# │  2. abra UMA vez `http://localhost:8000/?token=SEU_TOKEN`. O front guarda  │
+# │     em localStorage (templates/index.html) e daí em diante manda o token   │
+# │     sozinho no WS, nas /api e nas figuras. Sem esse primeiro acesso com    │
+# │     ?token=, o localStorage está vazio e o 401 continua.                   │
+# │                                                                           │
+# │ Por que não relaxar o gate para a faixa da bridge: o IP do gateway é o     │
+# │ MESMO para qualquer aparelho da LAN que alcance a porta publicada — tratar │
+# │ 172.17.0.1 como loopback abriria o vault inteiro para a rede local.        │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
 # GPU: no Windows, o Docker Desktop (backend WSL2) já expõe a NVIDIA; em Linux,
 # instale o NVIDIA Container Toolkit. Modelos/vault/bancos ficam no HOST (bind
 # mounts abaixo) — a imagem carrega só código e dependências.
@@ -14,6 +37,9 @@ services:
         CUDA_ARCH: "86" # Ampere/RTX 3080 — troque para a sua GPU (89 = Ada)
     image: mente-digital:local
     ports:
+      # Publica na LAN, como o app sempre fez (o token acima é quem protege).
+      # Para uso só nesta máquina, troque por "127.0.0.1:8000:8000" — aí nem a
+      # porta é alcançável de fora, e o token vira segunda camada em vez de única.
       - "8000:8000"
     # O .env do projeto (MENTE_*) entra como variáveis de ambiente do container —
     # ele NÃO é copiado para a imagem (.dockerignore), para segredo não vazar em layer.
@@ -21,10 +47,41 @@ services:
       - path: .env
         required: false
     environment:
+      # ⚠ Este bloco tem PRECEDÊNCIA sobre o env_file acima: é aqui que se
+      # neutraliza, sem tocar no .env do dono, o que é verdade no Windows/host
+      # mas mentira dentro do container.
+      #
       # O SQLite de telemetria vai para um diretório montado, para sobreviver ao
       # ciclo de vida do container sem bind-mount de arquivo único (que o Docker
       # criaria como DIRETÓRIO se não existisse, quebrando o SQLite).
       MENTE_DB_TELEMETRIA: /app/dados/telemetria_etl.db
+      # O .env do dono está em MENTE_TTS_ENGINE=xtts. No container isso puxaria
+      # torch+coqui e ~1,4 GB de VRAM para uma voz que ninguém pediu — o alvo aqui
+      # é reproduzir o comportamento WEB. Piper é o default do projeto e é leve.
+      MENTE_TTS_ENGINE: piper
+      # Caminhos de Windows vazando do .env para dentro do Linux. Com
+      # ocr_habilitado=True (default em config.py), o ETL tentaria dar
+      # subprocess.Popen num "C:\...\llama-server.exe" que não existe aqui, e
+      # criaria um diretório LITERALMENTE chamado "R:\ocr" dentro de /app.
+      # Vazio = OCR desligado (é o contrato do próprio campo em config.py).
+      MENTE_OCR_BIN: ""
+      MENTE_OCR_TMP_DIR: ""
+      # backup_dir default = BASE_DIR/"backups" = /app/backups — que o
+      # .dockerignore exclui e nenhum volume monta. Os até 14 zips diários
+      # (vault + SQLite) engordariam a camada gravável e sumiriam no primeiro
+      # `down`: backup que não sobrevive é backup que não existe. Sob /app/dados
+      # eles caem no bind mount e ficam no host.
+      MENTE_BACKUP_DIR: /app/dados/backups
+      # O .env do dono pede pesquisa agendada a cada 2h. Num container de TESTE
+      # isso é o processo saindo sozinho para a web e ESCREVENDO notas novas no
+      # vault do host (que está bind-montado) sem ninguém olhando. 0 = desligado;
+      # o idle por fim-de-conversa continua sendo o gatilho normal.
+      # ⚠ Note o nome: o campo em config.py é `pesquisa_agendada_intervalo_seconds`,
+      # então a env var é ..._SECONDS. A linha ..._SEGUNDOS que está no .env (e no
+      # .env.example) NÃO casa com campo nenhum e o `extra="ignore"` do pydantic a
+      # engole calada — hoje ela já é no-op. Fixamos o nome CERTO para o dia em que
+      # o .env for corrigido não religar a pesquisa aqui por acidente.
+      MENTE_PESQUISA_AGENDADA_INTERVALO_SECONDS: "0"
     volumes:
       # TODO dado do dono/derivado vive sob ./dados no host e /app/dados no container
       # (BASE_DIR=/app, então config aponta p/ /app/dados/*): vault, índice Chroma,
@@ -38,12 +95,28 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # O desligamento não é instantâneo: main.py drena as tasks de fundo
+    # (drenar_tasks(timeout=10)) e só então fecha o llama (shutdown()). O SIGKILL
+    # default do Docker chega em 10s — exatamente o orçamento da drenagem, ou seja,
+    # no limite: qualquer atraso e o processo morre no meio, com ETL pela metade.
+    stop_grace_period: 30s
     healthcheck:
-      # "/" serve a página sem gate; o gate do acesso.py protege /api e o WS.
-      # Dentro do container o curl é loopback, então passa mesmo sem token.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      # Bate em /api/health — a única /api SEM gate, feita de propósito para isto
+      # (main.py). A rota `/` também serviria, mas responde 200 com o LLM ainda
+      # carregando: "healthy" passaria a significar só "o uvicorn subiu".
+      #
+      # (O comentário antigo aqui dizia que o curl de dentro do container é
+      # loopback e por isso passa sem token. É FALSO nas duas metades: o cliente
+      # não é loopback — ver o aviso no topo — e `/` não tem gate nenhum, então
+      # ela passava por não ser protegida, não por ser loopback.)
+      #
+      # A rota devolve 200 mesmo quando pronto=false, então quem decide é o CORPO:
+      # `pronto` só fica true com os modelos carregados E o trabalho de fundo
+      # (malha, sync do Chroma) terminado. Efeito colateral aceito: uma passada
+      # pesada de fundo pode marcar unhealthy por um tempo — é a leitura honesta.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health | grep -q '\"pronto\":[[:space:]]*true'"]
       interval: 30s
-      start_period: 180s # o LLM demora a carregar; não derrube antes disso
+      start_period: 240s # LLM + embeddings + malha; não derrube antes disso
       retries: 3
 
 volumes:
