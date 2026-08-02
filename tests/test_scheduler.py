@@ -34,6 +34,19 @@ class FakeCtx:
         self.llama = None
         self.interactive_idle = asyncio.Event()
         self.interactive_idle.set()
+        self.tarefas: list = []
+
+    def track_task(self, coro):
+        """O mesmo contrato do AppContext.track_task (state.py:447): cria a task
+        e SEGURA uma referência forte.
+
+        Existia como buraco no fake até 2026-08-02, quando o dono ligou a pesquisa
+        agendada e um `tick()` de teste de lembrete caiu neste ramo pela primeira
+        vez — `AttributeError` no meio de um teste que não fala de pesquisa. Um
+        fake a que falta um método do objeto real não simplifica: esconde."""
+        tarefa = asyncio.ensure_future(coro)
+        self.tarefas.append(tarefa)
+        return tarefa
 
 
 @pytest.fixture
