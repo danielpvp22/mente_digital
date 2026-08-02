@@ -125,3 +125,7 @@ scripts/melhorar_links.estado.json
 # app_janela.json é só geometria, mas é estado de máquina, não código.
 dados/app_webview/
 dados/app_janela.json
+
+# Logs de runtime/diagnostico do app -- artefato, nunca codigo.
+dados/*.log
+dados/*.log.err
