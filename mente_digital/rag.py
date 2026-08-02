@@ -892,13 +892,19 @@ class VectorStore:
             except Exception as exc:
                 telemetry.error("MALHA", "Falha ao montar índice de conceitos", exc)
 
-    async def sync(self) -> None:
+    async def sync(self) -> bool:
         """Reindex incremental por mtime (novos + modificados) e por `meta_v`
-        (notas indexadas com esquema de metadado antigo — ver `_META_VERSAO`)."""
+        (notas indexadas com esquema de metadado antigo — ver `_META_VERSAO`).
+
+        Devolve **se reconstruiu a malha**. Serve ao chamador que já ia construí-la:
+        o `_malha_e_sync` do boot fazia malha→sync, e o `sync` refazia a malha no
+        fim — a primeira era jogada fora segundos depois toda vez que houvesse algo
+        a indexar (5,53 s medidos num boot real em 2026-08-02). Com o retorno, ele
+        constrói só quando este aqui não construiu."""
         if self._store is None:
             await self.open()
         if self._store is None:
-            return
+            return False
         # INVALIDA O ÍNDICE EXATO DE FIGURAS logo na entrada, e não nos pontos em que o
         # sync grava: `sync` tem várias saídas antecipadas ("nada novo", erro, lock), e
         # esquecer UMA delas deixaria a figura nova invisível até o próximo restart —
@@ -965,7 +971,7 @@ class VectorStore:
 
                 if not pendentes:
                     telemetry.track("DB", "VectorDB já sincronizado (nada novo).")
-                    return
+                    return False
 
                 # remove versões velhas dos arquivos modificados (evita duplicata).
                 # Só quem JÁ estava no índice remove algo — e contamos, porque essa
@@ -1016,7 +1022,7 @@ class VectorStore:
                         f"{len(pendentes)} arquivo(s) sem conteúdo indexável "
                         f"(0 chunks, nada removido) — índice inalterado, malha preservada.",
                     )
-                    return
+                    return False
                 for i in range(0, len(splits), settings.chroma_batch):
                     await asyncio.to_thread(
                         self._store.add_documents, splits[i : i + settings.chroma_batch]
@@ -1026,8 +1032,13 @@ class VectorStore:
                 )
             # Fora do write_lock: _reconstruir_malha só LÊ, e o lock não é reentrante.
             await self._reconstruir_malha()
+            return True
         except Exception as exc:
             telemetry.error("DB", "Erro na sincronização do VectorDB", exc)
+            # False e não None: quem perguntou "você construiu a malha?" recebe um
+            # "não" honesto e constrói por conta — o pior desfecho de um sync que
+            # falhou seria o boot seguir SEM índice de conceitos achando que tem.
+            return False
 
     async def corpus_com_embeddings(self) -> List[tuple]:
         """Dump (source, texto, embedding) por chunk — p/ a consolidação (Fase 2).

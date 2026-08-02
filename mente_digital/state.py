@@ -201,6 +201,9 @@ class AppContext:
     # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
     # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
     _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
+    # Só as tarefas que o `_boot` despachou, com o rótulo que a tela de boot mostra.
+    # Ver `track_boot_task` para o porquê de ser lista de PERMISSÃO.
+    _rotulo_boot: dict = field(default_factory=dict, repr=False)
     # #38: escrita no vault via ferramenta (nota/lista/captura) DURANTE a conversa não
     # reindexa na hora — o `sync` re-embeda os chunks E reconstrói a MALHA sobre ~13k
     # átomos na GPU serializada, o que congelava o PRÓXIMO turno (~46s: o STT em cuda e
@@ -326,6 +329,23 @@ class AppContext:
         if self.etl is not None:
             self.track_task(self.etl.run_idle(itens))
 
+    def track_boot_task(self, coro: Coroutine, rotulo: str) -> "asyncio.Task":
+        """`track_task` + marca a tarefa como sendo DO BOOT.
+
+        A marcação explícita substituiu uma heurística que se mostrou errada em
+        produção (2026-08-02): `tarefas_de_fundo` contava toda task retida menos
+        uma lista de laços perpétuos, e isso era veneno — o app cria trabalho de
+        fundo o tempo TODO em runtime (a passada de consolidação do scheduler, o
+        ETL do idle). Resultado: a tela de boot do app nativo ficava presa em 80%
+        esperando uma pendência que nunca acabava, porque a fila nunca esvazia.
+
+        Lista de PERMISSÃO é a forma certa aqui: "o boot terminou?" é uma pergunta
+        sobre um conjunto FECHADO e conhecido de tarefas, e nenhum trabalho criado
+        depois pode entrar nela por acidente."""
+        tarefa = self.track_task(coro)
+        self._rotulo_boot[tarefa] = rotulo
+        return tarefa
+
     def tarefas_de_fundo(self) -> List[str]:
         """Rótulos do trabalho de fundo AINDA em voo — sem os laços perpétuos.
 
@@ -341,34 +361,19 @@ class AppContext:
         um p50 de 242 ms. `lock_wait_ms` era 0 — não era fila do executor de GPU,
         era disputa de recurso bruto com o boot.
 
-        Genérico de propósito: lê o MESMO `_bg_tasks` que `track_task` alimenta,
-        então trabalho de fundo acrescentado no futuro entra na conta sem ninguém
-        precisar lembrar de atualizar uma lista. O que É preciso manter é o
-        conjunto de PERPÉTUAS abaixo — laço que nunca retorna e que, contado como
-        pendente, deixaria a tela de boot presa para sempre."""
-        perpetuas = {"run_forever"}
-        rotulos = {
-            "load": "Modelo na GPU",
-            "_malha_e_sync": "Malha e índice",
-            "sync": "Índice do vault",
-            "reconstruir_malha": "Malha de conceitos",
-            # `asyncio.to_thread(ctx.tts.preparar_ram)` chega aqui como `to_thread`:
-            # o alvo real fica escondido na closure. É o único to_thread que o boot
-            # retém, então o rótulo é seguro — se um segundo aparecer, some o nome.
-            "to_thread": "Voz para a RAM",
-        }
+        SÓ conta o que `track_boot_task` marcou. Não é genérico de propósito: uma
+        tentativa anterior varria o `_bg_tasks` inteiro excluindo laços perpétuos, e
+        o trabalho de runtime (consolidação, ETL do idle) entrava na conta e travava
+        a tela de boot em 80% para sempre. Ver `track_boot_task`.
+
+        Efeito colateral bom: a lista se limpa sozinha. Task concluída sai do dict,
+        então isto não cresce num processo que fica dias no ar."""
         pendentes: List[str] = []
-        for task in list(self._bg_tasks):
+        for task in list(self._rotulo_boot):
             if task.done():
+                self._rotulo_boot.pop(task, None)
                 continue
-            try:
-                nome = getattr(task.get_coro(), "__qualname__", "") or ""
-            except Exception:                       # noqa: BLE001 - task morrendo
-                continue
-            curto = nome.rsplit(".", 1)[-1]
-            if curto in perpetuas:
-                continue
-            pendentes.append(rotulos.get(curto, curto))
+            pendentes.append(self._rotulo_boot[task])
         return sorted(set(pendentes))
 
     def _provedor_de_embeddings(self):

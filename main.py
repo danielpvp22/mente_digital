@@ -72,11 +72,23 @@ def _preimportar_arvores() -> None:
 async def _malha_e_sync(ctx: AppContext) -> None:
     """O trabalho de RAG que não precisa segurar o boot — na ordem de sempre.
 
-    A malha PRIMEIRO, o reindex depois. Os dois leem/escrevem o mesmo SQLite do Chroma
-    (escritor único), então soltá-los como tasks irmãos os faz brigar: medido em
-    2026-07-30, a malha ficou 79 s sem montar e o app atendeu sem índice de conceitos."""
-    await ctx.vectorstore.reconstruir_malha()
-    await ctx.vectorstore.sync()
+    Sequencial, nunca em tasks irmãos: os dois leem/escrevem o mesmo SQLite do Chroma
+    (escritor único), e soltá-los soltos os faz brigar — medido em 2026-07-30, a malha
+    ficou 79 s sem montar e o app atendeu sem índice de conceitos.
+
+    O SYNC VEM PRIMEIRO desde 2026-08-02. Antes era malha→sync, e o `sync` reconstrói
+    a malha no fim sempre que mexe no índice: a primeira construção era jogada fora
+    segundos depois, toda vez que houvesse algo a indexar — 5,53 s medidos num boot
+    real. Como o app escreve no próprio vault (o ETL do idle colhe átomos), "algo a
+    indexar" é o caso NORMAL aqui, não a exceção.
+
+    Invertida, a malha é construída UMA vez: o `sync` a refaz se mexeu em algo, e só
+    quando ele não mexeu (ou falhou) é que a construímos por fora. O custo da inversão
+    é a malha ficar pronta alguns segundos mais tarde — e o `search` já degrada com
+    graça sem ela, mantendo o aterramento léxico e perdendo só a expansão por
+    conceito, que é exatamente o motivo de ela estar fora do caminho crítico."""
+    if not await ctx.vectorstore.sync():
+        await ctx.vectorstore.reconstruir_malha()
 
 
 async def _boot(ctx: AppContext) -> None:
@@ -88,15 +100,11 @@ async def _boot(ctx: AppContext) -> None:
     if settings.tts_engine == "xtts":
         await asyncio.to_thread(_preinit_cudnn)
     # GPU: em background (inclui warm-up).
-    ctx.track_task(ctx.llama.load())
+    ctx.track_boot_task(ctx.llama.load(), "Modelo na GPU")
     # CPU: Whisper e Piper em threads. Com `boot_paralelo`, o Whisper (2,50 s medidos)
     # carrega JUNTO com os embeddings (7,55 s) — os dois são CPU e independentes, então
     # o boot paga o maior em vez da soma. A ordem em relação ao _preinit_cudnn acima é
     # preservada: o cuDNN do torch já foi fixado antes de o ctranslate2 tocar o dele.
-    # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
-    # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
-    # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
-    # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
     # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
     # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
     # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
@@ -123,7 +131,7 @@ async def _boot(ctx: AppContext) -> None:
         # tem de aparecer com ~16.475 conceitos.
         if preguicoso and settings.tts_preparar_ram_no_boot:
             telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
-            ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
+            ctx.track_boot_task(asyncio.to_thread(ctx.tts.preparar_ram), "Voz para a RAM")
         await asyncio.gather(
             asyncio.to_thread(ctx.stt.load),
             asyncio.to_thread(ctx.vectorstore.load_embeddings),
@@ -147,9 +155,9 @@ async def _boot(ctx: AppContext) -> None:
         # de escritor único. Antes disso não acontecia por acidente de ordem: a malha
         # rodava AWAITADA, então terminava antes de o sync começar. Encadeando, os 3,09 s
         # saem do caminho crítico E a ordem relativa é a de sempre.
-        ctx.track_task(_malha_e_sync(ctx))
+        ctx.track_boot_task(_malha_e_sync(ctx), "Malha e índice")
     else:
-        ctx.track_task(ctx.vectorstore.sync())
+        ctx.track_boot_task(ctx.vectorstore.sync(), "Índice do vault")
     # XTTS EM RAM, DEPOIS DOS EMBEDDINGS — a ordem é o conserto de um bug real (medido
     # em 2026-07-29): despachado ANTES, o `preparar_ram` importava torch+coqui numa
     # thread enquanto o `load_embeddings` importava sentence-transformers noutra, e as
@@ -164,7 +172,7 @@ async def _boot(ctx: AppContext) -> None:
         # Com `boot_paralelo` ele JÁ foi despachado lá em cima, na frente de tudo —
         # aqui é só o caminho serial, que não tem o pré-import a proteger a ordem.
         telemetry.track("XTTS", "Pré-montando em RAM (a VRAM só na 1ª voz).")
-        ctx.track_task(asyncio.to_thread(ctx.tts.preparar_ram))
+        ctx.track_boot_task(asyncio.to_thread(ctx.tts.preparar_ram), "Voz para a RAM")
     elif preguicoso and not settings.tts_preparar_ram_no_boot:
         telemetry.track("XTTS", "Carga preguiçosa: só sobe quando houver voz.")
 

@@ -770,6 +770,12 @@ def main() -> int:
         easy_drag=False,          # só a .pywebview-drag-region arrasta — ver docstring
         background_color="#0B0B0D",
         text_select=True,
+        # `shadow=False`: com a região arredondada aplicada, a sombra/borda que o DWM
+        # desenha em volta da janela sem moldura vaza como uma LINHA CLARA de 1px,
+        # mais visível nas quinas — onde a curva da região se afasta do retângulo que
+        # o DWM continua desenhando. O dono viu isso em 2026-08-02. Sem sombra, a
+        # borda é só o recorte da região.
+        shadow=False,
     )
     # ---- bandeja: o X esconde, não encerra --------------------------------
     # Sem isto, fechar a janela custaria os ~36 s de boot para reabrir — e o app

@@ -129,29 +129,54 @@ async def test_fundo_vazio_quando_nada_roda():
     assert ctx.tarefas_de_fundo() == []
 
 
-async def test_fundo_ignora_lacos_perpetuos():
-    """O `scheduler.run_forever` também é tracked e NUNCA retorna. Contá-lo como
-    pendente prenderia a tela de boot para sempre."""
+async def test_trabalho_de_runtime_nao_conta_como_boot():
+    """A REGRESSÃO de 2026-08-02, travada em teste.
+
+    A primeira versão varria TODAS as tarefas retidas, excluindo uma lista de laços
+    perpétuos. Só que o app cria trabalho de fundo o tempo todo em runtime — a
+    passada de consolidação do scheduler, o ETL do idle — e nada disso é boot. A
+    tela ficou presa em 80% esperando uma fila que nunca esvazia; o dono viu
+    "180s · faltando: Rede, Índice e ajustes" numa janela que já estava pronta.
+
+    Lista de PERMISSÃO conserta: "o boot terminou?" é pergunta sobre um conjunto
+    FECHADO, e nada criado depois pode entrar nele por acidente."""
     ctx = AppContext(settings=settings)
-    tarefa = ctx.track_task(run_forever())
+    perpetua = ctx.track_task(run_forever())        # o scheduler
+    runtime = ctx.track_task(_dormir_para_sempre())  # consolidação / ETL do idle
     try:
         assert ctx.tarefas_de_fundo() == []
     finally:
-        tarefa.cancel()
+        perpetua.cancel()
+        runtime.cancel()
 
 
 async def test_fundo_reporta_rotulo_legivel():
-    """O dono pediu para saber em QUE etapa está — então o nome sai traduzido."""
+    """O dono pediu para saber em QUE etapa está — então o rótulo é declarado
+    no despacho, não adivinhado pelo nome da corrotina."""
     ctx = AppContext(settings=settings)
-    tarefa = ctx.track_task(_malha_e_sync())
+    tarefa = ctx.track_boot_task(_malha_e_sync(), "Malha e índice")
     try:
         assert ctx.tarefas_de_fundo() == ["Malha e índice"]
     finally:
         tarefa.cancel()
 
 
-async def test_fundo_esvazia_quando_a_tarefa_termina():
+async def test_boot_e_runtime_convivem():
+    """Só a do boot aparece, mesmo com runtime rodando ao lado."""
     ctx = AppContext(settings=settings)
-    ctx.track_task(asyncio.sleep(0))
+    boot = ctx.track_boot_task(_malha_e_sync(), "Malha e índice")
+    runtime = ctx.track_task(_dormir_para_sempre())
+    try:
+        assert ctx.tarefas_de_fundo() == ["Malha e índice"]
+    finally:
+        boot.cancel()
+        runtime.cancel()
+
+
+async def test_fundo_esvazia_quando_a_tarefa_termina():
+    """E a entrada some do dicionário — importa num processo que fica dias no ar."""
+    ctx = AppContext(settings=settings)
+    ctx.track_boot_task(asyncio.sleep(0), "Modelo na GPU")
     await asyncio.sleep(0.05)
     assert ctx.tarefas_de_fundo() == []
+    assert ctx._rotulo_boot == {}
