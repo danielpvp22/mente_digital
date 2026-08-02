@@ -51,11 +51,20 @@ SUPER = 8                        # fator de superamostragem (ver docstring)
 # quebrado, que é o que faz ícone parecer borrado a 125% (a escala do dono).
 TAMANHOS_ICO: tuple[int, ...] = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
-VARIANTES = ("letras", "letras_faisca", "monograma", "assinado",
+VARIANTES = ("letras", "empilhado", "letras_faisca", "monograma", "assinado",
              "vazado", "faisca", "neural")
 
-# A marca oficial (escolha do dono, 2026-08-02): o "MD" solto, sem azulejo,
-# preenchido pelo degradê. `MENTE_APP_ICONE=<variante>` troca sem tocar em código.
+# A marca oficial (escolha do dono, 2026-08-02): "MD" DEITADO, sem azulejo,
+# preenchido pelo degradê.
+#
+# Escolhido com a alternativa na mão, não por omissão: ele comparou com a barra
+# de tarefas dele (Discord, Spotify, VS Code) e pediu "sem fundo, igual esses".
+# Como aqueles são glifos que ocupam o slot inteiro e o "MD" deitado é ~2:1
+# (usa metade da altura), desenhei o `empilhado` para preencher o quadrado — e
+# ele preferiu o deitado mesmo assim, vendo os dois lado a lado nos tamanhos
+# reais. Ou seja: o ícone ser mais baixo que os vizinhos é TRADEOFF ACEITO, não
+# descuido. Não "consertar" isso trocando o padrão.
+# `MENTE_APP_ICONE=<variante>` troca sem tocar em código.
 VARIANTE_PADRAO = "letras"
 
 # Entra no NOME do arquivo gerado. Sem isto, mexer no desenho não teria efeito
@@ -311,6 +320,30 @@ def _v_letras(lado: int, paradas):
     return grad
 
 
+def _v_empilhado(lado: int, paradas):
+    """"M" sobre "D", sem fundo — a marca que PREENCHE o quadrado do ícone.
+
+    Nasceu de uma comparação do dono com a barra de tarefas dele (2026-08-02):
+    os ícones vizinhos (Discord, Spotify, VS Code) são glifos sem azulejo que
+    ocupam o slot inteiro. O "MD" deitado é ~2:1 e, num slot quadrado, sobra
+    metade da altura vazia — ele fica visivelmente menor que os vizinhos, mesmo
+    tendo o mesmo tamanho de arquivo.
+
+    Empilhado, a MESMA altura de letra (largura do slot ÷ 2) passa a usar as duas
+    metades do quadrado. Não é o ícone "maior": é o mesmo, com o vazio ocupado.
+    """
+    from PIL import ImageChops
+
+    desloca = int(lado * 0.25)
+    cima = ImageChops.offset(_mascara_texto(lado, "M", altura_rel=0.44, largura_rel=0.98),
+                             0, -desloca)
+    baixo = ImageChops.offset(_mascara_texto(lado, "D", altura_rel=0.44, largura_rel=0.82),
+                              0, desloca)
+    grad = _gradiente(lado, paradas).convert("RGBA")
+    grad.putalpha(ImageChops.lighter(cima, baixo))
+    return grad
+
+
 def _v_letras_faisca(lado: int, paradas):
     """O mesmo "MD" solto, com a faísca de IA sobrescrita na quina do D."""
     from PIL import Image, ImageChops, ImageDraw
@@ -325,7 +358,8 @@ def _v_letras_faisca(lado: int, paradas):
     return grad
 
 
-_DESENHOS = {"letras": _v_letras, "letras_faisca": _v_letras_faisca,
+_DESENHOS = {"letras": _v_letras, "empilhado": _v_empilhado,
+             "letras_faisca": _v_letras_faisca,
              "monograma": _v_monograma, "assinado": _v_assinado,
              "vazado": _v_vazado, "faisca": _v_faisca, "neural": _v_neural}
 

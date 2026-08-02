@@ -149,6 +149,29 @@ def test_variante_padrao_e_a_escolhida_pelo_dono():
     assert marca.VARIANTE_PADRAO in marca.VARIANTES
 
 
+def test_a_marca_oficial_nao_tem_fundo():
+    """Requisito explícito do dono: sem azulejo, como os ícones vizinhos na barra
+    de tarefas dele. Um azulejo voltando passaria despercebido em diff."""
+    alfa = marca.desenhar_marca(64, marca.VARIANTE_PADRAO).getchannel("A")
+    assert all(alfa.getpixel(xy) == 0 for xy in ((0, 0), (63, 0), (0, 63), (63, 63)))
+
+
+def test_empilhado_existe_e_preenche_o_quadrado():
+    """A alternativa que o dono VIU e recusou, mantida no catálogo.
+
+    Ela existe porque "sem fundo igual aos vizinhos" tem duas metades, e o
+    deitado só atende uma: os ícones da barra dele ocupam o slot inteiro, e o
+    "MD" deitado (~2:1) usa metade da altura. Ele escolheu o deitado assim mesmo,
+    com os dois lado a lado nos tamanhos reais — então isto NÃO é o padrão. Fica
+    testado para continuar sendo uma troca de uma variável de ambiente."""
+    alfa = marca.desenhar_marca(64, "empilhado").getchannel("A")
+    caixa = alfa.getbbox()                      # (x0, y0, x1, y1) do não-transparente
+    altura, largura = caixa[3] - caixa[1], caixa[2] - caixa[0]
+    assert altura / 64 > 0.85                   # usa a altura toda
+    assert 0.55 < largura / altura < 1.45       # aproximadamente quadrado
+    assert alfa.getpixel((0, 0)) == 0           # e continua sem fundo
+
+
 def test_env_troca_a_variante(monkeypatch):
     monkeypatch.setenv("MENTE_APP_ICONE", "faisca")
     assert marca.variante_configurada() == "faisca"
