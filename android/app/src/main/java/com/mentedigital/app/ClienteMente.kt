@@ -97,15 +97,23 @@ class ClienteMente(
         if (!querendoConectar) return
         val espera = Backoff.esperaMs(tentativas)
         tentativas++
+        // RASTRO OBRIGATÓRIO. Isto age sozinho, em segundo plano, e o sintoma de
+        // estar errado ("o app não volta") é idêntico ao de estar certo mas o
+        // servidor estar fora. Sem esta linha, distinguir os dois exigiria
+        // reencenar a queda inteira com um depurador acoplado.
+        Log.i(TAG, "reconexão #$tentativas em ${espera}ms")
         laco.schedule({ if (querendoConectar) abrir() }, espera, TimeUnit.MILLISECONDS)
     }
 
     private inner class Ouvinte : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            val reconexao = tentativas > 0
             tentativas = 0
             // SEMPRE, e antes de qualquer outra coisa. Ver ponto 2 do KDoc.
-            webSocket.send(Envio.setConversa(conversaId()))
+            val id = conversaId()
+            webSocket.send(Envio.setConversa(id))
+            Log.i(TAG, if (reconexao) "RECONECTADO; set_conversa=$id" else "conectado; set_conversa=$id")
             aoMudarConexao(Conexao.ABERTO, "")
         }
 
