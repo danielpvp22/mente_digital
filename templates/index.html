@@ -206,6 +206,17 @@
             padding: 12px 16px; font-size: 15px; outline: none; transition: .2s;
         }
         #av-busca:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        /* Filtros do vault. `flex-wrap` porque a janela nativa nasce com 430 px
+           de largura: sem ele os três seletores estouram a lateral. */
+        #av-filtros { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+        #av-filtros select, #av-filtros button {
+            background: var(--sup); color: var(--txt); border: 1px solid var(--linha);
+            border-radius: 14px; padding: 7px 11px; font-size: 12.5px; font-family: inherit;
+            outline: none; cursor: pointer; transition: .18s; max-width: 100%;
+        }
+        #av-filtros select:hover, #av-filtros button:hover { border-color: var(--acc); }
+        #av-filtros select:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        #av-filtros button { color: var(--txt2); }
         .av-item {
             background: var(--sup); border: 1px solid var(--linha); border-radius: 16px; padding: 12px 14px;
             cursor: pointer; transition: .18s var(--curva);
@@ -489,6 +500,23 @@
             <section class="av-secao on" id="av-fontes"></section>
             <section class="av-secao" id="av-vault">
                 <input id="av-busca" placeholder="Buscar nas suas notas…" autocomplete="off">
+                <!-- Filtros (pedido do dono, 2026-08-02). As opções de pasta e
+                     origem são MONTADAS a partir de /api/vault/facetas, não
+                     escritas aqui: uma pasta nova no vault aparece sozinha, e
+                     uma família sem nota nenhuma não é oferecida — oferecer um
+                     filtro que devolve zero faz o usuário achar que quebrou. -->
+                <div id="av-filtros">
+                    <select id="av-f-pasta" title="Pasta do vault"></select>
+                    <select id="av-f-origem" title="De onde a nota veio"></select>
+                    <select id="av-f-dias" title="Quando a nota foi colhida">
+                        <option value="0">Qualquer data</option>
+                        <option value="1">Colhidas hoje</option>
+                        <option value="7">Últimos 7 dias</option>
+                        <option value="30">Últimos 30 dias</option>
+                        <option value="90">Últimos 90 dias</option>
+                    </select>
+                    <button id="av-f-limpar" type="button" hidden>limpar</button>
+                </div>
                 <div id="av-lista"></div>
             </section>
             <section class="av-secao" id="av-sistema"></section>
@@ -1147,31 +1175,87 @@
 
         // --- aba 2: navegador do vault ---
         let buscaTimer = null;
+        let facetasCarregadas = false;
         document.getElementById('av-busca').addEventListener('input', () => {
             clearTimeout(buscaTimer); buscaTimer = setTimeout(buscarVault, 350);
         });
+        // Os filtros NÃO usam debounce: um <select> muda por escolha deliberada,
+        // não por digitação, e esperar 350 ms depois do clique parece travamento.
+        ['av-f-pasta', 'av-f-origem', 'av-f-dias'].forEach(id => {
+            document.getElementById(id).addEventListener('change', buscarVault);
+        });
+        document.getElementById('av-f-limpar').addEventListener('click', () => {
+            document.getElementById('av-f-pasta').value = '';
+            document.getElementById('av-f-origem').value = '';
+            document.getElementById('av-f-dias').value = '0';
+            buscarVault();
+        });
+
+        function filtrosVault() {
+            return {
+                pasta: document.getElementById('av-f-pasta').value,
+                origem: document.getElementById('av-f-origem').value,
+                dias: document.getElementById('av-f-dias').value,
+            };
+        }
+
+        async function carregarFacetas() {
+            // Uma vez por sessão: a varredura custa ~1,6 s no vault do dono
+            // (24.838 notas) e o servidor já a cacheia por 2 min. Falhar aqui
+            // deixa os filtros vazios e a busca segue funcionando sem eles.
+            if (facetasCarregadas) return;
+            try {
+                const res = await fetch('/api/vault/facetas', { headers: apiHeaders() });
+                const d = await res.json();
+                const opt = (v, t) => `<option value="${escapeHtml(v)}">${escapeHtml(t)}</option>`;
+                document.getElementById('av-f-pasta').innerHTML =
+                    opt('', 'Todas as pastas') + d.pastas.map(p => opt(p.valor, `${p.valor} (${p.n})`)).join('');
+                document.getElementById('av-f-origem').innerHTML =
+                    opt('', 'Toda origem') + d.familias.map(f => opt(f.valor, `${f.rotulo} (${f.n})`)).join('');
+                facetasCarregadas = true;
+            } catch (err) { /* filtros ficam vazios; a busca continua */ }
+        }
 
         async function buscarVault() {
+            carregarFacetas();
             const q = document.getElementById('av-busca').value.trim();
+            const f = filtrosVault();
+            const ativo = !!(f.pasta || f.origem || f.dias !== '0');
+            document.getElementById('av-f-limpar').hidden = !ativo;
             const lista = document.getElementById('av-lista');
             lista.innerHTML = '<div class="av-vazio">Buscando…</div>';
             try {
-                const res = await fetch('/api/notas?k=30&q=' + encodeURIComponent(q), { headers: apiHeaders() });
+                const p = new URLSearchParams({ k: 30, q, pasta: f.pasta, origem: f.origem, dias: f.dias });
+                const res = await fetch('/api/notas?' + p.toString(), { headers: apiHeaders() });
                 const d = await res.json();
                 lista.innerHTML = '';
-                if (!d.itens.length) { lista.innerHTML = '<div class="av-vazio">Nada encontrado.</div>'; return; }
+                if (!d.itens.length) {
+                    // Distingue "não existe" de "seus filtros cortaram" — sem isso o
+                    // usuário conclui que a busca quebrou e não que ele mesmo filtrou.
+                    lista.innerHTML = ativo
+                        ? '<div class="av-vazio">Nada com estes filtros. Tente limpar um deles.</div>'
+                        : '<div class="av-vazio">Nada encontrado.</div>';
+                    return;
+                }
                 const cab = document.createElement('div');
                 cab.className = 'av-titulo';
                 // Diz QUAL busca rodou: a semântica é a mesma que o assistente usa,
                 // então esta tela também serve para depurar o RAG, não só navegar.
-                cab.textContent = d.modo === 'semantica'
+                let texto = d.modo === 'semantica'
                     ? 'Busca semântica — a mesma do assistente' : 'Notas modificadas mais recentemente';
+                if (d.total_filtrado != null && d.total_filtrado > d.itens.length)
+                    texto += ` — ${d.itens.length} de ${d.total_filtrado}`;
+                cab.textContent = texto;
                 lista.appendChild(cab);
                 d.itens.forEach(it => {
                     const div = document.createElement('div');
                     div.className = 'av-item';
                     const dist = it.dist != null ? `<span class="av-tag">${it.dist}</span>` : '';
-                    div.innerHTML = `<div class="t">${dist}${escapeHtml(it.nome)}</div>`
+                    // A origem e a data COLHIDA viram etiqueta: é o que responde
+                    // "de onde veio isto?" sem precisar abrir a nota.
+                    const fam = it.familia ? `<span class="av-tag">${escapeHtml(it.familia)}</span>` : '';
+                    const dt = it.colhido_em ? `<span class="av-tag">${escapeHtml(it.colhido_em)}</span>` : '';
+                    div.innerHTML = `<div class="t">${dist}${fam}${dt}${escapeHtml(it.nome)}</div>`
                                   + (it.trecho ? `<div class="s">${escapeHtml(it.trecho)}…</div>` : '');
                     div.onclick = () => abrirNota(it.caminho);
                     lista.appendChild(div);

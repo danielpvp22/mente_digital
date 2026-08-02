@@ -12,6 +12,7 @@ import asyncio
 import gc
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -33,6 +34,7 @@ from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noq
 from mente_digital import rede  # noqa: E402
 from mente_digital.scheduler import SchedulerService  # noqa: E402
 from mente_digital.state import AppContext  # noqa: E402
+from mente_digital import vault_filtros  # noqa: E402
 from mente_digital.telemetry import db, telemetry  # noqa: E402
 from mente_digital.ws import LiveSession  # noqa: E402
 
@@ -458,38 +460,112 @@ async def ler_nota(caminho: str, request: Request):
     })
 
 
+# Varredura do vault para os FILTROS do navegador (pasta/origem/data). Medido no
+# vault do dono: 24.838 notas, 0,16 s para o rglob e 1,6 s lendo o frontmatter de
+# todas. Rápido para uma passada, caro para cada tecla digitada — daí o cache com
+# TTL. Não é invalidação por conteúdo de propósito: o painel é ferramenta de
+# navegação, e ver uma nota nascida há 90 s só no próximo minuto é irrelevante
+# perto de varrer o disco a cada requisição.
+_VAULT_TTL_SEGUNDOS = 120.0
+_vault_cache: dict = {"t": 0.0, "itens": [], "por_caminho": {}}
+
+
+def _varrer_vault() -> dict:
+    """(bloqueante) Caminho, mtime e cabeçalho de cada nota. Vai em to_thread."""
+    agora = time.time()
+    if _vault_cache["itens"] and agora - _vault_cache["t"] < _VAULT_TTL_SEGUNDOS:
+        return _vault_cache
+    raiz = Path(settings.caminho_obsidian)
+    itens = []
+    for p in raiz.rglob("*.md"):
+        try:
+            rel = str(p.relative_to(raiz)).replace("\\", "/")
+            mtime = p.stat().st_mtime
+        except OSError:                      # sumiu entre o rglob e o stat
+            continue
+        meta = vault_filtros.descrever(rel, vault_filtros.ler_cabecalho(p))
+        meta.update({"caminho": rel, "nome": p.stem, "mtime": mtime})
+        itens.append(meta)
+    itens.sort(key=lambda m: m["mtime"], reverse=True)
+    _vault_cache.update({"t": agora, "itens": itens,
+                         "por_caminho": {m["caminho"]: m for m in itens}})
+    return _vault_cache
+
+
+def _desde(dias: int) -> str:
+    """A data ISO de corte, ou "" quando não há filtro de data."""
+    if dias <= 0:
+        return ""
+    return (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
+
+
+@app.get("/api/vault/facetas", dependencies=[Depends(exigir_acesso)])
+async def facetas_do_vault(request: Request):
+    """As opções dos filtros, contadas a partir dos DADOS.
+
+    A tela não traz lista fixa: uma pasta nova aparece sozinha, e uma família sem
+    nota nenhuma não é oferecida numa lista que devolveria zero resultados."""
+    cache = await asyncio.to_thread(_varrer_vault)
+    return JSONResponse(content=vault_filtros.contar_facetas(cache["itens"]))
+
+
 @app.get("/api/notas", dependencies=[Depends(exigir_acesso)])
-async def buscar_notas(q: str = "", k: int = 30, request: Request = None):
+async def buscar_notas(q: str = "", k: int = 30, pasta: str = "", origem: str = "",
+                       dias: int = 0, request: Request = None):
     """Busca no vault para o navegador do modo avançado.
 
     Usa a MESMA recuperação vetorial do assistente (`VectorStore.recuperar`) em vez
     de varrer os ~24.700 arquivos: além de ser rápido, é honesto — o que aparece
     aqui é o que o RAG realmente enxerga, então a tela serve para DEPURAR a busca,
     não só para navegar. Sem `q`, devolve as notas modificadas mais recentemente,
-    que é o "o que mudou por aqui" útil na abertura do painel."""
-    ctx = get_ctx(request)
+    que é o "o que mudou por aqui" útil na abertura do painel.
+
+    `pasta`/`origem`/`dias` filtram (ver vault_filtros.py). O filtro é aplicado
+    DEPOIS da recuperação vetorial, não dentro dela, e isso é deliberado: o
+    `where` do Chroma não alcança `origem` nem `colhido_em` (o índice guarda só
+    `source`/`mtime` — rag.py:273), e mover esses campos para o índice custaria
+    reindexar 24 mil notas. Com filtro ativo a busca pede MAIS candidatos ao
+    vetorial para não devolver três resultados por causa do corte."""
     k = max(1, min(int(k or 30), 100))
+    corte = _desde(int(dias or 0))
+    filtrando = bool(pasta or origem or corte)
+
     if not q.strip():
-        raiz = Path(settings.caminho_obsidian)
+        cache = await asyncio.to_thread(_varrer_vault)
+        itens = [m for m in cache["itens"] if vault_filtros.passa(m, pasta, origem, corte)]
+        return JSONResponse(content={
+            "modo": "recentes", "total_filtrado": len(itens),
+            "itens": [{"caminho": m["caminho"], "nome": m["nome"], "trecho": "",
+                       "dist": None, "familia": m["familia"],
+                       "colhido_em": m["colhido_em"]} for m in itens[:k]],
+        })
 
-        def _recentes() -> list:
-            arquivos = sorted(raiz.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:k]
-            return [{"caminho": str(p.relative_to(raiz)).replace("\\", "/"),
-                     "nome": p.stem, "trecho": "", "dist": None} for p in arquivos]
-
-        return JSONResponse(content={"itens": await asyncio.to_thread(_recentes), "modo": "recentes"})
-
-    docs = await ctx.vectorstore.recuperar(q, k=k) or []
+    # O container só é preciso DAQUI para baixo: listar arquivos por data não
+    # depende do vetorial, e pedi-lo lá em cima acoplava o modo "recentes" a um
+    # serviço que ele não usa.
+    ctx = get_ctx(request)
+    # Sobre-busca só quando há filtro: sem ele, pedir 4× seria pagar HNSW à toa.
+    docs = await ctx.vectorstore.recuperar(q, k=min(k * 4, 400) if filtrando else k) or []
+    cache = await asyncio.to_thread(_varrer_vault) if filtrando else None
     itens = []
     for doc, dist in docs:
-        origem = (getattr(doc, "metadata", {}) or {}).get("source", "")
+        origem_doc = (getattr(doc, "metadata", {}) or {}).get("source", "")
+        caminho = origem_doc.replace("\\", "/")
+        meta = (cache["por_caminho"].get(caminho) if cache else None) or {}
+        if filtrando and not vault_filtros.passa(meta, pasta, origem, corte):
+            continue
         itens.append({
-            "caminho": origem.replace("\\", "/"),
-            "nome": Path(origem).stem if origem else "(sem origem)",
+            "caminho": caminho,
+            "nome": Path(origem_doc).stem if origem_doc else "(sem origem)",
             "trecho": (getattr(doc, "page_content", "") or "")[:280],
             "dist": round(float(dist), 4),
+            "familia": meta.get("familia", ""),
+            "colhido_em": meta.get("colhido_em", ""),
         })
-    return JSONResponse(content={"itens": itens, "modo": "semantica"})
+        if len(itens) >= k:
+            break
+    return JSONResponse(content={"itens": itens, "modo": "semantica",
+                                 "candidatos": len(docs)})
 
 
 @app.get("/api/historico", dependencies=[Depends(exigir_acesso)])
