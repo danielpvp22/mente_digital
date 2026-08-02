@@ -553,6 +553,39 @@ def arredondar_janela(janela, raio: int = RAIO_JANELA) -> bool:
         return False
 
 
+APP_ID = "MenteDigital.Assistente.Local.1"     # ver `identidade_windows`
+TITULO = "Mente Digital"                       # o nome que a barra de tarefas mostra
+
+
+def identidade_windows(app_id: str = APP_ID) -> bool:
+    """Declara ao Windows que este processo é um APLICATIVO próprio.
+
+    Sem isto, a barra de tarefas identifica a janela pelo executável — que aqui é
+    o `python.exe` da env conda. Consequências visíveis, todas as três:
+    o ícone vira a cobrinha do Python (o pywebview até tenta: sem `icon`, ele
+    EXTRAI o ícone de `sys.executable` — winforms.py:247), o balão de passar o
+    mouse mostra o agrupamento do Python, e fixar na barra fixa o interpretador,
+    não o app. Um AppUserModelID próprio separa os três.
+
+    ⚠ Tem de rodar ANTES de a primeira janela existir: o Windows lê o ID no
+    momento em que a janela é registrada na barra, e mudá-lo depois não
+    reetiqueta o que já foi criado.
+
+    Fail-soft: fora do Windows, ou se a chamada falhar, devolve False e o app
+    segue exatamente como antes — com o ícone do interpretador.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        return True
+    except Exception as exc:                       # noqa: BLE001 - cosmético
+        print(f"[APP] não consegui declarar a identidade na barra de tarefas: {exc}")
+        return False
+
+
 def _porta_responde(host: str, porta: int) -> bool:
     import socket
 
@@ -756,11 +789,18 @@ def main() -> int:
 
     import webview
 
+    from mente_digital import marca
+
+    # Antes de `create_window`: o Windows etiqueta a janela na barra de tarefas
+    # no instante em que ela nasce (ver docstring de `identidade_windows`).
+    identidade_windows()
+    icone = marca.caminho_ico(BASE_DIR)
+
     geo = ler_geometria((args.largura, args.altura))
     ponte = Ponte()
     voz_preguicosa = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
     janela = webview.create_window(
-        "Mente Digital",
+        TITULO,
         html=_montar_splash(voz_preguicosa),
         js_api=ponte,
         width=geo["largura"], height=geo["altura"],
@@ -859,6 +899,13 @@ def main() -> int:
         # de microfone entre execuções. Ver docstring do módulo.
         private_mode=False,
         storage_path=str(BASE_DIR / "dados" / "app_webview"),
+        # ⚠ O docstring do pywebview diz que `icon` é "supported only on GTK/QT"
+        # (__init__.py:205) — está DESATUALIZADO. O backend WinForms lê
+        # `_state['icon']` e monta o `Icon` do formulário (winforms.py:243-244);
+        # o mesmo trecho mostra que, sem ele, o fallback é extrair o ícone do
+        # `sys.executable`. Passar o caminho é o que troca a cobrinha do Python
+        # pela marca. `str()` porque a checagem é `os.path.isfile`.
+        icon=str(icone),
         debug=bool(os.environ.get("MENTE_APP_DEBUG")),
     )
     return 0

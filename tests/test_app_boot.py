@@ -75,6 +75,27 @@ def test_rotulo_final():
 
 
 # --------------------------------------------------------------------------- #
+# Identidade na barra de tarefas                                               #
+# --------------------------------------------------------------------------- #
+def test_identidade_windows_nunca_levanta(monkeypatch):
+    """Rodada no caminho crítico do boot, antes da janela existir. Se o shell32
+    recusar (política de grupo, Windows antigo, Wine), o app tem de abrir assim
+    mesmo — só com o ícone do interpretador, que é o estado anterior."""
+    monkeypatch.setattr(app.os, "name", "posix")
+    assert app.identidade_windows() is False
+
+
+def test_app_id_nao_e_o_titulo():
+    """São coisas diferentes e é fácil confundir: o AppUserModelID identifica o
+    APLICATIVO para o Windows (agrupamento, fixar na barra, jump list) e nunca é
+    exibido; o título é o texto que a barra de tarefas mostra ao passar o mouse.
+    Um AppUserModelID com espaço/acento quebra o agrupamento em silêncio."""
+    assert app.TITULO == "Mente Digital"
+    assert " " not in app.APP_ID
+    assert app.APP_ID.isascii()
+
+
+# --------------------------------------------------------------------------- #
 # Splash                                                                       #
 # --------------------------------------------------------------------------- #
 def test_splash_nao_deixa_placeholder():
