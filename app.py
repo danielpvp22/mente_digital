@@ -496,13 +496,52 @@ def arredondar_janela(janela, raio: int = RAIO_JANELA) -> bool:
     try:
         import ctypes
 
-        hwnd = int(janela.native.Handle)
-        largura, altura = int(janela.width), int(janela.height)
+        # `Handle` é um System.IntPtr do .NET (pythonnet), e `int()` não o converte:
+        # "int() argument must be ... not 'IntPtr'" — medido em 2026-08-02. O
+        # `ToInt64()` é o caminho oficial; o `int()` fica de reserva para o dia em
+        # que o pywebview trocar de backend e devolver um inteiro puro.
+        from ctypes import wintypes
+
+        bruto = janela.native.Handle
+        hwnd = bruto.ToInt64() if hasattr(bruto, "ToInt64") else int(bruto)
         gdi32, user32 = ctypes.windll.gdi32, ctypes.windll.user32
+        # ⚠ O TAMANHO VEM DO WIN32, não de `janela.width/height`.
+        # O pywebview reporta pixels LÓGICOS (CSS); o `SetWindowRgn` trabalha em
+        # pixels FÍSICOS. Numa tela a 150% de escala, os 430x900 lógicos viram
+        # 645x1350 físicos — e a região de 430x900 RECORTAVA a janela, deixando o
+        # canto inferior direito preto. Foi o que o dono viu em 2026-08-02: "o app
+        # não ocupa o espaço todo dele". `GetWindowRect` já devolve físico, então
+        # funciona em qualquer escala sem consultar o DPI.
+        rect = wintypes.RECT()
+        user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+        if not user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
+            return False
+        largura, altura = rect.right - rect.left, rect.bottom - rect.top
+        if largura <= 0 or altura <= 0:
+            return False
         gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
         # +1 em cada extremo: a API trata o canto inferior/direito como EXCLUSIVO,
         # e sem isso some uma coluna e uma linha de pixel da janela.
-        regiao = gdi32.CreateRoundRectRgn(0, 0, largura + 1, altura + 1, raio, raio)
+        # O raio é lógico e precisa virar físico, senão o canto fica visivelmente
+        # menos curvo numa tela a 150% do que numa a 100%. Perguntamos o DPI DIRETO
+        # ao Windows em vez de inferi-lo dividindo tamanhos: a inferência dependia
+        # de `janela.width` estar em unidade lógica, o que varia com o backend e
+        # deixa de valer se o pywebview mudar. `GetDpiForWindow` responde pelo
+        # monitor ONDE A JANELA ESTÁ — então arrastá-la para um segundo monitor com
+        # outra escala continua certo. Existe desde o Windows 10 1607; em Windows
+        # mais velho a chamada some e caímos em 96 (=100%), que é o comportamento
+        # anterior, não um erro.
+        dpi = 96
+        try:
+            user32.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+            user32.GetDpiForWindow.restype = ctypes.c_uint
+            lido = user32.GetDpiForWindow(ctypes.c_void_p(hwnd))
+            if lido:
+                dpi = lido
+        except (AttributeError, OSError):
+            pass
+        raio_fisico = max(2, int(round(raio * dpi / 96.0)))
+        regiao = gdi32.CreateRoundRectRgn(0, 0, largura + 1, altura + 1, raio_fisico, raio_fisico)
         if not regiao:
             return False
         user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
@@ -532,9 +571,6 @@ def _acompanhar_boot(janela, ponte: Ponte, url: str, ler_marcos, host: str, port
     """Roda numa thread do pywebview: acompanha os marcos, alimenta a tela de
     boot e só troca para o app quando TUDO está pronto."""
     ponte._janela = janela
-    # Cantos arredondados: só depois de a janela existir de fato (aqui já existe —
-    # esta função roda como callback do `webview.start`). Se falhar, segue quadrada.
-    arredondar_janela(janela)
     ultimo = None
     while True:
         prontos, pendentes = ler_marcos()
@@ -577,6 +613,68 @@ def _acompanhar_boot(janela, ponte: Ponte, url: str, ler_marcos, host: str, port
         janela.load_url(url)
     except Exception as exc:                       # noqa: BLE001
         print(f"[APP] não consegui abrir a interface: {exc}")
+
+
+def _api(base: str, rota: str, acao: str, token: str) -> dict:
+    """POST curto nas rotas de controle (/api/energia, /api/idle). Fail-soft:
+    erro devolve {} e quem chama segue — perder um tique de automação é aceitável;
+    derrubar o laço que a mantém viva não é."""
+    import urllib.request
+
+    alvo = base.rstrip("/") + rota
+    req = urllib.request.Request(
+        alvo, method="POST", data=json.dumps({"acao": acao}).encode(),
+        headers={"Content-Type": "application/json", "X-Mente-Token": token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:   # nosec B310 - http(s) fixo
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as exc:                       # noqa: BLE001
+        print(f"[APP] {rota} ({acao}) falhou: {exc}")
+        return {}
+
+
+def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None:
+    """Observa a inatividade do DONO e conduz o ciclo de consolidação.
+
+    Roda em thread própria porque a leitura é um polling de API do Windows — não
+    há evento a assinar. O intervalo é folgado (3 s): a decisão é de minutos, e
+    acordar a CPU cinco vezes por segundo num app que fica aberto o dia inteiro
+    seria o oposto do objetivo.
+
+    A máquina de estados fica em `ocioso.py`, pura. Aqui só se lê o relógio, se
+    chama o Windows e se executa a ação que ela devolve — a separação é o que
+    torna testável um comportamento cujos bugs são todos temporais."""
+    from mente_digital import ocioso
+
+    maquina = ocioso.MaquinaOciosa(
+        segundos_para_perguntar=float(os.environ.get("MENTE_APP_OCIOSO_SEGUNDOS", 300)),
+        segundos_de_resposta=15.0,
+    )
+    bandeja._maquina = maquina        # o item "Agora não" do menu responde por aqui
+    while not parar.wait(3.0):
+        sem_input = ocioso.segundos_sem_input()
+        if sem_input is None:
+            # "Não sei" é tratado como PRESENÇA. Uma leitura que falhou jamais
+            # pode ligar o idle no meio do trabalho do dono.
+            continue
+        acao = maquina.tick(sem_input, time.time())
+        if acao == "perguntar":
+            viu = bandeja.avisar(
+                "Mente Digital",
+                "Você está longe há um tempo. Vou consolidar a memória em 15 s — "
+                "abra o menu da bandeja e escolha 'Agora não' para adiar.",
+            )
+            if not viu:
+                # Sem notificação, o dono não teve chance de ver a pergunta —
+                # então agir sozinho depois de 15 s seria agir às escondidas.
+                maquina.responder(sim=False, agora=time.time())
+        elif acao == "rodar":
+            bandeja.marcar(consolidando=True)
+            _api(base, "/api/idle", "rodar", token)
+        elif acao == "parar":
+            _api(base, "/api/idle", "parar", token)
+            bandeja.marcar(consolidando=False)
 
 
 def _argumentos() -> argparse.Namespace:
@@ -666,8 +764,84 @@ def main() -> int:
         background_color="#0B0B0D",
         text_select=True,
     )
+    # ---- bandeja: o X esconde, não encerra --------------------------------
+    # Sem isto, fechar a janela custaria os ~36 s de boot para reabrir — e o app
+    # foi feito para ficar aberto o dia inteiro. `_sair` é a única saída de
+    # verdade, e vive no menu da bandeja.
+    from mente_digital.bandeja import Bandeja
+
+    parar_laco = threading.Event()
+    encerrando = {"agora": False}
+
+    def _sair() -> None:
+        encerrando["agora"] = True
+        parar_laco.set()
+        bandeja.parar()
+        try:
+            salvar_geometria(janela)
+        except Exception:                          # noqa: BLE001
+            pass
+        janela.destroy()
+
+    def _abrir() -> None:
+        try:
+            janela.show()
+            janela.restore()
+        except Exception as exc:                   # noqa: BLE001
+            print(f"[APP] não consegui trazer a janela: {exc}")
+
+    def _energia() -> None:
+        estado = _api(url, "/api/energia", "desligar" if bandeja.ligado else "ligar", settings.access_token)
+        bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
+
+    def _consolidar() -> None:
+        alvo = "parar" if bandeja.consolidando else "rodar"
+        _api(url, "/api/idle", alvo, settings.access_token)
+        bandeja.marcar(consolidando=(alvo == "rodar"))
+
+    def _adiar() -> None:
+        maquina = getattr(bandeja, "_maquina", None)
+        if maquina is not None:
+            maquina.responder(sim=False, agora=time.time())
+
+    bandeja = Bandeja(ao_abrir=_abrir, ao_sair=_sair,
+                      ao_alternar_energia=_energia, ao_consolidar=_consolidar,
+                      ao_adiar=_adiar)
+
+    def _ao_fechar() -> bool:
+        """Devolver False CANCELA o fechamento (o evento é cancelável no
+        pywebview). Só esconde se houver bandeja — sem ela o usuário ficaria com
+        uma janela invisível e nenhum jeito de trazê-la de volta."""
+        if encerrando["agora"] or not bandeja.ativa:
+            return True
+        salvar_geometria(janela)
+        janela.hide()
+        return False
+
+    janela.events.closing += _ao_fechar
+
+    # Cantos arredondados no `shown`, não antes: o `webview.start` roda o callback
+    # numa thread ANTES de a janela nativa existir, e `janela.native` ainda é None
+    # ali — medido em 2026-08-02 ("'NoneType' object has no attribute 'Handle'").
+    # `shown` é o primeiro instante em que o HWND existe de verdade.
+    # Reaplicado no `resized` porque a região do Windows é fixa em pixels: sem isso,
+    # aumentar a janela deixaria o conteúdo recortado pela região antiga.
+    janela.events.shown += lambda: arredondar_janela(janela)
+    if hasattr(janela.events, "resized"):
+        janela.events.resized += lambda *a: arredondar_janela(janela)
+
+    def _iniciar_fundo() -> None:
+        """Depois do boot: sobe a bandeja e o laço de ociosidade. Encadeado ao
+        `_acompanhar_boot` para não competir com o carregamento dos modelos."""
+        _acompanhar_boot(janela, ponte, url_abrir, ler_marcos, alvo_host, alvo_porta)
+        if bandeja.iniciar():
+            threading.Thread(
+                target=_laco_ocioso, args=(url, settings.access_token, bandeja, parar_laco),
+                daemon=True, name="ocioso",
+            ).start()
+
     webview.start(
-        _acompanhar_boot, (janela, ponte, url_abrir, ler_marcos, alvo_host, alvo_porta),
+        _iniciar_fundo, (),
         # private_mode=False + storage_path: preserva o token (#7) e a permissão
         # de microfone entre execuções. Ver docstring do módulo.
         private_mode=False,

@@ -111,7 +111,13 @@
         .history-item { padding: 11px 14px; border-radius: 12px; cursor: pointer; transition: background .15s; overflow: hidden; }
         .history-item:hover { background: var(--sup2); }
         .history-item.active { background: var(--acc-fraco); }
-        .hi-title { font-size: .89rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* Título de conversa em DUAS linhas, não uma. Em uma linha o titulo vinha
+           do primeiro turno e era cortado quase sempre -- "Como faco para..." nao
+           distingue conversa nenhuma. Duas linhas cabem o suficiente para escolher,
+           e o clamp mantem a lista alinhada. */
+        .hi-title { font-size: .89rem; line-height: 1.35; display: -webkit-box;
+                    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                    overflow-wrap: anywhere; }
         .hi-meta { font-size: .71rem; color: var(--txt2); margin-top: 2px; }
         .history-empty { color: var(--txt2); font-size: .85rem; text-align: center; padding: 34px 16px; line-height: 1.6; }
 
