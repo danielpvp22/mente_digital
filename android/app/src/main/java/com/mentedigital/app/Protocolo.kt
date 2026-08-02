@@ -114,4 +114,10 @@ object Envio {
 
     fun encerrarSessao(): String =
         JSONObject().put("tipo", "end_session").toString()
+
+    /** ⚠ ENVIADO significa "cancele o pipeline"; RECEBIDO significa "esvazie sua
+     *  fila de áudio". Mesmo nome, sentidos opostos — e receber NUNCA pode
+     *  disparar este envio (ws.py:328-332, index.html:884-885). */
+    fun bargeIn(): String =
+        JSONObject().put("tipo", "barge_in").toString()
 }

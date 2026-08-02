@@ -20,6 +20,11 @@ val Texto = Color(0xFFF2F2F3)
 val Texto2 = Color(0xFF8B8F96)
 val Acento = Color(0xFF8AB4F8)
 
+/** A linha divisória do tema escuro — o `rgba(255,255,255,.08)` do index.html.
+ *  ⚠ Declarada ANTES dos `ColorScheme`: propriedade de topo em Kotlin inicializa
+ *  na ordem do arquivo, e usá-la antes daria "must be initialized". */
+val Linha = Color(0x14FFFFFF)
+
 /** O gradiente da marca, para a barra e os acentos. */
 val Degrade = Brush.horizontalGradient(listOf(Azul, Roxo, Rosa))
 
@@ -28,6 +33,7 @@ private val Escuro = darkColorScheme(
     background = Grafite, onBackground = Texto,
     surface = Superficie, onSurface = Texto,
     surfaceVariant = BolhaCor, onSurfaceVariant = Texto,
+    outline = Linha, outlineVariant = Linha,
     error = Rosa,
 )
 
@@ -39,7 +45,20 @@ private val Claro = lightColorScheme(
     error = Rosa,
 )
 
+/**
+ * ⚠ ESCURO POR PADRÃO, e NÃO seguindo o sistema.
+ *
+ * É a mesma decisão do front (`index.html` nasce com `data-tema="escuro"`) e da
+ * janela nativa. O gradiente azul→roxo→rosa foi desenhado sobre #0B0B0D; no
+ * fundo claro ele perde o contraste e o app deixa de parecer o produto. Quem
+ * quiser claro passa `escuro = false` — a paleta clara existe e está calibrada,
+ * só não é o default.
+ */
 @Composable
-fun TemaMenteDigital(escuro: Boolean = isSystemInDarkTheme(), conteudo: @Composable () -> Unit) {
+fun TemaMenteDigital(escuro: Boolean = true, conteudo: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (escuro) Escuro else Claro, content = conteudo)
 }
+
+/** O tema do sistema, para quando o app oferecer a escolha ao dono. */
+@Composable
+fun sistemaPrefereEscuro(): Boolean = isSystemInDarkTheme()

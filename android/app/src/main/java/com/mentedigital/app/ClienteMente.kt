@@ -79,6 +79,11 @@ class ClienteMente(
 
     fun enviar(quadro: String): Boolean = ws?.send(quadro) ?: false
 
+    /** Quadro BINÁRIO: PCM16 LE mono 16 kHz, 1024 amostras. É o que
+     *  `np.frombuffer(raw, dtype=np.int16)` lê em ws.py:312. */
+    fun enviarAudio(pcm: ByteArray): Boolean =
+        ws?.send(okio.ByteString.of(*pcm)) ?: false
+
     fun enviarTexto(t: String): Boolean {
         val limpo = t.trim()
         if (limpo.isEmpty()) return false          // vazio é no-op no servidor

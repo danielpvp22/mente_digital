@@ -40,6 +40,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private var cliente: ClienteMente? = null
 
+    // ------------------------------------------------------------------ voz --
+    var modoVoz by mutableStateOf(false)
+        private set
+    var iaFalando by mutableStateOf(false)
+        private set
+
+    private val reprodutor = Reprodutor()
+    private var quadrosAltos = 0
+    private var bargeEnviado = false
+    private val gravador = Gravador { quadro, n -> tratarQuadro(quadro, n) }
+
     init {
         if (ajustes.conversaId.isEmpty()) ajustes.conversaId = novoId()
     }
@@ -61,8 +72,74 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun desconectar() = cliente?.desconectar()
 
     override fun onCleared() {
+        pararVoz()
         cliente?.desconectar()
         super.onCleared()
+    }
+
+    // --------------------------------------------------------------- modo voz --
+    /** Abre o microfone. Devolve se conseguiu — a permissão é pedida pela UI. */
+    fun iniciarVoz(): Boolean {
+        if (modoVoz) return true
+        reprodutor.iniciar()
+        if (!gravador.iniciar()) {
+            bolhas += Bolha(false, "Não consegui abrir o microfone deste aparelho.", erro = true)
+            reprodutor.parar()
+            return false
+        }
+        quadrosAltos = 0
+        bargeEnviado = false
+        modoVoz = true
+        ServicoVoz.ligar(getApplication())
+        return true
+    }
+
+    fun pararVoz() {
+        if (!modoVoz && !gravador.ativo) return
+        ServicoVoz.desligar(getApplication())
+        gravador.parar()
+        reprodutor.parar()
+        modoVoz = false
+        iaFalando = false
+        // O servidor consolida o conhecimento no `end_session` (ws.py:222-246).
+        // O disconnect já é rede de segurança, mas avisar é o certo.
+        cliente?.enviar(Envio.encerrarSessao())
+    }
+
+    fun alternarVoz(): Boolean = if (modoVoz) { pararVoz(); false } else iniciarVoz()
+
+    /**
+     * Um quadro de 1024 amostras saiu do microfone. Roda na thread do gravador.
+     *
+     * ⚠ A REGRA MAIS FÁCIL DE ERRAR do plano (§4.2c): enquanto a IA FALA, o app
+     * NÃO envia PCM — só roda o detector local de barge-in. É o que o navegador
+     * faz (index.html:988-1003), e o motivo é o eco: mandar o áudio do
+     * alto-falante de volta faria o servidor ouvir a própria voz e se cortar.
+     *
+     * Os limiares do CLIENTE são maiores que os do servidor de propósito
+     * (0,12/4 aqui contra 0,02/8 lá, index.html:969-975): aqui o microfone capta
+     * a voz do dono direto; lá o servidor precisa tolerar eco atenuado.
+     */
+    private fun tratarQuadro(quadro: ShortArray, n: Int) {
+        val falando = reprodutor.falando
+        if (falando != iaFalando) viewModelScope.launch { iaFalando = falando }
+
+        if (falando) {
+            if (Wav.rms(quadro, n) >= BARGE_RMS) {
+                quadrosAltos++
+                if (quadrosAltos >= BARGE_QUADROS && !bargeEnviado) {
+                    bargeEnviado = true
+                    reprodutor.esvaziar()          // cala AQUI, sem esperar a volta
+                    cliente?.enviar(Envio.bargeIn())
+                }
+            } else {
+                quadrosAltos = 0
+            }
+            return                                  // ⚠ NÃO envia PCM. Ver KDoc.
+        }
+        quadrosAltos = 0
+        bargeEnviado = false
+        cliente?.enviarAudio(Gravador.paraBytes(quadro, n))
     }
 
     // ---------------------------------------------------------------- enviar --
@@ -141,10 +218,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 "carregar_conversa" -> m.id?.let { abrirConversa(it) }
                 else -> Unit          // histórico/live: sem efeito na Fase 1
             }
-            // Fase 2. Reconhecidos para não caírem em Desconhecida — e o
-            // `barge_in` recebido NÃO gera envio (fecharia laço, ws.py:328-332).
-            is MensagemServidor.Audio -> Unit
-            MensagemServidor.BargeIn -> Unit
+            is MensagemServidor.Audio -> {
+                // Um WAV COMPLETO por frase. A taxa vem do cabeçalho, nunca de
+                // constante (Wav.kt explica por quê).
+                val bytes = try {
+                    android.util.Base64.decode(m.base64, android.util.Base64.DEFAULT)
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+                val pcm = bytes?.let { Wav.ler(it) }
+                if (pcm == null) android.util.Log.w("ChatVM", "áudio ilegível, descartado")
+                else reprodutor.enfileirar(pcm)
+            }
+            // ⚠ Esvaziar a fila e MAIS NADA. Reenviar `barge_in` ao recebê-lo
+            // fecha um laço cliente↔servidor (ws.py:328-332, index.html:884-885)
+            // — e em Kotlin o instinto é ter um `onBargeIn()` só, que trava.
+            MensagemServidor.BargeIn -> reprodutor.esvaziar()
             is MensagemServidor.Desconhecida -> Unit
         }
     }
@@ -168,5 +257,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         /** O id da conversa é gerado pelo CLIENTE (index.html:598), não pelo
          *  servidor — o app é dono do ciclo de vida dela. */
         fun novoId(): String = UUID.randomUUID().toString()
+
+        /** Limiares do CLIENTE, copiados de index.html:975. São MAIORES que os do
+         *  servidor (0,02 / 8 quadros) de propósito — ver `tratarQuadro`. */
+        const val BARGE_RMS = 0.12f
+        const val BARGE_QUADROS = 4
     }
 }

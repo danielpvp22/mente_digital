@@ -1,12 +1,17 @@
 package com.mentedigital.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mentedigital.app.ui.TelaChat
 import com.mentedigital.app.ui.TelaConfig
@@ -40,12 +45,34 @@ class MainActivity : ComponentActivity() {
                         if (tela == Tela.CHAT) vm.conectar()
                     }
 
+                    // A permissão de microfone é pedida no PRIMEIRO toque no
+                    // botão de voz, não na abertura do app: pedir antes de a
+                    // pessoa querer falar é o padrão que faz todo mundo negar.
+                    val pedirMic = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestPermission()
+                    ) { concedida -> if (concedida) vm.iniciarVoz() }
+
+                    val alternarVoz = {
+                        if (vm.modoVoz) {
+                            vm.pararVoz()
+                        } else if (ContextCompat.checkSelfPermission(
+                                this, Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            vm.iniciarVoz()
+                        } else {
+                            pedirMic.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                        Unit
+                    }
+
                     when (tela) {
                         Tela.CONFIG -> TelaConfig(vm) { tela = Tela.CHAT }
                         Tela.CHAT -> TelaChat(
                             vm,
                             aoAbrirConversas = { tela = Tela.CONVERSAS },
                             aoAbrirConfig = { tela = Tela.CONFIG },
+                            aoAlternarVoz = alternarVoz,
                         )
                         Tela.CONVERSAS -> TelaConversas(vm) { tela = Tela.CHAT }
                     }
