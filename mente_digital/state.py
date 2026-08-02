@@ -12,7 +12,7 @@ import contextlib
 import contextvars
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
+from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, List, Optional, Set, Tuple
 
 from mente_digital.config import Settings
 from mente_digital.telemetry import telemetry
@@ -326,6 +326,69 @@ class AppContext:
         if self.etl is not None:
             self.track_task(self.etl.run_idle(itens))
 
+    def tarefas_de_fundo(self) -> List[str]:
+        """Rótulos do trabalho de fundo AINDA em voo — sem os laços perpétuos.
+
+        Existe para a tela de boot do app nativo (app.py). O `_boot` do main.py
+        despacha trabalho que NÃO segura a porta: `llama.load`, `_malha_e_sync`
+        (malha de conceitos + sync do Chroma) e o `preparar_ram` do XTTS. A porta
+        abre antes deles terminarem, então quem só olhasse "os serviços estão
+        `ready`?" anunciaria "tudo pronto" com três jobs disputando GPU e disco.
+
+        Isso não é teórico: medido em 2026-08-02, a primeira pergunta feita logo
+        após o boot decodificou a **44,8 tok/s** contra os 93–113 tok/s das dez
+        amostras anteriores desta máquina, e a busca no vault levou 889 ms contra
+        um p50 de 242 ms. `lock_wait_ms` era 0 — não era fila do executor de GPU,
+        era disputa de recurso bruto com o boot.
+
+        Genérico de propósito: lê o MESMO `_bg_tasks` que `track_task` alimenta,
+        então trabalho de fundo acrescentado no futuro entra na conta sem ninguém
+        precisar lembrar de atualizar uma lista. O que É preciso manter é o
+        conjunto de PERPÉTUAS abaixo — laço que nunca retorna e que, contado como
+        pendente, deixaria a tela de boot presa para sempre."""
+        perpetuas = {"run_forever"}
+        rotulos = {
+            "load": "Modelo na GPU",
+            "_malha_e_sync": "Malha e índice",
+            "sync": "Índice do vault",
+            "reconstruir_malha": "Malha de conceitos",
+            # `asyncio.to_thread(ctx.tts.preparar_ram)` chega aqui como `to_thread`:
+            # o alvo real fica escondido na closure. É o único to_thread que o boot
+            # retém, então o rótulo é seguro — se um segundo aparecer, some o nome.
+            "to_thread": "Voz para a RAM",
+        }
+        pendentes: List[str] = []
+        for task in list(self._bg_tasks):
+            if task.done():
+                continue
+            try:
+                nome = getattr(task.get_coro(), "__qualname__", "") or ""
+            except Exception:                       # noqa: BLE001 - task morrendo
+                continue
+            curto = nome.rsplit(".", 1)[-1]
+            if curto in perpetuas:
+                continue
+            pendentes.append(rotulos.get(curto, curto))
+        return sorted(set(pendentes))
+
+    def _provedor_de_embeddings(self):
+        """O `EmbeddingProvider` de dentro do VectorStore, ou None.
+
+        ⚠ BUG CORRIGIDO em 2026-08-02: isto era um `getattr(vectorstore,
+        "embeddings", None)` inline, mas o `VectorStore.__init__` guarda o
+        provedor em `self._embeddings`, COM underscore (rag.py:708). O getattr
+        devolvia None e o `liberar_vram` pulava o embedding CALADO — desde que a
+        função nasceu, inclusive no caminho do OCR para o qual ela foi escrita.
+        O sintoma era invisível: `liberados` vinha sem "embeddings" e ninguém
+        comparava com o que deveria estar lá.
+
+        O nome público (`embeddings`, sem underscore) fica como primeira opção
+        porque os fakes duck-typed dos testes usam essa forma."""
+        loja = getattr(self, "vectorstore", None)
+        if loja is None:
+            return None
+        return getattr(loja, "embeddings", None) or getattr(loja, "_embeddings", None)
+
     async def liberar_vram(self) -> Set[str]:
         """Descarrega TUDO do projeto que ocupa VRAM — Fase 3 (OCR).
 
@@ -346,8 +409,7 @@ class AppContext:
             liberados.add("llama")     # religa sozinho (ensure_loaded) — não restauramos
         for nome, alvo in (("stt", getattr(self, "stt", None)),
                            ("tts", getattr(self, "tts", None)),
-                           ("embeddings", getattr(getattr(self, "vectorstore", None),
-                                                  "embeddings", None))):
+                           ("embeddings", self._provedor_de_embeddings())):
             if alvo is None or not hasattr(alvo, "unload") or not getattr(alvo, "ready", True):
                 continue
             try:
@@ -366,7 +428,7 @@ class AppContext:
         silencioso. Cada `load` é síncrono, então vai por to_thread."""
         pendentes, self._vram_liberada = set(self._vram_liberada), set()
         for nome in sorted(pendentes):
-            alvo = (getattr(getattr(self, "vectorstore", None), "embeddings", None)
+            alvo = (self._provedor_de_embeddings()
                     if nome == "embeddings" else getattr(self, nome, None))
             if alvo is None:
                 continue
