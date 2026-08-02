@@ -506,8 +506,18 @@
                      uma família sem nota nenhuma não é oferecida — oferecer um
                      filtro que devolve zero faz o usuário achar que quebrou. -->
                 <div id="av-filtros">
-                    <select id="av-f-pasta" title="Pasta do vault"></select>
-                    <select id="av-f-origem" title="De onde a nota veio"></select>
+                    <!-- A opção "todas" nasce no HTML, não só no JS que monta as
+                         facetas: um <select> VAZIO renderiza como um cotoco de
+                         ~28 px, e a varredura do vault leva ~1,6 s na primeira
+                         abertura. Sem isto a tela pisca dois cotocos antes de
+                         virar filtro — e continuaria assim para sempre se
+                         /api/vault/facetas falhasse. -->
+                    <select id="av-f-pasta" title="Pasta do vault">
+                        <option value="">Todas as pastas</option>
+                    </select>
+                    <select id="av-f-origem" title="De onde a nota veio">
+                        <option value="">Toda origem</option>
+                    </select>
                     <select id="av-f-dias" title="Quando a nota foi colhida">
                         <option value="0">Qualquer data</option>
                         <option value="1">Colhidas hoje</option>
