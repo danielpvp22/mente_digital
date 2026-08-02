@@ -27,6 +27,7 @@ from mente_digital import acesso  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
 from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
+from mente_digital import energia  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
 from mente_digital import rede  # noqa: E402
@@ -92,6 +93,10 @@ async def _boot(ctx: AppContext) -> None:
     # carrega JUNTO com os embeddings (7,55 s) — os dois são CPU e independentes, então
     # o boot paga o maior em vez da soma. A ordem em relação ao _preinit_cudnn acima é
     # preservada: o cuDNN do torch já foi fixado antes de o ctranslate2 tocar o dele.
+    # O XTTS custa ~17s de boot e ~1,4 GB de VRAM, e desde o portão de fala
+    # (`state.turno_falado`) uma sessão só de TEXTO nunca o usa. Quem o acorda é o
+    # microfone abrindo (`ws._on_audio`), com o `_falar` esperando o que faltar. O
+    # Piper continua no boot: é CPU, leve, e não disputa VRAM com o LLM.
     if settings.boot_paralelo:
         await asyncio.to_thread(_preimportar_arvores)
         await asyncio.gather(
@@ -224,23 +229,170 @@ async def home(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
 
 
+@app.get("/api/health")
+async def health(request: Request):
+    """Prontidão de cada serviço — a ÚNICA /api sem gate de acesso, de propósito.
+
+    Revela estritamente menos que a rota `/`, que já serve a SPA inteira sem gate
+    nenhum: aqui só saem booleanos, sem caminho, contagem, config ou conteúdo. Em
+    troca ela funciona de onde o gate não deixaria — a tela de boot do app nativo
+    apontada para um servidor remoto, e o healthcheck do container (que bate de
+    fora do loopback e hoje só passa por acidente de `/` não ser gateada).
+
+    `pronto` NÃO exige tudo: sem STT/voz o app responde por texto normalmente, e
+    com o XTTS preguiçoso a voz só sobe quando o microfone abre — esperá-la seria
+    esperar para sempre. O que segura a porta é o que impede PERGUNTAR."""
+    ctx = getattr(request.app.state, "ctx", None)
+    if ctx is None:                       # lifespan ainda montando o container
+        return JSONResponse(content={"pronto": False, "servicos": {}})
+    preguicoso = settings.tts_carga_preguicosa and settings.tts_engine == "xtts"
+    # O boot despacha trabalho que NÃO segura a porta (malha, sync do Chroma, XTTS
+    # para a RAM). Sem reportá-lo, um cliente concluiria "está pronto" enquanto três
+    # jobs disputam GPU e disco — e a primeira pergunta pagaria a conta. Ver
+    # AppContext.tarefas_de_fundo.
+    fundo = ctx.tarefas_de_fundo()
+    servicos = {
+        "servidor": True,
+        "llm": ctx.llama.ready,
+        "vault": ctx.vectorstore.ready,
+        "stt": ctx.stt.ready,
+        "voz": ctx.tts.ready or preguicoso,
+        "porta": True,                    # se esta resposta chegou, a porta atende
+        "fundo": not fundo,
+    }
+    return JSONResponse(content={
+        "pronto": all(servicos.values()),
+        "servicos": servicos,
+        "tarefas_de_fundo": fundo,
+        "motor_voz": settings.tts_engine,
+        "voz_preguicosa": preguicoso,
+    })
+
+
+@app.post("/api/energia", dependencies=[Depends(exigir_acesso)])
+async def energia_endpoint(request: Request):
+    """Liga/desliga os modelos sem fechar o app — o botão de energia da janela.
+
+    O app foi feito para ficar ABERTO o dia inteiro, e entre conversas os modelos
+    seguram ~5 GB de VRAM e ~7 GB de RAM à toa. `liberar_vram` já sabia soltar
+    tudo (nasceu para dar lugar ao OCR); aqui vira interruptor, com a medição
+    antes/depois para o dono conferir em vez de acreditar.
+
+    ⚠ Por que DESLIGADO é desligado, e não "dorme e acorda sozinho": o docstring
+    de `liberar_vram` é explícito — nenhum destes serviços auto-carrega. O LLM
+    voltaria sozinho (o `ws.py` chama `ensure_loaded` a cada mensagem), mas o
+    embedding NÃO: o RAG passaria a responder sem contexto, o STT devolveria ""
+    e o TTS ficaria mudo — os três em SILÊNCIO. Degradação silenciosa é o defeito
+    que este projeto mais combate, então religar é ato explícito. O front chama
+    "ligar" antes de mandar a mensagem quando está descansando."""
+    ctx = get_ctx(request)
+    corpo = await request.json() if await request.body() else {}
+    acao = (corpo.get("acao") or "estado").strip().lower()
+
+    if acao == "desligar":
+        antes = energia.medir()
+        liberados = await ctx.liberar_vram()
+        await asyncio.to_thread(energia.enxugar)
+        depois = energia.medir()
+        request.app.state.descansando = True
+        telemetry.track("ENERGIA", f"Descansando a pedido do dono ({', '.join(sorted(liberados)) or 'nada a soltar'}).")
+        return JSONResponse(content={
+            "estado": "descansando", "liberados": sorted(liberados),
+            "antes": antes, "depois": depois, "liberou": energia.delta(antes, depois),
+        })
+
+    if acao == "ligar":
+        antes = energia.medir()
+        await ctx.restaurar_vram()      # STT, TTS e embeddings — o LLM é lazy
+        await ctx.llama.ensure_loaded()
+        request.app.state.descansando = False
+        telemetry.track("ENERGIA", "Religado a pedido do dono.")
+        return JSONResponse(content={
+            "estado": "ligado", "antes": antes, "depois": energia.medir(),
+        })
+
+    return JSONResponse(content={
+        "estado": "descansando" if getattr(request.app.state, "descansando", False) else "ligado",
+        "depois": energia.medir(),
+    })
+
+
 @app.get("/api/imagem/{caminho:path}", dependencies=[Depends(exigir_acesso)])
 async def imagem_do_vault(caminho: str):
     """Serve uma figura do vault para o chat (Fase 5b). SÓ imagem, SÓ dentro do
-    vault: `resolve()` + `is_relative_to` fecham path traversal (um `..%2f..` no
-    caminho resolveria para fora e vazaria arquivo do disco), e a allowlist de
-    extensão impede servir .md/.db por esta rota. O gate de acesso é o mesmo das
-    demais /api — e como <img> não manda header, o token vai por query string,
-    o mesmo tradeoff já aceito no WebSocket."""
+    vault: o guard de traversal vive em `_dentro_do_vault` (compartilhado com as
+    rotas de nota), e a allowlist de extensão abaixo impede servir .md/.db por
+    esta rota. O gate de acesso é o mesmo das demais /api — e como <img> não manda
+    header, o token vai por query string, o mesmo tradeoff já aceito no WebSocket."""
     from fastapi.responses import FileResponse
 
+    alvo = _dentro_do_vault(caminho)
+    if alvo.suffix.lower() not in {".webp", ".png", ".jpg", ".jpeg", ".gif", ".svg"}:
+        raise HTTPException(status_code=404, detail="não encontrado")
+    return FileResponse(alvo, headers={"Cache-Control": "public, max-age=86400"})
+
+
+def _dentro_do_vault(caminho: str) -> Path:
+    """Resolve `caminho` DENTRO do vault ou levanta 404. Guard único.
+
+    `resolve()` + `is_relative_to` fecham path traversal: um `..%2f..` resolveria
+    para fora e vazaria arquivo do disco. Mesma regra da rota de imagem — extraída
+    para cá quando o modo avançado passou a ler notas, para não existirem duas
+    implementações do guard (uma delas destinada a envelhecer errado)."""
     raiz = Path(settings.caminho_obsidian).resolve()
     alvo = (raiz / caminho).resolve()
     if not alvo.is_relative_to(raiz) or not alvo.is_file():
         raise HTTPException(status_code=404, detail="não encontrado")
-    if alvo.suffix.lower() not in {".webp", ".png", ".jpg", ".jpeg", ".gif", ".svg"}:
+    return alvo
+
+
+@app.get("/api/nota", dependencies=[Depends(exigir_acesso)])
+async def ler_nota(caminho: str, request: Request):
+    """Texto cru de uma nota do vault — o que o modo avançado abre ao clicar numa
+    fonte. Só `.md`: as demais extensões saem pela rota de imagem, que tem a
+    allowlist própria, ou não saem."""
+    alvo = _dentro_do_vault(caminho)
+    if alvo.suffix.lower() != ".md":
         raise HTTPException(status_code=404, detail="não encontrado")
-    return FileResponse(alvo, headers={"Cache-Control": "public, max-age=86400"})
+    texto = await asyncio.to_thread(alvo.read_text, encoding="utf-8", errors="replace")
+    return JSONResponse(content={
+        "caminho": caminho, "nome": alvo.name, "texto": texto,
+        "bytes": alvo.stat().st_size,
+    })
+
+
+@app.get("/api/notas", dependencies=[Depends(exigir_acesso)])
+async def buscar_notas(q: str = "", k: int = 30, request: Request = None):
+    """Busca no vault para o navegador do modo avançado.
+
+    Usa a MESMA recuperação vetorial do assistente (`VectorStore.recuperar`) em vez
+    de varrer os ~24.700 arquivos: além de ser rápido, é honesto — o que aparece
+    aqui é o que o RAG realmente enxerga, então a tela serve para DEPURAR a busca,
+    não só para navegar. Sem `q`, devolve as notas modificadas mais recentemente,
+    que é o "o que mudou por aqui" útil na abertura do painel."""
+    ctx = get_ctx(request)
+    k = max(1, min(int(k or 30), 100))
+    if not q.strip():
+        raiz = Path(settings.caminho_obsidian)
+
+        def _recentes() -> list:
+            arquivos = sorted(raiz.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:k]
+            return [{"caminho": str(p.relative_to(raiz)).replace("\\", "/"),
+                     "nome": p.stem, "trecho": "", "dist": None} for p in arquivos]
+
+        return JSONResponse(content={"itens": await asyncio.to_thread(_recentes), "modo": "recentes"})
+
+    docs = await ctx.vectorstore.recuperar(q, k=k) or []
+    itens = []
+    for doc, dist in docs:
+        origem = (getattr(doc, "metadata", {}) or {}).get("source", "")
+        itens.append({
+            "caminho": origem.replace("\\", "/"),
+            "nome": Path(origem).stem if origem else "(sem origem)",
+            "trecho": (getattr(doc, "page_content", "") or "")[:280],
+            "dist": round(float(dist), 4),
+        })
+    return JSONResponse(content={"itens": itens, "modo": "semantica"})
 
 
 @app.get("/api/historico", dependencies=[Depends(exigir_acesso)])
