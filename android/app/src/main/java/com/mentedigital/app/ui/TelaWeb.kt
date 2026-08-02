@@ -28,9 +28,19 @@ import com.mentedigital.app.PonteAndroid
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun TelaWeb(url: String, ponte: PonteAndroid, aoCriar: (WebView) -> Unit) {
+fun TelaWeb(
+    url: String,
+    ponte: PonteAndroid,
+    aoCriar: (WebView) -> Unit,
+    aoLiberar: (WebView) -> Unit = {},
+) {
     AndroidView(
         modifier = Modifier.fillMaxSize(),
+        // Sair desta tela (modo economia, voltar à configuração) tira o WebView da
+        // composição. Sem destruí-lo aqui, cada ida e volta deixaria um WebView
+        // vivo — com o processo de renderização e o socket da SPA junto. `onRelease`
+        // roda com a view já desanexada, que é a hora segura de destruir.
+        onRelease = { w -> aoLiberar(w); w.destroy() },
         factory = { ctx ->
             WebView(ctx).apply {
                 layoutParams = ViewGroup.LayoutParams(

@@ -13,10 +13,23 @@ data class Saude(
     val servicos: Map<String, Boolean> = emptyMap(),
     val tarefasDeFundo: List<String> = emptyList(),
     val detalhe: String = "",
+    /**
+     * O servidor está de pé com os modelos SOLTOS de propósito — o modo economia.
+     *
+     * ⚠ Isto era DEDUZIDO de `llm == false`, e a dedução é ambígua no caso mais
+     * comum de todos: durante um boot normal o LLM também está em false, e o app
+     * mandava um "ligar" por cima de um carregamento já em curso. O servidor passou
+     * a dizer com todas as letras (main.py, /api/health). O `null` guarda o caso de
+     * um APK novo contra um servidor antigo: aí, e só aí, volta-se à dedução.
+     */
+    val descansandoDito: Boolean? = null,
 ) {
-    /** O servidor está de pé mas com os modelos soltos — o "standby" do PC. */
     val descansando: Boolean
-        get() = alcancavel && servicos.isNotEmpty() && servicos["llm"] == false
+        get() = when {
+            !alcancavel -> false
+            descansandoDito != null -> descansandoDito
+            else -> servicos.isNotEmpty() && servicos["llm"] == false
+        }
 }
 
 /**
@@ -47,7 +60,8 @@ class Servidor(private val conf: () -> Conf) {
                     srv?.keys()?.forEach { k -> mapa[k] = srv.optBoolean(k) }
                     val arr = o.optJSONArray("tarefas_de_fundo")
                     val fundo = (0 until (arr?.length() ?: 0)).map { arr!!.optString(it) }
-                    Saude(true, mapa, fundo)
+                    val dito = if (o.has("descansando")) o.optBoolean("descansando") else null
+                    Saude(true, mapa, fundo, descansandoDito = dito)
                 }
         } catch (e: Exception) {
             Saude(false, detalhe = e.message ?: "sem resposta")
@@ -65,28 +79,90 @@ class Servidor(private val conf: () -> Conf) {
      * Idempotente do lado do servidor: `ligar` com tudo carregado devolve o
      * estado e não recarrega nada.
      */
-    fun ligar(): Boolean = acao("ligar")
+    fun ligar(): Energia? = energia("ligar")
 
-    private fun acao(qual: String): Boolean {
+    /**
+     * MODO ECONOMIA: solta os modelos e devolve a máquina ao dono.
+     *
+     * É o mesmo botão que a bandeja do PC tem ("Descansar"), agora ao alcance de
+     * quem está longe do computador — que é justamente quem mais precisa dele. O
+     * servidor continua de pé: acordar é um toque, não um boot.
+     */
+    fun desligar(): Energia? = energia("desligar")
+
+    /** Dispara ou interrompe a consolidação de fundo (o "Consolidar" da bandeja). */
+    fun idle(acao: String): Boolean = postar("/api/idle", acao) != null
+
+    private fun energia(qual: String): Energia? = postar("/api/energia", qual)?.let(Energia::de)
+
+    /**
+     * POST curto nas rotas de controle. Devolve o corpo, ou null se falhou.
+     *
+     * ⚠ Token no HEADER, sempre: sem ele o gate de acesso responde 401 e a ação
+     * some sem nada na tela. As duas rotas daqui são gateadas (só /api/health não é).
+     */
+    private fun postar(rota: String, acao: String): JSONObject? {
         val c = conf()
-        if (c.base.isBlank()) return false
-        val corpo = JSONObject().put("acao", qual).toString()
+        if (c.base.isBlank()) return null
+        val corpo = JSONObject().put("acao", acao).toString()
             .toRequestBody("application/json".toMediaType())
         val req = Request.Builder()
-            .url(Endereco.api(c.base, "/api/energia"))
+            .url(Endereco.api(c.base, rota))
             .header("X-Mente-Token", c.token)
             .post(corpo)
             .build()
         return try {
-            http.newCall(req).execute().use { it.isSuccessful }
+            http.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) null else JSONObject(r.body?.string().orEmpty())
+            }
         } catch (e: Exception) {
-            false
+            null
         }
     }
 }
 
 /** Endereço + token, sem depender do Android — o que torna isto testável. */
 data class Conf(val base: String, val token: String)
+
+/**
+ * A resposta de `/api/energia` — estado e a medição que o servidor fez.
+ *
+ * A medição vem junto porque o projeto inteiro prefere MOSTRAR o número a
+ * afirmar o efeito: "liberei 4,9 GB" é conferível, "liberado" é uma promessa.
+ */
+data class Energia(val estado: String, val vramMb: Int?, val ramCommitMb: Int?) {
+
+    val descansando: Boolean get() = estado == "descansando"
+
+    /**
+     * A medição em uma linha, em português. Puro/testável.
+     *
+     * O que o servidor manda é o uso do DISPOSITIVO (inclui o desktop e qualquer
+     * outro programa na GPU) — é o número que aparece no nvidia-smi, e por isso o
+     * rótulo aqui é "em uso", não "liberado": atribuir a queda inteira ao
+     * assistente seria propaganda.
+     */
+    fun resumo(): String {
+        val partes = mutableListOf<String>()
+        vramMb?.let { partes += gb(it) + " GB de VRAM" }
+        ramCommitMb?.let { partes += gb(it) + " GB de RAM" }
+        return if (partes.isEmpty()) "" else partes.joinToString(" · ") + " em uso"
+    }
+
+    private fun gb(mb: Int): String = String.format(java.util.Locale.US, "%.1f", mb / 1024.0)
+        .replace('.', ',')
+
+    companion object {
+        fun de(o: JSONObject): Energia {
+            // A medição vem em "depois" ("como ficou"); o /api/energia sem ação
+            // devolve só ela. Campo ausente é null, nunca 0 — "não medi" e "zero"
+            // são afirmações diferentes (mesma régua do energia.py no servidor).
+            val m = o.optJSONObject("depois") ?: JSONObject()
+            fun inteiro(chave: String): Int? = if (m.isNull(chave)) null else m.optInt(chave)
+            return Energia(o.optString("estado", "ligado"), inteiro("vram_mb"), inteiro("ram_commit_mb"))
+        }
+    }
+}
 
 /**
  * Os marcos da tela de boot, com o peso de cada um. Somam 100 de propósito: um

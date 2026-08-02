@@ -98,4 +98,27 @@ class BootTest {
         assertTrue(m["servidor"]!!)
         assertTrue(m["porta"]!!)
     }
+
+    @Test
+    fun `o campo explicito do servidor vence a deducao`() {
+        // Este é o conserto de uma ambiguidade real: durante um boot NORMAL o LLM
+        // também está em false, e o app deduzia "standby" — mandando um `ligar` por
+        // cima de um carregamento já em curso. Com o campo explícito, boot é boot.
+        val subindo = Saude(true, mapOf("llm" to false), descansandoDito = false)
+        assertFalse(subindo.descansando)
+
+        val dormindo = Saude(true, mapOf("llm" to false), descansandoDito = true)
+        assertTrue(dormindo.descansando)
+    }
+
+    @Test
+    fun `servidor antigo sem o campo volta a deducao`() {
+        // APK novo contra servidor velho: sem o campo, a heurística de antes.
+        assertTrue(Saude(true, mapOf("llm" to false), descansandoDito = null).descansando)
+    }
+
+    @Test
+    fun `descansando dito por servidor inalcancavel nao vale`() {
+        assertFalse(Saude(false, descansandoDito = true).descansando)
+    }
 }
