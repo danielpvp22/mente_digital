@@ -23,8 +23,8 @@ pip install -r requirements-dev.txt     # deps de teste (pytest, pytest-asyncio)
 pytest                                   # suíte roda sem GPU/rede (usa fakes)
 ```
 
-Servidor em `http://localhost:8000`. A suíte `pytest` (pasta `tests/`) tem **1.663 testes em
-151 arquivos** cobrindo a lógica pura e sensível — gate de relevância, buffer anti-sentinela,
+Servidor em `http://localhost:8000`. A suíte `pytest` (pasta `tests/`) tem **1.777 testes em
+154 arquivos** cobrindo a lógica pura e sensível — gate de relevância, buffer anti-sentinela,
 chunker, latência, cada agente das três ondas, a ingestão de obras — com fakes de LLM/TTS/store
 (sem GPU nem rede, ~42 s). O CI (`.github/workflows/tests.yml`) roda **ruff + pytest com piso de
 cobertura (`--cov-fail-under=77`) + bandit + pip-audit** a cada PR, instalando só o

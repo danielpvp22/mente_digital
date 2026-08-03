@@ -61,6 +61,45 @@ _db_teste.init()
 
 
 @pytest.fixture(autouse=True)
+def _os_name_intocado(monkeypatch):
+    """Trava a CLASSE de bug que deixou o master ~3 h vermelho em 2026-08-03.
+
+    Um teste simulava Windows com `monkeypatch.setattr(inicializacao.os, "name", "nt")`
+    — e `inicializacao.os` É o módulo `os` global, então aquilo trocava o `os.name` do
+    PROCESSO INTEIRO. O `Path.__new__` lê `os.name` a CADA chamada para escolher entre
+    WindowsPath e PosixPath, então num runner POSIX todo `Path(...)` passava a levantar
+    NotImplementedError. Pior: o próprio pytest tropeça nisso ao FORMATAR a falha
+    (`_pytest/nodes.py` faz `Path(os.getcwd())`), e uma falha comum virava INTERNALERROR
+    que levava a sessão inteira — 49 testes de uma vez.
+
+    Na máquina do dono (Windows) `os.name` já é "nt": o patch era no-op e a suíte local
+    dizia "1663 passed" o tempo todo. Verde no Windows, sessão destruída no Linux.
+
+    ⚠ O `monkeypatch` no parâmetro NÃO é decoração — é o que faz a guarda funcionar.
+    Fixture é destruída na ordem INVERSA da criação: pedindo o monkeypatch, ele nasce
+    ANTES desta e morre DEPOIS, então este teardown roda com o patch AINDA DE PÉ e vê a
+    mutação. Sem essa dependência, o monkeypatch desfaria o patch primeiro, esta guarda
+    leria o valor já restaurado e passaria sempre — verde e inútil.
+
+    Pega quem CAUSOU, não quem rodar depois, e vale para qualquer patch global da mesma
+    família: `sys.platform`, `os.sep`, locale, timezone.
+    """
+    antes = os.name
+    yield
+    agora = os.name
+    # RESTAURA ANTES DE ACUSAR. Sem esta linha a guarda se sabota: o pytest formata a
+    # falha fazendo `Path(os.getcwd())`, que com o os.name trocado levanta de novo — e
+    # o INTERNALERROR que viemos impedir volta, agora causado pela própria guarda.
+    os.name = antes
+    assert agora == antes, (
+        f"este teste deixou os.name == {agora!r} (era {antes!r}). Trocar o os.name do "
+        f"processo quebra TODO Path() num runner POSIX e derruba a sessão do pytest com "
+        f"INTERNALERROR. Use um seam no módulo sob teste (ver inicializacao.e_windows), "
+        f"não o os.name global."
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isola_do_env(monkeypatch, tmp_path):
     """Isola a suíte do .env de PRODUÇÃO.
 

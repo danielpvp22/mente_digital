@@ -533,7 +533,7 @@ def arredondar_janela(janela, raio: int = RAIO_JANELA) -> bool:
     Fail-soft por completo: qualquer erro aqui deixa a janela quadrada, que é
     exatamente o estado anterior. Um canto feio jamais pode impedir o app de abrir.
     """
-    if os.name != "nt":
+    if not e_windows():
         return False
     try:
         import ctypes
@@ -599,6 +599,24 @@ APP_ID = "MenteDigital.Assistente.Local.1"     # ver `identidade_windows`
 TITULO = "Mente Digital"                       # o nome que a barra de tarefas mostra
 
 
+def e_windows() -> bool:
+    """Seam de plataforma. Quem simula Windows troca ISTO, nunca o `os.name`.
+
+    `app.os` é o módulo `os` GLOBAL: trocar `os.name` por ali muda o processo inteiro, e
+    o `Path.__new__` lê `os.name` a cada chamada para escolher WindowsPath×PosixPath —
+    então qualquer `Path(...)` durante o patch levanta NotImplementedError, inclusive o
+    `Path(os.getcwd())` que o próprio pytest usa para FORMATAR falhas (vira
+    INTERNALERROR e leva a sessão junto). Foi o que deixou o master ~3 h vermelho em
+    2026-08-03, pelo espelho deste caso: lá o patch era "nt" e explodia no Linux do CI;
+    aqui é "posix" e explodiria no Windows do dono.
+
+    Espelha `inicializacao.e_windows`, e não o importa de propósito: esta casca evita
+    depender de módulo de domínio para um booleano, e o import ficaria no caminho do
+    relógio de boot (ver o topo do arquivo).
+    """
+    return os.name == "nt"
+
+
 def identidade_windows(app_id: str = APP_ID) -> bool:
     """Declara ao Windows que este processo é um APLICATIVO próprio.
 
@@ -616,7 +634,7 @@ def identidade_windows(app_id: str = APP_ID) -> bool:
     Fail-soft: fora do Windows, ou se a chamada falhar, devolve False e o app
     segue exatamente como antes — com o ícone do interpretador.
     """
-    if os.name != "nt":
+    if not e_windows():
         return False
     try:
         import ctypes

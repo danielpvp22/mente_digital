@@ -81,7 +81,10 @@ def test_identidade_windows_nunca_levanta(monkeypatch):
     """Rodada no caminho crítico do boot, antes da janela existir. Se o shell32
     recusar (política de grupo, Windows antigo, Wine), o app tem de abrir assim
     mesmo — só com o ícone do interpretador, que é o estado anterior."""
-    monkeypatch.setattr(app.os, "name", "posix")
+    # Troca o SEAM, não o `os.name`: `app.os` é o módulo `os` global, e mudá-lo faria
+    # todo `Path()` do processo levantar NotImplementedError enquanto o patch durasse —
+    # inclusive dentro do formatador de falhas do pytest. Ver `app.e_windows`.
+    monkeypatch.setattr(app, "e_windows", lambda: False)
     assert app.identidade_windows() is False
 
 
