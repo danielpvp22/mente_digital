@@ -33,6 +33,8 @@ from mente_digital import agenda
 from mente_digital import backup
 from mente_digital import calendario
 from mente_digital import energia
+from mente_digital import potencia
+from mente_digital import tomada
 from mente_digital import prompts
 from mente_digital import standby
 from mente_digital import textutils
@@ -111,6 +113,7 @@ class SchedulerService:
     async def tick(self, agora: Optional[datetime] = None) -> None:
         agora = agora or datetime.now()
         await self._probe_vram()  # #28/#29: amostra a VRAM 1x por tick
+        await self._amostrar_consumo()   # wattímetro: energia acumulada por dia
         vencidos = await asyncio.to_thread(db.get_agendamentos_vencidos, agora.isoformat())
         for ag in vencidos:
             await self._disparar(ag, agora)
@@ -439,6 +442,36 @@ class SchedulerService:
             telemetry.error("PESQUISA_IDLE", "Falha na pesquisa agendada", exc)
         finally:
             self._pesquisa_em_andamento = False
+
+    async def _amostrar_consumo(self) -> None:
+        """WATTÍMETRO: uma amostra de energia por passada, estrangulada por `devido`.
+
+        Fica no tick do scheduler e não num laço próprio pelo mesmo motivo do
+        `_probe_vram`: já existe um relógio de fundo rodando, e um segundo laço só
+        para isto seria mais uma thread para drenar no shutdown.
+
+        ⚠ Roda MESMO em standby, de propósito. É quando o assistente está
+        descansando que o dono mais quer saber quanto a máquina ainda gasta — e
+        nenhuma das duas fontes (NVML e o arquivo do ajudante) depende de modelo
+        carregado. Parar aqui abriria um buraco justamente na parte da conta que
+        ele pediu para enxergar.
+
+        Nunca levanta: uma falha de contabilidade não pode derrubar o loop que
+        dispara os alarmes.
+        """
+        registro = getattr(self.ctx, "consumo", None)
+        if registro is None or not registro.devido(settings.consumo_intervalo_seconds):
+            return
+        try:
+            medida = await asyncio.to_thread(energia.medir)
+            mj = await asyncio.to_thread(potencia.energia_acumulada_mj)
+            parede = tomada.a_partir_de_energia(medida)
+            await asyncio.to_thread(
+                registro.registrar, mj, medida.get("cpu_watts"),
+                parede.total.minimo, parede.total.maximo,
+            )
+        except Exception as exc:                       # noqa: BLE001 - ver docstring
+            telemetry.error("CONSUMO", "Falha ao amostrar o consumo", exc)
 
     async def _probe_vram(self) -> None:
         """#28: alimenta o detector de vazamento e avisa se disparar. #29: recalibra

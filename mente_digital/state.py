@@ -230,6 +230,10 @@ class AppContext:
     agent: "Agent" = None                 # type: ignore[assignment]
     etl: "EtlProcessor" = None            # type: ignore[assignment]
     scheduler: "SchedulerService" = None  # type: ignore[assignment]
+    # WATTÍMETRO: o acumulador de energia por dia. Vive no ctx (e não em
+    # `app.state`, como o registro de aparelhos) porque quem o alimenta é o tick do
+    # scheduler, que só enxerga o ctx.
+    consumo: object = None
 
     # MODO ECONOMIA (2026-08-02): os modelos estão soltos e a máquina livre — o
     # servidor segue de pé atendendo /api, mas LLM/Whisper/voz/embeddings saíram da

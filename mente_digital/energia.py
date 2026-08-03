@@ -132,6 +132,23 @@ def _watt_da_cpu() -> potencia_cpu.Leitura:
     return leitura
 
 
+def somar_watts(gpu: Optional[float], cpu: Optional[float]) -> Optional[float]:
+    """O total GPU + CPU, ou None se faltar QUALQUER uma das duas parcelas.
+
+    Puro/testável, e a regra é o oposto de "some o que tiver": um total precisa de
+    todas as parcelas. Com o ajudante elevado fora do ar (o estado normal — ler a
+    potência da CPU no Windows exige driver), somar só a GPU e chamar de "consumo
+    total" reportaria ~96 W onde a máquina gasta ~240 W. Seria pior que não medir,
+    porque um número plausível não levanta suspeita nenhuma — é a mesma razão pela
+    qual `medir()` nunca escreve `0 W` para um campo ausente.
+
+    Quando falta parcela, o front mostra a parcela que TEM, rotulada como tal.
+    """
+    if gpu is None or cpu is None:
+        return None
+    return round(gpu + cpu, 1)
+
+
 def medir() -> dict:
     """Fotografia do consumo AGORA. Campo ausente vira None, nunca zero — zero
     seria indistinguível de "medi e não há consumo", que é uma afirmação forte.
@@ -169,6 +186,12 @@ def medir() -> dict:
         # de pé publicando lixo" aparecem os dois como um campo vazio na tela, e
         # têm consertos diferentes. O campo é o que responde "por quê" sem reencenar.
         "cpu_watts_motivo": watt_cpu.motivo,
+        # O que o dono pediu ver: GPU + CPU num número só. None enquanto faltar uma
+        # das parcelas — ver `somar_watts` para o porquê de não somar pela metade.
+        "watts_total": somar_watts(
+            watt_gpu.watts if watt_gpu.watts is not None else None,
+            watt_cpu.watts if watt_cpu.watts is not None else None,
+        ),
     }
 
 

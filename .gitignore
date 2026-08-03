@@ -152,3 +152,12 @@ android/.kotlin/
 # primeiro build depois de clonar, com um "resource not found" que não diz o que
 # fazer. Continuam GERADOS por scripts/gerar_mipmaps.py (a fonte é marca.py);
 # rode-o de novo se a marca mudar.
+
+# ==== Watts (2026-08-03) ====
+# LibreHardwareMonitorLib + instalador do PawnIO: binarios de TERCEIRO, baixados
+# da release oficial (docs/INSTALACAO_WATTS.md). Versiona-los poria ~10 MB de DLL
+# e um instalador de driver de kernel dentro do repo, e trocaria um download
+# verificavel por um commit.
+dados/lhm/
+# Publicacao do ajudante elevado: estado de runtime, reescrito a cada 2 s.
+dados/potencia_cpu.json

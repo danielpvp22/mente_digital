@@ -352,6 +352,20 @@
         #barra-acesso span { flex: 1; min-width: 0; }
         #barra-acesso button { flex-shrink: 0; }
 
+
+        /* ===== aba Consumo: os dois gráficos do wattímetro ===== */
+        .cs-topo { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+        .cs-total { font-size: 1.35rem; font-weight: 600; }
+        .cs-sub { font-size: .74rem; color: var(--txt2); }
+        .cs-tarifa { width: 74px; background: var(--sup); border: 1px solid var(--linha);
+                     color: var(--txt); border-radius: 8px; padding: 4px 7px; font-size: .76rem; }
+        .cs-legenda { display: flex; gap: 12px; flex-wrap: wrap; font-size: .7rem; color: var(--txt2); margin: 6px 0 2px; }
+        .cs-legenda i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+        .cs-graf { width: 100%; overflow-x: auto; }
+        .cs-graf svg { display: block; }
+        .cs-nota { font-size: .7rem; color: var(--txt2); line-height: 1.5; margin-top: 8px;
+                   border-left: 2px solid var(--linha); padding-left: 9px; }
+
         /* ========================= composer =============================== */
         #bottom-bar {
             position: fixed; bottom: 0; left: 0; width: 100%; display: flex; align-items: flex-end;
@@ -484,7 +498,7 @@
                  É falso. Os watts são do DISPOSITIVO — 22 programas tinham contexto na GPU
                  quando isto foi medido (compositor do Windows, navegador, música) —, a
                  mesma ressalva que energia.py já documenta para a VRAM. -->
-            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med" title="Watts do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro. O número após a barra é o teto do driver. O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s."></span>
+            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med" title="Watt TOTAL = GPU + CPU, e do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro. Se aparecer só 'W GPU', a parcela da CPU está faltando (o ajudante elevado não está de pé) — o total nunca é somado pela metade. O número após a barra é o teto do driver, que é da GPU. O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s."></span>
         </button>
         <button class="sw" id="btn-end" onclick="encerrarConversa()" title="Consolidar agora: encerra a conversa e roda o ETL do idle">
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg>
@@ -541,6 +555,7 @@
             <div class="av-tabs">
                 <button class="av-tab on" data-aba="fontes" onclick="abrirAba('fontes')">Fontes</button>
                 <button class="av-tab" data-aba="vault" onclick="abrirAba('vault')">Vault</button>
+                <button class="av-tab" data-aba="consumo" onclick="abrirAba('consumo')">Consumo</button>
                 <button class="av-tab" data-aba="sistema" onclick="abrirAba('sistema')">Sistema</button>
             </div>
             <button class="icon-btn" onclick="alternarAvancado()" title="Fechar"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
@@ -578,6 +593,7 @@
                 </div>
                 <div id="av-lista"></div>
             </section>
+            <section class="av-secao" id="av-consumo"></section>
             <section class="av-secao" id="av-sistema"></section>
         </div>
         <div id="av-leitor">
@@ -1319,6 +1335,32 @@
             el.disabled = estado === 'ocupado';
         }
 
+        // O detalhe que SAIU do chip: vai para o tooltip do próprio número, onde há
+        // espaço para as ressalvas que um botão de cabeçalho não comporta. Nada foi
+        // perdido — só deixou de disputar atenção com o total.
+        function detalheDe(dados) {
+            const m = (dados && (dados.depois || dados)) || {};
+            const l = [];
+            if (m.watts_total != null) {
+                l.push(`Total ${Math.round(m.watts_total)} W = GPU ${Math.round(m.gpu_watts)} W`
+                     + ` + CPU ${Math.round(m.cpu_watts)} W`);
+            }
+            if (m.gpu_watts_limite != null) l.push(`Teto do driver da GPU: ${m.gpu_watts_limite} W`);
+            if (m.cpu_watts == null && m.cpu_watts_motivo) {
+                // Por que falta a metade da conta, em vez de um campo mudo.
+                const porque = { ausente: 'o ajudante elevado não está de pé',
+                                 vencido: 'o ajudante parou de publicar',
+                                 invalido: 'a publicação do ajudante está ilegível' };
+                l.push(`Sem a parcela da CPU: ${porque[m.cpu_watts_motivo] || m.cpu_watts_motivo}.`);
+            }
+            if (m.vram_mb != null) l.push(`VRAM ${(m.vram_mb / 1024).toFixed(1)} GB`);
+            if (m.ram_commit_mb != null) l.push(`RAM ${(m.ram_commit_mb / 1024).toFixed(1)} GB`);
+            l.push('Watts do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem '
+                 + 'contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro.');
+            l.push('O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s.');
+            return l.join('\n');
+        }
+
         // O que a faixa do chip mostra: memória e, desde 2026-08-03, WATTS.
         //
         // ⚠ Cada campo entra por conta própria, sem `return ''` adiantado. Antes
@@ -1332,24 +1374,30 @@
         // salta de 96 W parada para 320 W decodificando, os dois contam
         // histórias diferentes, e o til é o que separa uma da outra. O tooltip
         // do próprio span explica de quem são estes watts.
+        // O que fica no CHIP é só o watt total (pedido do dono): num botão que vive
+        // no cabeçalho, quatro números competindo viram nenhum. VRAM e RAM não se
+        // perderam — mudaram de lugar, para o tooltip (`detalheDe`) e para a tela
+        // de Consumo no Avançado, onde há espaço para lê-las com calma.
         function medidaDe(dados) {
             const m = (dados && (dados.depois || dados)) || {};
             const partes = [];
-            if (m.vram_mb != null) partes.push(`${(m.vram_mb / 1024).toFixed(1)} GB VRAM`);
-            if (m.ram_commit_mb != null) partes.push(`${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM`);
 
-            const watts = [];
-            if (m.gpu_watts != null) {
-                const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
-                // O teto do driver dá ESCALA: 96 W sozinho não diz se a placa
-                // está parada ou apertada; 96/320 diz.
-                const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
-                watts.push(`${instante}${Math.round(m.gpu_watts)}${teto} W GPU`);
+            // O til é da GPU, mas contamina o TOTAL: se a parcela maior é o
+            // instante sorteado, a soma também é — não dá para rotular de média.
+            const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
+            if (m.watts_total != null) {
+                partes.push(`${instante}${Math.round(m.watts_total)} W`);
+            } else if (m.gpu_watts != null) {
+                // Falta a parcela da CPU (acontece sempre que o ajudante elevado
+                // não está de pé). O número vai ROTULADO "GPU" de propósito:
+                // mostrá-lo pelado, no mesmo lugar onde o total aparece, faria
+                // ~96 W passar por consumo da máquina inteira, que gasta bem mais.
+                // Número plausível e errado não levanta suspeita nenhuma — e é por
+                // isso que este é o único caso em que o chip usa duas palavras.
+                partes.push(`${instante}${Math.round(m.gpu_watts)} W GPU`);
+            } else if (m.cpu_watts != null) {
+                partes.push(`${Math.round(m.cpu_watts)} W CPU`);
             }
-            // Ausente é o estado NORMAL: sem o ajudante elevado de pé não há como
-            // ler a potência da CPU no Windows, e o campo vem null (nunca 0).
-            if (m.cpu_watts != null) watts.push(`${Math.round(m.cpu_watts)} W CPU`);
-            if (watts.length) partes.push(watts.join(' + '));
 
             return partes.join(' · ');
         }
@@ -1371,6 +1419,7 @@
             try {
                 const d = await energiaPost(desligar ? 'desligar' : 'ligar');
                 pintarEnergia(d.estado, medidaDe(d));
+                document.getElementById('sw-energia-med').title = detalheDe(d);
                 if (d.adiado) {
                     // O servidor cedeu a vez a uma resposta em andamento. Sem esta
                     // mensagem o clique viraria um nada silencioso — o chip
@@ -1391,7 +1440,13 @@
         }
 
         async function lerEnergia() {
-            try { const d = await energiaPost('estado'); pintarEnergia(d.estado, medidaDe(d)); }
+            try {
+                const d = await energiaPost('estado');
+                pintarEnergia(d.estado, medidaDe(d));
+                // O tooltip acompanha a medida. Deixá-lo fixo no HTML faria o
+                // detalhe envelhecer enquanto o numero na frente dele atualiza.
+                document.getElementById('sw-energia-med').title = detalheDe(d);
+            }
             catch (err) { /* servidor fora do ar: o ponto de conexão já avisa */ }
         }
 
@@ -1413,7 +1468,128 @@
             document.querySelectorAll('.av-secao').forEach(s => s.classList.toggle('on', s.id === 'av-' + nome));
             fecharNota();
             if (nome === 'vault' && !document.getElementById('av-lista').children.length) buscarVault();
+            if (nome === 'consumo') renderConsumo();
             if (nome === 'sistema') renderSistema();
+        }
+
+
+        // ---------- aba Consumo: o WATTÍMETRO ----------
+        // Duas camadas com QUALIDADES diferentes, e o gráfico não pode fundi-las: a
+        // barra é MEDIDA (a GPU pelo contador de energia do driver, exata; a CPU
+        // integrando os watts do ajudante) e o bigode é ESTIMATIVA da tomada
+        // (`tomada.py`), que inclui fonte, placa-mãe, bombas, periféricos e os dois
+        // monitores. Fundir as duas num número só transformaria o fato em chute
+        // exatamente onde a diferença importa: a conta de luz.
+        const TARIFA_PADRAO = 0.92;      // R$/kWh — o dono ajusta no campo
+        function tarifa() {
+            const v = parseFloat(localStorage.getItem('mente_tarifa') || TARIFA_PADRAO);
+            return isFinite(v) && v > 0 ? v : TARIFA_PADRAO;
+        }
+        function setTarifa(v) {
+            const n = parseFloat(String(v).replace(',', '.'));
+            if (isFinite(n) && n > 0) { localStorage.setItem('mente_tarifa', n); renderConsumo(); }
+        }
+
+        async function renderConsumo() {
+            const box = document.getElementById('av-consumo');
+            box.innerHTML = '<div class="av-vazio">Lendo o medidor…</div>';
+            let d;
+            try { d = await apiGet('/api/consumo?dias=30&meses=12'); }
+            catch (err) {
+                box.innerHTML = '<div class="av-vazio">Não li o consumo.<br>'
+                              + escapeHtml(motivoFalha(err)) + '</div>';
+                return;
+            }
+            if (!d.habilitado) {
+                box.innerHTML = '<div class="av-vazio">O wattímetro está desligado.</div>';
+                return;
+            }
+            const dias = d.diario || [], meses = d.mensal || [];
+            const medido = dias.reduce((a, x) => a + x.medido_wh, 0);
+            const pmin = dias.reduce((a, x) => a + x.parede_min_wh, 0);
+            const pmax = dias.reduce((a, x) => a + x.parede_max_wh, 0);
+            const horas = dias.reduce((a, x) => a + x.segundos, 0) / 3600;
+            const t = tarifa();
+            const reais = (w) => 'R$ ' + (w / 1000 * t).toFixed(2).replace('.', ',');
+
+            let html = '<div class="cs-topo">'
+              + '<div><div class="cs-total">'
+              + (pmax > 0 ? reais(pmin) + ' a ' + reais(pmax) : reais(medido))
+              + '</div><div class="cs-sub">últimos 30 dias · '
+              + horas.toFixed(1) + ' h medidas</div></div>'
+              + '<div class="cs-sub">tarifa <input class="cs-tarifa" value="' + t.toFixed(2)
+              + '" onchange="setTarifa(this.value)" title="R$ por kWh — está na sua conta de luz">'
+              + ' R$/kWh</div></div>';
+
+            html += '<div class="cs-legenda">'
+              + '<span><i style="background:var(--acc)"></i>GPU (medido)</span>'
+              + '<span><i style="background:var(--txt2)"></i>CPU (medido)</span>'
+              + '<span><i style="background:#F28B82"></i>parede (estimativa, faixa)</span>'
+              + '<span>barra apagada = dia mal medido</span></div>';
+
+            html += '<div class="av-titulo">Últimos 30 dias</div><div class="cs-graf">'
+                  + barrasConsumo(dias, (x) => x.dia.slice(8), 30) + '</div>';
+            html += '<div class="av-titulo" style="margin-top:14px">Por mês</div><div class="cs-graf">'
+                  + barrasConsumo(meses, (x) => x.mes.slice(5) + '/' + x.mes.slice(2, 4), 12) + '</div>';
+
+            html += '<div class="cs-nota">A <b>barra</b> é o que dá para MEDIR: a GPU pelo contador '
+                  + 'de energia do driver (exato) e a CPU integrando os watts do ajudante elevado. '
+                  + 'O <b>bigode vermelho</b> é a estimativa do que o PC inteiro puxa da tomada — '
+                  + 'fonte, placa-mãe, bombas, periféricos e os dois monitores —, e é faixa porque a '
+                  + 'incerteza é real.<br>Barra apagada = dia com pouca cobertura: o medidor só conta '
+                  + 'enquanto o assistente está de pé, e ele se recusa a creditar energia de período '
+                  + 'que não mediu. Dia mal medido não é dia econômico.</div>';
+            box.innerHTML = html;
+        }
+
+        // Barras em SVG puro — sem lib, porque a página é servida localmente e não
+        // busca nada de fora (a mesma regra que faz a figura da web ser baixada pelo
+        // SERVIDOR em vez de o browser ir ao domínio de origem).
+        function barrasConsumo(itens, rotulo, n) {
+            if (!itens.length) return '<div class="av-vazio">Ainda não há medição.</div>';
+            const L = 46, T = 8, B = 22, larg = Math.max(34, Math.floor(560 / n));
+            const A = 150, W = L + itens.length * larg + 8;
+            const teto = Math.max(1, ...itens.map((x) => Math.max(x.medido_wh, x.parede_max_wh || 0)));
+            const y = (v) => T + (A - T - B) * (1 - v / teto);
+            let g = '<svg viewBox="0 0 ' + W + ' ' + A + '" width="' + W + '" height="' + A + '" role="img">';
+            [0, 0.5, 1].forEach((f) => {
+                const v = teto * f;
+                const rot = v >= 1000 ? (v / 1000).toFixed(1) + 'k' : Math.round(v);
+                g += '<line x1="' + L + '" y1="' + y(v) + '" x2="' + (W - 4) + '" y2="' + y(v)
+                   + '" stroke="var(--linha)" stroke-width="1"/>'
+                   + '<text x="' + (L - 5) + '" y="' + (y(v) + 3) + '" text-anchor="end" font-size="8"'
+                   + ' fill="var(--txt2)">' + rot + '</text>';
+            });
+            const passo = Math.ceil(itens.length / 10);
+            itens.forEach((x, i) => {
+                const cx = L + i * larg, lb = larg * 0.6, ox = cx + larg * 0.2, base = A - B;
+                const hg = (A - T - B) * (x.gpu_wh / teto), hc = (A - T - B) * (x.cpu_wh / teto);
+                const mal = (x.cobertura != null && x.cobertura < 0.5) || x.dias_com_medicao === 0;
+                const op = mal ? 0.35 : 1;
+                const dica = rotulo(x) + ' — medido ' + x.medido_wh.toFixed(1) + ' Wh (GPU '
+                           + x.gpu_wh.toFixed(1) + ' + CPU ' + x.cpu_wh.toFixed(1) + ')'
+                           + (x.parede_max_wh ? ' · parede ' + x.parede_min_wh.toFixed(0) + '–'
+                              + x.parede_max_wh.toFixed(0) + ' Wh' : '')
+                           + (x.cobertura != null ? ' · cobertura ' + (x.cobertura * 100).toFixed(1) + '%' : '');
+                g += '<g><title>' + escapeHtml(dica) + '</title>'
+                   + '<rect x="' + ox + '" y="' + (base - hg) + '" width="' + lb + '" height="'
+                   + Math.max(0, hg) + '" fill="var(--acc)" opacity="' + op + '"/>'
+                   + '<rect x="' + ox + '" y="' + (base - hg - hc) + '" width="' + lb + '" height="'
+                   + Math.max(0, hc) + '" fill="var(--txt2)" opacity="' + op + '"/>';
+                if (x.parede_max_wh > 0) {
+                    const y1 = y(x.parede_min_wh), y2 = y(x.parede_max_wh), mx = ox + lb / 2;
+                    g += '<line x1="' + mx + '" y1="' + y1 + '" x2="' + mx + '" y2="' + y2
+                       + '" stroke="#F28B82" stroke-width="1.5"/>'
+                       + '<line x1="' + (mx - 3) + '" y1="' + y2 + '" x2="' + (mx + 3) + '" y2="' + y2
+                       + '" stroke="#F28B82" stroke-width="1.5"/>';
+                }
+                if (i % passo === 0) {
+                    g += '<text x="' + (ox + lb / 2) + '" y="' + (A - 7) + '" text-anchor="middle"'
+                       + ' font-size="8" fill="var(--txt2)">' + escapeHtml(rotulo(x)) + '</text>';
+                }
+                g += '</g>';
+            });
+            return g + '</svg>';
         }
 
         // --- aba 1: fontes da última resposta ---

@@ -39,39 +39,131 @@ privilégio.
 > **Nada aqui foi executado por mim** — os passos 1, 2, 4 e 5 mudam a máquina ou
 > instalam software, e essa decisão é sua.
 
-### Passo 1 — instalar a ponte para .NET
+### Passo 0 — a checagem que decide se o passo 4 pode funcionar
+
+Antes de tudo, veja se o Windows vai deixar o driver subir (leitura de registro,
+não muda nada):
+
+```powershell
+(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -EA SilentlyContinue).Enabled
+```
+
+Vazio ou `0` = Integridade de Memória desligada, o driver sobe. `1` = **o passo 4
+vai falhar** e você precisa decidir se quer desligar o Isolamento de Núcleo (é uma
+proteção real; não desligue só por um número na tela).
+
+> Medido nesta máquina em 2026-08-03: vazio — não há bloqueio.
+
+### ~~Passo 1 — instalar a ponte para .NET~~ (JÁ FEITO nesta máquina)
 
 ```powershell
 C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pip install pythonnet
 ```
 
-**Risco:** baixo. É um pacote comum do PyPI, entra só na env `llama-omni`, e o
+O `pythonnet` **já está instalado** na env `llama-omni` (conferido em 2026-08-03),
+e ele carrega o **.NET Framework 4.x** — o que decide qual zip pegar no passo 2.
+
+**Risco:** baixo. Pacote comum do PyPI, entra só na env `llama-omni`, e o
 **servidor nunca o importa** — quem usa é o ajudante. Não entra em
 `requirements.txt` nem no CI de propósito.
 
-### Passo 2 — pegar a LibreHardwareMonitorLib.dll (release OFICIAL)
+### ~~Passo 2 — pegar a DLL~~ (JÁ FEITO — as DLLs estão em `dados\lhm\`)
 
-Baixe o `LibreHardwareMonitor-net472.zip` da página de releases do projeto
-oficial (`github.com/LibreHardwareMonitor/LibreHardwareMonitor`), descompacte, e
-copie **só** o `LibreHardwareMonitorLib.dll` para:
+Feito em 2026-08-03 a partir da release **oficial v0.9.6**
+(`github.com/LibreHardwareMonitor/LibreHardwareMonitor`), asset
+`LibreHardwareMonitor.zip`, SHA-256 do zip
+`086d9f1b5a99e643edc2cfaaac16051685b551e4c5ac0b32a57c58c0e529c001`.
 
-```
-D:\projetos\mente_digital\dados\lhm\LibreHardwareMonitorLib.dll
-```
+⚠ **Duas correções em relação ao que este doc dizia antes**, e as duas custam
+tempo se descobertas na hora:
 
-**Risco:** você está trazendo um binário de terceiro que vai rodar elevado no
-passo 4 — pegue da página de releases oficial e de nenhum espelho.
+1. **O asset `LibreHardwareMonitor-net472.zip` não existe mais.** A v0.9.6 publica
+   `LibreHardwareMonitor.zip` (.NET Framework — **este**) e
+   `LibreHardwareMonitor.NET.10.zip` (**errado** para esta env: o `pythonnet` daqui
+   carrega o .NET Framework 4.x, conferido).
+2. **Copiar "só o `LibreHardwareMonitorLib.dll`" NÃO funciona.** Ele depende de
+   assemblies de apoio, e a falha aparece só quando o sensor é lido:
+   `Não foi possível carregar … 'System.Memory, Version=4.0.5.0'`. São **8**
+   arquivos em `dados\lhm\`:
+
+   ```
+   LibreHardwareMonitorLib.dll          HidSharp.dll
+   System.Memory.dll                    Microsoft.Bcl.HashCode.dll
+   System.Buffers.dll                   System.Numerics.Vectors.dll
+   System.Runtime.CompilerServices.Unsafe.dll
+   System.Threading.Tasks.Extensions.dll
+   ```
+
+A `LibreHardwareMonitorLib.dll` **não é assinada** — o normal para a lib
+gerenciada desse projeto; quem precisa de assinatura é o `.sys` que ela extrai,
+senão o próprio Windows recusa carregar. A garantia aqui é a ORIGEM (release
+oficial por HTTPS) e o hash acima.
+
+**Risco:** é binário de terceiro que vai rodar elevado no passo 4 — pegue da
+página de releases oficial e de nenhum espelho.
 
 ### Passo 3 — conferir SEM elevação (nada muda na máquina)
 
 ```powershell
-C:\ProgramData\miniconda3\envs\llama-omni\python.exe scripts\ajudante_watts.py --uma-vez
+C:\ProgramData\miniconda3\envs\llama-omni\python.exe D:\projetos\mente_digital\scripts\ajudante_watts.py --uma-vez
 ```
 
-Esperado agora: uma mensagem dizendo que não deu, e saída `2`. É o que se quer
-ver — prova que a falta do driver é tratada como estado normal, não como crash.
+⚠ Caminho ABSOLUTO, como no passo 4. A versão relativa (`scripts\...`) só funciona
+se o PowerShell já estiver em `D:\projetos\mente_digital` — de qualquer outra
+pasta o Python responde `can't open file 'C:\Users\Você\scripts\...'`, que parece
+instalação quebrada e não é.
+
+Com as DLLs já no lugar, o esperado agora é:
+
+```
+[WATTS] nenhum sensor de potência da CPU respondeu — quase sempre é falta de
+privilégio (o driver não subiu) ou CPU sem o sensor exposto
+```
+
+É **exatamente** o que se quer ver: significa que a cadeia de DLLs está completa e
+o único bloqueio que resta é a elevação. (Se aparecer `LibreHardwareMonitorLib.dll
+não encontrada`, falta o passo 2; se aparecer `não consegui carregar … System.
+Memory`, faltam as assemblies de apoio do passo 2.)
 
 **Risco:** nenhum. Este passo não eleva nada e não carrega driver nenhum.
+
+### Passo 3.5 — instalar o PawnIO ⚠ NOVO, e é o que estava faltando
+
+**Medido em 2026-08-03, e contraria tudo que este doc dizia antes:** a
+LibreHardwareMonitor **não carrega mais o WinRing0**. A v0.9.5 trocou o driver
+(*"Swap WinRing0 to PawnIO"*, PR #1857 — o WinRing0 vinha sendo bloqueado por
+antivírus e tem a certificação revogada). A `LibreHardwareMonitorLib.dll` da
+v0.9.6 **não contém `WinRing0` nem nenhum `.sys`**: zero ocorrências das cadeias
+`WinRing0`, `Ring0` e `.sys` no binário, e o zip da release não traz driver algum.
+
+O sintoma exato disso — e é enganoso, porque **não parece falta de driver**:
+
+```
+[Cpu] AMD Ryzen 9 7950X3D
+   POWER  'Package'      = 0.0
+   POWER  'Core #1 (SMU)' = 0.0     ← todos zerados
+```
+
+O sensor **aparece** (a lib enumera a CPU por CPUID, sem driver nenhum); só o
+VALOR precisa de MSR, e sem driver ele vem `0.0`. Rodar como administrador não
+muda nada — conferido numa sessão comprovadamente elevada.
+
+O PawnIO é um driver de kernel **scriptável** e assinado, e existe justamente
+porque o WinRing0 expunha leitura/escrita crua de MSR a qualquer processo local.
+Ele precisa ser instalado **à parte** (a LHM não o embute):
+
+```
+https://github.com/namazso/PawnIO.Setup/releases/latest/download/PawnIO_setup.exe
+```
+
+**Risco:** ainda é um driver em modo kernel, e a decisão continua sua — mas é o
+substituto que o próprio projeto adotou por segurança, não o WinRing0 que este
+doc descrevia. Alternativa: usar uma LHM **≤ 0.9.4**, que ainda embute o
+WinRing0 — trocar segurança por conveniência, e o antivírus provavelmente barra.
+
+**Se você não quiser instalar driver nenhum:** nada quebra. O watt da GPU
+continua funcionando de graça, o campo da CPU fica vazio (nunca `0 W`), e o total
+da tela mostra a parcela que existe, rotulada `GPU`.
 
 ### Passo 4 — a primeira medição de verdade (aqui o driver sobe)
 
@@ -83,14 +175,18 @@ C:\ProgramData\miniconda3\envs\llama-omni\python.exe D:\projetos\mente_digital\s
 
 Esperado: `[WATTS] CPU Package: 142.3 W  ->  ...\dados\potencia_cpu.json`
 
-**Risco — o maior de todos, leia antes de rodar:** a LibreHardwareMonitorLib
-carrega o **`WinRing0x64.sys`**, um driver em modo kernel que expõe leitura e
-escrita de MSR e de portas de I/O a quem falar com ele. Enquanto ele estiver
-carregado, qualquer processo local capaz de abrir esse dispositivo tem um
-primitivo de escalada de privilégio. É por isso que este passo é seu e não meu, e
-por isso o passo 6 (desligar) existe. Se o **Isolamento de núcleo / Integridade
-de memória** estiver ligado no Windows, o driver provavelmente será **bloqueado**
-— e aí o passo falha com uma mensagem, sem estrago.
+**Risco:** o driver do passo 3.5 (PawnIO) fica carregado. Ele é bem melhor que o
+WinRing0 que este doc descrevia — em vez de expor leitura e escrita cruas de MSR
+a quem abrir o dispositivo, ele executa *bytecode* restrito —, mas driver de
+kernel continua sendo superfície. Por isso o passo 6 (desfazer) existe.
+
+⚠ **A elevação sozinha NÃO basta e não é o primeiro suspeito.** Medido em
+2026-08-03 numa sessão comprovadamente elevada: sem o PawnIO, o sensor `Package`
+aparece e lê `0.0`. Se você chegou aqui e vê zeros ou "nenhum sensor respondeu",
+volte ao passo 3.5 — não adianta reabrir o terminal como administrador.
+
+Se o **Isolamento de núcleo / Integridade de memória** estiver ligado, o driver
+pode ser bloqueado — o passo 0 é justamente para descobrir isso antes.
 
 ### Passo 5 — deixar de plantão (opcional)
 
@@ -137,6 +233,7 @@ reencenar a instalação inteira:
 | `cpu_watts_motivo` | O que é | O que fazer |
 |---|---|---|
 | `ausente` | o ajudante nunca publicou (não está de pé) | passo 4 ou 5 |
+| *(o ajudante diz "nenhum sensor respondeu")* | o **PawnIO não está instalado** — o sensor existe e lê `0.0` | passo 3.5. **Não** é elevação: medido elevado, dá o mesmo |
 | `vencido` | ele publicou e **parou** — morreu ou travou | veja a janela dele; o número não fica congelado na tela de propósito |
 | `invalido` | o arquivo existe e não presta | apague `dados\potencia_cpu.json` e rode o passo 4 |
 
