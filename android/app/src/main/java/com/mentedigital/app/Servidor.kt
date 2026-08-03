@@ -150,6 +150,43 @@ class Servidor(private val conf: () -> Conf) {
         }
     }
 
+    // ---- identidade POR APARELHO -------------------------------------------
+    /**
+     * Troca o CÓDIGO DE PAREAMENTO pela credencial deste aparelho.
+     *
+     * `base` vem por parâmetro, como em `saude` e pela mesma razão: isto é
+     * chamado da tela de CONFIGURAÇÃO, onde o endereço ainda está no campo e
+     * pode nem ter sido salvo.
+     *
+     * ⚠ SEM o header `X-Mente-Token`, e isso é deliberado: esta é a única rota
+     * sem gate (main.py, `parear_aparelho`) justamente por ser a porta de quem
+     * ainda NÃO tem credencial. Mandar o token velho aqui não abriria nada e só
+     * o exporia a mais um lugar.
+     */
+    fun parear(codigo: String, base: String = conf().base): Pareamento.Resultado {
+        if (base.isBlank()) return Pareamento.Resultado.Falhou("sem endereço")
+        val corpo = JSONObject().put("codigo", Pareamento.normalizarCodigo(codigo))
+            .toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder()
+            .url(Endereco.api(base, "/api/aparelhos/parear"))
+            .post(corpo)
+            .build()
+        // `httpCurto` e não `http`: parear é uma consulta ao SQLite e responde em
+        // milissegundos. Os 200 s de leitura do `http` existem para o `ligar`
+        // carregar modelo; herdá-los aqui deixaria o dono olhando um botão
+        // "Pareando…" por mais de três minutos quando o endereço estivesse errado.
+        return try {
+            httpCurto.newCall(req).execute().use { r ->
+                Pareamento.lerResposta(r.code, r.body?.string().orEmpty())
+            }
+        } catch (e: Exception) {
+            // ⚠ Só o que passa por AQUI é falha de rede. Um 401 com motivo não
+            // levanta exceção no OkHttp — ele é RECUSA, sai pelo `lerResposta`, e
+            // pede da tela uma frase completamente diferente.
+            Pareamento.Resultado.Falhou(e.message ?: "sem resposta")
+        }
+    }
+
     /** Cliente de tempo curto: o vigia responde em milissegundos ou não está lá.
      *  O `http` normal tem 200 s de leitura por causa do `ligar`, e esperar isso
      *  para descobrir que não há vigia deixaria a tela de boot muda. */
