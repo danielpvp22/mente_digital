@@ -15,17 +15,31 @@ não é liberar memória: o que sai da RAM física vai para o arquivo de pagina�
 volta quando for tocado. O número que diz quanta memória o processo AINDA exige do
 sistema é o `commit` (PrivateUsage). Reportar só o working set daria uma queda
 espetacular e enganosa. Os dois saem juntos, sempre.
+
+⚠ A MESMA RESSALVA VALE PARA OS WATTS, e é mais fácil de errar: `gpu_watts` é a
+potência do DISPOSITIVO, não deste processo. Numa máquina de trabalho há dezenas
+de programas com contexto na GPU (medido aqui em 2026-08-03: 22, entre o
+compositor do Windows, o navegador e um reprodutor de música), e todos entram no
+número — ler os ~96 W de repouso como "o assistente gasta 96 W parado" é
+simplesmente falso. Quem exibe tem de dizer isso (ver o tooltip do index.html).
+`cpu_watts` é o mesmo caso, um degrau pior: é o pacote INTEIRO da CPU.
 """
 from __future__ import annotations
 
 import gc
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 
-from mente_digital import vram
+from mente_digital import potencia, potencia_cpu, vram
 
 _MB = 1024 * 1024
+
+# O aviso de "ajudante publicando lixo" sai UMA vez. `medir()` roda a cada 20 s
+# (o laço do front) e a cada clique no botão de energia: repetir a mesma linha
+# para sempre afogaria o log em vez de informar.
+_avisou_cpu = False
 
 
 # --------------------------------------------------------------------------- #
@@ -90,11 +104,49 @@ def _ram_posix() -> Optional[tuple[int, int]]:
         return None
 
 
+def _watt_da_cpu() -> potencia_cpu.Leitura:
+    """O que o ajudante elevado publicou. Ajudante fora do ar é ESTADO NORMAL
+    (R1: o servidor não roda elevado, então ele pode simplesmente não existir) —
+    por isso "ausente" e "vencido" são silenciosos. O que merece log é o arquivo
+    EXISTIR e não prestar: aí há algo instalado e quebrado, e o dono precisa saber
+    sem ter de reencenar a instalação inteira."""
+    global _avisou_cpu
+    try:
+        from mente_digital.config import settings
+
+        leitura = potencia_cpu.ler_publicacao(
+            Path(settings.potencia_cpu_arquivo) if settings.potencia_cpu_arquivo else None,
+            settings.potencia_cpu_validade_seconds,
+        )
+    except Exception:                              # noqa: BLE001 - medição nunca é fatal
+        return potencia_cpu.Leitura(None, None, "ausente")
+    if leitura.motivo == "invalido" and not _avisou_cpu:
+        _avisou_cpu = True                         # uma vez: isto roda a cada 20 s
+        try:
+            from mente_digital.telemetry import telemetry
+
+            telemetry.warn("POTENCIA", "O arquivo do ajudante de watts existe mas está "
+                                       "inválido — o watt da CPU sai como None.")
+        except Exception:                          # noqa: BLE001
+            pass
+    return leitura
+
+
 def medir() -> dict:
     """Fotografia do consumo AGORA. Campo ausente vira None, nunca zero — zero
-    seria indistinguível de "medi e não há consumo", que é uma afirmação forte."""
+    seria indistinguível de "medi e não há consumo", que é uma afirmação forte.
+
+    Vale em dobro para os watts: sem NVML (ou sem o ajudante elevado da CPU) o
+    campo some, e "0 W" nunca é escrito."""
     ram = _ram_windows() if os.name == "nt" else _ram_posix()
     gpu = vram.ler_uso()
+    # A leitura de watts da GPU é MÉDIA POR INTEGRAL desde a chamada anterior a
+    # esta — logo, quem chama `medir()` duas vezes coladas (a rota de energia faz
+    # isso, antes/depois de soltar os modelos) recebe o instante, não uma janela
+    # de 0,1 s dividida por quase nada. Ver potencia.media_integral.
+    watt_gpu = potencia.medida_gpu()
+    watt_cpu = _watt_da_cpu()
+    limite = potencia.limite_gpu()
     return {
         "ram_mb": round(ram[0] / _MB) if ram else None,
         "ram_commit_mb": round(ram[1] / _MB) if ram else None,
@@ -103,6 +155,20 @@ def medir() -> dict:
         # número certo para ele conferir — mas não atribua a queda inteira a nós.
         "vram_mb": round(gpu["usado"] / _MB) if gpu else None,
         "vram_total_mb": round(gpu["total"] / _MB) if gpu else None,
+        # Watts: DISPOSITIVO inteiro, não o processo (ver o cabeçalho do módulo).
+        # A origem viaja junto porque "média de 20 s" e "instante" são números
+        # diferentes sobre a mesma placa, e sem o rótulo não dá para saber qual.
+        "gpu_watts": round(watt_gpu.watts, 1) if watt_gpu.watts is not None else None,
+        "gpu_watts_origem": watt_gpu.origem,
+        # O teto imposto pelo driver — é ele que dá ESCALA ao watt: 96 W sozinho
+        # não diz se a placa está parada ou apertada; 96 de 320 diz.
+        "gpu_watts_limite": round(limite) if limite is not None else None,
+        "cpu_watts": round(watt_cpu.watts, 1) if watt_cpu.watts is not None else None,
+        "cpu_watts_origem": watt_cpu.origem,
+        # Por que o motivo sobe até a API: "o ajudante não está de pé" e "ele está
+        # de pé publicando lixo" aparecem os dois como um campo vazio na tela, e
+        # têm consertos diferentes. O campo é o que responde "por quê" sem reencenar.
+        "cpu_watts_motivo": watt_cpu.motivo,
     }
 
 

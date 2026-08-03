@@ -464,7 +464,12 @@
 
     <div id="strip">
         <button class="sw on" id="sw-energia" onclick="alternarEnergia()" title="Solta os modelos da VRAM sem fechar o app">
-            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med"></span>
+            <!-- ⚠ Tooltip PRÓPRIO no span da medida, e não no botão: sem ele o dono lê
+                 "96 W" logo depois de "VRAM" e conclui que o assistente gasta 96 W parado.
+                 É falso. Os watts são do DISPOSITIVO — 22 programas tinham contexto na GPU
+                 quando isto foi medido (compositor do Windows, navegador, música) —, a
+                 mesma ressalva que energia.py já documenta para a VRAM. -->
+            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med" title="Watts do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro. O número após a barra é o teto do driver. O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s."></span>
         </button>
         <button class="sw" id="btn-end" onclick="encerrarConversa()" title="Consolidar agora: encerra a conversa e roda o ETL do idle">
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg>
@@ -1175,11 +1180,39 @@
             el.disabled = estado === 'ocupado';
         }
 
+        // O que a faixa do chip mostra: memória e, desde 2026-08-03, WATTS.
+        //
+        // ⚠ Cada campo entra por conta própria, sem `return ''` adiantado. Antes
+        // a função desistia se `vram_mb` viesse null, e watt não depende de VRAM
+        // (o da GPU vem da NVML por ctypes, o da CPU vem do ajudante elevado) —
+        // uma leitura de memória ausente apagaria uma medida que existe.
+        //
+        // ⚠ O `~` do watt da GPU não é enfeite: com ele, o número é o INSTANTE
+        // sorteado (1ª leitura, ainda sem janela); sem ele, é a média por
+        // integral de energia dos ~20 s desde a leitura anterior. Numa placa que
+        // salta de 96 W parada para 320 W decodificando, os dois contam
+        // histórias diferentes, e o til é o que separa uma da outra. O tooltip
+        // do próprio span explica de quem são estes watts.
         function medidaDe(dados) {
             const m = (dados && (dados.depois || dados)) || {};
-            if (m.vram_mb == null) return '';
-            const ram = m.ram_commit_mb != null ? ` · ${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM` : '';
-            return `${(m.vram_mb / 1024).toFixed(1)} GB VRAM${ram}`;
+            const partes = [];
+            if (m.vram_mb != null) partes.push(`${(m.vram_mb / 1024).toFixed(1)} GB VRAM`);
+            if (m.ram_commit_mb != null) partes.push(`${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM`);
+
+            const watts = [];
+            if (m.gpu_watts != null) {
+                const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
+                // O teto do driver dá ESCALA: 96 W sozinho não diz se a placa
+                // está parada ou apertada; 96/320 diz.
+                const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
+                watts.push(`${instante}${Math.round(m.gpu_watts)}${teto} W GPU`);
+            }
+            // Ausente é o estado NORMAL: sem o ajudante elevado de pé não há como
+            // ler a potência da CPU no Windows, e o campo vem null (nunca 0).
+            if (m.cpu_watts != null) watts.push(`${Math.round(m.cpu_watts)} W CPU`);
+            if (watts.length) partes.push(watts.join(' + '));
+
+            return partes.join(' · ');
         }
 
         async function energiaPost(acao) {
