@@ -248,6 +248,11 @@ def _montar_handler(vigia: Vigia):
     return Handler
 
 
+class CertificadoInvalido(RuntimeError):
+    """TLS pedido no `.env` e impossível de cumprir. Mata o plantão de propósito —
+    ver o ⚠ de `contexto_tls`."""
+
+
 class _Plantao(ThreadingHTTPServer):
     """O servidor do plantão, só para calar o traceback do handshake errado.
 
@@ -289,33 +294,77 @@ def contexto_tls(cert: str, chave: str) -> Optional["ssl.SSLContext"]:
     claro enquanto todo o resto vai cifrado seria proteger tudo menos a chave.
 
     `ssl` é stdlib — não fere a regra de não trazer peso para cá.
-    Fail-soft como o `main.py`: caminho configurado que não existe vira aviso e
-    plantão em HTTP, porque um vigia mudo é pior que um vigia em claro.
+
+    ⚠ NÃO cai para HTTP quando o certificado está configurado e QUEBRADO — levanta.
+    A 1ª versão caía, copiando o fail-soft do `main.py` ("vigia mudo é pior que
+    vigia em claro"), e uma revisão adversária derrubou o argumento: se o servidor
+    está configurado para TLS, o celular também está (ele DERIVA o esquema), então
+    um plantão em HTTP puro **já está mudo para o celular** — o fallback não salva
+    ninguém e só deixa a credencial de acordar em claro num socket que escuta em
+    `0.0.0.0`. Pior: o aviso é um `print`, e no ÚNICO caminho de "sobe com o
+    Windows" que este projeto oferece (`inicializacao.script_vbs` → `sh.Run …, 0,
+    False`, janela oculta e sem redirecionamento) ele não tem console nem arquivo
+    onde cair. Seria uma regressão de confidencialidade completamente silenciosa,
+    meses depois, quando o cert expirasse — e o cert do Tailscale expira em 90
+    dias com renovação manual.
+
+    Caminho vazio continua sendo HTTP sem drama: "não configurei TLS" é uma
+    ESCOLHA, não um erro. O que vira exceção é a contradição entre o que o `.env`
+    pede e o que existe no disco.
     """
     import ssl
 
     if not (cert and chave):
         return None
     if not (os.path.exists(cert) and os.path.exists(chave)):
-        print(f"[VIGIA] MENTE_SSL_CERT/KEY apontam para arquivo inexistente "
-              f"({cert!r}, {chave!r}) — plantão em HTTP.", flush=True)
-        return None
+        raise CertificadoInvalido(
+            f"MENTE_SSL_CERT/KEY apontam para arquivo inexistente ({cert!r}, {chave!r})")
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=cert, keyfile=chave)
         return ctx
-    except Exception as exc:                          # noqa: BLE001 - nunca derruba o plantão
-        print(f"[VIGIA] não consegui carregar o certificado: {exc} — plantão em HTTP.",
-              flush=True)
-        return None
+    except CertificadoInvalido:
+        raise
+    except Exception as exc:
+        raise CertificadoInvalido(f"não consegui carregar o certificado: {exc}") from exc
+
+
+def registrar_falha(raiz: Path, mensagem: str) -> None:
+    """Deixa o motivo em DISCO antes de morrer.
+
+    O plantão roda sem console (ver o ⚠ acima), então `print` sozinho é o mesmo que
+    silêncio: o dono veria só o app deixando de se encerrar, semanas depois, sem
+    nenhum lugar para olhar. Um arquivo é o canal que sobrevive a um processo sem
+    console — o mesmo recurso que `potencia_cpu` já usa para falar com o servidor.
+
+    Best-effort de propósito: se nem o arquivo der para escrever, o processo ainda
+    tem de morrer com a exceção original, não com uma exceção sobre o log.
+    """
+    try:
+        destino = raiz / "dados"
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "vigia_erro.txt").write_text(mensagem, encoding="utf-8")
+    except Exception as exc:                          # noqa: BLE001 - ver docstring
+        print(f"[VIGIA] não consegui nem gravar o motivo da falha: {exc}", flush=True)
 
 
 def servir(raiz: Path, porta: Optional[int] = None) -> None:
     """Fica de plantão. Bloqueia — é o corpo do processo do vigia."""
     porta = porta or settings.vigia_port
+    # O certificado é resolvido ANTES de abrir a porta: falhar com o socket já no
+    # ar deixaria a porta presa por um instante e, pior, um `server_close` a mais
+    # no caminho de erro. Nada de rede acontece até o TLS estar decidido.
+    try:
+        ctx = contexto_tls(settings.ssl_cert, settings.ssl_key)
+    except CertificadoInvalido as exc:
+        registrar_falha(raiz, f"[VIGIA] {exc}\nO plantão NÃO subiu: o .env pede TLS e o "
+                              f"certificado não serve. Sem isto, a credencial de acordar "
+                              f"iria em claro num socket que escuta em 0.0.0.0.\n")
+        print(f"[VIGIA] {exc} — plantão NÃO vai subir (motivo em dados/vigia_erro.txt).",
+              flush=True)
+        raise
     vigia = Vigia(raiz)
     httpd = _Plantao((settings.host, porta), _montar_handler(vigia))
-    ctx = contexto_tls(settings.ssl_cert, settings.ssl_key)
     if ctx is not None:
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     protegido = "com token" if settings.access_token else "só loopback"

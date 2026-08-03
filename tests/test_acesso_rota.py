@@ -92,6 +92,45 @@ def test_revogado_responde_401_COM_O_MOTIVO(cliente):
     assert r.json()["detail"]["motivo"] == regras.MOTIVO_REVOGADO
 
 
+def test_id_de_revogado_com_segredo_CHUTADO_nao_confirma_a_revogacao(cliente):
+    """O buraco que a revisão adversária de 2026-08-03 achou (pré-existente ao PR):
+    o `id` é PÚBLICO — aparece na tela de pareamento do celular e em `/api/aparelhos`
+    —, e a credencial é `mdk1.<id>.<segredo>`. Bastava montar
+    `mdk1.<id conhecido>.<lixo>` para o servidor confirmar que aquele aparelho está
+    revogado, sem acertar segredo nenhum. O bloqueio progressivo impede VARRER ids,
+    não uma sondagem única contra um id que a pessoa já viu.
+
+    Quem tem o segredo continua vendo "revogado" (é o teste acima) — é ele que faz o
+    app mostrar a tela certa. Quem só chutou recebe o genérico."""
+    c, registro = cliente
+    credencial = _parear(registro)
+    aparelho_id = regras.partir_credencial(credencial)[0]
+    registro.revogar(aparelho_id)
+
+    chute = regras.montar_credencial(aparelho_id, regras.gerar_segredo())
+    r = c.get("/api/acesso", headers={"X-Mente-Token": chute})
+    assert r.status_code == 401
+    assert r.json()["detail"]["motivo"] == "credencial_invalida"
+
+
+def test_a_auditoria_do_dono_continua_sabendo_que_era_revogado():
+    """O motivo GROSSO é só da resposta HTTP. Na trilha, o dono precisa distinguir
+    "sondaram um aparelho que eu revoguei" de "chutaram um id que não existe" —
+    esconder isso dele seria trocar um problema por outro."""
+    from datetime import datetime
+
+    ap = regras.Aparelho(id="a" * 16, apelido="celular", impressao="x", sal="y",
+                         criado_em="2026-08-03T00:00:00", revogado_em="2026-08-03T01:00:00")
+    v = regras.avaliar(regras.Situacao(
+        habilitado=True, host="10.0.0.9",
+        credencial=regras.montar_credencial("a" * 16, regras.gerar_segredo()),
+        token_legado="", aceita_token_legado=True, agora=datetime(2026, 8, 3, 2, 0),
+        aparelho=ap, segredo_confere=False))
+
+    assert v.motivo == regras.MOTIVO_REVOGADO          # trilha: fina
+    assert v.motivo_publico == "credencial_invalida"   # resposta: grossa
+
+
 def test_id_inexistente_nao_vira_oraculo_de_enumeracao(cliente):
     """Sondar um id que não existe tem de responder IGUAL a acertar o id e errar o
     segredo. Se diferisse, a rota de sondagem viraria a ferramenta mais barata para

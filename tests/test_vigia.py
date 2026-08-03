@@ -251,13 +251,51 @@ def test_o_plantao_atende_em_TLS_com_o_cert_do_servidor(monkeypatch, tmp_path):
         httpd.shutdown()
 
 
-def test_cert_configurado_mas_inexistente_nao_deixa_o_plantao_mudo(tmp_path, capsys):
-    """Fail-soft igual ao do `main.py`: caminho errado no `.env` vira aviso e HTTP.
-    Um vigia mudo é pior que um vigia em claro — sem ele o celular não tem a quem
-    pedir para levantar o PC, e o app nem se encerra mais (ver `_vigia_de_plantao`)."""
-    assert vigia.contexto_tls(str(tmp_path / "nao_existe.crt"),
-                              str(tmp_path / "nao_existe.key")) is None
-    assert "plantão em HTTP" in capsys.readouterr().out
+def test_cert_configurado_e_quebrado_MATA_o_plantao(tmp_path):
+    """A 1ª versão caía para HTTP aqui, copiando o fail-soft do `main.py`. Uma
+    revisão adversária derrubou o argumento: se o servidor está configurado para
+    TLS, o CELULAR também está (ele deriva o esquema), então o plantão em HTTP puro
+    **já está mudo para ele** — o fallback não salva ninguém e só deixa a credencial
+    de acordar em claro num socket que escuta em `0.0.0.0`.
+
+    E o aviso era um `print`: no único caminho de "sobe com o Windows"
+    (`inicializacao.script_vbs` → `sh.Run …, 0, False`, janela oculta e sem
+    redirecionamento) ele não tem console nem arquivo onde cair. Silêncio total,
+    meses depois, quando o cert de 90 dias do Tailscale expirasse."""
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.contexto_tls(str(tmp_path / "nao_existe.crt"), str(tmp_path / "nao_existe.key"))
+
+
+def test_cert_ilegivel_tambem_mata(tmp_path):
+    """Arquivo existe mas não é certificado (truncado, trocado, chave que não casa)."""
+    lixo_cert = tmp_path / "lixo.crt"
+    lixo_chave = tmp_path / "lixo.key"
+    lixo_cert.write_text("isto não é um certificado")
+    lixo_chave.write_text("nem isto é uma chave")
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.contexto_tls(str(lixo_cert), str(lixo_chave))
+
+
+def test_a_falha_fatal_deixa_o_motivo_em_DISCO(tmp_path, monkeypatch):
+    """`print` num processo sem console é o mesmo que silêncio. O arquivo é o canal
+    que sobrevive — o dono veria, senão, só o app deixando de se encerrar."""
+    monkeypatch.setattr(vigia.settings, "ssl_cert", str(tmp_path / "nao_existe.crt"))
+    monkeypatch.setattr(vigia.settings, "ssl_key", str(tmp_path / "nao_existe.key"))
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.servir(tmp_path, porta=0)
+
+    deixado = (tmp_path / "dados" / "vigia_erro.txt").read_text(encoding="utf-8")
+    assert "nao_existe.crt" in deixado
+    assert "0.0.0.0" in deixado          # diz POR QUE não subiu, não só que não subiu
+
+
+def test_pasta_de_dados_impossivel_nao_troca_a_excecao_original(tmp_path, monkeypatch, capsys):
+    """Se nem o arquivo der para escrever, o processo tem de morrer com a falha do
+    CERTIFICADO — não com uma falha sobre o log dela."""
+    monkeypatch.setattr(vigia.Path, "mkdir",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio")))
+    vigia.registrar_falha(tmp_path, "qualquer coisa")
+    assert "não consegui nem gravar" in capsys.readouterr().out
 
 
 def test_sem_cert_configurado_o_plantao_segue_em_http(tmp_path):
