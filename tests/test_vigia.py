@@ -219,6 +219,77 @@ def test_aparelho_revogado_NAO_acorda_mais_o_pc(vigia_com_aparelhos):
     assert subidas == []
 
 
+def test_o_plantao_atende_em_TLS_com_o_cert_do_servidor(monkeypatch, tmp_path):
+    """O celular DERIVA o endereço do vigia do endereço do assistente, trocando só
+    a porta — inclusive o esquema (`Endereco.vigia`, Android). Ligar o HTTPS no
+    servidor grande e deixar o plantão em HTTP puro faria o app falar `https://` com
+    um socket que não fala TLS, e a falha chegaria na tela como "o PC está
+    desligado": a ambiguidade que o vigia existe para matar, ressuscitada.
+
+    Servidor real com certificado real (gerado aqui pelo `cryptography`, que já é
+    dependência transitiva): handshake é a classe de coisa que passa na leitura e
+    falha na rede."""
+    ssl = pytest.importorskip("ssl")
+    cert, chave = _cert_efemero(tmp_path)
+
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    monkeypatch.setattr(vigia.rede, "porta_em_uso", lambda h, p: False)
+    monkeypatch.setattr(vigia, "subir_app", lambda raiz: True)
+
+    ctx = vigia.contexto_tls(cert, chave)
+    assert ctx is not None
+    httpd = vigia._Plantao(("127.0.0.1", 0), vigia._montar_handler(vigia.Vigia(tmp_path)))
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        porta = httpd.server_address[1]
+        cliente = ssl._create_unverified_context()   # nosec B323 - cert efêmero do teste
+        with urllib.request.urlopen(                 # nosec B310
+                f"https://127.0.0.1:{porta}/vigia/status", timeout=5, context=cliente) as r:
+            assert json.loads(r.read().decode())["vigia"] is True
+    finally:
+        httpd.shutdown()
+
+
+def test_cert_configurado_mas_inexistente_nao_deixa_o_plantao_mudo(tmp_path, capsys):
+    """Fail-soft igual ao do `main.py`: caminho errado no `.env` vira aviso e HTTP.
+    Um vigia mudo é pior que um vigia em claro — sem ele o celular não tem a quem
+    pedir para levantar o PC, e o app nem se encerra mais (ver `_vigia_de_plantao`)."""
+    assert vigia.contexto_tls(str(tmp_path / "nao_existe.crt"),
+                              str(tmp_path / "nao_existe.key")) is None
+    assert "plantão em HTTP" in capsys.readouterr().out
+
+
+def test_sem_cert_configurado_o_plantao_segue_em_http(tmp_path):
+    """O default do projeto (`ssl_cert=""`): nada muda, nem um aviso a mais."""
+    assert vigia.contexto_tls("", "") is None
+
+
+def _cert_efemero(tmp_path) -> tuple[str, str]:
+    """Cert auto-assinado de 1 dia para 127.0.0.1, feito pelo `openssl` do PATH.
+
+    Nem `cryptography` (NÃO está nesta env — medido: o teste se pulava em silêncio)
+    nem chave commitada no repo (chave privada versionada é cheiro ruim mesmo em
+    teste, e o bandit reclama com razão). `openssl` vem com o Git for Windows na
+    máquina do dono e existe no runner Linux do CI, então a prova roda nos dois —
+    que é o ponto: TLS é a classe de coisa que passa na leitura e falha na rede.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("openssl"):
+        pytest.skip("openssl não está no PATH")
+    p_cert = tmp_path / "t.crt"
+    p_chave = tmp_path / "t.key"
+    r = subprocess.run([                                         # nosec B603 B607
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(p_chave), "-out", str(p_cert), "-days", "1",
+        "-subj", "/CN=mente-teste", "-addext", "subjectAltName=IP:127.0.0.1",
+    ], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return str(p_cert), str(p_chave)
+
+
 def test_com_a_identidade_desligada_o_plantao_nao_ABRE_o_banco(monkeypatch, tmp_path):
     """A função nasce desligada, e desligada o plantão tem de continuar barato: o
     celular pergunta a cada tique da tela de carregamento, e abrir SQLite em cada

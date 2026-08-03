@@ -39,7 +39,10 @@ import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:      # só para a anotação: `ssl` é carregado sob demanda, e este
+    import ssl         # módulo existe para não carregar o que não vai usar
 
 from mente_digital import acesso, rede
 from mente_digital.config import settings
@@ -245,13 +248,79 @@ def _montar_handler(vigia: Vigia):
     return Handler
 
 
+class _Plantao(ThreadingHTTPServer):
+    """O servidor do plantão, só para calar o traceback do handshake errado.
+
+    Com TLS ligado, um cliente que ainda fale `http://` (o celular com a
+    configuração antiga é o caso certo de acontecer) produz um `ssl.SSLError` por
+    tentativa, e o `socketserver` responde a isso com um traceback inteiro. Num
+    processo que existe para ficar calado meses a fio, isso é ruído que esconde o
+    que importa. Vira UMA linha — que continua dizendo quem bateu e por quê; o
+    resto segue com o traceback de sempre, porque erro engolido é o defeito que
+    este projeto mais combate.
+    """
+
+    def handle_error(self, request, client_address):    # noqa: D102 - assinatura da stdlib
+        import ssl
+        import sys
+        import traceback
+
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ssl.SSLError):
+            print(f"[VIGIA] handshake TLS recusado de {client_address[0]}: "
+                  f"{getattr(exc, 'reason', None) or exc} (cliente falando HTTP puro?)",
+                  flush=True)
+            return
+        traceback.print_exc()
+
+
+def contexto_tls(cert: str, chave: str) -> Optional["ssl.SSLContext"]:
+    """O MESMO par de certificados do servidor grande (MENTE_SSL_CERT/KEY), ou None.
+
+    Por que o plantão precisa disto, e por que descobrir tarde sai caro: o app do
+    celular DERIVA o endereço do vigia do endereço do assistente, trocando só a
+    porta (`Endereco.vigia`, Android) — inclusive o ESQUEMA. No dia em que o dono
+    ligar o HTTPS para destravar o microfone de fora de casa, o app passaria a
+    falar `https://…:8765` com um vigia de HTTP puro, e a falha chegaria na tela
+    como "o PC está desligado". Seria a AMBIGUIDADE que o vigia existe para matar,
+    ressuscitada pelo conserto de outra coisa.
+
+    E há o motivo direto: `acordar` é a única rota que carrega o token. Deixá-la em
+    claro enquanto todo o resto vai cifrado seria proteger tudo menos a chave.
+
+    `ssl` é stdlib — não fere a regra de não trazer peso para cá.
+    Fail-soft como o `main.py`: caminho configurado que não existe vira aviso e
+    plantão em HTTP, porque um vigia mudo é pior que um vigia em claro.
+    """
+    import ssl
+
+    if not (cert and chave):
+        return None
+    if not (os.path.exists(cert) and os.path.exists(chave)):
+        print(f"[VIGIA] MENTE_SSL_CERT/KEY apontam para arquivo inexistente "
+              f"({cert!r}, {chave!r}) — plantão em HTTP.", flush=True)
+        return None
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert, keyfile=chave)
+        return ctx
+    except Exception as exc:                          # noqa: BLE001 - nunca derruba o plantão
+        print(f"[VIGIA] não consegui carregar o certificado: {exc} — plantão em HTTP.",
+              flush=True)
+        return None
+
+
 def servir(raiz: Path, porta: Optional[int] = None) -> None:
     """Fica de plantão. Bloqueia — é o corpo do processo do vigia."""
     porta = porta or settings.vigia_port
     vigia = Vigia(raiz)
-    httpd = ThreadingHTTPServer((settings.host, porta), _montar_handler(vigia))
+    httpd = _Plantao((settings.host, porta), _montar_handler(vigia))
+    ctx = contexto_tls(settings.ssl_cert, settings.ssl_key)
+    if ctx is not None:
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     protegido = "com token" if settings.access_token else "só loopback"
-    print(f"[VIGIA] de plantão em {settings.host}:{porta} ({protegido}); "
+    esquema = "https" if ctx is not None else "http"
+    print(f"[VIGIA] de plantão em {esquema}://{settings.host}:{porta} ({protegido}); "
           f"o assistente responde na {settings.port} quando subir.", flush=True)
     try:
         httpd.serve_forever()

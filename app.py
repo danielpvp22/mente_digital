@@ -766,12 +766,35 @@ def _acordar_se_dormindo(base: str, token: str) -> bool:
 
 def _vigia_de_plantao(porta: int, timeout: float = 1.5) -> bool:
     """Há um vigia atendendo? É a pré-condição para o app poder se encerrar: sem
-    ele, sair deixaria o celular sem ninguém para chamar."""
+    ele, sair deixaria o celular sem ninguém para chamar.
+
+    ⚠ O esquema SEGUE o do plantão, que segue o do servidor (`MENTE_SSL_CERT/KEY`).
+    Cravar `http://` aqui daria um falso "não tem vigia" no dia em que o dono
+    ligasse o TLS — e a consequência não é um erro na tela, é o app DEIXANDO DE SE
+    ENCERRAR para sempre, achando que ninguém assumiria o plantão. Falha na direção
+    silenciosa, que é a pior.
+
+    Certificado NÃO é verificado, de propósito: isto é um booleano de vida lido de
+    127.0.0.1. Verificar aqui exigiria que o cert do dono cobrisse o IP de loopback
+    (o do Tailscale não cobre) e não compraria segurança nenhuma — quem consegue se
+    passar pelo seu próprio loopback já é dono da máquina.
+    """
     import urllib.request
 
+    from mente_digital.config import settings as cfg
+
+    if cfg.ssl_cert and cfg.ssl_key:
+        import ssl
+
+        contexto = ssl._create_unverified_context()   # nosec B323 - ver docstring
+        esquema = "https"
+    else:
+        contexto = None
+        esquema = "http"
     try:
-        with urllib.request.urlopen(  # nosec B310 - http fixo em loopback
-            f"http://127.0.0.1:{porta}/vigia/status", timeout=timeout
+        with urllib.request.urlopen(  # nosec B310 - loopback, esquema derivado da config
+            f"{esquema}://127.0.0.1:{porta}/vigia/status", timeout=timeout,
+            context=contexto,
         ) as r:
             return bool(json.loads(r.read().decode("utf-8")).get("vigia"))
     except Exception:                              # noqa: BLE001 - sem vigia é resposta válida
