@@ -26,4 +26,26 @@ object Endereco {
         val c = if (caminho.startsWith("/")) caminho else "/$caminho"
         return normalizarBase(base) + c
     }
+
+    /**
+     * Rota do VIGIA — o processo mínimo que fica de plantão no PC quando o
+     * assistente está encerrado (`mente_digital/vigia.py`).
+     *
+     * O endereço é DERIVADO do que o dono já configurou: mesma máquina, outra
+     * porta. Pedir um segundo campo na tela de configuração seria pedir duas vezes
+     * a mesma informação — e um campo a mais para errar.
+     */
+    fun vigia(base: String, caminho: String, porta: Int = PORTA_VIGIA): String {
+        val limpa = normalizarBase(base)
+        if (limpa.isEmpty()) return ""
+        val esquema = limpa.substringBefore("://")
+        val semEsquema = limpa.substringAfter("://")
+        // Corta porta E qualquer caminho: o host é tudo até o primeiro ':' ou '/'.
+        val host = semEsquema.substringBefore('/').substringBefore(':')
+        val c = if (caminho.startsWith("/")) caminho else "/$caminho"
+        return "$esquema://$host:$porta$c"
+    }
+
+    /** O default do `vigia_port` no servidor (config.py). */
+    const val PORTA_VIGIA = 8765
 }

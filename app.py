@@ -746,7 +746,22 @@ def _acordar_se_dormindo(base: str, token: str) -> bool:
     return True
 
 
-def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None:
+def _vigia_de_plantao(porta: int, timeout: float = 1.5) -> bool:
+    """Há um vigia atendendo? É a pré-condição para o app poder se encerrar: sem
+    ele, sair deixaria o celular sem ninguém para chamar."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(  # nosec B310 - http fixo em loopback
+            f"http://127.0.0.1:{porta}/vigia/status", timeout=timeout
+        ) as r:
+            return bool(json.loads(r.read().decode("utf-8")).get("vigia"))
+    except Exception:                              # noqa: BLE001 - sem vigia é resposta válida
+        return False
+
+
+def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event,
+                 ao_encerrar=None) -> None:
     """Observa a inatividade do DONO e conduz o ciclo de consolidação.
 
     Roda em thread própria porque a leitura é um polling de API do Windows — não
@@ -775,6 +790,23 @@ def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event) -> None
             estado = _api(base, "/api/energia", "estado", token)
             if estado:
                 bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
+                # ENCERRAR de vez (o degrau acima do standby): o processo sai e o
+                # PC volta a zero, com o VIGIA assumindo o plantão. A decisão é
+                # pura e mora em standby.py; aqui só se lê o relógio do servidor e
+                # se confirma que há quem atenda o celular depois.
+                from mente_digital import standby
+                from mente_digital.config import settings as cfg
+
+                if ao_encerrar is not None and standby.deve_encerrar(
+                    cfg.idle_encerrar_minutos,
+                    float(estado.get("sem_uso_s") or 0.0),
+                    bool(estado.get("ocupado")),
+                    _vigia_de_plantao(cfg.vigia_port),
+                ):
+                    print(f"[APP] {cfg.idle_encerrar_minutos} min sem uso e vigia de "
+                          f"plantão — encerrando; o PC volta a zero.", flush=True)
+                    ao_encerrar()
+                    return
         # Com o servidor dormindo, consolidar seria contraditório: o ETL religaria o
         # modelo (e só ele — `restaurar_vram` não é chamado por esse caminho), então
         # o vault seria indexado SEM embeddings e a economia teria durado nada. Quem
@@ -823,7 +855,14 @@ def _argumentos() -> argparse.Namespace:
                    help="abre no navegador padrão em vez da janela nativa.")
     p.add_argument("--standby", action="store_true",
                    help="sobe o servidor, SOLTA os modelos e fica de plantão na bandeja "
-                        "(janela oculta). É o modo de iniciar junto com o Windows.")
+                        "(janela oculta).")
+    p.add_argument("--oculto", action="store_true",
+                   help="sobe tudo normalmente, mas com a janela ESCONDIDA (bandeja como "
+                        "porta de entrada). É como o vigia levanta o app a pedido do celular.")
+    p.add_argument("--vigia", action="store_true",
+                   help="NÃO sobe o assistente: fica de plantão mínimo (sem torch) esperando "
+                        "um pedido autenticado do celular para levantá-lo. É o modo de "
+                        "iniciar junto com o Windows.")
     p.add_argument("--instalar-inicio", action="store_true",
                    help="registra o app na pasta Inicializar do Windows (modo standby).")
     p.add_argument("--remover-inicio", action="store_true",
@@ -866,6 +905,14 @@ def main() -> int:
     saida = _gerir_inicio_automatico(args)
     if saida is not None:
         return saida
+
+    if args.vigia:
+        # Sai por aqui ANTES de qualquer coisa: o valor do vigia é não ter
+        # importado nada pesado. Ele só conhece config, acesso e rede.
+        from mente_digital import vigia
+
+        vigia.servir(BASE_DIR)
+        return 0
 
     from mente_digital import rede
     from mente_digital.config import settings
@@ -938,11 +985,11 @@ def main() -> int:
         width=geo["largura"], height=geo["altura"],
         x=geo["x"], y=geo["y"],
         min_size=(360, 560),
-        # `--standby` nasce ESCONDIDA: o modo existe para o logon do Windows, e uma
-        # janela aparecendo sozinha toda vez que o PC liga seria o oposto de discreto.
-        # A bandeja é a porta de entrada — e, como a janela existe (só não se vê),
-        # abri-la depois custa zero em vez dos ~36 s de um boot novo.
-        hidden=args.standby,
+        # ESCONDIDA quando ninguém pediu uma janela: no `--standby` (plantão) e no
+        # `--oculto` (o vigia levantou o app a pedido do celular, e quem pediu está
+        # em outro cômodo). A bandeja é a porta de entrada — e, como a janela existe
+        # (só não se vê), trazê-la depois custa zero em vez de um boot novo.
+        hidden=args.standby or args.oculto,
         frameless=not args.com_moldura,
         easy_drag=False,          # só a .pywebview-drag-region arrasta — ver docstring
         background_color="#0B0B0D",
@@ -1080,7 +1127,8 @@ def main() -> int:
         # deixaria o app inalcançável para sempre.
         if bandeja.iniciar():
             threading.Thread(
-                target=_laco_ocioso, args=(url, settings.access_token, bandeja, parar_laco),
+                target=_laco_ocioso,
+                args=(url, settings.access_token, bandeja, parar_laco, _sair),
                 daemon=True, name="ocioso",
             ).start()
         if args.standby:

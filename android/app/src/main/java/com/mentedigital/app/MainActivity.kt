@@ -95,9 +95,37 @@ class MainActivity : ComponentActivity() {
                         if (tela != Tela.BOOT) return@LaunchedEffect
                         segundos = 0; forcou = false
                         var acordou = false
+                        var pediuAoVigia = false
                         while (true) {
                             val s = withContext(Dispatchers.IO) { servidor.saude() }
                             saude = s
+
+                            // O VIGIA, quando o assistente nem existe. Depois de 45 min
+                            // sem uso o `app.py` se ENCERRA e o PC volta a zero — aí não
+                            // há `/api/health` para perguntar, e sem esta pergunta o app
+                            // ficaria em "procurando o servidor…" para sempre, como o dono
+                            // viu em 2026-08-02. O vigia é um processo de ~30 MB que
+                            // atende, valida o TOKEN e levanta o assistente.
+                            if (!s.alcancavel && !pediuAoVigia) {
+                                val v = withContext(Dispatchers.IO) { servidor.vigiaStatus() }
+                                if (v != null && !v.servidorDePe && !v.subindo) {
+                                    pediuAoVigia = true
+                                    when (withContext(Dispatchers.IO) { servidor.vigiaAcordar() }) {
+                                        // Token errado é problema de CREDENCIAL e se resolve
+                                        // configurando — mandar esperar seria mentir. É a
+                                        // "tela de autenticação" do fluxo pedido pelo dono.
+                                        PedidoVigia.RECUSADO -> {
+                                            aviso = "O PC recusou o acesso — confira o token."
+                                            tela = Tela.CONFIG
+                                            break
+                                        }
+                                        PedidoVigia.ACEITO -> aviso = "Acordando o PC…"
+                                        PedidoVigia.FALHOU -> pediuAoVigia = false
+                                    }
+                                } else if (v != null && v.subindo) {
+                                    pediuAoVigia = true      // já está subindo: só esperar
+                                }
+                            }
                             // ACORDA O PC uma única vez, assim que ele responde e se
                             // revela em repouso.
                             //

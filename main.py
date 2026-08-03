@@ -390,6 +390,13 @@ async def energia_endpoint(request: Request):
     return JSONResponse(content={
         "estado": "descansando" if ctx.descansando else "ligado",
         "depois": energia.medir(),
+        # Para a CASCA decidir se já é hora de encerrar o processo (ver
+        # `idle_encerrar_minutos`). O relógio é do servidor porque só ele sabe o
+        # que é uso de verdade — um turno, e não uma janela aberta; quem manda no
+        # ciclo de vida do processo é a casca, porque o servidor não pode se
+        # matar de dentro de um handler sem deixar a resposta pela metade.
+        "sem_uso_s": round(ctx.segundos_sem_uso(), 1),
+        "ocupado": not ctx.interactive_idle.is_set() or ctx.idle_em_andamento,
     })
 
 

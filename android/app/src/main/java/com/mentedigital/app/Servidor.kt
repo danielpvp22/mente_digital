@@ -95,6 +95,69 @@ class Servidor(private val conf: () -> Conf) {
 
     private fun energia(qual: String): Energia? = postar("/api/energia", qual)?.let(Energia::de)
 
+    // ---- o VIGIA -----------------------------------------------------------
+    /**
+     * O plantão mínimo do PC (`mente_digital/vigia.py`), consultado ANTES do
+     * `/api/health`.
+     *
+     * Por que existe: depois de 45 min sem uso o assistente se ENCERRA e o PC
+     * volta a zero — então não há `/api/health` para perguntar. Quem atende é o
+     * vigia, num processo de ~30 MB sem torch. Ele é a diferença entre "o PC está
+     * desligado/fora da rede" e "o assistente está dormindo e eu posso acordá-lo".
+     */
+    fun vigiaStatus(base: String = conf().base): VigiaStatus? {
+        if (base.isBlank()) return null
+        val url = Endereco.vigia(base, "/vigia/status")
+        return try {
+            httpCurto.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                if (!r.isSuccessful) return null
+                val o = JSONObject(r.body?.string().orEmpty())
+                VigiaStatus(o.optBoolean("servidor"), o.optBoolean("subindo"))
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Pede ao vigia que LEVANTE o assistente. Autenticado — é o "só abre quando
+     * autenticado" pedido pelo dono; sem o token o vigia devolve 401 e o app manda
+     * a pessoa para a tela de configuração.
+     *
+     * ⚠ Devolve `RECUSADO` (e não simplesmente falso) no 401, porque as duas
+     * situações pedem telas diferentes: token errado é problema de credencial e se
+     * resolve configurando; falha de rede é esperar e tentar de novo.
+     */
+    fun vigiaAcordar(): PedidoVigia {
+        val c = conf()
+        if (c.base.isBlank()) return PedidoVigia.FALHOU
+        val corpo = JSONObject().toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder()
+            .url(Endereco.vigia(c.base, "/vigia/acordar"))
+            .header("X-Mente-Token", c.token)
+            .post(corpo)
+            .build()
+        return try {
+            httpCurto.newCall(req).execute().use { r ->
+                when {
+                    r.code == 401 -> PedidoVigia.RECUSADO
+                    r.isSuccessful -> PedidoVigia.ACEITO
+                    else -> PedidoVigia.FALHOU
+                }
+            }
+        } catch (e: Exception) {
+            PedidoVigia.FALHOU
+        }
+    }
+
+    /** Cliente de tempo curto: o vigia responde em milissegundos ou não está lá.
+     *  O `http` normal tem 200 s de leitura por causa do `ligar`, e esperar isso
+     *  para descobrir que não há vigia deixaria a tela de boot muda. */
+    private val httpCurto = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .build()
+
     /**
      * POST curto nas rotas de controle. Devolve o corpo, ou null se falhou.
      *
@@ -123,6 +186,12 @@ class Servidor(private val conf: () -> Conf) {
 
 /** Endereço + token, sem depender do Android — o que torna isto testável. */
 data class Conf(val base: String, val token: String)
+
+/** O que o vigia respondeu sobre o assistente. */
+data class VigiaStatus(val servidorDePe: Boolean, val subindo: Boolean)
+
+/** Resultado de pedir ao vigia que levante o assistente. */
+enum class PedidoVigia { ACEITO, RECUSADO, FALHOU }
 
 /**
  * A resposta de `/api/energia` — estado e a medição que o servidor fez.

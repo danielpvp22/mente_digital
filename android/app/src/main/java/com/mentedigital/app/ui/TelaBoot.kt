@@ -87,7 +87,7 @@ private fun faltando(marcos: Map<String, Boolean>): List<String> =
     Boot.MARCOS.filter { marcos[it.first] != true }.map { it.second }
 
 private fun detalhe(saude: Saude, marcos: Map<String, Boolean>, seg: Int): String {
-    if (!saude.alcancavel) return "${seg}s · procurando o servidor…"
+    if (!saude.alcancavel) return "${seg}s · acordando o PC…"
     val falta = faltando(marcos)
     if (falta.isEmpty()) return "pronto em ${seg}s"
     if (falta == listOf("Índice e ajustes") && saude.tarefasDeFundo.isNotEmpty())

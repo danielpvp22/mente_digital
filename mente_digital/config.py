@@ -1143,6 +1143,18 @@ class Settings(BaseSettings):
     # em silêncio. Estourado o tempo, a rota RECUSA com motivo em vez de estragar
     # a resposta — quem quis economizar aperta de novo daqui a pouco.
     energia_espera_turno_seconds: float = 20.0
+    # Minutos sem uso até o app.py SE ENCERRAR (não só dormir), devolvendo o PC ao
+    # estado zero. Só faz sentido com o VIGIA de plantão (ver vigia.py): sem ele,
+    # encerrar deixaria o celular sem ninguém para chamar. 0 desliga.
+    #
+    # ⚠ Encerrar FECHA A JANELA se ela estiver aberta. É a consequência aceita da
+    # escolha do dono ("o PC volta a zero"): reabrir é um toque no celular ou um
+    # duplo-clique no atalho, e o vigia garante que sempre há quem atenda.
+    idle_encerrar_minutos: int = 45
+    # Porta do VIGIA — o processo mínimo que fica de plantão e sobe o assistente
+    # quando o celular pede (autenticado). Separada da porta do servidor de
+    # propósito: os dois coexistem, e o vigia continua ali depois de o app sair.
+    vigia_port: int = 8765
     # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
     # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
     # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.

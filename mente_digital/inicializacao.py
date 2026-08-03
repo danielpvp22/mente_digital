@@ -1,11 +1,16 @@
 """
-Subir junto com o Windows — em modo economia, não carregando tudo.
+Subir junto com o Windows — o VIGIA, não o assistente.
 
 O pedido (dono, 2026-08-02): "o servidor no pc ficar rodando... iniciando junto
-com o computador". O que se instala aqui é `app.py --standby`: o servidor sobe,
-os modelos são soltos assim que terminam de carregar e a bandeja fica de plantão.
-O PC amanhece livre e o assistente acorda quando alguém (o dono na bandeja, ou o
-celular pela rede) pedir.
+com o computador", e depois, escolhendo entre as opções: "os dois, em camadas".
+O que se instala aqui é `app.py --vigia`: o processo MÍNIMO (stdlib pura, ~30 MB,
+sem torch) que fica de plantão e levanta o assistente quando o celular pede,
+autenticado. O PC amanhece em zero de verdade.
+
+⚠ Isto MUDOU em 2026-08-02: antes instalava `--standby`, que sobe o servidor
+inteiro e só solta a VRAM — ficavam ~7,7 GB de RAM comprometidos a noite toda. O
+dono viu a medida e pediu as duas camadas. `--standby` continua existindo para
+quem prefere o assistente sempre a 30 s de distância.
 
 POR QUE UM `.vbs` E NÃO UM ATALHO `.lnk`
 ----------------------------------------
@@ -59,7 +64,7 @@ def interpretador(executavel: Optional[str] = None) -> str:
     return str(candidato if candidato.exists() else exe)
 
 
-def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--standby") -> str:
+def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--vigia") -> str:
     """O conteúdo do `.vbs`. PURO — é o que permite testar as aspas sem escrever
     na pasta de inicialização de ninguém.
 
@@ -72,7 +77,9 @@ def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--st
 
     comando = f"{entre_aspas(python)} {entre_aspas(script)} {argumentos}".strip()
     return (
-        "' Mente Digital — sobe o assistente em MODO ECONOMIA junto com o Windows.\n"
+        "' Mente Digital — deixa o VIGIA de plantão junto com o Windows.\n"
+        "' Ele não carrega modelo nenhum: só espera o celular pedir (autenticado)\n"
+        "' e então levanta o assistente. O PC amanhece em zero.\n"
         "' Gerado por `python app.py --instalar-inicio`. Para desfazer, rode\n"
         "' `python app.py --remover-inicio` ou simplesmente apague este arquivo.\n"
         "'\n"
@@ -87,7 +94,7 @@ def instalado() -> bool:
     return caminho_atalho().exists()
 
 
-def instalar(raiz: Path, argumentos: str = "--standby") -> Path:
+def instalar(raiz: Path, argumentos: str = "--vigia") -> Path:
     """Escreve o `.vbs` na pasta Inicializar e devolve o caminho. Levanta em vez de
     falhar calado: isto roda por pedido EXPLÍCITO do dono, e "não deu certo" tem de
     aparecer na hora — descobrir no próximo logon que nada subiu seria pior."""

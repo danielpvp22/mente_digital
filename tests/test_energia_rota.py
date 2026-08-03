@@ -37,6 +37,15 @@ class CtxFake:
         self.liberou = 0
         self.restaurou = 0
         self.usos = 0
+        # O `estado` passou a reportar o relógio de uso para a CASCA decidir se
+        # encerra o processo (idle_encerrar_minutos). Fake sem estes campos
+        # quebraria um teste que não fala de encerramento — a mesma lição de
+        # sempre: fake a que falta um campo do objeto real esconde, não simplifica.
+        self.idle_em_andamento = False
+        self.sem_uso = 0.0
+
+    def segundos_sem_uso(self, agora=None) -> float:
+        return self.sem_uso
 
     async def aguardar_ocio(self, timeout: float) -> bool:
         try:
@@ -126,10 +135,14 @@ def test_estado_nao_mexe_em_nada(cliente):
     c, ctx = cliente
     ctx.descansando = True
 
+    ctx.sem_uso = 2700.0
+
     corpo = c.post("/api/energia", json={"acao": "estado"}).json()
 
     assert corpo["estado"] == "descansando"
     assert ctx.liberou == 0 and ctx.restaurou == 0
+    # O relógio que a casca lê para decidir encerrar o processo.
+    assert corpo["sem_uso_s"] == 2700.0 and corpo["ocupado"] is False
 
 
 def test_health_diz_descansando_com_todas_as_letras(cliente):

@@ -70,3 +70,23 @@ def avaliar(s: Situacao) -> Veredito:
         faltam = int(limite - s.segundos_sem_uso)
         return Veredito(False, f"usado há {int(s.segundos_sem_uso)}s (faltam {faltam}s)")
     return Veredito(True, f"{int(s.segundos_sem_uso / 60)} min sem uso")
+
+
+def deve_encerrar(minutos: int, sem_uso_s: float, ocupado: bool, ha_vigia: bool) -> bool:
+    """O processo inteiro deve SAIR, devolvendo o PC ao estado zero?
+
+    O degrau acima do standby, e a escolha do dono em 2026-08-02: descansar libera
+    a VRAM mas o processo Python segue com ~7,7 GB de RAM comprometidos. Depois de
+    45 min sem uso ele sai de vez, e quem atende o celular passa a ser o VIGIA
+    (vigia.py), que custa ~30 MB.
+
+    ⚠ `ha_vigia` é condição, não enfeite: encerrar sem alguém de plantão deixaria o
+    celular sem ninguém para chamar — o assistente sumiria da rede até o dono
+    voltar ao PC e clicar no atalho. Sem vigia, o teto é o standby.
+
+    Puro/testável, como o resto deste módulo."""
+    if minutos <= 0 or not ha_vigia:
+        return False
+    if ocupado:
+        return False
+    return sem_uso_s >= minutos * 60

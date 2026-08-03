@@ -42,9 +42,14 @@ def test_vbs_roda_oculto_e_sem_esperar():
     assert vbs.rstrip().endswith(", 0, False")
 
 
-def test_vbs_leva_o_standby_por_padrao():
+def test_vbs_leva_o_VIGIA_por_padrao():
+    """⚠ Mudou em 2026-08-02: antes era `--standby`, que sobe o servidor inteiro e
+    só solta a VRAM — ficavam ~7,7 GB de RAM comprometidos a noite toda. O dono viu
+    a medida e escolheu as duas camadas: o logon deixa de plantão o VIGIA, que não
+    carrega modelo nenhum."""
     vbs = inicializacao.script_vbs("py.exe", "app.py", "C:\\proj")
-    assert "--standby" in vbs
+    assert "--vigia" in vbs
+    assert "--standby" not in vbs
 
 
 def test_vbs_explica_como_desfazer():
@@ -97,4 +102,4 @@ def test_o_arquivo_sai_em_utf16_com_bom(monkeypatch, tmp_path):
     destino = inicializacao.instalar(Path(r"D:\projetos\mente_digital"))
     bruto = destino.read_bytes()
     assert bruto[:2] == b"\xff\xfe"                       # BOM de UTF-16 LE
-    assert "MODO ECONOMIA" in bruto.decode("utf-16")
+    assert "VIGIA" in bruto.decode("utf-16")
