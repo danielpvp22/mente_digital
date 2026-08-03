@@ -188,6 +188,33 @@ class FakeTts:
 
 
 # ==========================================================================
+# Distâncias sintéticas RELATIVAS ao gate
+# ==========================================================================
+# Os testes de gate/malha/figura nasceram com distâncias CRUAS na escala do MiniLM
+# (0.4 = "confiante", 1.2 = "longe"), porque o default do código era o MiniLM. Quando
+# o e5-base foi promovido a default — ele comprime as distâncias numa banda estreita,
+# gate calibrado em 0.16 — NOVE testes viraram vermelho sem que uma linha de lógica
+# tivesse mudado: eles afirmavam a ESCALA do embedding, não o COMPORTAMENTO do gate.
+#
+# É a mesma armadilha que o projeto já documentou três vezes (L2 vs cosseno, o dedup
+# 0.08 -> 0.01, este gate): um número medido numa escala, usado noutra. Aqui ela custou
+# só testes vermelhos; nos outros dois casos custou recuperação quebrada em silêncio.
+#
+# Estes helpers dizem o que o teste QUER ("um match que o gate aceita" / "um que ele
+# recusa") em vez de um número mágico — então a próxima troca de embedding não os
+# quebra. Use-os em qualquer teste novo que precise de uma distância sintética.
+def dist_confiante(fator: float = 0.5) -> float:
+    """Distância que o gate aceita por confiança semântica (abaixo do limiar)."""
+    return _settings.rag_score_confident * fator
+
+
+def dist_longe(fator: float = 3.0) -> float:
+    """Distância ACIMA do limiar de confiança mas ainda exibível (< rag_score_max),
+    para exercitar 'entrou por aterramento léxico, não por proximidade'."""
+    return min(_settings.rag_score_confident * fator, _settings.rag_score_max * 0.8)
+
+
+# ==========================================================================
 # Documento / store falsos para a busca local (sem ChromaDB)
 # ==========================================================================
 class FakeDoc:

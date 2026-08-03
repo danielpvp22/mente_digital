@@ -469,7 +469,14 @@ class Settings(BaseSettings):
     # que virava átomo de memória ("Entendido, registrei") e ativava o pipeline à toa.
     # Ignora em silêncio (nada dito, nada gravado). Lista em otimizador._BACKCHANNEL.
     ignorar_backchannel: bool = True
-    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    # EMBEDDING ADOTADO. Trocado do MiniLM pelo e5-base em 0d345c4, decidido por A/B
+    # (`eval/ab_embeddings.py`): known-item MRR@10 0,20 -> 0,375, Recall@1 0,145 -> 0,288.
+    # O default do CÓDIGO ficou no MiniLM por três semanas enquanto o valor real vivia só
+    # no .env.example — quem clonava sem copiar o .env rodava o embedding antigo, ~2x pior
+    # no ranqueamento, EM SILÊNCIO. Promovido aqui para que o default seja o que o projeto
+    # de fato usa. ATENÇÃO: este campo é um PAR indivisível com os prefixos e com o
+    # `rag_score_confident` — mudar um sem os outros quebra o gate (ver lá embaixo).
+    embedding_model: str = "intfloat/multilingual-e5-base"
     # "auto" = usa a GPU (cuda) se disponível, senão CPU. O embedding da query está
     # no caminho crítico de TODA pergunta, então a GPU baixa a latência por-pergunta
     # (e acelera a reindexação). Force com MENTE_EMBEDDING_DEVICE=cpu se precisar.
@@ -496,14 +503,16 @@ class Settings(BaseSettings):
     figura_inline_min_palavras: int = 2
     # PREFIXOS DE INSTRUÇÃO (família e5): modelos como intfloat/multilingual-e5-* foram
     # treinados com "query: " nas perguntas e "passage: " nos documentos — sem isso
-    # perdem boa parte da qualidade. VAZIOS por padrão (o MiniLM atual não usa prefixo);
-    # ao trocar para um e5, ligue no .env: MENTE_EMBEDDING_QUERY_PREFIX="query: " e
-    # MENTE_EMBEDDING_PASSAGE_PREFIX="passage: ". Aplicados no EmbeddingProvider (rag.py),
-    # cobrindo TODO caminho (Chroma index/busca, malha, RAG efêmero web) de uma vez.
+    # perdem boa parte da qualidade. PREENCHIDOS por padrão porque o `embedding_model`
+    # default é um e5; se você voltar para um modelo SEM prefixo (MiniLM, BGE...), esvazie
+    # os dois no .env. Aplicados no EmbeddingProvider (rag.py), cobrindo TODO caminho
+    # (Chroma index/busca, malha, RAG efêmero web) de uma vez.
     # ATENÇÃO: trocar o modelo/prefixo EXIGE reindexar o vault (apagar banco_vetorial_*)
     # E recalibrar os thresholds do gate — a escala de distância muda com o modelo.
-    embedding_query_prefix: str = ""
-    embedding_passage_prefix: str = ""
+    # O reindex é automático: o `_fingerprint_ok` do rag.py detecta a divergência e
+    # reconstrói do vault (o vault é a fonte de verdade). Os LIMIARES, não — são estes.
+    embedding_query_prefix: str = "query: "
+    embedding_passage_prefix: str = "passage: "
 
     # --- RAG / Busca -----------------------------------------------------------
     # Nº de candidatos recuperados do vetor. A base é ZETTELKASTEN ATÔMICA — cada
@@ -524,7 +533,21 @@ class Settings(BaseSettings):
     # PRINCIPAL BOTÃO DE CALIBRAÇÃO: distância abaixo da qual um match é "confiante"
     # o bastante para valer como Cache Hit MESMO sem casar palavra-chave. Ajuste
     # olhando o log "[LOCAL] melhor_dist=..." com os seus próprios dados.
-    rag_score_confident: float = 0.8
+    #
+    # A ESCALA É FUNÇÃO DO EMBEDDING — este valor e o `embedding_model` são UM PAR.
+    # 0,16 é o valor derivado por `eval/calibrar_gate.py` para o e5-base (que comprime
+    # as distâncias numa banda estreita: pergunta do vault casa em 0,06-0,17). Na era do
+    # MiniLM o valor operacional era 0,55, e o default do código era 0,8 — mais frouxo
+    # que a própria calibração daquela era.
+    #
+    # POR QUE ISTO IMPORTA: aplicar um limiar medido numa escala a distâncias de OUTRA é
+    # a assinatura exata do bug fundador deste RAG (L2 vs cosseno, ver as war stories):
+    # gate de e5 (0,16) com MiniLM REJEITA quase tudo e manda toda pergunta pra web;
+    # gate de MiniLM (0,8) com e5 ACEITA quase tudo e ressuscita o Cache Hit falso.
+    # O `_fingerprint_ok` (rag.py) protege o ÍNDICE quando o embedding muda — reconstrói
+    # do vault sozinho. Ele NÃO protege este número. Trocou de embedding? Rode o
+    # calibrar_gate e mude os dois juntos (e o `dedup_dist_max`, mesma armadilha).
+    rag_score_confident: float = 0.16
     # ATERRAMENTO PONDERADO POR IDF (G3, Onda 2/Graphify): o aterramento léxico é um OR
     # booleano — bastava a nota conter UMA keyword da pergunta. Uma keyword comum (que
     # escapou do STOP, ex.: "base", "sistema") aterrava a nota ERRADA (a mesma falha que a
