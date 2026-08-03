@@ -393,8 +393,6 @@ def gerar_ico(destino: Path, variante: str | None = None,
     borrada. Cada tamanho aqui foi reduzido com LANCZOS a partir da tela
     superamostrada.
     """
-    from PIL import Image
-
     destino.parent.mkdir(parents=True, exist_ok=True)
     quadros = [desenhar_marca(n, variante) for n in sorted(tamanhos, reverse=True)]
     maior = quadros[0]
