@@ -48,6 +48,41 @@ JOGOS_PADRAO = frozenset(
     }
 )
 
+#: Jogos que vao para o CCD com V-Cache. DIFERENTE de JOGOS_PADRAO de proposito:
+#: aquele inclui BEService/BattlEye porque o anti-cheat sobe ANTES do jogo e e o
+#: gatilho certo para soltar o kernel A TEMPO. Mas o servico do anti-cheat nao
+#: renderiza nada -- fixa-lo no V-Cache so tiraria nucleo de quem precisa.
+JOGOS_AFINIDADE = frozenset(
+    {
+        "escapefromtarkov.exe",
+        "escapefromtarkovarena.exe",
+    }
+)
+
+#: Mascara do CCD com V-Cache nesta maquina (7950X3D): CPUs logicas 0-15.
+#:
+#: MEDIDO em 2026-08-03, nao herdado do folclore "CCD0 = cores 0-7". Aqui o
+#: Windows reporta 96 MB de L3 nos DOIS CCDs (soma 192 MB contra os 128 MB reais
+#: do processador), entao a topologia do sistema NAO distingue os dois -- ele nao
+#: enxerga a assimetria. Quem separou foi um benchmark cruzado, com dois testes
+#: porque um so seria ambiguo: working set de 512 KB (mora no L2, mede clock)
+#: contra 64 MB (cabe nos 96 MB do V-Cache, nao cabe nos 32 MB do outro):
+#:
+#:     CPUs 0-15   perdeu clock por 11,2%, GANHOU cache por 44,1%  -> V-Cache
+#:     CPUs 16-31  ganhou clock, perdeu cache                      -> clock alto
+#:
+#: Confirmado no jogo (Tarkov Arena, parado no mesmo ponto, 4 trocas de ida e
+#: volta): livre 195-200 FPS / GPU 67% -> fixado aqui 251-258 FPS / GPU 84%.
+#:
+#: ⚠ O CONTROLE E O QUE DA VALOR AO NUMERO: fixar no CCD-B (16-31) deu 186-194
+#: FPS, PIOR que deixar livre. Ou seja, o ganho NAO vem de "confinar a um unico
+#: CCD e evitar latencia entre eles" -- vem do V-Cache especificamente. Sem esse
+#: teste a conclusao seria plausivel e errada.
+#:
+#: ⚠ E ESPECIFICO DESTA CPU. Noutro 7950X3D a numeracao pode diferir, e noutro
+#: modelo nao existe. Refaca o benchmark antes de reusar (--mascara sobrescreve).
+MASCARA_VCACHE = 0xFFFF
+
 
 class Acao(enum.Enum):
     """O que o plantao deve fazer AGORA."""
@@ -148,8 +183,8 @@ def _estrutura_processentry32w():
     return PROCESSENTRY32W
 
 
-def processos_em_execucao() -> set[str]:
-    """Nomes dos executaveis vivos, em minusculas.
+def processos_com_pid() -> list[tuple[int, str]]:
+    """(pid, nome em minusculas) de todo processo vivo.
 
     Snapshot do Toolhelp: nao precisa abrir cada processo, entao nao pede
     privilegio nenhum e nao falha em processo protegido -- que e exatamente o
@@ -169,16 +204,104 @@ def processos_em_execucao() -> set[str]:
     if snap == INVALID_HANDLE_VALUE or not snap:
         raise ctypes.WinError(ctypes.get_last_error())
 
-    nomes: set[str] = set()
+    achados: list[tuple[int, str]] = []
     try:
         entrada = entry()
         entrada.dwSize = ctypes.sizeof(entry)
         if not kernel32.Process32FirstW(snap, ctypes.byref(entrada)):
-            return nomes
+            return achados
         while True:
-            nomes.add(normalizar(entrada.szExeFile))
+            achados.append((int(entrada.th32ProcessID), normalizar(entrada.szExeFile)))
             if not kernel32.Process32NextW(snap, ctypes.byref(entrada)):
                 break
     finally:
         kernel32.CloseHandle(snap)
-    return nomes
+    return achados
+
+
+def processos_em_execucao() -> set[str]:
+    """So os nomes. Deriva de `processos_com_pid` para nao duplicar o Toolhelp."""
+    return {nome for _, nome in processos_com_pid()}
+
+
+# --------------------------------------------------------------------------
+# Afinidade: mandar o jogo para o CCD com V-Cache.
+#
+# Existe porque o driver AMD 3D V-Cache Performance Optimizer NAO fez isso nesta
+# maquina -- medido em 2026-08-03, com o driver instalado e o servico rodando, o
+# jogo continuou preferindo o CCD errado (CCD-B a 24,8% contra CCD-A a 20,0%).
+# A causa provavel: o Arena e build de BETA e nao esta na Known Game List da
+# Microsoft, e o Optimizer depende dessa classificacao. Uma regra `App` escrita
+# a mao no registro do driver tambem nao mudou nada.
+# --------------------------------------------------------------------------
+
+PROCESS_SET_INFORMATION = 0x0200
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def alvos_de_afinidade(
+    processos: Iterable[tuple[int, str]], alvos: Iterable[str] = JOGOS_AFINIDADE
+) -> list[tuple[int, str]]:
+    """Quais (pid, nome) devem ir para o V-Cache. Puro.
+
+    Devolve o nome NORMALIZADO, igual a `detectar` -- duas funcoes irmas com
+    contratos diferentes viram bug de log e de comparacao mais tarde.
+    """
+    procurados = {normalizar(a) for a in alvos}
+    achados = ((pid, normalizar(nome)) for pid, nome in processos)
+    return [(pid, nome) for pid, nome in achados if nome in procurados]
+
+
+def precisa_fixar(atual: int | None, desejada: int) -> bool:
+    """Puro. `None` (nao consegui ler) conta como 'precisa' -- tentar e barato e
+    o pior caso e um erro logado; NAO tentar deixaria o jogo no CCD errado em
+    silencio, que e o defeito que este modulo existe para corrigir."""
+    return atual != desejada
+
+
+def afinidade_atual(pid: int) -> int | None:
+    """Mascara de afinidade do processo, ou None se nao der para ler."""
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        proc = ctypes.c_uint64(0)
+        sistema = ctypes.c_uint64(0)
+        if not kernel32.GetProcessAffinityMask(
+            h, ctypes.byref(proc), ctypes.byref(sistema)
+        ):
+            return None
+        return int(proc.value)
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def fixar_afinidade(pid: int, mascara: int = MASCARA_VCACHE) -> tuple[bool, str]:
+    """Prende o processo na mascara. (ok, mensagem) -- nunca levanta.
+
+    ⚠ ESTREITAR FUNCIONA, TROCAR DE LADO NAO. `SetProcessAffinityMask` falha com
+    ERROR_INVALID_PARAMETER se alguma THREAD ja tiver afinidade que nao cruze a
+    nova mascara -- foi o que aconteceu ao tentar ir de 0x0000FFFF direto para
+    0xFFFF0000 durante os testes. Como aqui so vamos de "todos" para um
+    subconjunto, o caminho e seguro; quem precisar trocar de CCD tem de passar
+    pela mascara cheia antes.
+    """
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    h = kernel32.OpenProcess(
+        PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not h:
+        return False, f"nao consegui abrir o pid {pid}: {ctypes.WinError(ctypes.get_last_error())}"
+    try:
+        if not kernel32.SetProcessAffinityMask(h, wintypes.WPARAM(mascara)):
+            return False, str(ctypes.WinError(ctypes.get_last_error()))
+        return True, f"pid {pid} fixado em 0x{mascara:X}"
+    finally:
+        kernel32.CloseHandle(h)

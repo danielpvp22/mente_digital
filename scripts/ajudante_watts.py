@@ -174,13 +174,38 @@ def _mexer_no_driver(habilitar: bool) -> tuple[bool, str]:
     return r.returncode == 0, saida or f"código {r.returncode}"
 
 
-def _jogo_agora(alvos) -> tuple[Optional[str], Optional[str]]:
-    """(jogo, erro). Erro não vira exceção: o plantão não pode morrer porque a
-    enumeração de processos falhou num tique."""
+def _jogo_agora(alvos) -> tuple[Optional[str], list, Optional[str]]:
+    """(jogo, processos, erro). Erro não vira exceção: o plantão não pode morrer
+    porque a enumeração de processos falhou num tique."""
     try:
-        return jogo_ativo.detectar(jogo_ativo.processos_em_execucao(), alvos), None
+        procs = jogo_ativo.processos_com_pid()
+        return jogo_ativo.detectar((n for _, n in procs), alvos), procs, None
     except Exception as exc:                     # noqa: BLE001
-        return None, str(exc)
+        return None, [], str(exc)
+
+
+def _fixar_no_vcache(procs, mascara: int, ja_feitos: set) -> None:
+    """Prende o jogo no CCD com V-Cache. Uma vez por PID.
+
+    Por que aqui e não num processo próprio: este já é o único elevado, já roda
+    a cada tique e já sabe reconhecer o jogo. Um segundo vigia seria uma segunda
+    cópia da mesma regra, e duas cópias divergem no primeiro conserto de uma.
+
+    Uma vez por PID de propósito — reaplicar a cada tique brigaria com o jogo se
+    ele mesmo mexesse na afinidade, e encheria o log sem informar nada.
+    """
+    for pid, nome in jogo_ativo.alvos_de_afinidade(procs):
+        if pid in ja_feitos:
+            continue
+        atual = jogo_ativo.afinidade_atual(pid)
+        if not jogo_ativo.precisa_fixar(atual, mascara):
+            ja_feitos.add(pid)
+            continue
+        ok, msg = jogo_ativo.fixar_afinidade(pid, mascara)
+        ja_feitos.add(pid)                       # não insiste: falhou, falhou
+        atual_txt = "?" if atual is None else f"0x{atual:X}"
+        print(f"[WATTS] afinidade de {nome} ({atual_txt} -> 0x{mascara:X}): "
+              f"{'ok' if ok else msg}", flush=True)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -198,12 +223,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--jogo", action="append", default=None,
                         help="executável extra que dispara a pausa (pode repetir); "
                              "substitui a lista padrão de jogo_ativo.py")
+    parser.add_argument("--sem-afinidade", action="store_true",
+                        help="não prende o jogo no CCD com V-Cache")
+    parser.add_argument("--mascara", default=None,
+                        help="máscara de afinidade do CCD com V-Cache (ex.: 0xFFFF). "
+                             "O default foi MEDIDO nesta CPU — refaça o benchmark "
+                             "antes de reusar noutra máquina")
     args = parser.parse_args(argv)
 
     saida = Path(args.saida) if args.saida else caminho_padrao()
     alvos = frozenset(map(jogo_ativo.normalizar, args.jogo)) if args.jogo \
         else jogo_ativo.JOGOS_PADRAO
     guarda = not args.ignorar_jogos
+    afinidade_on = not args.sem_afinidade
+    try:
+        mascara = int(args.mascara, 0) if args.mascara else jogo_ativo.MASCARA_VCACHE
+    except ValueError:
+        print(f"[WATTS] máscara inválida: {args.mascara!r} (use algo como 0xFFFF)",
+              flush=True)
+        return 2
+    if mascara <= 0:
+        print("[WATTS] máscara vazia prenderia o jogo em zero núcleo.", flush=True)
+        return 2
+    pids_fixados: set[int] = set()
 
     dll = achar_dll(args.lhm)
     if dll is None:
@@ -263,6 +305,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[WATTS] de plantão: publicando em {saida} a cada {args.intervalo:.0f} s."
           + ("" if not guarda else
              f" Solto o kernel se abrir: {', '.join(sorted(alvos))}.")
+          + ("" if not (guarda and afinidade_on) else
+             f" Prendo o jogo em 0x{mascara:X} (CCD do V-Cache).")
           + " Ctrl+C encerra.", flush=True)
 
     pausado = False
@@ -271,7 +315,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         while True:
             if guarda:
-                jogo, erro = _jogo_agora(alvos)
+                jogo, procs, erro = _jogo_agora(alvos)
+                if erro is None and afinidade_on:
+                    # Antes da pausa: fixar não depende de medir, e o jogo pode
+                    # abrir enquanto já estamos pausados por causa do anti-cheat.
+                    _fixar_no_vcache(procs, mascara, pids_fixados)
+                    pids_vivos = {p for p, _ in procs}
+                    pids_fixados.intersection_update(pids_vivos)
                 if erro is not None:
                     # Não dá para saber se há jogo. MANTÉM o estado atual em vez
                     # de adivinhar: pausar por engano mataria a medição em
