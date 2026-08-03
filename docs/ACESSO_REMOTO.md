@@ -72,7 +72,8 @@ todo este roteiro.
 
 Emitido por Let's Encrypt via `tailscale cert`, com validade de 90 dias e
 **renovação manual** — quem chama o comando diretamente é responsável por renovar.
-Vencido, o assistente para de atender em HTTPS **sem aviso**: marque no calendário
+Vencido, o assistente para de atender em HTTPS; o **plantão**, esse, se recusa a
+subir e escreve o motivo em `dados/vigia_erro.txt` (§3). Marque no calendário
 ou automatize o `tailscale cert` num agendamento (ele é idempotente e o Let's
 Encrypt tem limite de emissões, então mensal já é frequente demais — trimestral,
 antes do vencimento, é o certo).
@@ -135,8 +136,15 @@ o arquivo **não** foi mexido: a decisão é do dono, não do agente.
 - O Tailscale não está instalado.
 - O vigia atende em TLS: servidor real, certificado real, handshake real
   (`tests/test_vigia.py::test_o_plantao_atende_em_TLS_com_o_cert_do_servidor`).
-- Certificado configurado mas inexistente → aviso e plantão em HTTP (fail-soft,
-  igual ao `main.py`): um vigia mudo é pior que um vigia em claro.
+- Certificado configurado e **quebrado** (ausente, ilegível, vencido no disco) →
+  o plantão **NÃO sobe**, e o motivo fica em `dados/vigia_erro.txt`. ⚠ Isto é
+  deliberado e foi a conclusão de uma revisão adversária: cair para HTTP não
+  salvaria ninguém (com o servidor em TLS, o celular deriva `https://` para o
+  plantão também, então um plantão em HTTP puro **já está mudo para ele**) e
+  deixaria a credencial de acordar em claro num socket que escuta em `0.0.0.0`.
+  **Se o celular parar de conseguir acordar o PC depois de você mexer no
+  certificado, olhe esse arquivo primeiro.** Certificado NÃO configurado segue em
+  HTTP sem drama — isso é escolha, não erro.
 - O `app.py` sonda o plantão no mesmo esquema; antes cravava `http://`, o que daria
   um falso "não tem vigia" e faria o app **deixar de se encerrar** — falha na
   direção silenciosa.
