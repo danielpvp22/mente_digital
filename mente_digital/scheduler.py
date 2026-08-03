@@ -286,6 +286,12 @@ class SchedulerService:
         formada e sem contexto nenhum. Degradação silenciosa é justamente o defeito
         que este projeto mais combate; por isso dormir sozinho obriga a avisar."""
         try:
+            # Fecha a corrida entre o `tick` (que checou) e esta task (que age):
+            # um turno pode ter começado no meio. Espera curta — se alguém voltou
+            # a conversar, o standby não é mais devido e o próximo tick reavalia.
+            if not await self.ctx.aguardar_ocio(2.0):
+                telemetry.track("ECONOMIA", "Standby abortado — conversa retomada.")
+                return
             antes = energia.medir()
             liberados = await self.ctx.liberar_vram()
             await asyncio.to_thread(energia.enxugar)

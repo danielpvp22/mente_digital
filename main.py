@@ -347,6 +347,16 @@ async def energia_endpoint(request: Request):
     acao = (corpo.get("acao") or "estado").strip().lower()
 
     if acao == "desligar":
+        # CEDE A VEZ a um turno em voo. Ver `AppContext.aguardar_ocio`: o botão
+        # agora existe no celular, e derrubar o embedding no meio de uma resposta
+        # não a mata — deixa-a pior, em silêncio. Estourado o tempo, RECUSA com
+        # motivo: uma economia que estraga a resposta de alguém não é economia.
+        if not await ctx.aguardar_ocio(settings.energia_espera_turno_seconds):
+            telemetry.track("ENERGIA", "Descansar adiado — há uma resposta em andamento.")
+            return JSONResponse(content={
+                "estado": "ligado", "adiado": True,
+                "motivo": "há uma resposta em andamento", "depois": energia.medir(),
+            })
         antes = energia.medir()
         liberados = await ctx.liberar_vram()
         await asyncio.to_thread(energia.enxugar)

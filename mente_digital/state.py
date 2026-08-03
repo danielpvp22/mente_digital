@@ -295,6 +295,25 @@ class AppContext:
             # enquanto ainda estava sendo gerada.
             self.marcar_uso()
 
+    async def aguardar_ocio(self, timeout: float) -> bool:
+        """Espera o turno em voo terminar. False = estourou o tempo e ainda há um.
+
+        Existe por causa do botão de MODO ECONOMIA, que agora existe no celular —
+        e é apertado por quem está longe do PC, sem ver o que acontece nele.
+        Descarregar os modelos no meio de uma resposta não a derruba (o pipeline
+        é fail-soft), faz pior: ela sai DEGRADADA e calada. Medido em 2026-08-02,
+        o `liberar_vram` no meio de um turno levou o embedding junto e a busca de
+        figuras estourou `'NoneType' object has no attribute 'embed_query'` — o
+        pára-quedas segurou ("seguindo só com texto") e a pessoa recebeu uma
+        resposta pior sem nada dizendo que foi por isso.
+
+        O watcher automático já vetava esse caso; o botão manual, não."""
+        try:
+            await asyncio.wait_for(self.interactive_idle.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
     def marcar_uso(self) -> None:
         """"Alguém está usando isto agora" — rearma o relógio do modo economia.
 

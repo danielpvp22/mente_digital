@@ -47,6 +47,13 @@ class CtxEconomia:
     def segundos_sem_uso(self, agora=None) -> float:
         return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
 
+    async def aguardar_ocio(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self.interactive_idle.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
     async def liberar_vram(self):
         self.liberou += 1
         return {"llama", "stt", "tts", "embeddings"}
@@ -171,6 +178,27 @@ async def test_nao_dorme_duas_vezes_em_ticks_seguidos(monkeypatch):
     await _esperar_tarefas(ctx)
 
     assert ctx.liberou == 1
+
+
+async def test_conversa_retomada_entre_o_tick_e_a_acao_aborta_o_standby(monkeypatch):
+    """A corrida que sobra: o `tick` checou "ninguém está usando" e despachou a
+    task; entre uma coisa e outra alguém mandou uma pergunta. Sem a segunda
+    checagem, o standby soltaria os modelos por cima dela."""
+    _com_minutos(monkeypatch, 20)
+    ctx = CtxEconomia()
+    ctx.ultima_interacao -= 21 * 60
+    sched = SchedulerService(ctx)
+
+    # O tick decide dormir com a GPU livre...
+    assert sched._standby_devido() is True
+    sched._standby_em_andamento = True
+    # ...e a conversa recomeça antes de a task rodar.
+    ctx.interactive_idle.clear()
+    await sched._executar_standby()
+
+    assert ctx.liberou == 0
+    assert ctx.descansando is False
+    assert sched._standby_em_andamento is False     # a flag não vaza
 
 
 async def test_avisar_energia_sobrevive_a_sessao_morrendo(monkeypatch):

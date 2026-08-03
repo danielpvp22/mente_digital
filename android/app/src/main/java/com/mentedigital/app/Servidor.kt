@@ -130,7 +130,22 @@ data class Conf(val base: String, val token: String)
  * A medição vem junto porque o projeto inteiro prefere MOSTRAR o número a
  * afirmar o efeito: "liberei 4,9 GB" é conferível, "liberado" é uma promessa.
  */
-data class Energia(val estado: String, val vramMb: Int?, val ramCommitMb: Int?) {
+data class Energia(
+    val estado: String,
+    val vramMb: Int?,
+    val ramCommitMb: Int?,
+    /**
+     * O servidor CEDEU A VEZ a uma resposta em andamento e não dormiu.
+     *
+     * Existe porque este botão é apertado de longe, por quem não vê o que está
+     * acontecendo no PC: soltar os modelos no meio de um turno não derruba a
+     * resposta, deixa-a pior em silêncio (medido em 2026-08-02 — o embedding
+     * sumiu e a busca de figuras caiu para "só com texto"). Aqui isso vira uma
+     * recusa com motivo, e o app diz para tentar de novo.
+     */
+    val adiado: Boolean = false,
+    val motivo: String = "",
+) {
 
     val descansando: Boolean get() = estado == "descansando"
 
@@ -159,7 +174,12 @@ data class Energia(val estado: String, val vramMb: Int?, val ramCommitMb: Int?) 
             // são afirmações diferentes (mesma régua do energia.py no servidor).
             val m = o.optJSONObject("depois") ?: JSONObject()
             fun inteiro(chave: String): Int? = if (m.isNull(chave)) null else m.optInt(chave)
-            return Energia(o.optString("estado", "ligado"), inteiro("vram_mb"), inteiro("ram_commit_mb"))
+            return Energia(
+                o.optString("estado", "ligado"),
+                inteiro("vram_mb"), inteiro("ram_commit_mb"),
+                adiado = o.optBoolean("adiado"),
+                motivo = o.optString("motivo", ""),
+            )
         }
     }
 }

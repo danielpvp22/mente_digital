@@ -1137,6 +1137,12 @@ class Settings(BaseSettings):
     # enviar (index.html), o celular religa na tela de boot (/api/energia) e a bandeja
     # tem o item de sempre. 0 desliga o watcher (só dorme no botão).
     idle_standby_minutos: int = 20
+    # Quanto o "desligar" ESPERA por um turno em voo antes de soltar os modelos.
+    # O botão é apertado do celular, por quem não vê o que acontece no PC: sem a
+    # espera, ele derruba o embedding no meio de uma resposta e ela sai degradada
+    # em silêncio. Estourado o tempo, a rota RECUSA com motivo em vez de estragar
+    # a resposta — quem quis economizar aperta de novo daqui a pouco.
+    energia_espera_turno_seconds: float = 20.0
     # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
     # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
     # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.

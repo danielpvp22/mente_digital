@@ -126,11 +126,16 @@ class MainActivity : ComponentActivity() {
                             val r = withContext(Dispatchers.IO) { servidor.desligar() }
                             ocupado = null
                             folhaAberta = false
-                            if (r == null) {
-                                aviso = "Não consegui liberar o PC."
-                            } else {
-                                medidaRepouso = r.resumo()
-                                tela = Tela.DORMINDO
+                            when {
+                                r == null -> aviso = "Não consegui liberar o PC."
+                                // O servidor cedeu a vez a uma resposta em andamento
+                                // (alguém está usando o PC agora). Ir para a tela de
+                                // repouso aqui seria mentira: o PC não dormiu.
+                                r.adiado -> aviso = "O PC está respondendo agora — tente de novo em instantes."
+                                else -> {
+                                    medidaRepouso = r.resumo()
+                                    tela = Tela.DORMINDO
+                                }
                             }
                         }
                     }

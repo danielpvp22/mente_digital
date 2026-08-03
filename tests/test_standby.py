@@ -102,6 +102,46 @@ def test_segundos_sem_uso_nunca_negativo():
 
 
 @pytest.mark.asyncio
+async def test_aguardar_ocio_volta_na_hora_com_a_gpu_livre():
+    ctx = AppContext(settings=Settings())
+    assert await ctx.aguardar_ocio(0.05) is True
+
+
+@pytest.mark.asyncio
+async def test_aguardar_ocio_estoura_com_turno_em_voo():
+    """É o guarda do botão de MODO ECONOMIA, que agora existe no celular e é
+    apertado por quem NÃO vê o que acontece no PC. Soltar os modelos no meio de
+    uma resposta não a derruba — deixa-a pior, em silêncio (medido em
+    2026-08-02: o embedding sumiu e a busca de figuras caiu para 'só texto')."""
+    import asyncio
+
+    ctx = AppContext(settings=Settings())
+    ctx.interactive_idle.clear()
+    assert await ctx.aguardar_ocio(0.05) is False
+    # E volta a passar assim que o turno termina.
+    ctx.interactive_idle.set()
+    assert await ctx.aguardar_ocio(0.05) is True
+    assert isinstance(ctx.interactive_idle, asyncio.Event)
+
+
+@pytest.mark.asyncio
+async def test_aguardar_ocio_espera_o_turno_terminar_em_vez_de_recusar_logo():
+    """A espera é o ponto: a maioria dos turnos acaba em segundos, e o dono que
+    apertou "economia" quer que o PC durma — só não por cima da resposta."""
+    import asyncio
+
+    ctx = AppContext(settings=Settings())
+    ctx.interactive_idle.clear()
+
+    async def _terminar_o_turno():
+        await asyncio.sleep(0.05)
+        ctx.interactive_idle.set()
+
+    asyncio.ensure_future(_terminar_o_turno())
+    assert await ctx.aguardar_ocio(2.0) is True
+
+
+@pytest.mark.asyncio
 async def test_turno_interativo_marca_uso_na_saida():
     """O relógio conta do FIM do turno. Marcar só na entrada faria uma síntese
     longa envelhecer enquanto ainda estava sendo gerada."""

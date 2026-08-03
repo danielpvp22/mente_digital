@@ -1199,7 +1199,12 @@
             try {
                 const d = await energiaPost(desligar ? 'desligar' : 'ligar');
                 pintarEnergia(d.estado, medidaDe(d));
-                if (desligar && d.liberou) {
+                if (d.adiado) {
+                    // O servidor cedeu a vez a uma resposta em andamento. Sem esta
+                    // mensagem o clique viraria um nada silencioso — o chip
+                    // continuaria "Ligado" e ninguém saberia por quê.
+                    toast("Tem uma resposta em andamento — tente de novo em instantes.");
+                } else if (desligar && d.liberou) {
                     // Reporta o que REALMENTE caiu, medido antes/depois no servidor.
                     const v = d.liberou.vram_mb, r = d.liberou.ram_commit_mb;
                     const partes = [];
