@@ -337,6 +337,21 @@
         }
         #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+        /* Recusa de acesso: barra PERSISTENTE, não toast. O toast some em 3,5 s e o
+           usuário barrado precisa de duas coisas que só ficam de pé — o motivo (que
+           ele não vai reler) e um botão para tentar de novo depois de arrumar o
+           token. O ponto vermelho sozinho dizia "sem conexão", que é a mentira que
+           esta barra existe para desfazer. */
+        #barra-acesso {
+            display: none; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 9px 13px;
+            border-radius: 12px; font-size: .8rem; line-height: 1.35;
+            background: rgba(242, 139, 130, .13); border: 1px solid rgba(242, 139, 130, .45);
+            color: var(--txt);
+        }
+        #barra-acesso.show { display: flex; }
+        #barra-acesso span { flex: 1; min-width: 0; }
+        #barra-acesso button { flex-shrink: 0; }
+
         /* ========================= composer =============================== */
         #bottom-bar {
             position: fixed; bottom: 0; left: 0; width: 100%; display: flex; align-items: flex-end;
@@ -479,6 +494,11 @@
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 7h11l-2 3 2 3H4"/></svg>
             Avançado
         </button>
+    </div>
+
+    <div id="barra-acesso" role="alert">
+        <span id="barra-acesso-txt"></span>
+        <button class="sw" onclick="tentarAcessoDeNovo()">Tentar de novo</button>
     </div>
 
     <div id="toast"></div>
@@ -922,24 +942,100 @@
         // parecer vazio em vez de barrado. Recusa de acesso ≠ ausência de dado.
         async function apiGet(url) {
             const res = await fetch(url, { headers: apiHeaders() });
-            if (!res.ok) { const e = new Error('http ' + res.status); e.status = res.status; throw e; }
+            if (!res.ok) throw await erroHttp(res);
             return res.json();
+        }
+        // O 401 do gate por aparelho tem CORPO — {"detail":{"erro":…,"motivo":"revogado"}} —
+        // e é o motivo que separa o insolúvel do consertável: "revogado" só o dono
+        // resolve (código novo), "credencial_invalida" o usuário resolve sozinho. Jogar
+        // o corpo fora igualava os dois numa frase só, que é o mesmo erro de classe do
+        // `res.ok` que este bloco já conserta uma vez.
+        async function erroHttp(res) {
+            const e = new Error('http ' + res.status);
+            e.status = res.status;
+            try {
+                const corpo = await res.json();
+                const d = corpo && corpo.detail;
+                if (d && typeof d === 'object') e.motivo = d.motivo;
+            } catch (_) { /* corpo não-JSON (proxy, 502): sobra o status, que já diz o essencial */ }
+            return e;
         }
         // A mensagem tem que dizer o que FAZER. 401 no celular é quase sempre o
         // token do aparelho, e é ele que o dono consegue arrumar sozinho.
+        const MOTIVO_TEXTO = {
+            revogado: 'O dono revogou este aparelho. Peça um código de pareamento novo.',
+            expirado: 'A credencial deste aparelho expirou. Pareie de novo para renovar.',
+            bloqueado: 'Bloqueado por tentativas erradas — espere alguns minutos.',
+            credencial_invalida: 'A credencial deste aparelho não confere.',
+            sem_credencial: 'Este aparelho não tem credencial configurada.',
+        };
         function motivoFalha(err) {
             const s = err && err.status;
-            if (s === 401) return 'Acesso recusado — o token deste aparelho não confere.';
+            if (s === 401) return MOTIVO_TEXTO[err.motivo]
+                || 'Acesso recusado — o token deste aparelho não confere.';
             if (s) return 'O servidor respondeu ' + s + '.';
             return 'Sem resposta do servidor.';
         }
 
+        // ---------- recusa de acesso ≠ queda de rede ----------
+        // ⚠ MEDIDO em 2026-08-03 (uvicorn + Chrome, `close(1008)` nas duas posições):
+        // o WebSocket recusado ANTES do `accept` NÃO entrega 1008 ao navegador. O
+        // uvicorn responde HTTP 403 ao handshake e o JS recebe `code=1006, reason=""`
+        // — byte a byte o que ele receberia com o WiFi caído. Só a recusa DEPOIS do
+        // accept (a revogação ao vivo, `derrubar()` no main.py) chega como 1008.
+        //
+        // Como o caso MUDO é justamente o do aparelho revogado que reabre o app, tratar
+        // só o 1008 consertaria a metade que quase nunca acontece. Então: 1008 para o
+        // laço na hora; socket que nem abriu PERGUNTA ao HTTP, onde o 401 tem corpo.
+        let acessoNegado = false;      // o servidor disse NÃO — insistir é laço inútil
+        let reconnectTimer = null;
+        let falhasSemAbrir = 0;
+
+        function pararPorRecusa(msg) {
+            acessoNegado = true;
+            clearTimeout(reconnectTimer);
+            document.getElementById('barra-acesso-txt').textContent = msg;
+            document.getElementById('barra-acesso').classList.add('show');
+            document.getElementById('conn-dot').classList.remove('online');
+        }
+
+        function tentarAcessoDeNovo() {
+            acessoNegado = false; falhasSemAbrir = 0; reconnectDelay = 1000;
+            document.getElementById('barra-acesso').classList.remove('show');
+            conectarWS();
+        }
+
+        async function checarAcesso() {
+            // Rota de propósito barata (sem GPU, sem vault). Falha de REDE cai no catch
+            // sem status: aí não há recusa nenhuma a anunciar e o backoff segue.
+            try {
+                await apiGet('/api/acesso');
+            } catch (err) {
+                if (err && err.status === 401) { pararPorRecusa(motivoFalha(err)); return; }
+                return;
+            }
+            // O servidor responde e o acesso é válido, mas o socket não abre. Sobrou o
+            // handshake em si (Origin ≠ Host atrás de proxy é o caso real). Isso NÃO é
+            // recusa de credencial, então o laço continua — o que não pode continuar é
+            // o silêncio: sem isto o app fica "quase conectado" para sempre.
+            if (++falhasSemAbrir >= 3) {
+                document.getElementById('barra-acesso-txt').textContent =
+                    'O servidor responde, mas recusa a conexão ao vivo. Tentando de novo…';
+                document.getElementById('barra-acesso').classList.add('show');
+            }
+        }
+
         function conectarWS() {
+            if (acessoNegado) return;      // já ouvimos "não"; só o botão religa
             const proto = location.protocol === 'https:' ? 'wss' : 'ws';
             const qs = TOKEN_ACESSO ? `?token=${encodeURIComponent(TOKEN_ACESSO)}` : '';
             ws = new WebSocket(`${proto}://${window.location.host}/ws/chat_live${qs}`);
+            let abriu = false;             // por SOCKET, não global: o onclose do
+                                           // anterior não pode julgar a tentativa nova
             ws.onopen = () => {
+                abriu = true; falhasSemAbrir = 0;
                 reconnectDelay = 1000;
+                document.getElementById('barra-acesso').classList.remove('show');
                 document.getElementById('conn-dot').classList.add('online');
                 wsEnviar({ tipo: "set_conversa", id: conversaId });  // reassocia a conversa atual
             };
@@ -1033,9 +1129,20 @@
                     if (isLiveMode && !iaFalando) atualizarEstadoOrb('listening');
                 }
             };
-            ws.onclose = () => {
+            ws.onclose = (ev) => {
                 document.getElementById('conn-dot').classList.remove('online');
-                setTimeout(conectarWS, reconnectDelay);
+                // 1008 = policy violation. Ele só CHEGA aqui quando a sessão já estava
+                // aberta, ou seja: o dono revogou este aparelho agora há pouco. Voltar
+                // a bater na porta seria insistir contra um "não" explícito.
+                if (ev && ev.code === 1008) {
+                    pararPorRecusa('O acesso deste aparelho foi encerrado pelo servidor.');
+                    return;
+                }
+                // Nem abriu: pode ser rede OU recusa (o handshake recusado chega como
+                // 1006 — ver o bloco medido acima). Quem responde isso é o HTTP, em
+                // paralelo; o backoff segue e o `checarAcesso` o corta se for recusa.
+                if (!abriu) checarAcesso();
+                reconnectTimer = setTimeout(conectarWS, reconnectDelay);
                 reconnectDelay = Math.min(reconnectDelay * 1.6, 15000);
             };
             ws.onerror = () => { try { ws.close(); } catch (e) {} };
