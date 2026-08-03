@@ -9,6 +9,7 @@ não mostra erro de script de inicialização em lugar nenhum que o dono veja.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from mente_digital import inicializacao
@@ -76,7 +77,7 @@ def test_interpretador_cai_no_python_normal_se_nao_houver_w(tmp_path):
 def test_instalar_e_remover_num_appdata_de_mentira(monkeypatch, tmp_path):
     """O ciclo completo, com a pasta Inicializar redirecionada para o tmp — a
     única forma honesta de exercitar a escrita sem tocar no logon de ninguém."""
-    monkeypatch.setattr(inicializacao.os, "name", "nt")
+    monkeypatch.setattr(inicializacao, "e_windows", lambda: True)
     monkeypatch.setenv("APPDATA", str(tmp_path))
 
     assert inicializacao.instalado() is False
@@ -96,10 +97,35 @@ def test_o_arquivo_sai_em_utf16_com_bom(monkeypatch, tmp_path):
     assistente". Só sujava comentário, mas o dia em que uma string acentuada
     entrar no script o logon quebra EM SILÊNCIO: falha de script de
     inicialização não aparece em lugar nenhum que o dono veja."""
-    monkeypatch.setattr(inicializacao.os, "name", "nt")
+    monkeypatch.setattr(inicializacao, "e_windows", lambda: True)
     monkeypatch.setenv("APPDATA", str(tmp_path))
 
     destino = inicializacao.instalar(Path(r"D:\projetos\mente_digital"))
     bruto = destino.read_bytes()
     assert bruto[:2] == b"\xff\xfe"                       # BOM de UTF-16 LE
     assert "VIGIA" in bruto.decode("utf-16")
+
+
+def test_simular_windows_nao_mexe_no_os_name_do_processo(monkeypatch, tmp_path):
+    """⚠ Regressão de 2026-08-03, e o motivo de `e_windows` existir.
+
+    A 1ª versão simulava o Windows com `setattr(inicializacao.os, "name", "nt")`
+    — e `inicializacao.os` É o módulo `os` global, então aquilo trocava o
+    `os.name` do PROCESSO. Como o `Path.__new__` lê `os.name` a cada chamada
+    para escolher entre `WindowsPath` e `PosixPath`, num runner POSIX todo
+    `Path(...)` passava a levantar `NotImplementedError` — inclusive dentro do
+    pytest, que morria com INTERNALERROR levando a suíte junto.
+
+    Verde no Windows do dono (onde o patch é no-op) e sessão destruída no Linux
+    do CI: por isso o teste guarda o INVARIANTE (`os.name` intocado) e não só o
+    resultado. Ele não falha nesta máquina — só o CI POSIX o exerce de verdade;
+    é uma trava contra o padrão voltar, não a prova do conserto.
+    """
+    real = os.name
+    monkeypatch.setattr(inicializacao, "e_windows", lambda: True)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    inicializacao.instalar(Path("raiz"))
+
+    assert os.name == real, "simular o Windows não pode trocar o os.name do processo"
+    assert isinstance(Path("."), type(tmp_path)), "o flavour nativo do pathlib mudou"
