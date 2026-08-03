@@ -32,6 +32,7 @@ from mente_digital import energia  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
 from mente_digital import rede  # noqa: E402
+from mente_digital.registro_aparelhos import RegistroAparelhos  # noqa: E402
 from mente_digital.scheduler import SchedulerService  # noqa: E402
 from mente_digital.state import AppContext  # noqa: E402
 from mente_digital import vault_filtros  # noqa: E402
@@ -196,6 +197,23 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     await asyncio.to_thread(db.init)
 
+    # Identidade por aparelho. A ORDEM importa: `db.init()` tem de vir antes, porque a
+    # trilha de auditoria grava na tabela `auditoria`, que é da telemetria — sem ela,
+    # todo convite falhava com "no such table" enquanto a ação acontecia (medido no CLI
+    # contra um banco novo). Nasce INERTE: com MENTE_APARELHOS_HABILITADO=false o gate
+    # delega, byte a byte, para o acesso.cliente_autorizado de sempre.
+    #
+    # Vive em `app.state`, não no AppContext: o AppContext é container de serviços de
+    # CONVERSA (LLM, STT, vault) e este gate roda ANTES de existir conversa — inclusive
+    # em requisição que o AppContext recusaria.
+    registro = RegistroAparelhos(settings.db_telemetria)
+    await asyncio.to_thread(registro.init)
+    registro.configurar_bloqueio(
+        settings.aparelhos_bloqueio_base_segundos,
+        settings.aparelhos_bloqueio_teto_segundos,
+    )
+    app.state.registro = registro
+
     # Sem memória de sessão aqui: ela é POR CONEXÃO (LiveSession.memory). O AppContext
     # é container de SERVIÇOS, que são compartilháveis; estado de conversa não é.
     ctx = AppContext(settings=settings)
@@ -252,8 +270,44 @@ async def exigir_acesso(request: Request) -> None:
     A regra em si é pura e vive em acesso.py; aqui só se extrai host/token."""
     token = request.headers.get("x-mente-token") or request.query_params.get("token")
     host = request.client.host if request.client else None
-    if not acesso.cliente_autorizado(host, token, settings.access_token):
-        raise HTTPException(status_code=401, detail="não autorizado")
+    registro = getattr(request.app.state, "registro", None)
+    if registro is None:
+        # Sem lifespan não há registro (teste de rota que monta a app crua, e qualquer
+        # caminho que suba o app sem o boot). Cair para o gate de SEMPRE é a degradação
+        # certa: não é mais fraco que hoje — é exatamente hoje. Estourar aqui trocaria
+        # um gate que funciona por um 500 em toda rota.
+        if not acesso.cliente_autorizado(host, token, settings.access_token):
+            raise HTTPException(status_code=401, detail="não autorizado")
+        return
+    veredito = registro.autorizar(
+        token, host, request.url.path,
+        habilitado=settings.aparelhos_habilitado,
+        token_legado=settings.access_token,
+        aceita_token_legado=settings.aparelhos_token_legado,
+    )
+    if not veredito.autorizado:
+        # O `motivo_publico` é GROSSO de propósito: id inexistente e segredo errado
+        # respondem igual, senão a rota vira oráculo de enumeração. O que ele separa é
+        # "revogado"/"expirado" de "não autorizado" — e é isso que deixa o app mostrar a
+        # tela certa em vez de um 401 mudo. O Servidor.kt já trata 401 como RECUSADO
+        # (distinto de falha de rede), então o contrato do cliente não muda.
+        raise HTTPException(
+            status_code=401,
+            detail={"erro": "não autorizado", "motivo": veredito.motivo_publico},
+        )
+    request.state.aparelho_id = veredito.aparelho_id
+
+
+async def exigir_loopback(request: Request) -> None:
+    """Só a máquina do dono. Emitir convite e revogar são atos de DONO, e o gate normal
+    NÃO serve aqui: um aparelho já pareado passaria nele e poderia inscrever o quinto ou
+    revogar os outros três — o teto de 4 viraria decoração.
+
+    A checagem reusa `cliente_autorizado` com token esperado VAZIO, que é exatamente a
+    regra "só loopback" da própria acesso.py, sem duplicar a lista de endereços."""
+    host = request.client.host if request.client else None
+    if not acesso.cliente_autorizado(host, None, ""):
+        raise HTTPException(status_code=403, detail="só na máquina do assistente")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -723,6 +777,56 @@ async def obter_conversa(cid: str, request: Request):
     return JSONResponse(content=turnos)
 
 
+@app.get("/api/aparelhos", dependencies=[Depends(exigir_loopback)])
+async def listar_aparelhos(request: Request):
+    """Quem tem acesso, desde quando, de que IP, e quantas sessões vivas."""
+    reg = request.app.state.registro
+    return JSONResponse(content={
+        "habilitado": settings.aparelhos_habilitado,
+        "teto": settings.aparelhos_teto,
+        "aparelhos": [
+            {"id": a.id, "apelido": a.apelido, "criado_em": a.criado_em,
+             "ultimo_uso": a.ultimo_uso, "ultimo_ip": a.ultimo_ip,
+             "expira_em": a.expira_em, "sessoes": reg.sessoes_vivas(a.id)}
+            for a in reg.listar()
+        ],
+    })
+
+
+@app.post("/api/aparelhos/convite", dependencies=[Depends(exigir_loopback)])
+async def convidar_aparelho(request: Request):
+    corpo = await request.json()
+    codigo = request.app.state.registro.emitir_codigo(
+        (corpo.get("apelido") or "aparelho")[:40], settings.aparelhos_teto)
+    if codigo is None:
+        return JSONResponse(status_code=409,
+                            content={"erro": "teto", "teto": settings.aparelhos_teto})
+    return JSONResponse(content={
+        "codigo": codigo,
+        "validade_minutos": settings.aparelhos_codigo_validade_minutos,
+    })
+
+
+@app.delete("/api/aparelhos/{aparelho_id}", dependencies=[Depends(exigir_loopback)])
+async def revogar_aparelho(aparelho_id: str, request: Request):
+    return JSONResponse(content={"revogado": request.app.state.registro.revogar(aparelho_id)})
+
+
+@app.post("/api/aparelhos/parear")
+async def parear_aparelho(request: Request):
+    """A ÚNICA sem gate, de propósito: é a porta de quem ainda NÃO tem credencial, então
+    exigir credencial aqui seria exigir o que se veio buscar. O que a defende é o código
+    de uso único e vida curta, sob o mesmo bloqueio progressivo por IP do gate."""
+    corpo = await request.json()
+    host = request.client.host if request.client else "?"
+    r = request.app.state.registro.parear(
+        corpo.get("codigo") or "", host, settings.aparelhos_teto,
+        settings.aparelhos_codigo_validade_minutos, settings.aparelhos_expira_dias)
+    if not r.ok:
+        return JSONResponse(status_code=401, content={"erro": r.motivo})
+    return JSONResponse(content={"credencial": r.credencial, "aparelho_id": r.aparelho_id})
+
+
 @app.get("/api/metrics", dependencies=[Depends(exigir_acesso)])
 async def obter_metricas(request: Request):
     metricas = await asyncio.to_thread(db.metrics)
@@ -777,13 +881,42 @@ async def websocket_endpoint(websocket: WebSocket):
     # tradeoff documentado; a URL do WS não é logada pelo uvicorn com log_level=error.
     token = websocket.query_params.get("token")
     host = websocket.client.host if websocket.client else None
-    if not acesso.cliente_autorizado(host, token, settings.access_token):
-        await websocket.close(code=1008)
-        return
+    registro = getattr(websocket.app.state, "registro", None)   # None = app sem lifespan
+    if registro is None:
+        if not acesso.cliente_autorizado(host, token, settings.access_token):
+            await websocket.close(code=1008)
+            return
+        veredito = None
+    else:
+        veredito = registro.autorizar(
+            token, host, "/ws/chat_live",
+            habilitado=settings.aparelhos_habilitado,
+            token_legado=settings.access_token,
+            aceita_token_legado=settings.aparelhos_token_legado,
+        )
+        if not veredito.autorizado:
+            await websocket.close(code=1008)
+            return
     if not acesso.origin_confere(websocket.headers.get("origin"), websocket.headers.get("host", "")):
         await websocket.close(code=1008)
         return
-    await LiveSession(ctx, websocket).run()
+    # Revogar tem de derrubar a sessão ABERTA, senão a revogação só valeria na próxima
+    # conexão e o celular perdido seguiria conversando até alguém fechar o app. O pedido
+    # chega de OUTRA thread (o painel/CLI), então o fechamento é AGENDADO no loop desta
+    # conexão: chamar `close()` de fora do loop não fecha nada.
+    laco = asyncio.get_running_loop()
+
+    def derrubar() -> None:
+        laco.call_soon_threadsafe(lambda: laco.create_task(websocket.close(code=1008)))
+
+    if registro is None:
+        await LiveSession(ctx, websocket).run()
+        return
+    sid = registro.registrar_sessao(veredito.aparelho_id, derrubar)
+    try:
+        await LiveSession(ctx, websocket).run()
+    finally:
+        registro.encerrar_sessao(veredito.aparelho_id, sid)
 
 
 if __name__ == "__main__":
