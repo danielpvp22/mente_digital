@@ -477,3 +477,35 @@ def test_ajudante_publica_o_par_sensor_watts(monkeypatch, tmp_path):
 
     lido = potencia_cpu.ler_publicacao(tmp_path / "p.json", 15.0, agora=1001.0)
     assert (lido.watts, lido.origem) == (142.0, "CPU Package")
+
+
+# --------------------------------------------------------------------------- #
+# A SOMA (pedido do dono, 2026-08-03): o chip mostra GPU + CPU num número só    #
+# --------------------------------------------------------------------------- #
+def test_soma_as_duas_parcelas():
+    from mente_digital.energia import somar_watts
+
+    assert somar_watts(96.4, 142.3) == 238.7
+
+
+def test_sem_a_parcela_da_CPU_NAO_ha_total():
+    """O estado NORMAL desta máquina: sem o ajudante elevado de pé, o Windows não
+    entrega a potência do pacote da CPU.
+
+    Somar só a GPU e chamar de total reportaria ~96 W onde a máquina gasta bem
+    mais — pior que não medir, porque um número plausível não levanta suspeita
+    nenhuma. É a mesma regra do `medir()`, que nunca escreve `0 W` para campo
+    ausente: o front então mostra a parcela que TEM, rotulada 'GPU'."""
+    from mente_digital.energia import somar_watts
+
+    assert somar_watts(96.4, None) is None
+    assert somar_watts(None, 142.3) is None
+    assert somar_watts(None, None) is None
+
+
+def test_zero_watt_medido_e_diferente_de_ausente():
+    """0 é uma MEDIDA (placa em repouso profundo), não uma ausência — e um `if not
+    gpu` no lugar de `is None` apagaria o total inteiro por causa dela."""
+    from mente_digital.energia import somar_watts
+
+    assert somar_watts(0.0, 142.3) == 142.3

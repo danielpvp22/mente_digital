@@ -484,7 +484,7 @@
                  É falso. Os watts são do DISPOSITIVO — 22 programas tinham contexto na GPU
                  quando isto foi medido (compositor do Windows, navegador, música) —, a
                  mesma ressalva que energia.py já documenta para a VRAM. -->
-            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med" title="Watts do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro. O número após a barra é o teto do driver. O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s."></span>
+            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med" title="Watt TOTAL = GPU + CPU, e do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro. Se aparecer só 'W GPU', a parcela da CPU está faltando (o ajudante elevado não está de pé) — o total nunca é somado pela metade. O número após a barra é o teto do driver, que é da GPU. O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s."></span>
         </button>
         <button class="sw" id="btn-end" onclick="encerrarConversa()" title="Consolidar agora: encerra a conversa e roda o ETL do idle">
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg>
@@ -1338,18 +1338,30 @@
             if (m.vram_mb != null) partes.push(`${(m.vram_mb / 1024).toFixed(1)} GB VRAM`);
             if (m.ram_commit_mb != null) partes.push(`${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM`);
 
-            const watts = [];
-            if (m.gpu_watts != null) {
-                const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
-                // O teto do driver dá ESCALA: 96 W sozinho não diz se a placa
-                // está parada ou apertada; 96/320 diz.
+            // O til é da GPU, mas contamina o TOTAL: se a parcela maior é o
+            // instante sorteado, a soma também é — não dá para rotular de média.
+            const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
+            if (m.watts_total != null) {
+                // O pedido do dono: um número só, GPU + CPU. As parcelas ficam
+                // entre parênteses porque sem elas "238 W" não diz onde apertar —
+                // e o teto do driver (96/320) só faz sentido colado na GPU, que é
+                // de quem ele é; pendurá-lo no total seria comparar com a régua
+                // errada.
                 const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
-                watts.push(`${instante}${Math.round(m.gpu_watts)}${teto} W GPU`);
+                partes.push(`${instante}${Math.round(m.watts_total)} W `
+                          + `(GPU ${Math.round(m.gpu_watts)}${teto} + CPU ${Math.round(m.cpu_watts)})`);
+            } else if (m.gpu_watts != null) {
+                // Falta a parcela da CPU (o estado NORMAL: sem o ajudante elevado
+                // de pé, o Windows não entrega a potência do pacote). Aqui o
+                // número vai ROTULADO "GPU" de propósito: mostrá-lo sem rótulo,
+                // no lugar onde antes vinha o total, faria ~96 W passar por
+                // consumo da máquina inteira, que gasta bem mais. Número plausível
+                // e errado não levanta suspeita nenhuma.
+                const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
+                partes.push(`${instante}${Math.round(m.gpu_watts)}${teto} W GPU`);
+            } else if (m.cpu_watts != null) {
+                partes.push(`${Math.round(m.cpu_watts)} W CPU`);
             }
-            // Ausente é o estado NORMAL: sem o ajudante elevado de pé não há como
-            // ler a potência da CPU no Windows, e o campo vem null (nunca 0).
-            if (m.cpu_watts != null) watts.push(`${Math.round(m.cpu_watts)} W CPU`);
-            if (watts.length) partes.push(watts.join(' + '));
 
             return partes.join(' · ');
         }

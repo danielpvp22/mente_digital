@@ -39,28 +39,68 @@ privilégio.
 > **Nada aqui foi executado por mim** — os passos 1, 2, 4 e 5 mudam a máquina ou
 > instalam software, e essa decisão é sua.
 
-### Passo 1 — instalar a ponte para .NET
+### Passo 0 — a checagem que decide se o passo 4 pode funcionar
+
+Antes de tudo, veja se o Windows vai deixar o driver subir (leitura de registro,
+não muda nada):
+
+```powershell
+(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -EA SilentlyContinue).Enabled
+```
+
+Vazio ou `0` = Integridade de Memória desligada, o driver sobe. `1` = **o passo 4
+vai falhar** e você precisa decidir se quer desligar o Isolamento de Núcleo (é uma
+proteção real; não desligue só por um número na tela).
+
+> Medido nesta máquina em 2026-08-03: vazio — não há bloqueio.
+
+### ~~Passo 1 — instalar a ponte para .NET~~ (JÁ FEITO nesta máquina)
 
 ```powershell
 C:\ProgramData\miniconda3\envs\llama-omni\python.exe -m pip install pythonnet
 ```
 
-**Risco:** baixo. É um pacote comum do PyPI, entra só na env `llama-omni`, e o
+O `pythonnet` **já está instalado** na env `llama-omni` (conferido em 2026-08-03),
+e ele carrega o **.NET Framework 4.x** — o que decide qual zip pegar no passo 2.
+
+**Risco:** baixo. Pacote comum do PyPI, entra só na env `llama-omni`, e o
 **servidor nunca o importa** — quem usa é o ajudante. Não entra em
 `requirements.txt` nem no CI de propósito.
 
-### Passo 2 — pegar a LibreHardwareMonitorLib.dll (release OFICIAL)
+### ~~Passo 2 — pegar a DLL~~ (JÁ FEITO — as DLLs estão em `dados\lhm\`)
 
-Baixe o `LibreHardwareMonitor-net472.zip` da página de releases do projeto
-oficial (`github.com/LibreHardwareMonitor/LibreHardwareMonitor`), descompacte, e
-copie **só** o `LibreHardwareMonitorLib.dll` para:
+Feito em 2026-08-03 a partir da release **oficial v0.9.6**
+(`github.com/LibreHardwareMonitor/LibreHardwareMonitor`), asset
+`LibreHardwareMonitor.zip`, SHA-256 do zip
+`086d9f1b5a99e643edc2cfaaac16051685b551e4c5ac0b32a57c58c0e529c001`.
 
-```
-D:\projetos\mente_digital\dados\lhm\LibreHardwareMonitorLib.dll
-```
+⚠ **Duas correções em relação ao que este doc dizia antes**, e as duas custam
+tempo se descobertas na hora:
 
-**Risco:** você está trazendo um binário de terceiro que vai rodar elevado no
-passo 4 — pegue da página de releases oficial e de nenhum espelho.
+1. **O asset `LibreHardwareMonitor-net472.zip` não existe mais.** A v0.9.6 publica
+   `LibreHardwareMonitor.zip` (.NET Framework — **este**) e
+   `LibreHardwareMonitor.NET.10.zip` (**errado** para esta env: o `pythonnet` daqui
+   carrega o .NET Framework 4.x, conferido).
+2. **Copiar "só o `LibreHardwareMonitorLib.dll`" NÃO funciona.** Ele depende de
+   assemblies de apoio, e a falha aparece só quando o sensor é lido:
+   `Não foi possível carregar … 'System.Memory, Version=4.0.5.0'`. São **8**
+   arquivos em `dados\lhm\`:
+
+   ```
+   LibreHardwareMonitorLib.dll          HidSharp.dll
+   System.Memory.dll                    Microsoft.Bcl.HashCode.dll
+   System.Buffers.dll                   System.Numerics.Vectors.dll
+   System.Runtime.CompilerServices.Unsafe.dll
+   System.Threading.Tasks.Extensions.dll
+   ```
+
+A `LibreHardwareMonitorLib.dll` **não é assinada** — o normal para a lib
+gerenciada desse projeto; quem precisa de assinatura é o `.sys` que ela extrai,
+senão o próprio Windows recusa carregar. A garantia aqui é a ORIGEM (release
+oficial por HTTPS) e o hash acima.
+
+**Risco:** é binário de terceiro que vai rodar elevado no passo 4 — pegue da
+página de releases oficial e de nenhum espelho.
 
 ### Passo 3 — conferir SEM elevação (nada muda na máquina)
 
@@ -68,8 +108,17 @@ passo 4 — pegue da página de releases oficial e de nenhum espelho.
 C:\ProgramData\miniconda3\envs\llama-omni\python.exe scripts\ajudante_watts.py --uma-vez
 ```
 
-Esperado agora: uma mensagem dizendo que não deu, e saída `2`. É o que se quer
-ver — prova que a falta do driver é tratada como estado normal, não como crash.
+Com as DLLs já no lugar, o esperado agora é:
+
+```
+[WATTS] nenhum sensor de potência da CPU respondeu — quase sempre é falta de
+privilégio (o driver não subiu) ou CPU sem o sensor exposto
+```
+
+É **exatamente** o que se quer ver: significa que a cadeia de DLLs está completa e
+o único bloqueio que resta é a elevação. (Se aparecer `LibreHardwareMonitorLib.dll
+não encontrada`, falta o passo 2; se aparecer `não consegui carregar … System.
+Memory`, faltam as assemblies de apoio do passo 2.)
 
 **Risco:** nenhum. Este passo não eleva nada e não carrega driver nenhum.
 
