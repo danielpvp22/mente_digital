@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Iterator, Optional
 
 from mente_digital import aparelhos as regras
+from mente_digital import identidade
 from mente_digital.aparelhos import Aparelho, Situacao, Veredito
 from mente_digital.telemetry import db as db_padrao
 from mente_digital.telemetry import telemetry
@@ -79,6 +80,41 @@ class RegistroAparelhos:
         self._parametros_bloqueio: tuple[float, float] = (2.0, 900.0)
         # ip -> (falhas_consecutivas, bloqueado_ate)
         self._falhas: dict[str, tuple[int, Optional[datetime]]] = {}
+        # ORÇAMENTO GLOBAL DE PAREAMENTO (2026-08-03, revisão de segurança).
+        #
+        # O castigo progressivo é por IP, e é ótimo contra UM atacante — mas é cego para
+        # o distribuído: com N máquinas (botnet, rotação de IPv6), cada uma chega com o
+        # contador zerado e ganha as 2 tentativas livres na hora. A conta que fizemos diz
+        # que ainda assim é inviável (1.000 IPs contra 31^10 na janela de validade do
+        # código dá P ≈ 1,3e-11) — ou seja, isto NÃO conserta um buraco aberto.
+        #
+        # Existe pelo motivo oposto: hoje nada LIMITA por desenho, e a folga vive de um
+        # número (a entropia do código) permanecer o que é. Um dia alguém encurta o código
+        # "para ficar mais fácil de ditar" e a defesa inteira cai sem que ninguém perceba,
+        # porque a conta que a sustentava nunca esteve no código. Um teto global torna a
+        # varredura impossível independentemente da entropia — e custa 10 linhas.
+        #
+        # Só conta PAREAMENTO (o elo de baixa entropia, digitado à mão). O gate normal
+        # segue só com o castigo por IP: lá o segredo tem 256 bits, e um teto global ali
+        # deixaria um atacante trancar os quatro usuários de fora — negação de serviço
+        # servida de bandeja.
+        # AVISAR O DONO quando alguém está martelando (decisão dele, 2026-08-03: "essas
+        # notificações devem chegar no meu celular"). Ligado em `main.py` ao
+        # `SchedulerService.alertar_seguranca`; None = ninguém escutando, e aí o castigo
+        # segue mudo como sempre foi.
+        #
+        # ⚠ Por que um atributo opcional e não um import: este módulo é usado pelo VIGIA,
+        # um processo de stdlib pura sem FastAPI nem scheduler — importar o scheduler aqui
+        # arrastaria o mundo para dentro do plantão de 61 MB que existe justamente para
+        # não ter isso. Mesma disciplina do `vigia.py`.
+        #
+        # O contrato (definido pelo lado que recebe): síncrono, nunca levanta, nunca
+        # bloqueia — porque isto é chamado de DENTRO do gate de acesso.
+        self.ao_alerta: Optional[Callable[[str, str, str], None]] = None
+        self._pareamentos_falhos: list[datetime] = []
+        # (tentativas, janela em segundos). 30 chutes errados em 10 min já é ordens de
+        # grandeza acima do dedo trocado do dono ditando um código por telefone.
+        self._teto_pareamento: tuple[int, float] = (30, 600.0)
         # aparelho_id -> {id_sessao: derrubador}
         self._sessoes: dict[str, dict[int, Callable[[], None]]] = {}
         self._proxima_sessao = 0
@@ -110,7 +146,7 @@ class RegistroAparelhos:
                     """CREATE TABLE IF NOT EXISTS aparelhos
                        (id TEXT PRIMARY KEY, apelido TEXT, impressao TEXT, sal TEXT,
                         criado_em TEXT, ultimo_uso TEXT, ultimo_ip TEXT,
-                        revogado_em TEXT, expira_em TEXT)"""
+                        revogado_em TEXT, expira_em TEXT, usuario TEXT)"""
                 )
                 # O código vive na tabela para sobreviver a restart: o dono gera no PC,
                 # anda até o celular e digita. Um código em RAM morreria num reload do
@@ -118,15 +154,40 @@ class RegistroAparelhos:
                 c.execute(
                     """CREATE TABLE IF NOT EXISTS aparelhos_pareamento
                        (codigo TEXT PRIMARY KEY, emitido_em TEXT, usado_em TEXT,
-                        apelido TEXT)"""
+                        apelido TEXT, usuario TEXT)"""
                 )
+                # Migração idempotente para banco que nasceu antes do multiusuário.
+                # Mesmo padrão do `conversa_id` em telemetry.py: lê `PRAGMA table_info`
+                # e só ALTERa o que falta. O backfill carimba o dono padrão — todo
+                # aparelho que já estava pareado é dele.
+                for tabela in ("aparelhos", "aparelhos_pareamento"):
+                    self._garantir_coluna_usuario(c, tabela)
         except Exception as exc:
             telemetry.error("APARELHOS", "Erro ao criar as tabelas do registro", exc)
+
+    @staticmethod
+    def _garantir_coluna_usuario(cursor, tabela: str) -> None:
+        """Acrescenta `usuario` se faltar, e carimba o legado como do dono padrão.
+
+        O backfill fica DENTRO do ramo do ALTER de propósito: rodando a cada boot, ele
+        re-carimbaria como do dono qualquer linha que legitimamente nascesse sem usuário
+        — é a mesma armadilha que o agente do SQLite descreveu na `auditoria`.
+        """
+        colunas = {c[1] for c in cursor.execute(f"PRAGMA table_info([{tabela}])")}
+        if "usuario" in colunas:
+            return
+        cursor.execute(f"ALTER TABLE [{tabela}] ADD COLUMN usuario TEXT")
+        cursor.execute(f"UPDATE [{tabela}] SET usuario = ? WHERE usuario IS NULL",
+                       (identidade.DONO_PADRAO,))
 
     def _linha_para_aparelho(self, row: tuple) -> Aparelho:
         return Aparelho(
             id=row[0], apelido=row[1], impressao=row[2], sal=row[3], criado_em=row[4],
             ultimo_uso=row[5], ultimo_ip=row[6], revogado_em=row[7], expira_em=row[8],
+            # Linha anterior à migração (ou banco de teste montado na mão) cai no dono
+            # padrão. Nunca None: um aparelho sem usuário passaria pelo gate e morreria
+            # depois, no `exigir_dono`, longe da causa.
+            usuario=(row[9] if len(row) > 9 and row[9] else identidade.DONO_PADRAO),
         )
 
     def buscar(self, aparelho_id: str) -> Optional[Aparelho]:
@@ -134,7 +195,7 @@ class RegistroAparelhos:
             with self._conn() as conn:
                 row = conn.execute(
                     "SELECT id, apelido, impressao, sal, criado_em, ultimo_uso, "
-                    "ultimo_ip, revogado_em, expira_em FROM aparelhos WHERE id = ?",
+                    "ultimo_ip, revogado_em, expira_em, usuario FROM aparelhos WHERE id = ?",
                     (aparelho_id,),
                 ).fetchone()
             return self._linha_para_aparelho(row) if row else None
@@ -145,7 +206,7 @@ class RegistroAparelhos:
     def listar(self, incluir_revogados: bool = False) -> list[Aparelho]:
         """O que o painel do dono mostra."""
         sql = ("SELECT id, apelido, impressao, sal, criado_em, ultimo_uso, ultimo_ip, "
-               "revogado_em, expira_em FROM aparelhos")
+               "revogado_em, expira_em, usuario FROM aparelhos")
         if not incluir_revogados:
             sql += " WHERE revogado_em IS NULL"
         sql += " ORDER BY criado_em"
@@ -160,7 +221,8 @@ class RegistroAparelhos:
         return len(self.listar())
 
     # --- Inscrição (só o dono inicia) ----------------------------------------
-    def emitir_codigo(self, apelido: str, teto: int) -> Optional[str]:
+    def emitir_codigo(self, apelido: str, teto: int,
+                      usuario: Optional[str] = None) -> Optional[str]:
         """Gera o código de pareamento. Chamado a partir do PAINEL (loopback), nunca
         por um pedido remoto — um aparelho novo não pode pedir a própria entrada.
 
@@ -171,15 +233,23 @@ class RegistroAparelhos:
         if not regras.pode_inscrever(self.contar_ativos(), teto):
             telemetry.warn("APARELHOS", f"Código recusado: teto de {teto} aparelhos atingido.")
             return None
+        # O USUÁRIO é fixado AQUI, na emissão — é o ato explícito do dono dizendo para
+        # quem é este aparelho. Fazer o celular escolher o próprio usuário na hora de
+        # parear seria deixar quem chega decidir de qual memória vai ler.
+        # Normaliza já: o nome vira pasta (`Pessoal/<dono>/`) e coleção do Chroma, e um
+        # apelido inválido tem de falhar aqui, na mão do dono, não lá na frente.
+        dono = identidade.normalizar(usuario) if usuario else identidade.DONO_PADRAO
         codigo = regras.gerar_codigo()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO aparelhos_pareamento (codigo, emitido_em, usado_em, apelido) "
-                    "VALUES (?, ?, NULL, ?)",
-                    (codigo, self._agora().isoformat(), apelido),
+                    "INSERT INTO aparelhos_pareamento "
+                    "(codigo, emitido_em, usado_em, apelido, usuario) "
+                    "VALUES (?, ?, NULL, ?, ?)",
+                    (codigo, self._agora().isoformat(), apelido, dono),
                 )
-            telemetry.track("APARELHOS", f"Código de pareamento emitido para '{apelido}'.")
+            telemetry.track(
+                "APARELHOS", f"Código de pareamento emitido para '{apelido}' (usuário {dono}).")
             return codigo
         except Exception as exc:
             telemetry.error("APARELHOS", "Erro ao emitir código de pareamento", exc)
@@ -198,11 +268,18 @@ class RegistroAparelhos:
         if self._bloqueado(ip, agora):
             self._auditar("aparelho_pareamento_recusado", f"ip={ip} motivo={regras.MOTIVO_BLOQUEADO}")
             return ResultadoPareamento(False, regras.MOTIVO_BLOQUEADO)
+        # O teto GLOBAL vem depois do castigo por IP e antes de qualquer leitura: quem
+        # varre com muitos IPs não paga nem o SELECT. Ver `_pareamentos_falhos`.
+        if self._teto_pareamento_estourado(agora):
+            self._auditar("aparelho_pareamento_recusado",
+                          f"ip={ip} motivo=teto_global_pareamento")
+            return ResultadoPareamento(False, regras.MOTIVO_BLOQUEADO)
 
         try:
             with self._conn() as conn:
                 row = conn.execute(
-                    "SELECT emitido_em, usado_em, apelido FROM aparelhos_pareamento WHERE codigo = ?",
+                    "SELECT emitido_em, usado_em, apelido, usuario "
+                    "FROM aparelhos_pareamento WHERE codigo = ?",
                     (codigo,),
                 ).fetchone()
         except Exception as exc:
@@ -213,6 +290,7 @@ class RegistroAparelhos:
         recusa = regras.codigo_valido(emitido, bool(row and row[1]), agora, validade_minutos)
         if recusa is not None:
             self._contar_falha(ip, agora)
+            self._registrar_falha_pareamento(agora)
             self._auditar("aparelho_pareamento_recusado", f"ip={ip} motivo={recusa}")
             return ResultadoPareamento(False, recusa)
 
@@ -229,12 +307,16 @@ class RegistroAparelhos:
                 # Marca o código como usado NA MESMA transação da inserção: se o
                 # servidor cair entre as duas, um código de uso único teria virado
                 # de uso duplo.
+                # O usuário viaja do CÓDIGO para o APARELHO nesta mesma transação — é o
+                # único momento em que ele é definido, e depois é imutável (ver o campo
+                # `Aparelho.usuario`). Código de antes da migração cai no dono padrão.
                 conn.execute(
                     "INSERT INTO aparelhos (id, apelido, impressao, sal, criado_em, "
-                    "ultimo_uso, ultimo_ip, revogado_em, expira_em) "
-                    "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?)",
+                    "ultimo_uso, ultimo_ip, revogado_em, expira_em, usuario) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
                     (aparelho_id, row[2] or "aparelho", regras.impressao(segredo, sal), sal,
-                     agora.isoformat(), expira),
+                     agora.isoformat(), expira,
+                     (row[3] if len(row) > 3 and row[3] else identidade.DONO_PADRAO)),
                 )
                 conn.execute(
                     "UPDATE aparelhos_pareamento SET usado_em = ? WHERE codigo = ?",
@@ -364,6 +446,58 @@ class RegistroAparelhos:
             self._falhas[ip] = (n, ate)
         if atraso > 0:
             telemetry.warn("APARELHOS", f"{ip}: {n} falhas — bloqueado por {atraso:.0f}s.")
+            # Só quando o castigo JÁ disparou, não a cada falha: as 2 primeiras são o
+            # dedo trocado do próprio dono digitando, e avisar nelas ensinaria a ignorar
+            # o aviso. O estrangulamento fino é do outro lado (janela por chave).
+            self._avisar_alerta(
+                f"{n} tentativas de acesso recusadas",
+                f"IP {ip} — bloqueado por {atraso:.0f}s. Se não foi você, revogue os "
+                f"aparelhos que não reconhecer.",
+                f"auth:{ip}",
+            )
+
+    def _avisar_alerta(self, titulo: str, detalhe: str, chave: str) -> None:
+        """Chama o ouvinte, se houver. Uma falha aqui NÃO pode derrubar o gate: quem
+        está no meio disto é uma requisição sendo recusada, e trocar uma recusa
+        correta por um 500 seria transformar o alarme na porta de entrada."""
+        ouvinte = self.ao_alerta
+        if ouvinte is None:
+            return
+        try:
+            ouvinte(titulo, detalhe, chave)
+        except Exception as exc:
+            telemetry.error("APARELHOS", "Falha ao emitir alerta de segurança", exc)
+
+    def _registrar_falha_pareamento(self, agora: datetime) -> None:
+        """Anota uma tentativa de pareamento errada, SEM olhar de que IP veio."""
+        _tentativas, janela = self._teto_pareamento
+        with self._trava:
+            corte = agora - timedelta(seconds=janela)
+            # Poda ao inserir: a lista nunca cresce além da janela, então não é preciso
+            # um limpador em background para um processo que fica dias no ar.
+            self._pareamentos_falhos = [
+                t for t in self._pareamentos_falhos if t >= corte] + [agora]
+
+    def _teto_pareamento_estourado(self, agora: datetime) -> bool:
+        tentativas, janela = self._teto_pareamento
+        if tentativas <= 0:
+            return False                       # 0 = sem teto global (escape hatch)
+        corte = agora - timedelta(seconds=janela)
+        with self._trava:
+            recentes = sum(1 for t in self._pareamentos_falhos if t >= corte)
+        if recentes >= tentativas:
+            telemetry.warn(
+                "APARELHOS",
+                f"Teto GLOBAL de pareamento atingido: {recentes} tentativas erradas em "
+                f"{janela:.0f}s. Pareamento suspenso — sinal de varredura distribuída."
+            )
+            return True
+        return False
+
+    def configurar_teto_pareamento(self, tentativas: int, janela_segundos: float) -> None:
+        """Instância, não classe: teste e app no mesmo processo não partilham calibração
+        (mesma razão de `configurar_bloqueio`)."""
+        self._teto_pareamento = (tentativas, janela_segundos)
 
     def _limpar_falhas(self, ip: str) -> None:
         with self._trava:

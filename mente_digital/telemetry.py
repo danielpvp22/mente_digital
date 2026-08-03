@@ -19,8 +19,121 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from mente_digital import textutils
+from mente_digital import identidade, textutils
 from mente_digital.config import settings
+
+
+def _dono_para_consulta() -> str:
+    """De quem é a linha que estamos prestes a gravar/ler — o ÚNICO lugar do módulo
+    onde o modo multiusuário liga e desliga.
+
+    DESLIGADO (default de hoje): devolve o dono do contexto OU `DONO_PADRAO`. O banco
+    inteiro foi carimbado 'daniel' no backfill da migração, então toda consulta casa
+    exatamente as mesmas linhas de antes — inclusive nos caminhos que rodam FORA de um
+    turno e não têm dono nenhum a marcar (lifespan do main.py, tick do scheduler, ETL
+    idle). Ligar a segmentação não podia ser o mesmo commit que quebra o app.
+
+    LIGADO: cai em `exigir_dono()` e FALHA ALTO em quem esqueceu de marcar o dono —
+    é o ⚠ de identidade.py: com quatro pessoas, filtro ausente devolve a memória de
+    todo mundo, e isso é SILENCIOSO. Um erro visível é melhor que um vazamento mudo.
+
+    O campo é lido DIRETO, sem `getattr(..., False)` de conveniência: um default aqui
+    transformaria "renomearam/removeram o campo" em "a segmentação está desligada", que
+    é a mesma armadilha do `..._SEGUNDOS` vs `..._SECONDS` — o pydantic engoliu a
+    grafia errada com `extra="ignore"` e a pesquisa agendada passou meses desligada
+    sem ninguém saber. Chave de privacidade não pode falhar para o lado calado.
+    """
+    if settings.multiusuario_habilitado:
+        return identidade.exigir_dono()
+    return identidade.dono_atual() or identidade.DONO_PADRAO
+
+
+# Tabelas PESSOAIS de chave SIMPLES (id autoincrement): a segmentação por dono cabe
+# numa coluna a mais, do mesmo jeito idempotente do `conversa_id`/waterfall.
+_PESSOAIS_COLUNA = ("chat_history", "agendamentos", "srs_cards", "gatilhos", "auditoria")
+
+# Tabelas PESSOAIS cuja CHAVE precisou virar COMPOSTA. Aqui a coluna sozinha NÃO
+# bastaria: `lacunas`, `rotinas`, `mestre_atalhos` etc. nasceram com PRIMARY KEY sobre
+# um texto que é do USUÁRIO ('academia', 'manhã', 'o que é X'). Com dois donos, o
+# `ON CONFLICT(chave)` casa entre PESSOAS DIFERENTES — o segundo a salvar sobrescreve
+# o primeiro, e o `INSERT OR IGNORE` de `habitos` faz pior: descarta em silêncio o dia
+# cumprido do segundo dono. SQLite não altera PK por ALTER TABLE, então banco antigo é
+# RECONSTRUÍDO (ver `_migrar_chave_por_dono`). O DDL vive aqui, e não inline no init(),
+# porque a criação e a reconstrução usam o MESMO texto — duas cópias divergiriam no
+# primeiro conserto de uma. A tupla ao lado são as colunas do legado a copiar.
+_PESSOAIS_CHAVE_COMPOSTA: dict[str, tuple[str, tuple[str, ...]]] = {
+    # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web). É o
+    # sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle usa para
+    # saber o que buscar e trazer pronto pra próxima vez. `chave` é a forma normalizada
+    # (agrupa 'o que é X?' e 'X, o que é'); `n` acumula. Buraco de UM dono, não da casa.
+    "lacunas": (
+        """CREATE TABLE IF NOT EXISTS lacunas
+           (chave TEXT, dono TEXT, termos TEXT, n INTEGER DEFAULT 1,
+            visto_em TEXT, pesquisado_em TEXT, PRIMARY KEY (chave, dono))""",
+        ("chave", "termos", "n", "visto_em", "pesquisado_em"),
+    ),
+    # TEMAS QUENTES (#4): o ESPELHO da lacuna. Lacuna = o que NÃO responderam (buraco).
+    # Tema quente = o que o usuário mais REUSA do banco — interesse recorrente. A
+    # pesquisa proativa do idle re-pesquisa estes na web para trazer NOVIDADE (dedup por
+    # átomo filtra o já-sabido). Mesmo shape da lacuna; `n` conta os reusos.
+    "temas_quentes": (
+        """CREATE TABLE IF NOT EXISTS temas_quentes
+           (chave TEXT, dono TEXT, termos TEXT, n INTEGER DEFAULT 1,
+            visto_em TEXT, pesquisado_em TEXT, PRIMARY KEY (chave, dono))""",
+        ("chave", "termos", "n", "visto_em", "pesquisado_em"),
+    ),
+    # Comandos com a palavra-mestre que NEM o parser rápido NEM o roteador LLM
+    # reconheceram: a lista de "melhorias a revisar". `chave` normalizada agrupa
+    # tentativas repetidas (UPSERT incrementa `n`).
+    "mestre_nao_reconhecido": (
+        """CREATE TABLE IF NOT EXISTS mestre_nao_reconhecido
+           (chave TEXT, dono TEXT, comando TEXT, n INTEGER DEFAULT 1, visto_em TEXT,
+            PRIMARY KEY (chave, dono))""",
+        ("chave", "comando", "n", "visto_em"),
+    ),
+    # ATALHO DE INTENÇÃO FREQUENTE (#2): conta as intenções-mestre por forma normalizada.
+    # Quando `n` cruza o limiar, o app OFERECE um atalho — `sugerido` garante que a oferta
+    # acontece UMA vez só (não vira nag). O hábito de um não pode acelerar a oferta ao outro.
+    "mestre_frequencia": (
+        """CREATE TABLE IF NOT EXISTS mestre_frequencia
+           (assinatura TEXT, dono TEXT, exemplo TEXT, n INTEGER DEFAULT 1,
+            sugerido INTEGER DEFAULT 0, visto_em TEXT, PRIMARY KEY (assinatura, dono))""",
+        ("assinatura", "exemplo", "n", "sugerido", "visto_em"),
+    ),
+    # ATALHOS nomeados (#2): apelido -> comando-mestre completo. Dois donos PRECISAM
+    # poder chamar o atalho deles de "diagnóstico" sem um sobrescrever o do outro.
+    "mestre_atalhos": (
+        """CREATE TABLE IF NOT EXISTS mestre_atalhos
+           (nome TEXT, dono TEXT, comando TEXT, criado_em TEXT, PRIMARY KEY (nome, dono))""",
+        ("nome", "comando", "criado_em"),
+    ),
+    # ROTINAS COMPOSTAS (#10): macro NOMEADA -> comando composto salvo. "rotina manhã"
+    # expande para o `comando` e o fluxo normal (parse_composto) executa os passos. A
+    # "manhã" de cada um é a dele.
+    "rotinas": (
+        """CREATE TABLE IF NOT EXISTS rotinas
+           (nome TEXT, dono TEXT, comando TEXT, criado_em TEXT, PRIMARY KEY (nome, dono))""",
+        ("nome", "comando", "criado_em"),
+    ),
+    # HÁBITOS (#37): uma linha por (hábito, DIA cumprido). O UNIQUE virou trinca porque
+    # com (nome, data) só o PRIMEIRO dono a marcar "academia" hoje contaria — o segundo
+    # cairia no INSERT OR IGNORE e sumiria sem erro.
+    "habitos": (
+        """CREATE TABLE IF NOT EXISTS habitos
+           (id INTEGER PRIMARY KEY AUTOINCREMENT, dono TEXT, nome TEXT, data TEXT,
+            criado_em TEXT, UNIQUE(nome, data, dono))""",
+        ("id", "nome", "data", "criado_em"),
+    ),
+    # DIAPASÃO (#36): perfil de COMO o usuário prefere ser respondido. Era UMA linha na
+    # máquina inteira (chave fixa 'conversa'); agora é uma POR DONO — o idle refina, o
+    # hot-path lê, e o estilo de um não vira diretriz de estilo do outro.
+    "perfil_conversa": (
+        """CREATE TABLE IF NOT EXISTS perfil_conversa
+           (chave TEXT, dono TEXT, valor TEXT, atualizado_em TEXT,
+            PRIMARY KEY (chave, dono))""",
+        ("chave", "valor", "atualizado_em"),
+    ),
+}
 
 
 def _reconfig_utf8(stream: object) -> None:
@@ -272,7 +385,7 @@ class Database:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS chat_history
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
-                    pergunta TEXT, resposta TEXT, conversa_id TEXT)"""
+                    pergunta TEXT, resposta TEXT, conversa_id TEXT, dono TEXT)"""
             )
             # Migração: bancos antigos não têm a coluna conversa_id (agrupa turnos em
             # CONVERSAS no histórico). Adiciona se faltar — turnos legados ficam com NULL
@@ -331,26 +444,6 @@ class Database:
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, origem TEXT,
                     texto TEXT, bruto TEXT, tool TEXT, parse_ok INTEGER)"""
             )
-            # LACUNAS: perguntas que a RAM E o banco NÃO responderam (escalaram pra web).
-            # É o sinal de "maior ponto de dúvida do app" que a pesquisa proativa do idle
-            # usa para saber o que buscar e trazer pronto pra próxima vez. `chave` é a
-            # forma normalizada (agrupa 'o que é X?' e 'X, o que é'); `n` acumula.
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS lacunas
-                   (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
-                    visto_em TEXT, pesquisado_em TEXT)"""
-            )
-            # TEMAS QUENTES (#4): o ESPELHO da lacuna. Lacuna = o que a RAM E o banco NÃO
-            # responderam (buraco). Tema quente = o que o usuário mais REUSA do banco (o
-            # estágio Banco respondeu de fato) — interesse recorrente. A pesquisa proativa
-            # do idle re-pesquisa estes na web para trazer NOVIDADE (dedup por átomo filtra
-            # o já-sabido), então a base amadurece nos temas favoritos, não só nos buracos.
-            # Mesmo shape da lacuna; `chave` normalizada agrupa; `n` conta os reusos.
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS temas_quentes
-                   (chave TEXT PRIMARY KEY, termos TEXT, n INTEGER DEFAULT 1,
-                    visto_em TEXT, pesquisado_em TEXT)"""
-            )
             # AGENDAMENTOS: a "responsabilidade contínua" dos agentes (lembrete/alarme/
             # timer, watcher "me avise quando", briefing diário). Persistente de propósito
             # — o SchedulerService lê esta tabela e sobrevive a restart do servidor (a RAM
@@ -364,15 +457,8 @@ class Database:
                 """CREATE TABLE IF NOT EXISTS agendamentos
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, mensagem TEXT,
                     proximo_disparo TEXT, recorrencia TEXT, payload TEXT,
-                    status TEXT DEFAULT 'ativo', criado_em TEXT, conversa_id TEXT)"""
-            )
-            # Comandos com a palavra-mestre que NEM o parser rápido NEM o roteador LLM
-            # reconheceram. É a lista de "melhorias a revisar": mostra que comandos o
-            # usuário tentou e o app não cobre — matéria-prima para ampliar os agentes.
-            # `chave` normalizada agrupa tentativas repetidas (UPSERT incrementa `n`).
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS mestre_nao_reconhecido
-                   (chave TEXT PRIMARY KEY, comando TEXT, n INTEGER DEFAULT 1, visto_em TEXT)"""
+                    status TEXT DEFAULT 'ativo', criado_em TEXT, conversa_id TEXT,
+                    dono TEXT)"""
             )
             # AUDITORIA (#27): trilha das AÇÕES que os agentes executaram (lembrete criado,
             # item na lista, watcher satisfeito, briefing entregue...). É o que responde
@@ -381,22 +467,7 @@ class Database:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS auditoria
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT,
-                    acao TEXT, detalhe TEXT)"""
-            )
-            # ATALHO DE INTENÇÃO FREQUENTE (#2): conta as intenções-mestre por forma
-            # normalizada (agrupa repetições idênticas: 'diagnóstico', 'o que tem na lista
-            # de compras'...). Quando `n` cruza o limiar, o app OFERECE um atalho — `sugerido`
-            # garante que a oferta acontece UMA vez só (não vira nag).
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS mestre_frequencia
-                   (assinatura TEXT PRIMARY KEY, exemplo TEXT, n INTEGER DEFAULT 1,
-                    sugerido INTEGER DEFAULT 0, visto_em TEXT)"""
-            )
-            # ATALHOS nomeados (#2): apelido -> comando-mestre completo. "mestre, atalho X"
-            # grava o último comando sob o nome X; depois "mestre, X" expande de volta.
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS mestre_atalhos
-                   (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
+                    acao TEXT, detalhe TEXT, dono TEXT)"""
             )
             # SRS (#43): cards de repetição espaçada. `frente`/`verso` da carta (a última
             # troca marcada), `proxima_revisao` (ISO) e `estagio` (caixa de Leitner). A
@@ -404,7 +475,8 @@ class Database:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS srs_cards
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, frente TEXT, verso TEXT,
-                    proxima_revisao TEXT, estagio INTEGER DEFAULT 0, criado_em TEXT)"""
+                    proxima_revisao TEXT, estagio INTEGER DEFAULT 0, criado_em TEXT,
+                    dono TEXT)"""
             )
             # GATILHOS CONDICIONAIS INTERNOS (#11): "quando <evento interno>, faça <ação>".
             #   evento : nome do evento do app (v1: 'lista_add')
@@ -414,20 +486,7 @@ class Database:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS gatilhos
                    (id INTEGER PRIMARY KEY AUTOINCREMENT, evento TEXT, filtro TEXT,
-                    acao TEXT, descricao TEXT, criado_em TEXT)"""
-            )
-            # HÁBITOS (#37): uma linha por (hábito, DIA cumprido). UNIQUE evita contar duas
-            # vezes o mesmo dia; a sequência (streak) é derivada das datas. Fluxo independente.
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS habitos
-                   (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, data TEXT,
-                    criado_em TEXT, UNIQUE(nome, data))"""
-            )
-            # ROTINAS COMPOSTAS (#10): macro NOMEADA -> comando composto salvo. "rotina manhã"
-            # expande para o `comando` e o fluxo normal (parse_composto) executa os passos.
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS rotinas
-                   (nome TEXT PRIMARY KEY, comando TEXT, criado_em TEXT)"""
+                    acao TEXT, descricao TEXT, criado_em TEXT, dono TEXT)"""
             )
             # DETECTOR DE CONTRADIÇÃO (#24): pares de átomos que o idle marcou como
             # afirmando fatos incompatíveis. UNIQUE(fonte_a, fonte_b) evita re-gravar o
@@ -438,34 +497,94 @@ class Database:
                     resumo TEXT, data TEXT, resolvido INTEGER DEFAULT 0,
                     UNIQUE(fonte_a, fonte_b))"""
             )
-            # DIAPASÃO (#36): perfil de COMO o usuário prefere ser respondido. Uma linha
-            # (chave fixa 'conversa'); o idle refina, o hot-path lê. Diretriz de estilo.
+            # -- Segmentação por DONO (multiusuário, 2026-08-03) --------------------
+            # Só as tabelas PESSOAIS entram aqui. O que é da MÁQUINA (metricas_latencia,
+            # log_etl, base_snapshot, router_log, academico_pdfs, contradicoes) fica como
+            # está: são o painel do dono da máquina, não a memória de alguém.
+            for _tabela in _PESSOAIS_COLUNA:
+                self._migrar_coluna_dono(c, _tabela)
+            for _tabela, (_ddl, _colunas) in _PESSOAIS_CHAVE_COMPOSTA.items():
+                c.execute(_ddl)  # banco novo já nasce com a chave composta
+                self._migrar_chave_por_dono(c, _tabela, _ddl, _colunas)
+            # Índice onde a leitura por dono é do CAMINHO QUENTE: o histórico é lido a
+            # cada abertura do app (`get_conversations` varre a tabela toda para agrupar)
+            # e os agendamentos são varridos a cada tique do scheduler. Nas demais o
+            # volume é de dezenas de linhas — índice ali seria custo sem ganho.
+            c.execute("CREATE INDEX IF NOT EXISTS idx_chat_dono ON chat_history (dono)")
             c.execute(
-                """CREATE TABLE IF NOT EXISTS perfil_conversa
-                   (chave TEXT PRIMARY KEY, valor TEXT, atualizado_em TEXT)"""
+                "CREATE INDEX IF NOT EXISTS idx_agend_dono ON agendamentos (dono, status)"
             )
             conn.commit()
 
+    @staticmethod
+    def _migrar_coluna_dono(c: sqlite3.Cursor, tabela: str) -> None:
+        """Adiciona `dono` a uma tabela pessoal de chave simples e CARIMBA o legado.
+
+        Mesmo padrão idempotente do `conversa_id`: lê o PRAGMA, só então ALTERa. O
+        backfill mora DENTRO do ramo de propósito — se rodasse a cada boot, ele
+        re-carimbaria como 'daniel' toda linha de `auditoria` nascida sem dono (a recusa
+        de acesso, que acontece ANTES de existir dono), atribuindo a uma pessoa um
+        evento que não foi dela. Migração de legado roda UMA vez; reparo contínuo é
+        outra coisa, e não é isto.
+        """
+        cols = [r[1] for r in c.execute(f"PRAGMA table_info({tabela})").fetchall()]
+        if "dono" in cols:
+            return
+        c.execute(f"ALTER TABLE {tabela} ADD COLUMN dono TEXT")
+        c.execute(f"UPDATE {tabela} SET dono = ? WHERE dono IS NULL",
+                  (identidade.DONO_PADRAO,))
+
+    @staticmethod
+    def _migrar_chave_por_dono(
+        c: sqlite3.Cursor, tabela: str, ddl: str, colunas: tuple[str, ...]
+    ) -> None:
+        """RECONSTRÓI uma tabela pessoal cuja chave era o texto do usuário (ver o
+        comentário de `_PESSOAIS_CHAVE_COMPOSTA`): SQLite não muda PRIMARY KEY nem
+        UNIQUE por ALTER TABLE, então o caminho é renomear, recriar com a chave
+        composta e copiar o legado carimbado com `DONO_PADRAO`.
+
+        Roda dentro da MESMA transação do `init()` (DDL é transacional no SQLite), então
+        uma falha no meio desfaz tudo e a tabela antiga continua lá — a alternativa
+        (renomear, falhar, e deixar o app sem tabela) perderia os dados do dono.
+        """
+        cols = [r[1] for r in c.execute(f"PRAGMA table_info({tabela})").fetchall()]
+        if not cols or "dono" in cols:
+            return  # tabela nova (nasceu com dono) ou já migrada
+        legado = f"{tabela}_pre_dono"
+        c.execute(f"DROP TABLE IF EXISTS {legado}")  # resto de uma migração interrompida
+        c.execute(f"ALTER TABLE {tabela} RENAME TO {legado}")
+        c.execute(ddl)
+        lista = ", ".join(colunas)
+        c.execute(
+            f"INSERT INTO {tabela} (dono, {lista}) SELECT ?, {lista} FROM {legado}",
+            (identidade.DONO_PADRAO,),
+        )
+        c.execute(f"DROP TABLE {legado}")
+
     def salvar_perfil(self, valor: str, chave: str = "conversa") -> None:
-        """Grava/atualiza o perfil de conversa (#36)."""
+        """Grava/atualiza o perfil de conversa DESTE dono (#36)."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO perfil_conversa (chave, valor, atualizado_em) VALUES (?, ?, ?)
-                       ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor,
+                    """INSERT INTO perfil_conversa (chave, dono, valor, atualizado_em)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(chave, dono) DO UPDATE SET valor = excluded.valor,
                        atualizado_em = excluded.atualizado_em""",
-                    (chave, valor, datetime.now().isoformat()),
+                    (chave, dono, valor, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao salvar perfil de conversa", exc)
 
     def ler_perfil(self, chave: str = "conversa") -> Optional[str]:
-        """O perfil de conversa guardado, ou None (#36)."""
+        """O perfil de conversa DESTE dono, ou None (#36)."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 row = conn.execute(
-                    "SELECT valor FROM perfil_conversa WHERE chave = ?", (chave,)
+                    "SELECT valor FROM perfil_conversa WHERE chave = ? AND dono = ?",
+                    (chave, dono),
                 ).fetchone()
             return row[0] if row else None
         except Exception as exc:
@@ -541,12 +660,13 @@ class Database:
         return out
 
     def save_chat(self, pergunta: str, resposta: str, conversa_id: Optional[str] = None) -> None:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO chat_history (data_hora, pergunta, resposta, conversa_id) "
-                    "VALUES (?, ?, ?, ?)",
-                    (datetime.now().isoformat(), pergunta, resposta, conversa_id),
+                    "INSERT INTO chat_history (data_hora, pergunta, resposta, conversa_id, dono) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (datetime.now().isoformat(), pergunta, resposta, conversa_id, dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -554,12 +674,13 @@ class Database:
 
     # -- SRS (#43): repetição espaçada -----------------------------------------
     def srs_criar_card(self, frente: str, verso: str, proxima_revisao: str) -> None:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO srs_cards (frente, verso, proxima_revisao, estagio, criado_em) "
-                    "VALUES (?, ?, ?, 0, ?)",
-                    (frente, verso, proxima_revisao, datetime.now().isoformat()),
+                    "INSERT INTO srs_cards (frente, verso, proxima_revisao, estagio, "
+                    "criado_em, dono) VALUES (?, ?, ?, 0, ?, ?)",
+                    (frente, verso, proxima_revisao, datetime.now().isoformat(), dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -567,12 +688,13 @@ class Database:
 
     def srs_vencidos(self, agora_iso: str, limite: int) -> list:
         """Cards com revisão vencida (proxima_revisao <= agora), do mais atrasado ao menos."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
                     "SELECT id, frente, verso, proxima_revisao, estagio FROM srs_cards "
-                    "WHERE proxima_revisao <= ? ORDER BY proxima_revisao LIMIT ?",
-                    (agora_iso, limite),
+                    "WHERE dono = ? AND proxima_revisao <= ? ORDER BY proxima_revisao LIMIT ?",
+                    (dono, agora_iso, limite),
                 ).fetchall()
             return [
                 {"id": r[0], "frente": r[1], "verso": r[2], "proxima_revisao": r[3], "estagio": r[4]}
@@ -583,21 +705,27 @@ class Database:
             return []
 
     def srs_contar_vencidos(self, agora_iso: str) -> int:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 return conn.execute(
-                    "SELECT COUNT(*) FROM srs_cards WHERE proxima_revisao <= ?", (agora_iso,)
+                    "SELECT COUNT(*) FROM srs_cards WHERE dono = ? AND proxima_revisao <= ?",
+                    (dono, agora_iso),
                 ).fetchone()[0]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao contar cards SRS", exc)
             return 0
 
     def srs_reagendar(self, card_id: int, estagio: int, proxima_revisao: str) -> None:
+        # `card_id` vem de um id que trafegou pelo cliente: sem o `AND dono`, reagendar
+        # o card de outra pessoa seria só uma questão de digitar o número certo.
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE srs_cards SET estagio = ?, proxima_revisao = ? WHERE id = ?",
-                    (estagio, proxima_revisao, card_id),
+                    "UPDATE srs_cards SET estagio = ?, proxima_revisao = ? "
+                    "WHERE id = ? AND dono = ?",
+                    (estagio, proxima_revisao, card_id, dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -605,23 +733,28 @@ class Database:
 
     # -- Gatilhos condicionais internos (#11) ----------------------------------
     def gatilho_criar(self, evento: str, filtro: str, acao_json: str, descricao: str) -> None:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO gatilhos (evento, filtro, acao, descricao, criado_em) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (evento, filtro, acao_json, descricao, datetime.now().isoformat()),
+                    "INSERT INTO gatilhos (evento, filtro, acao, descricao, criado_em, dono) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (evento, filtro, acao_json, descricao, datetime.now().isoformat(), dono),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao criar gatilho", exc)
 
     def gatilhos_por_evento(self, evento: str) -> list:
+        # Filtra por dono no DISPARO, não só na listagem: o gatilho é uma AÇÃO que roda
+        # sozinha, e o evento de um usuário não pode acionar a automação de outro.
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT id, filtro, acao, descricao FROM gatilhos WHERE evento = ?",
-                    (evento,),
+                    "SELECT id, filtro, acao, descricao FROM gatilhos "
+                    "WHERE evento = ? AND dono = ?",
+                    (evento, dono),
                 ).fetchall()
             return [{"id": r[0], "filtro": r[1], "acao": r[2], "descricao": r[3]} for r in rows]
         except Exception as exc:
@@ -629,10 +762,11 @@ class Database:
             return []
 
     def gatilhos_listar(self) -> list:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT id, descricao FROM gatilhos ORDER BY id"
+                    "SELECT id, descricao FROM gatilhos WHERE dono = ? ORDER BY id", (dono,)
                 ).fetchall()
             return [{"id": r[0], "descricao": r[1]} for r in rows]
         except Exception as exc:
@@ -640,9 +774,12 @@ class Database:
             return []
 
     def gatilho_remover(self, gatilho_id: int) -> bool:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                cur = conn.execute("DELETE FROM gatilhos WHERE id = ?", (gatilho_id,))
+                cur = conn.execute(
+                    "DELETE FROM gatilhos WHERE id = ? AND dono = ?", (gatilho_id, dono)
+                )
                 conn.commit()
                 return cur.rowcount > 0
         except Exception as exc:
@@ -651,13 +788,16 @@ class Database:
 
     # -- Hábitos (#37) ---------------------------------------------------------
     def habito_marcar(self, nome: str, data_iso: str) -> None:
-        """Registra o hábito num DIA. UNIQUE(nome, data) -> marcar duas vezes o mesmo dia
-        é inócuo (INSERT OR IGNORE)."""
+        """Registra o hábito num DIA. UNIQUE(nome, data, dono) -> marcar duas vezes o
+        mesmo dia é inócuo (INSERT OR IGNORE), mas o mesmo hábito no mesmo dia de OUTRA
+        pessoa conta separado (com o UNIQUE antigo, o segundo sumia sem erro)."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT OR IGNORE INTO habitos (nome, data, criado_em) VALUES (?, ?, ?)",
-                    (nome, data_iso, datetime.now().isoformat()),
+                    "INSERT OR IGNORE INTO habitos (nome, data, criado_em, dono) "
+                    "VALUES (?, ?, ?, ?)",
+                    (nome, data_iso, datetime.now().isoformat(), dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -665,10 +805,12 @@ class Database:
 
     def habito_datas(self, nome: str) -> list:
         """Todas as datas (ISO) em que o hábito foi cumprido."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT data FROM habitos WHERE nome = ? ORDER BY data", (nome,)
+                    "SELECT data FROM habitos WHERE nome = ? AND dono = ? ORDER BY data",
+                    (nome, dono),
                 ).fetchall()
             return [r[0] for r in rows]
         except Exception as exc:
@@ -676,9 +818,12 @@ class Database:
             return []
 
     def habitos_nomes(self) -> list:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                rows = conn.execute("SELECT DISTINCT nome FROM habitos ORDER BY nome").fetchall()
+                rows = conn.execute(
+                    "SELECT DISTINCT nome FROM habitos WHERE dono = ? ORDER BY nome", (dono,)
+                ).fetchall()
             return [r[0] for r in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao listar hábitos", exc)
@@ -686,38 +831,49 @@ class Database:
 
     # -- Rotinas compostas (#10) -----------------------------------------------
     def rotina_salvar(self, nome: str, comando: str) -> None:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO rotinas (nome, comando, criado_em) VALUES (?, ?, ?)",
-                    (nome, comando, datetime.now().isoformat()),
+                    "INSERT OR REPLACE INTO rotinas (nome, dono, comando, criado_em) "
+                    "VALUES (?, ?, ?, ?)",
+                    (nome, dono, comando, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao salvar rotina", exc)
 
     def rotina_get(self, nome: str) -> Optional[str]:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                row = conn.execute("SELECT comando FROM rotinas WHERE nome = ?", (nome,)).fetchone()
+                row = conn.execute(
+                    "SELECT comando FROM rotinas WHERE nome = ? AND dono = ?", (nome, dono)
+                ).fetchone()
             return row[0] if row else None
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler rotina", exc)
             return None
 
     def rotinas_listar(self) -> list:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                rows = conn.execute("SELECT nome, comando FROM rotinas ORDER BY nome").fetchall()
+                rows = conn.execute(
+                    "SELECT nome, comando FROM rotinas WHERE dono = ? ORDER BY nome", (dono,)
+                ).fetchall()
             return [{"nome": r[0], "comando": r[1]} for r in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao listar rotinas", exc)
             return []
 
     def rotina_remover(self, nome: str) -> bool:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                cur = conn.execute("DELETE FROM rotinas WHERE nome = ?", (nome,))
+                cur = conn.execute(
+                    "DELETE FROM rotinas WHERE nome = ? AND dono = ?", (nome, dono)
+                )
                 conn.commit()
                 return cur.rowcount > 0
         except Exception as exc:
@@ -888,31 +1044,34 @@ class Database:
         assim a pesquisa proativa prioriza o que MAIS falta, não o que falta há mais tempo."""
         if not chave:
             return
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO lacunas (chave, termos, n, visto_em)
-                       VALUES (?, ?, 1, ?)
-                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
-                    (chave, termos, datetime.now().isoformat()),
+                    """INSERT INTO lacunas (chave, dono, termos, n, visto_em)
+                       VALUES (?, ?, ?, 1, ?)
+                       ON CONFLICT(chave, dono) DO UPDATE SET n = n + 1,
+                       visto_em = excluded.visto_em""",
+                    (chave, dono, termos, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao gravar lacuna", exc)
 
     def get_lacunas(self, limit: int = 20, nao_pesquisadas_ha_dias: int = 7) -> list[dict]:
-        """As maiores dúvidas por resolver, mais frequentes primeiro.
+        """As maiores dúvidas por resolver DESTE dono, mais frequentes primeiro.
 
         Pula lacunas pesquisadas há menos de `nao_pesquisadas_ha_dias` (não re-pesquisa
         o que acabou de ser trazido). Ordena por n desc, depois recência."""
+        dono = _dono_para_consulta()
         try:
             corte = (datetime.now() - timedelta(days=nao_pesquisadas_ha_dias)).isoformat()
             with self._conn() as conn:
                 rows = conn.execute(
                     """SELECT termos, n FROM lacunas
-                       WHERE pesquisado_em IS NULL OR pesquisado_em < ?
+                       WHERE dono = ? AND (pesquisado_em IS NULL OR pesquisado_em < ?)
                        ORDER BY n DESC, visto_em DESC LIMIT ?""",
-                    (corte, limit),
+                    (dono, corte, limit),
                 ).fetchall()
             return [{"termos": t, "n": n} for t, n in rows]
         except Exception as exc:
@@ -921,11 +1080,12 @@ class Database:
 
     def marcar_lacuna_pesquisada(self, chave: str) -> None:
         """Carimba que a lacuna foi pesquisada — sai da fila por `nao_pesquisadas_ha_dias`."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE lacunas SET pesquisado_em = ? WHERE chave = ?",
-                    (datetime.now().isoformat(), chave),
+                    "UPDATE lacunas SET pesquisado_em = ? WHERE chave = ? AND dono = ?",
+                    (datetime.now().isoformat(), chave, dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -938,13 +1098,15 @@ class Database:
         linhas — a re-pesquisa proativa prioriza o favorito mais consultado."""
         if not chave:
             return
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO temas_quentes (chave, termos, n, visto_em)
-                       VALUES (?, ?, 1, ?)
-                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
-                    (chave, termos, datetime.now().isoformat()),
+                    """INSERT INTO temas_quentes (chave, dono, termos, n, visto_em)
+                       VALUES (?, ?, ?, 1, ?)
+                       ON CONFLICT(chave, dono) DO UPDATE SET n = n + 1,
+                       visto_em = excluded.visto_em""",
+                    (chave, dono, termos, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
@@ -953,17 +1115,20 @@ class Database:
     def get_temas_quentes(
         self, limit: int = 10, min_reuso: int = 3, nao_pesquisadas_ha_dias: int = 14
     ) -> list[dict]:
-        """Os temas MAIS REUSADOS ainda não re-pesquisados (ou fora do cooldown), do mais
-        reusado ao menos. `min_reuso` separa o interesse recorrente da curiosidade de uma
-        vez só; `nao_pesquisadas_ha_dias` é o cooldown (não refresca o mesmo favorito à toa)."""
+        """Os temas MAIS REUSADOS por ESTE dono ainda não re-pesquisados (ou fora do
+        cooldown), do mais reusado ao menos. `min_reuso` separa o interesse recorrente da
+        curiosidade de uma vez só; `nao_pesquisadas_ha_dias` é o cooldown (não refresca o
+        mesmo favorito à toa)."""
+        dono = _dono_para_consulta()
         try:
             corte = (datetime.now() - timedelta(days=nao_pesquisadas_ha_dias)).isoformat()
             with self._conn() as conn:
                 rows = conn.execute(
                     """SELECT termos, n FROM temas_quentes
-                       WHERE n >= ? AND (pesquisado_em IS NULL OR pesquisado_em < ?)
+                       WHERE dono = ? AND n >= ?
+                         AND (pesquisado_em IS NULL OR pesquisado_em < ?)
                        ORDER BY n DESC, visto_em DESC LIMIT ?""",
-                    (min_reuso, corte, limit),
+                    (dono, min_reuso, corte, limit),
                 ).fetchall()
             return [{"termos": t, "n": n} for t, n in rows]
         except Exception as exc:
@@ -972,11 +1137,12 @@ class Database:
 
     def marcar_tema_pesquisado(self, chave: str) -> None:
         """Carimba que o tema quente foi re-pesquisado — entra no cooldown de N dias."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE temas_quentes SET pesquisado_em = ? WHERE chave = ?",
-                    (datetime.now().isoformat(), chave),
+                    "UPDATE temas_quentes SET pesquisado_em = ? WHERE chave = ? AND dono = ?",
+                    (datetime.now().isoformat(), chave, dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -989,14 +1155,16 @@ class Database:
         conversa_id: Optional[str] = None,
     ) -> Optional[int]:
         """Insere um agendamento ATIVO e devolve o id (para o usuário poder cancelar)."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 cur = conn.execute(
                     """INSERT INTO agendamentos
-                       (tipo, mensagem, proximo_disparo, recorrencia, payload, status, criado_em, conversa_id)
-                       VALUES (?, ?, ?, ?, ?, 'ativo', ?, ?)""",
+                       (tipo, mensagem, proximo_disparo, recorrencia, payload, status,
+                        criado_em, conversa_id, dono)
+                       VALUES (?, ?, ?, ?, ?, 'ativo', ?, ?, ?)""",
                     (tipo, mensagem, proximo_disparo, recorrencia, payload,
-                     datetime.now().isoformat(), conversa_id),
+                     datetime.now().isoformat(), conversa_id, dono),
                 )
                 conn.commit()
                 return cur.lastrowid
@@ -1004,61 +1172,79 @@ class Database:
             telemetry.error("SQLITE", "Erro ao criar agendamento", exc)
             return None
 
-    def get_agendamentos_vencidos(self, agora_iso: str) -> list[dict]:
-        """Agendamentos ATIVOS cujo horário já chegou — o scheduler dispara estes."""
+    # Colunas que o scheduler precisa de um agendamento. `dono` entra no retorno porque
+    # quem dispara tem de ROTEAR: o alarme de um não pode falar na sessão do outro.
+    _COLS_AGENDAMENTO = ("id, tipo, mensagem, proximo_disparo, recorrencia, payload, "
+                         "conversa_id, dono")
+
+    @staticmethod
+    def _linha_agendamento(row: tuple) -> dict:
+        i, t, m, p, r, pl, c, d = row
+        return {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
+                "recorrencia": r, "payload": pl, "conversa_id": c, "dono": d}
+
+    def get_agendamentos_vencidos(
+        self, agora_iso: str, todos_os_donos: bool = False
+    ) -> list[dict]:
+        """Agendamentos ATIVOS cujo horário já chegou — o scheduler dispara estes.
+
+        ⚠ `todos_os_donos=True` é a EXCEÇÃO deliberada ao filtro por dono, e o único
+        caminho correto para o `SchedulerService.tick`: ele roda FORA de turno (é um
+        loop de fundo, não a resposta de alguém), então não há dono no contexto — e
+        filtrar pelo padrão faria o alarme das outras três pessoas NUNCA tocar. Por
+        isso a linha volta com `dono`: quem dispara é obrigado a rotear com ele
+        (entrar em `identidade.usar_dono(ag["dono"])` antes de reprogramar, auditar e
+        empurrar a fala). O default é False para que um chamador distraído erre para o
+        lado seguro (ver menos), nunca para o lado do vazamento.
+        """
         try:
             with self._conn() as conn:
-                rows = conn.execute(
-                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
-                       FROM agendamentos
-                       WHERE status = 'ativo' AND proximo_disparo <= ?
-                       ORDER BY proximo_disparo ASC""",
-                    (agora_iso,),
-                ).fetchall()
-            return [
-                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
-                 "recorrencia": r, "payload": pl, "conversa_id": c}
-                for i, t, m, p, r, pl, c in rows
-            ]
+                sql = (f"SELECT {self._COLS_AGENDAMENTO} FROM agendamentos "
+                       "WHERE status = 'ativo' AND proximo_disparo <= ?")
+                params: tuple = (agora_iso,)
+                if not todos_os_donos:
+                    sql += " AND dono = ?"
+                    params += (_dono_para_consulta(),)
+                rows = conn.execute(sql + " ORDER BY proximo_disparo ASC", params).fetchall()
+            return [self._linha_agendamento(r) for r in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler agendamentos vencidos", exc)
             return []
 
-    def get_agendamentos_pendentes(self) -> list[dict]:
-        """Disparos que ocorreram sem ninguém conectado — entregues na próxima conexão."""
+    def get_agendamentos_pendentes(self, todos_os_donos: bool = False) -> list[dict]:
+        """Disparos que ocorreram sem ninguém conectado — entregues na próxima conexão.
+
+        Mesma exceção do `get_agendamentos_vencidos`: a reentrega feita pelo tick não
+        tem dono no contexto e precisa de `todos_os_donos=True` + roteamento por
+        `ag["dono"]`; a reentrega feita no accept do WebSocket JÁ sabe de quem é a
+        conexão e usa o default (filtrado)."""
         try:
             with self._conn() as conn:
-                rows = conn.execute(
-                    """SELECT id, tipo, mensagem, proximo_disparo, recorrencia, payload, conversa_id
-                       FROM agendamentos WHERE status = 'pendente_entrega'
-                       ORDER BY proximo_disparo ASC""",
-                ).fetchall()
-            return [
-                {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p,
-                 "recorrencia": r, "payload": pl, "conversa_id": c}
-                for i, t, m, p, r, pl, c in rows
-            ]
+                sql = (f"SELECT {self._COLS_AGENDAMENTO} FROM agendamentos "
+                       "WHERE status = 'pendente_entrega'")
+                params: tuple = ()
+                if not todos_os_donos:
+                    sql += " AND dono = ?"
+                    params += (_dono_para_consulta(),)
+                rows = conn.execute(sql + " ORDER BY proximo_disparo ASC", params).fetchall()
+            return [self._linha_agendamento(r) for r in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler agendamentos pendentes", exc)
             return []
 
     def listar_agendamentos(self, tipos: Optional[tuple] = None) -> list[dict]:
-        """Agendamentos ATIVOS (para 'liste meus lembretes'). Filtra por tipo se dado."""
+        """Agendamentos ATIVOS DESTE dono (para 'liste meus lembretes'). Filtra por tipo
+        se dado."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
+                sql = ("SELECT id, tipo, mensagem, proximo_disparo, recorrencia "
+                       "FROM agendamentos WHERE status = 'ativo' AND dono = ?")
+                params: tuple = (dono,)
                 if tipos:
-                    marks = ",".join("?" * len(tipos))
-                    rows = conn.execute(
-                        f"""SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
-                            WHERE status = 'ativo' AND tipo IN ({marks})
-                            ORDER BY proximo_disparo ASC""",
-                        tuple(tipos),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        """SELECT id, tipo, mensagem, proximo_disparo, recorrencia FROM agendamentos
-                           WHERE status = 'ativo' ORDER BY proximo_disparo ASC""",
-                    ).fetchall()
+                    sql += f" AND tipo IN ({','.join('?' * len(tipos))})"
+                    params += tuple(tipos)
+                rows = conn.execute(sql + " ORDER BY proximo_disparo ASC", params).fetchall()
             return [
                 {"id": i, "tipo": t, "mensagem": m, "proximo_disparo": p, "recorrencia": r}
                 for i, t, m, p, r in rows
@@ -1072,7 +1258,12 @@ class Database:
         payload: Optional[str] = None,
     ) -> None:
         """Reprograma (próximo disparo da recorrência), muda o status, e/ou atualiza o
-        payload (ex.: fase do pomodoro #19) de um agendamento."""
+        payload (ex.: fase do pomodoro #19) de um agendamento DESTE dono.
+
+        O `AND dono` fecha o mesmo furo do `cancelar_agendamento`: `ag_id` é um número
+        que trafega pelo cliente, e sem ele bastava chutar o id para mexer no alarme
+        alheio. Quem age em nome de outro (o scheduler reprogramando a recorrência de
+        quem não está conectado) entra em `identidade.usar_dono(ag["dono"])` antes."""
         campos, valores = [], []
         if status is not None:
             campos.append("status = ?")
@@ -1085,23 +1276,27 @@ class Database:
             valores.append(payload)
         if not campos:
             return
-        valores.append(ag_id)
+        valores.extend([ag_id, _dono_para_consulta()])
         try:
             with self._conn() as conn:
                 conn.execute(
-                    f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ?", valores
+                    f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = ? AND dono = ?",
+                    valores,
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao atualizar agendamento", exc)
 
     def cancelar_agendamento(self, ag_id: int) -> bool:
-        """Marca como cancelado. True se um agendamento ATIVO foi de fato cancelado."""
+        """Marca como cancelado. True se um agendamento ATIVO DESTE dono foi de fato
+        cancelado — sem o `AND dono`, o id de outra pessoa cancelava o alarme dela."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 cur = conn.execute(
-                    "UPDATE agendamentos SET status = 'cancelado' WHERE id = ? AND status = 'ativo'",
-                    (ag_id,),
+                    "UPDATE agendamentos SET status = 'cancelado' "
+                    "WHERE id = ? AND dono = ? AND status = 'ativo'",
+                    (ag_id, dono),
                 )
                 conn.commit()
                 return cur.rowcount > 0
@@ -1114,26 +1309,32 @@ class Database:
         chave = textutils.normaliza(comando)[:120]
         if not chave:
             return
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO mestre_nao_reconhecido (chave, comando, n, visto_em)
-                       VALUES (?, ?, 1, ?)
-                       ON CONFLICT(chave) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
-                    (chave, comando, datetime.now().isoformat()),
+                    """INSERT INTO mestre_nao_reconhecido (chave, dono, comando, n, visto_em)
+                       VALUES (?, ?, ?, 1, ?)
+                       ON CONFLICT(chave, dono) DO UPDATE SET n = n + 1,
+                       visto_em = excluded.visto_em""",
+                    (chave, dono, comando, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao registrar comando desconhecido", exc)
 
     def get_comandos_desconhecidos(self, limit: int = 50) -> list[dict]:
-        """Comandos de agente que o app ainda não cobre, mais tentados primeiro."""
+        """Comandos de agente que o app ainda não cobre, mais tentados primeiro.
+
+        Filtrado por dono apesar de ser uma lista de MELHORIAS: a linha guarda o comando
+        LITERAL que a pessoa falou, então é conteúdo dela, não estatística da máquina."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
                     "SELECT comando, n, visto_em FROM mestre_nao_reconhecido "
-                    "ORDER BY n DESC, visto_em DESC LIMIT ?",
-                    (limit,),
+                    "WHERE dono = ? ORDER BY n DESC, visto_em DESC LIMIT ?",
+                    (dono, limit),
                 ).fetchall()
             return [{"comando": c, "n": n, "visto_em": v} for c, n, v in rows]
         except Exception as exc:
@@ -1143,34 +1344,48 @@ class Database:
     # ---- Auditoria (#27): trilha de ações dos agentes ----
     def registrar_auditoria(self, acao: str, detalhe: str) -> None:
         """Registra UMA ação com efeito (não leituras). Best-effort: falhar aqui nunca
-        pode derrubar a ação em si."""
+        pode derrubar a ação em si.
+
+        ⚠ ÚNICA escrita pessoal que usa `dono_atual()` (pode ser None) em vez de
+        `_dono_para_consulta()`. O motivo é o `registro_aparelhos`: ele audita RECUSA DE
+        ACESSO, que por definição acontece ANTES de existir dono — exigir um aqui faria
+        a trilha perder justamente a linha que mais importa, a da tentativa negada. Dono
+        NULL significa "a máquina, sem pessoa", e é dado; não é falta de dado."""
+        dono = identidade.dono_atual()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO auditoria (data_hora, acao, detalhe) VALUES (?, ?, ?)",
-                    (datetime.now().isoformat(), acao, detalhe[:300]),
+                    "INSERT INTO auditoria (data_hora, acao, detalhe, dono) VALUES (?, ?, ?, ?)",
+                    (datetime.now().isoformat(), acao, detalhe[:300], dono),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao registrar auditoria", exc)
 
-    def get_auditoria(self, desde_iso: Optional[str] = None, limit: int = 50) -> list[dict]:
+    def get_auditoria(self, desde_iso: Optional[str] = None, limit: int = 50,
+                      dono: Optional[str] = None) -> list[dict]:
         """Ações registradas, mais recentes primeiro. `desde_iso` filtra por instante
-        (ex.: início do dia para 'o que você fez hoje')."""
+        (ex.: início do dia para 'o que você fez hoje').
+
+        `dono=None` devolve a trilha INTEIRA de propósito — é a visão de quem administra
+        a máquina (`scripts/aparelhos.py`), e ela precisa enxergar também as linhas sem
+        dono (recusa de acesso). Quem responde "o que VOCÊ fez hoje" a uma pessoa passa
+        o dono dela."""
         try:
             with self._conn() as conn:
+                sql = "SELECT data_hora, acao, detalhe FROM auditoria"
+                filtros, params = [], []
                 if desde_iso:
-                    rows = conn.execute(
-                        "SELECT data_hora, acao, detalhe FROM auditoria "
-                        "WHERE data_hora >= ? ORDER BY id DESC LIMIT ?",
-                        (desde_iso, limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT data_hora, acao, detalhe FROM auditoria "
-                        "ORDER BY id DESC LIMIT ?",
-                        (limit,),
-                    ).fetchall()
+                    filtros.append("data_hora >= ?")
+                    params.append(desde_iso)
+                if dono:
+                    filtros.append("dono = ?")
+                    params.append(dono)
+                if filtros:
+                    sql += " WHERE " + " AND ".join(filtros)
+                rows = conn.execute(
+                    sql + " ORDER BY id DESC LIMIT ?", (*params, limit)
+                ).fetchall()
             return [{"t": t, "acao": a, "detalhe": d} for t, a, d in rows]
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler auditoria", exc)
@@ -1183,17 +1398,22 @@ class Database:
         chave = (assinatura or "").strip()[:120]
         if not chave:
             return (0, True)
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO mestre_frequencia (assinatura, exemplo, n, sugerido, visto_em)
-                       VALUES (?, ?, 1, 0, ?)
-                       ON CONFLICT(assinatura) DO UPDATE SET n = n + 1, visto_em = excluded.visto_em""",
-                    (chave, exemplo, datetime.now().isoformat()),
+                    """INSERT INTO mestre_frequencia
+                       (assinatura, dono, exemplo, n, sugerido, visto_em)
+                       VALUES (?, ?, ?, 1, 0, ?)
+                       ON CONFLICT(assinatura, dono) DO UPDATE SET n = n + 1,
+                       visto_em = excluded.visto_em""",
+                    (chave, dono, exemplo, datetime.now().isoformat()),
                 )
                 conn.commit()
                 row = conn.execute(
-                    "SELECT n, sugerido FROM mestre_frequencia WHERE assinatura = ?", (chave,)
+                    "SELECT n, sugerido FROM mestre_frequencia "
+                    "WHERE assinatura = ? AND dono = ?",
+                    (chave, dono),
                 ).fetchone()
             return (int(row[0]), bool(row[1])) if row else (0, True)
         except Exception as exc:
@@ -1205,10 +1425,13 @@ class Database:
         chave = (assinatura or "").strip()[:120]
         if not chave:
             return
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE mestre_frequencia SET sugerido = 1 WHERE assinatura = ?", (chave,)
+                    "UPDATE mestre_frequencia SET sugerido = 1 "
+                    "WHERE assinatura = ? AND dono = ?",
+                    (chave, dono),
                 )
                 conn.commit()
         except Exception as exc:
@@ -1219,23 +1442,28 @@ class Database:
         chave = (nome or "").strip().lower()[:60]
         if not chave or not comando:
             return
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """INSERT INTO mestre_atalhos (nome, comando, criado_em) VALUES (?, ?, ?)
-                       ON CONFLICT(nome) DO UPDATE SET comando = excluded.comando,
+                    """INSERT INTO mestre_atalhos (nome, dono, comando, criado_em)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(nome, dono) DO UPDATE SET comando = excluded.comando,
                        criado_em = excluded.criado_em""",
-                    (chave, comando, datetime.now().isoformat()),
+                    (chave, dono, comando, datetime.now().isoformat()),
                 )
                 conn.commit()
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao salvar atalho", exc)
 
     def listar_atalhos(self) -> dict:
-        """Todos os atalhos (nome -> comando), para o Agent carregar em memória."""
+        """Os atalhos DESTE dono (nome -> comando), para o Agent carregar em memória."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
-                rows = conn.execute("SELECT nome, comando FROM mestre_atalhos").fetchall()
+                rows = conn.execute(
+                    "SELECT nome, comando FROM mestre_atalhos WHERE dono = ?", (dono,)
+                ).fetchall()
             return {nome: comando for nome, comando in rows}
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao listar atalhos", exc)
@@ -1275,12 +1503,13 @@ class Database:
             return []
 
     def get_history(self, limit: int = 200) -> list[dict]:
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
                     "SELECT pergunta, resposta, data_hora FROM chat_history "
-                    "ORDER BY id DESC LIMIT ?",
-                    (limit,),
+                    "WHERE dono = ? ORDER BY id DESC LIMIT ?",
+                    (dono, limit),
                 ).fetchall()
             return [{"q": q, "a": a, "t": t} for q, a, t in rows]
         except Exception as exc:
@@ -1295,19 +1524,21 @@ class Database:
     def get_conversations(self, limit: int = 100) -> list[dict]:
         """Histórico agrupado em CONVERSAS (não turnos soltos). Uma entrada por
         conversa: id, título (1ª pergunta), instante final e nº de turnos."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
                     f"""SELECT {self._CID} AS cid, MAX(data_hora) AS fim, COUNT(*) AS n
-                        FROM chat_history GROUP BY cid ORDER BY fim DESC LIMIT ?""",
-                    (limit,),
+                        FROM chat_history WHERE dono = ?
+                        GROUP BY cid ORDER BY fim DESC LIMIT ?""",
+                    (dono, limit),
                 ).fetchall()
                 out = []
                 for cid, fim, n in rows:
                     tr = conn.execute(
                         f"""SELECT pergunta FROM chat_history
-                            WHERE {self._CID} = ? ORDER BY id ASC LIMIT 1""",
-                        (cid,),
+                            WHERE {self._CID} = ? AND dono = ? ORDER BY id ASC LIMIT 1""",
+                        (cid, dono),
                     ).fetchone()
                     titulo = (tr[0] if tr and tr[0] else "") or "Conversa"
                     out.append({"id": cid, "titulo": titulo, "fim": fim, "n": n})
@@ -1317,14 +1548,21 @@ class Database:
             return []
 
     def get_conversation(self, cid: str, limit: int = 1000) -> list[dict]:
-        """Todos os turnos (pergunta/resposta) de UMA conversa, em ordem cronológica —
-        para reabrir o chat e continuar de onde parou."""
+        """Todos os turnos (pergunta/resposta) de UMA conversa DESTE dono, em ordem
+        cronológica — para reabrir o chat e continuar de onde parou.
+
+        ⚠ O `AND dono` é a correção de um IDOR real: o `cid` chega do CLIENTE (rota
+        `/api/conversa/{id}` e o `carregar_conversa` do WebSocket), e sem ele bastava
+        pedir o id de outra pessoa para LER a conversa inteira dela. Conversa de outro
+        dono devolve VAZIO em vez de erro, de propósito: o chamador já trata "não
+        existe", e responder 'existe, mas não é sua' confirmaria a existência dela."""
+        dono = _dono_para_consulta()
         try:
             with self._conn() as conn:
                 rows = conn.execute(
                     f"""SELECT pergunta, resposta, data_hora FROM chat_history
-                        WHERE {self._CID} = ? ORDER BY id ASC LIMIT ?""",
-                    (cid, limit),
+                        WHERE {self._CID} = ? AND dono = ? ORDER BY id ASC LIMIT ?""",
+                    (cid, dono, limit),
                 ).fetchall()
             return [{"q": q, "a": a, "t": t} for q, a, t in rows]
         except Exception as exc:
@@ -1332,6 +1570,9 @@ class Database:
             return []
 
     def metrics(self) -> dict:
+        """Painel da MÁQUINA (/api/metrics), não de uma pessoa — por isso `total_chat`
+        segue contando a tabela toda, junto com log_etl e as latências, que são globais.
+        O que sai daqui é volume e tempo, nunca o conteúdo do turno de alguém."""
         try:
             with self._conn() as conn:
                 total_chat = conn.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0]

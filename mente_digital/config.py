@@ -1406,7 +1406,54 @@ class Settings(BaseSettings):
     latencia_ttft_teto_ms: float = 120000.0
     latencia_tok_s_teto: float = 300.0
 
+    # --- MULTIUSUÁRIO (2026-08-03, pedido do dono: 4 usuários) -----------------
+    # NASCE DESLIGADO, como `aparelhos_habilitado`. Com False, TUDO se comporta byte a
+    # byte como hoje: uma coleção no Chroma, um vault sem subpastas de dono, as tabelas
+    # do SQLite respondendo sem filtro. É o que permite mergear a espinha inteira sem
+    # mexer na máquina do dono — e o que dá um caminho de volta se algo der errado com
+    # o vault, que é a ÚNICA cópia do conhecimento destilado.
+    multiusuario_habilitado: bool = False
+
+    # A fronteira de privacidade é a PASTA/COLEÇÃO, não um filtro de metadado. Medido em
+    # 2026-08-03, e as três medições apontam para o mesmo lugar:
+    #   (a) `rag._buscar_texto` é DELIBERADAMENTE fail-open — filtro que erra ou vem
+    #       vazio vira busca SEM filtro. Com `dono` em metadado, o usuário cujo filtro
+    #       não casasse nada leria o vault inteiro. Está comentado lá como sobrevivência
+    #       da busca (nasceu do bug de `meta_v<4`), então não é acidente a remover.
+    #   (b) dos 25.671 chunks do índice, 5 NÃO têm a chave `origem` — e são justamente
+    #       `Inbox_Captura.md`, `Lista_compras.md` e as notas salvas à mão pelas
+    #       ferramentas. Chave ausente não casa `where` em sentido nenhum: é a war story
+    #       do `acervo_suspeito` acertando o que mais importa proteger.
+    #   (c) o único metadado presente em 100% dos chunks é `source`, o CAMINHO. E
+    #       caminho não se esquece de gravar, porque escrever o arquivo obriga a
+    #       escolher a pasta.
+    subpasta_acervo: str = "Acervo"
+    subpasta_pessoal: str = "Pessoal"
+    # Nomes das coleções do Chroma. MESMO persist_directory: o acervo (10.721 notas,
+    # ~200 MB dos 468 MB do índice) fica numa coleção só, compartilhada — dividir por
+    # usuário NÃO custa disco, porque a biblioteca não é copiada 4×.
+    colecao_acervo: str = "acervo"
+    prefixo_colecao_pessoal: str = "pessoal_"
+    # O nome da coleção de hoje (default do langchain-chroma). Com o multiusuário
+    # DESLIGADO é esta que continua valendo, e é ela que o índice atual já usa —
+    # trocá-la exigiria reindexar as 25 mil notas.
+    colecao_legada: str = "langchain"
+
     # --- Derivados -------------------------------------------------------------
+    @property
+    def caminho_acervo(self) -> Path:
+        """O acervo COMUM: átomos de obra e figuras que os quatro leem."""
+        return Path(self.caminho_obsidian) / self.subpasta_acervo
+
+    def caminho_pessoal(self, dono: str) -> Path:
+        """A memória privada de um usuário. O `dono` já chega normalizado por
+        `identidade.normalizar` (a-z0-9_-), que é o que impede um apelido com "..\\"
+        de escapar do vault — mesma guarda do `_dentro_do_vault` no main.py."""
+        return Path(self.caminho_obsidian) / self.subpasta_pessoal / dono
+
+    def colecao_pessoal(self, dono: str) -> str:
+        return f"{self.prefixo_colecao_pessoal}{dono}"
+
     @property
     def dir_conhecimento_novo(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_conhecimento_novo

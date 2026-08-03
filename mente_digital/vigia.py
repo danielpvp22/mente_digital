@@ -263,7 +263,73 @@ class _Plantao(ThreadingHTTPServer):
     que importa. Vira UMA linha — que continua dizendo quem bateu e por quê; o
     resto segue com o traceback de sempre, porque erro engolido é o defeito que
     este projeto mais combate.
+
+    ⚠ E LIMITA AS THREADS (revisão de segurança, 2026-08-03). O `ThreadingHTTPServer`
+    cria uma thread por conexão, SEM teto, e a thread nasce ANTES de o gate rodar — logo,
+    o custo é pago por quem ainda não provou nada. Num processo que existe para viver com
+    dezenas de MB e cuja única função é levantar o PC de longe, uma enxurrada de conexões
+    (nem precisa ser lenta) o derruba por exaustão de thread. O ataque nega exatamente a
+    função do plantão, e do jeito mais silencioso possível: você tenta acordar o PC pelo
+    celular, não acontece nada, e a tela diz "o PC está desligado".
+
+    A defesa é um SEMÁFORO, não um pool: conexão que chega com o teto cheio ESPERA um
+    slot e é atendida (ou o cliente desiste), em vez de ganhar uma thread própria. 32 é
+    ordens de grandeza acima do uso real — são quatro celulares perguntando o status na
+    tela de carregamento — e ordens de grandeza abaixo do que esgota o processo.
     """
+
+    # Teto de conexões simultâneas. `ThreadingHTTPServer` não tem esse conceito, então
+    # ele é imposto no `process_request` abaixo.
+    MAX_CONEXOES = 32
+    # daemon_threads herdado do ThreadingHTTPServer: thread pendurada não impede o
+    # processo de morrer quando o assistente sobe e o plantão sai de cena.
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._vagas = threading.Semaphore(self.MAX_CONEXOES)
+
+    def process_request(self, request, client_address):     # noqa: D102 - stdlib
+        # Segura ANTES de criar a thread — segurar depois seria criar a thread que
+        # queremos evitar. Timeout para o atacante de conexões lentas não transformar
+        # espera em enfileiramento infinito: sem vaga em 5s, a conexão é descartada.
+        if not self._vagas.acquire(timeout=5.0):
+            self.handle_error_de_lotacao(client_address)
+            # ⚠ `super().shutdown_request`, NÃO o override abaixo: aqui a vaga nunca foi
+            # adquirida, e passar pelo override a LIBERARIA — o contador do semáforo
+            # cresceria a cada recusa e o teto viraria ficção justamente sob ataque, que
+            # é a única hora em que ele importa.
+            super().shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._vagas.release()   # a thread não chegou a nascer: devolve a vaga aqui
+            raise
+
+    def shutdown_request(self, request):                    # noqa: D102 - stdlib
+        try:
+            super().shutdown_request(request)
+        finally:
+            # Devolvido no FIM de cada conexão atendida. Fica no `shutdown_request`
+            # (e não no handler) porque é o ponto por onde a stdlib passa em TODOS os
+            # caminhos de encerramento, inclusive quando o handler estoura.
+            self._vagas.release()
+
+    def handle_error_de_lotacao(self, client_address) -> None:
+        """Recusa por lotação é EVENTO, não silêncio: é o sinal de que alguém está
+        martelando o plantão.
+
+        Sai por `print`, como a recusa de handshake TLS logo abaixo — é a convenção
+        deste módulo. ⚠ Com honestidade sobre o limite: o plantão sobe pelo `.vbs` com
+        janela oculta e sem redirecionamento, então na prática este texto cai no vazio.
+        Vale por consistência e para quem rodar o vigia à mão depurando; o canal que o
+        dono realmente vê é o alerta do assistente (`alertar_seguranca`), e ele não
+        existe aqui porque este processo não tem — de propósito — nada do projeto
+        dentro dele além do registro de aparelhos.
+        """
+        de_onde = client_address[0] if client_address else "?"
+        print(f"[VIGIA] plantão lotado ({self.MAX_CONEXOES} conexões) — "
+              f"conexão de {de_onde} descartada.", flush=True)
 
     def handle_error(self, request, client_address):    # noqa: D102 - assinatura da stdlib
         import ssl

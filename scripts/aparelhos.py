@@ -13,9 +13,18 @@ auto-inscrever — e o teto de 4 viraria decoração.
 
 USO:
     python scripts/aparelhos.py listar
-    python scripts/aparelhos.py convidar "celular do dono"
+    python scripts/aparelhos.py convidar "celular do dono"              (usuário: daniel)
+    python scripts/aparelhos.py convidar "celular da ana" ana           (usuário: ana)
     python scripts/aparelhos.py revogar <id>
     python scripts/aparelhos.py trilha [n]
+
+O ÚLTIMO argumento do `convidar` é o USUÁRIO quando ele cabe na regra de nome (a-z0-9_-,
+sem espaço). É ele que decide de qual memória o aparelho vai ler: cada usuário tem a sua
+em `Pessoal/<usuario>/`, e o acervo de obras é comum aos quatro. Omitido = o dono padrão.
+
+⚠ O usuário é fixado no PAREAMENTO e não muda depois. Trocar o dono de um aparelho já
+pareado seria entregar a memória inteira de alguém a outra pessoa — para mudar, revogue
+e pareie de novo, que deixa rastro na trilha.
 """
 from __future__ import annotations
 
@@ -24,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mente_digital import identidade  # noqa: E402
 from mente_digital.config import settings  # noqa: E402
 from mente_digital.registro_aparelhos import RegistroAparelhos  # noqa: E402
 from mente_digital.telemetry import db  # noqa: E402
@@ -51,7 +61,8 @@ def listar() -> int:
         visto = a.ultimo_uso or "nunca"
         onde = a.ultimo_ip or "-"
         expira = a.expira_em or "não expira"
-        print(f"  {a.id}  {a.apelido}")
+        mestre = "  (MESTRE)" if a.usuario == identidade.MESTRE else ""
+        print(f"  {a.id}  {a.apelido}   [usuário: {a.usuario}]{mestre}")
         print(f"      criado: {a.criado_em}   expira: {expira}")
         print(f"      último uso: {visto}   de: {onde}   sessões vivas: {reg.sessoes_vivas(a.id)}")
     revogados = [a for a in reg.listar(incluir_revogados=True) if not a.ativo]
@@ -62,15 +73,26 @@ def listar() -> int:
     return 0
 
 
-def convidar(apelido: str) -> int:
+def convidar(apelido: str, usuario: str = "") -> int:
     reg = _registro()
-    codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto)
+    # O usuário decide de QUAL memória este aparelho vai ler e escrever. Validado aqui,
+    # antes de tocar o banco: o nome vira pasta (`Pessoal/<usuario>/`) e coleção do
+    # Chroma, então um apelido inválido tem de morrer na mão de quem digitou.
+    try:
+        dono = identidade.normalizar(usuario) if usuario else identidade.DONO_PADRAO
+    except ValueError as exc:
+        print(f"\n✗ {exc}\n")
+        return 1
+    codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto, dono)
     if codigo is None:
         print(f"\n✗ Teto de {settings.aparelhos_teto} aparelhos atingido. Revogue um antes.\n")
         return 1
-    print(f"\n  Código para '{apelido}':   {codigo}")
+    print(f"\n  Código para '{apelido}' (usuário: {dono}):   {codigo}")
     print(f"  Vale por {settings.aparelhos_codigo_validade_minutos} min e serve UMA vez.")
-    print("  Digite-o no aparelho novo (tela de configuração).\n")
+    print("  Digite-o no aparelho novo (tela de configuração).")
+    if dono == identidade.MESTRE:
+        print(f"  ⚠ '{dono}' é o usuário MESTRE: administra aparelhos e recebe os alertas.")
+    print()
     return 0
 
 
@@ -109,8 +131,14 @@ def main(argv: list[str]) -> int:
         return listar()
     if comando == "convidar":
         if not resto:
-            print("Falta o apelido: python scripts/aparelhos.py convidar \"celular do dono\"")
+            print("Falta o apelido: python scripts/aparelhos.py convidar \"celular da ana\" ana")
             return 2
+        # O ÚLTIMO argumento é o usuário quando ele já cabe na regra de nome (a-z0-9_-,
+        # sem espaço). Assim `convidar "celular da ana" ana` funciona sem flag, e o uso
+        # antigo de uma palavra só (`convidar tablet`) continua valendo — nesse caso ela
+        # é o APELIDO e o usuário fica no padrão, que é o comportamento de hoje.
+        if len(resto) >= 2 and identidade.valido(resto[-1]) and " " not in resto[-1]:
+            return convidar(" ".join(resto[:-1]), resto[-1])
         return convidar(" ".join(resto))
     if comando == "revogar":
         if not resto:
