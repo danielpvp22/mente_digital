@@ -65,10 +65,11 @@ def cliente(monkeypatch):
 
     monkeypatch.setattr(energia, "medir", lambda: {"vram_mb": 1000, "ram_commit_mb": 2000})
     monkeypatch.setattr(energia, "enxugar", lambda: None)
-    # ⚠ O gate do painel #7 aceita loopback OU token, e o host do TestClient é
-    # "testclient" — não loopback. Com o `.env` do dono definindo MENTE_ACCESS_TOKEN,
-    # toda chamada aqui levaria 401 e o teste falharia por um motivo que não é o
-    # dele. Sem token configurado, o gate libera (é o modo padrão do projeto).
+    # ⚠ Com `MENTE_ACCESS_TOKEN` configurado, o gate do painel #7 exige o token
+    # "venha de onde vier" — loopback NÃO isenta (acesso.py:32-34). O `.env` do
+    # dono define o token, então sem zerá-lo aqui toda chamada leva 401 e o teste
+    # falha por um motivo que não é o dele. Sem token, o gate libera o loopback
+    # (e "testclient" está na lista), que é o modo padrão do projeto.
     monkeypatch.setattr(main.settings, "access_token", "")
     # Espera curta: o teste não pode gastar os 20 s reais do default.
     monkeypatch.setattr(main.settings, "energia_espera_turno_seconds", 0.05)
