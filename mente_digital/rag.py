@@ -29,6 +29,7 @@ from mente_digital import disjuntor as _disjuntor
 from mente_digital import vram
 from mente_digital import egressao
 from mente_digital import grafo
+from mente_digital import identidade
 from mente_digital import livro
 from mente_digital import obras
 from mente_digital import prompts
@@ -427,10 +428,24 @@ class MalhaIndex:
         self._por_conceito, self._conceitos_de = {}, {}
         self._texto_de, self._meta_de = {}, {}
         self._df_palavra = {}
+        self.estender(documentos, metadatas)
+
+    def estender(self, documentos: List[str], metadatas: List[dict]) -> None:
+        """Acrescenta o dump de OUTRA coleção a este índice (o fan-in do multiusuário:
+        o acervo comum mais o vault pessoal de quem está perguntando).
+
+        ⚠ Cada chamada tem de trazer átomos COMPLETOS de uma coleção. O
+        document-frequency é contado uma vez por `source` tocado NESTA chamada, então
+        um mesmo átomo partido entre duas chamadas contaria duas vezes — o que não
+        acontece porque cada chamada é o dump de uma coleção e nenhum `source` vive
+        em duas (a fronteira é a PASTA; ver o bloco `multiusuario_ligado`).
+        """
+        tocados: set = set()
         for texto, md in zip(documentos, metadatas):
             src = str((md or {}).get("source") or "")
             if not src:
                 continue
+            tocados.add(src)
             # Um átomo pode ter virado 2+ chunks; o texto do vizinho é a nota inteira.
             self._texto_de[src] = (self._texto_de.get(src, "") + "\n" + (texto or "")).strip()
             self._meta_de.setdefault(src, dict(md or {}))
@@ -442,14 +457,36 @@ class MalhaIndex:
             ]
             self._conceitos_de[src] = conceitos
             for c in conceitos:
-                self._por_conceito.setdefault(c, set()).add(src)
+                portadores = self._por_conceito.get(c)
+                # Set NOVO em vez de `.add`: numa malha DERIVADA este set ainda é o do
+                # acervo, compartilhado com os outros donos — mutá-lo daria a cada um a
+                # vizinhança dos demais. Copy-on-write: só o conceito que este dump
+                # toca é copiado (ver `derivada`).
+                self._por_conceito[c] = (set(portadores) | {src}) if portadores else {src}
         # DOCUMENT-FREQUENCY DE PALAVRAS (G3): conta em quantos ÁTOMOS cada palavra
         # aparece (não ocorrências), para o IDF do aterramento léxico. Feito num 2º passe
         # sobre o texto JÁ concatenado por átomo (`_texto_de`), então um átomo multi-chunk
         # conta uma vez só — o mesmo cuidado do índice de conceitos acima.
-        for texto in self._texto_de.values():
-            for w in set(textutils.tokens(texto)):
+        for src in tocados:
+            for w in set(textutils.tokens(self._texto_de.get(src, ""))):
                 self._df_palavra[w] = self._df_palavra.get(w, 0) + 1
+
+    def derivada(self) -> "MalhaIndex":
+        """Cópia BARATA deste índice, para receber por cima o vault de UM dono.
+
+        Rasa de propósito: os dicionários são novos (o dono nunca contamina o acervo),
+        mas os `set` de portadores, as listas de conceitos e as strings dos átomos são
+        COMPARTILHADOS até alguém escrever — e quem escreve é o `estender`, que troca
+        o objeto inteiro em vez de mutá-lo. Com 4 donos, é a diferença entre 4 cópias
+        dos ~25k átomos do acervo em RAM e uma só; em CPU, é não repetir os ~3 s de
+        montagem da malha do acervo a cada usuário."""
+        nova = MalhaIndex()
+        nova._por_conceito = dict(self._por_conceito)
+        nova._conceitos_de = dict(self._conceitos_de)
+        nova._texto_de = dict(self._texto_de)
+        nova._meta_de = dict(self._meta_de)
+        nova._df_palavra = dict(self._df_palavra)
+        return nova
 
     def idf(self, conceito: str) -> float:
         """log(N/df). Conceito ausente devolve 0.0 — não pontua, em vez de explodir."""
@@ -628,6 +665,122 @@ class EmbeddingProvider:
 
 
 # ==========================================================================
+# Multiusuário: a fronteira é a COLEÇÃO, não um `where`
+# ==========================================================================
+# POR QUE NÃO `dono` NO METADADO + filtro — as duas medições de 2026-08-03 que
+# fecharam a decisão, ambas sobre ESTE índice (25.671 chunks):
+#
+# (1) `_buscar_texto` é fail-open DE PROPÓSITO: se o filtro der erro OU vier vazio,
+#     ele refaz a busca SEM filtro nenhum. Isso salvou a busca numa base ainda em
+#     meta_v<4 (sem o campo `tipo`) e está lá comentado como sobrevivência. Com o
+#     dono num `where`, o MESMO mecanismo vira o vazamento: o usuário cujo filtro
+#     não casasse nada cairia numa busca sobre o vault inteiro — e a resposta viria
+#     bonita, aterrada e com a memória de outra pessoa.
+# (2) dos 25.671 chunks, 5 NÃO têm a chave `origem` — e são justamente
+#     `Inbox_Captura.md`, `Lista_compras.md` e as notas que as ferramentas salvam à
+#     mão. Chave AUSENTE não casa `where` em sentido nenhum: é a war story do
+#     `acervo_suspeito` (ver `metadados_da_nota`), agora com privacidade em jogo.
+#
+# O único metadado presente em 100% dos chunks é `source`, o CAMINHO — e caminho
+# ninguém esquece de gravar, porque escrever o arquivo obriga a escolher a pasta.
+# Daí: pasta separada no vault, COLEÇÃO separada no Chroma (mesma persist_directory,
+# mesmo embedding, mesmo `hnsw:space`), e o dono deixa de ser um filtro que dá para
+# esquecer de aplicar. O que não está no escopo simplesmente não é consultado.
+_avisou_config_incompleta = False
+
+
+def multiusuario_ligado() -> bool:
+    """O PONTO ÚNICO da decisão. Desligado (o default), TUDO abaixo vira no-op e o
+    RAG se comporta byte a byte como antes: uma coleção só, com o nome de sempre
+    ('langchain', o default do langchain-chroma), zero fan-in, zero cache por dono.
+
+    O `getattr` não é frouxidão, é o oposto. O campo EXISTE (`Settings.
+    multiusuario_habilitado`); se um dia sumir num rename, ler `settings.x` direto
+    derrubaria TODA busca com AttributeError, e engolir a ausência em silêncio repetiria
+    a war story deste projeto (`..._SEGUNDOS` em vez de `..._SECONDS`, engolido pelo
+    `extra="ignore"` do pydantic: uma função que o dono acreditou ter ligado e passou
+    meses desligada). Aqui a ausência não derruba e não cala — ela GRITA no log, uma
+    vez, e o RAG segue no modo de um usuário só."""
+    global _avisou_config_incompleta
+    ligado = getattr(settings, "multiusuario_habilitado", None)
+    if ligado is None:
+        if not _avisou_config_incompleta:
+            _avisou_config_incompleta = True
+            telemetry.warn(
+                "DB",
+                "config sem `multiusuario_habilitado` — RAG seguindo em coleção ÚNICA "
+                "(modo de um usuário só). Se você esperava separação por dono, ela NÃO "
+                "está no ar.",
+            )
+        return False
+    return bool(ligado)
+
+
+def repartir_por_raiz(caminhos: Sequence[str],
+                      raizes: Sequence[str]) -> Tuple[dict, List[str]]:
+    """Distribui cada arquivo para a RAIZ que o contém. Puro/testável (sem IO).
+
+    Devolve `(por_raiz, sobras)`. `sobras` é a metade que importa: arquivo que não
+    cai em raiz nenhuma não pertence a coleção nenhuma e some da busca — e sumir em
+    silêncio é a falha que este projeto já pagou duas vezes (attach_only e
+    acervo_suspeito, ambas "declaração que ninguém lia").
+
+    Raiz mais LONGA primeiro, porque as raízes se aninham: `<vault>/Pessoal/daniel`
+    tem de vencer `<vault>` quando as duas casam. Com UMA raiz (o vault inteiro, que
+    é o modo de um usuário só) tudo cai nela e `sobras` é vazia por construção."""
+    normal = sorted(
+        ((r, os.path.normcase(os.path.abspath(r))) for r in raizes),
+        key=lambda rn: -len(rn[1]),
+    )
+    por_raiz: dict = {r: [] for r in raizes}
+    sobras: List[str] = []
+    for caminho in caminhos:
+        ap = os.path.normcase(os.path.abspath(caminho))
+        for r, base in normal:
+            if ap == base or ap.startswith(base + os.sep):
+                por_raiz[r].append(caminho)
+                break
+        else:
+            sobras.append(caminho)
+    return por_raiz, sobras
+
+
+def lojas_do_escopo(escopo, base) -> list:
+    """As coleções a consultar: as do `escopo` que o chamador já resolveu, ou só a BASE.
+
+    Pura, e recebe tudo o que usa por argumento — o `search` resolve o escopo UMA vez e
+    o repassa às etapas seguintes (irmãos de página, anexo por co-locação), em vez de
+    cada uma redescobrir de quem é o turno. Sem escopo, o padrão é a base sozinha:
+    degrada para MENOS informação (só o acervo comum), nunca para a de outra pessoa —
+    a única direção em que errar aqui é aceitável."""
+    if escopo is not None:
+        return [loja for _chave, loja in escopo]
+    return [base] if base is not None else []
+
+
+def fundir_por_distancia(partes: Sequence[Sequence[tuple]], k: int) -> list:
+    """Funde os resultados `(doc, score)` de N coleções num top-k único. Puro/testável.
+
+    POR QUE PEDIR `k` EM CADA COLEÇÃO E CORTAR EM `k` NO FIM (e não `k/N` em cada):
+    a união dos top-k de uma partição CONTÉM o top-k do conjunto todo, então este
+    resultado é exatamente o que uma coleção única devolveria — nada de "o acervo
+    perdeu metade das vagas porque existe uma coleção pessoal, mesmo vazia". Isso é o
+    que preserva a calibração: `rag_score_confident` (0,16 no e5) é um limiar de
+    DISTÂNCIA, não de posição — um top-k enviesado por cota mudaria o que entra no
+    contexto sem mudar número nenhum de config. O custo é N buscas HNSW em vez de
+    uma, cada uma contra um índice menor.
+
+    Uma parte só devolve a lista INTACTA (nem ordena, nem corta): é o modo de um
+    usuário só, e ali o contrato é ser indistinguível do código anterior."""
+    partes = [p for p in partes if p]
+    if len(partes) <= 1:
+        return list(partes[0]) if partes else []
+    juntos = [par for parte in partes for par in parte]
+    juntos.sort(key=lambda ds: ds[1])
+    return juntos[:k]
+
+
+# ==========================================================================
 # VectorStore (ChromaDB)
 # ==========================================================================
 class _FingerprintMudou(RuntimeError):
@@ -722,28 +875,109 @@ class VectorStore:
         # imagem — e a primeira pergunta com figura já o paga uma vez só.
         self._idx_figuras: Optional["_IndiceFiguras"] = None
         self._write_lock = asyncio.Lock()  # era chroma_write_lock
-        self.malha = MalhaIndex()
         # A malha é montada em DOIS caminhos (fim do open e fim do sync) e, desde que o
         # boot a manda para segundo plano, os dois podem se cruzar — duas threads
         # mutando o MESMO MalhaIndex. O lock as serializa; sem ele o índice de conceitos
         # ficaria pela metade em silêncio (fail-soft), que é o pior modo de falhar.
         self._malha_lock = asyncio.Lock()
         self._recuperado_ja = False  # #33: recupera índice no máximo 1x por processo
+        # A malha base e os caches do multiusuário (`_pessoais`, `_malhas_dono`,
+        # `_idx_figuras_dono`, `_pessoais_lock`) NÃO nascem aqui — ver `_preguicoso`.
+
+    def _preguicoso(self, nome: str, fabrica):
+        """Campo criado na 1ª necessidade, por INSTÂNCIA.
+
+        Não é elegância: meia dúzia de testes monta o VectorStore por
+        `VectorStore.__new__` justamente para não tocar disco nem embedding, e
+        preenche à mão só os campos que o caminho sob teste usa. Um cache que só
+        nascesse no `__init__` transformaria esse atalho legítimo — e todo fake que
+        alguém escrever depois — em AttributeError num ponto que não tem nada a ver
+        com o que o teste afirma. Atributo de CLASSE resolveria o AttributeError e
+        criaria coisa pior: um dicionário mutável compartilhado por todas as
+        instâncias, ou seja, o vault de um usuário no cache de outro."""
+        valor = self.__dict__.get(nome)
+        if valor is None:
+            valor = self.__dict__[nome] = fabrica()
+        return valor
+
+    @property
+    def _malha_base(self) -> MalhaIndex:
+        """O índice de conceitos do ESCOPO BASE (o acervo, ou o vault inteiro no modo
+        de um usuário só). É dele que as malhas por dono derivam."""
+        return self._preguicoso("_cache_malha_base", MalhaIndex)
+
+    @property
+    def _pessoais(self) -> dict:
+        """Coleções pessoais abertas, por dono. Abrir uma coleção do Chroma custa IO e
+        o dono pergunta dezenas de vezes por sessão — daí o cache."""
+        return self._preguicoso("_cache_pessoais", dict)
+
+    @property
+    def _pessoais_lock(self) -> asyncio.Lock:
+        """Serializa a abertura: dois turnos simultâneos do mesmo dono abririam duas."""
+        return self._preguicoso("_cache_pessoais_lock", asyncio.Lock)
+
+    @property
+    def _malhas_dono(self) -> dict:
+        """Malha por dono (acervo + vault dele). Derivada da base — ver `derivada`."""
+        return self._preguicoso("_cache_malhas_dono", dict)
+
+    @property
+    def _idx_figuras_dono(self) -> dict:
+        """Matriz exata de figuras por dono. A do acervo segue em `_idx_figuras`."""
+        return self._preguicoso("_cache_idx_figuras_dono", dict)
 
     @property
     def ready(self) -> bool:
         return self._store is not None
 
+    @property
+    def malha(self) -> MalhaIndex:
+        """O índice de conceitos DO ESCOPO de quem está perguntando.
+
+        É propriedade e não atributo por uma razão só: `search` (aterramento por IDF,
+        expansão por conceito), `buscar_conteudos` (hubs primeiro) e o painel de
+        conexões em `comandos_mestre` leem `vectorstore.malha` — e no multiusuário a
+        resposta depende de QUEM pergunta. Concentrar isso aqui evita reescrever cada
+        chamador e, mais importante, evita que um deles fique para trás lendo a malha
+        errada, que é vazamento silencioso.
+
+        Sem multiusuário devolve a de sempre. Com multiusuário e sem dono no contexto
+        (trabalho de fundo, boot), devolve a do ACERVO — nunca a do último usuário.
+        Dono ainda sem malha montada cai na do acervo, que é degradação honesta: perde
+        a vizinhança das notas dele, não enxerga a de ninguém."""
+        base = self._malha_base
+        if not multiusuario_ligado():
+            return base
+        dono = identidade.dono_atual()
+        return self._malhas_dono.get(dono or "") or base
+
+    @malha.setter
+    def malha(self, valor) -> None:
+        """Escrever em `.malha` escreve na BASE (o acervo). Quem faz isso é o boot e
+        os testes; as malhas por dono derivam dela e são reconstruídas pelo sync."""
+        self.__dict__["_cache_malha_base"] = valor
+
     def load_embeddings(self) -> None:
         """Síncrono — chamar via asyncio.to_thread no startup."""
         self._embeddings.load()
 
-    def _construir_store(self):
+    def _construir_store(self, colecao: Optional[str] = None):
         """Constrói o cliente Chroma (síncrono — chamar via to_thread). Isolado do
-        open() para o caminho de auto-recuperação poder reabrir sem duplicar código."""
+        open() para o caminho de auto-recuperação poder reabrir sem duplicar código.
+
+        `colecao=None` NÃO passa o argumento: o default do langchain-chroma
+        ('langchain') continua sendo o nome, então o modo de um usuário só abre
+        exatamente a coleção que já está no disco — 25.671 embeddings, 468 MB, que
+        nenhuma renomeação vai reindexar. Todas as coleções compartilham a MESMA
+        `persist_directory` e os MESMOS `collection_metadata` (cosseno + fingerprint),
+        porque distância e embedding precisam ser idênticos para as distâncias de
+        coleções diferentes serem comparáveis no fan-in."""
         from langchain_chroma import Chroma
 
+        extra = {"collection_name": colecao} if colecao else {}
         return Chroma(
+            **extra,
             embedding_function=self._embeddings.instance,
             persist_directory=settings.diretorio_banco_vetorial,
             # Distância de COSSENO (não o L2 padrão). Os embeddings não são
@@ -763,11 +997,11 @@ class VectorStore:
             },
         )
 
-    async def _abrir_e_provar(self):
+    async def _abrir_e_provar(self, colecao: Optional[str] = None):
         """Abre o Chroma E o PROVA com uma leitura mínima. A prova é o que
         distingue 'abriu' de 'abriu íntegro': um HNSW/sqlite corrompido às vezes
         constrói o objeto e só estoura na 1ª leitura. Levanta se algo falhar."""
-        store = await asyncio.to_thread(self._construir_store)
+        store = await asyncio.to_thread(self._construir_store, colecao)
         await asyncio.to_thread(lambda: store.get(limit=1))  # probe
         return store
 
@@ -817,9 +1051,16 @@ class VectorStore:
         if self._embeddings.instance is None:
             telemetry.warn("DB", "VectorStore sem embeddings — indexação desativada.")
             return
+        # Reabrir troca o cliente Chroma: as coleções pessoais cacheadas apontam para o
+        # cliente ANTIGO (no caminho de auto-recuperação, para um diretório movido para
+        # o lado). Zerar aqui é o que impede uma busca pós-recuperação de ler um banco
+        # que já não é o banco.
+        self._pessoais.clear()
+        self._malhas_dono.clear()
+        self._idx_figuras_dono.clear()
         async with self._write_lock:
             try:
-                store = await self._abrir_e_provar()
+                store = await self._abrir_e_provar(self._colecao_base())
                 # Fingerprint ANTES de aceitar o índice (painel 2026-07): embedding
                 # ou prefixos mudaram sem reindex = toda busca degrada em silêncio.
                 # Mismatch reusa o MESMO caminho do #33 logo abaixo.
@@ -852,13 +1093,82 @@ class VectorStore:
                     mover_indice_corrompido, settings.diretorio_banco_vetorial
                 )
                 try:
-                    self._store = await self._abrir_e_provar()
+                    self._store = await self._abrir_e_provar(self._colecao_base())
                     telemetry.track("DB", "Índice recuperado: banco vazio reaberto, sync reconstrói do vault.")
                 except Exception as exc2:
                     telemetry.error("DB", "Recuperação do índice falhou", exc2)
                     return
         if self._store is not None and com_malha:
             await self._reconstruir_malha()
+
+    # ----------------------------------------------------------------------
+    # Escopo: quais coleções esta leitura enxerga
+    # ----------------------------------------------------------------------
+    def _colecao_base(self) -> Optional[str]:
+        """O nome da coleção BASE: a do acervo comum no multiusuário, e `None` (= o
+        default 'langchain') no modo de um usuário só, para não renomear o que já
+        está no disco."""
+        return settings.colecao_acervo if multiusuario_ligado() else None
+
+    async def _loja_pessoal(self, dono: str):
+        """A coleção pessoal de `dono`, aberta sob demanda e cacheada. None se não deu.
+
+        Sob demanda porque abrir coleção custa IO e a maioria dos processos (boot,
+        scripts, trabalho de fundo) nunca lê dado pessoal de ninguém. O lock evita que
+        dois turnos simultâneos do mesmo dono abram duas.
+
+        FALHA É PEGAJOSA (cacheia o None) de propósito: sem isso, uma coleção que não
+        abre viraria uma tentativa cara de IO a CADA pergunta. O erro vai alto no log,
+        e o turno segue enxergando só o acervo — degrada para MENOS informação, nunca
+        para a de outra pessoa."""
+        if self._store is None or not dono:
+            return None
+        if dono in self._pessoais:
+            return self._pessoais[dono]
+        async with self._pessoais_lock:
+            if dono in self._pessoais:      # outra corrotina abriu enquanto esperávamos
+                return self._pessoais[dono]
+            try:
+                loja = await self._abrir_e_provar(settings.colecao_pessoal(dono))
+                if not await asyncio.to_thread(self._fingerprint_ok, loja):
+                    # Sem auto-recuperação aqui: ela move o DIRETÓRIO inteiro para o
+                    # lado, o que levaria junto o acervo e as coleções dos outros. O
+                    # caso real (config de embedding trocada entre execuções) já é
+                    # pego no `open()`, que roda antes e cobre o banco todo.
+                    raise _FingerprintMudou(
+                        f"coleção pessoal de '{dono}' construída com outro embedding")
+                self._pessoais[dono] = loja
+            except Exception as exc:
+                telemetry.error(
+                    "DB", f"Coleção pessoal de '{dono}' indisponível — os turnos dele "
+                          f"enxergam só o acervo comum até reiniciar", exc)
+                self._pessoais[dono] = None
+                return None
+        await self._reconstruir_malha_dono(dono)
+        return self._pessoais[dono]
+
+    async def _escopo(self) -> List[Tuple[str, object]]:
+        """(chave, coleção) de tudo que esta leitura enxerga: o acervo comum e, quando
+        há dono no contexto, a coleção pessoal dele. É o fan-in inteiro num lugar só.
+
+        A `chave` ("" para a base, o nome do dono para a pessoal) é o que indexa os
+        caches em RAM — malha e matriz de figuras —, para trocar de usuário não
+        remontar nada.
+
+        SEM DONO DEFINIDO devolve só o acervo. Nunca "o do último usuário", nunca "o de
+        todos": é a mesma escolha do `identidade.dono_atual`, em que a ausência de dono
+        NEGA o dado pessoal em vez de adivinhar de quem ele é."""
+        if self._store is None:
+            return []
+        if not multiusuario_ligado():
+            return [("", self._store)]
+        escopo: List[Tuple[str, object]] = [("", self._store)]
+        dono = identidade.dono_atual()
+        if dono:
+            pessoal = await self._loja_pessoal(dono)
+            if pessoal is not None:
+                escopo.append((dono, pessoal))
+        return escopo
 
     async def reconstruir_malha(self) -> None:
         """Porta pública da malha, para o BOOT montá-la em segundo plano.
@@ -885,22 +1195,92 @@ class VectorStore:
         if self._store is None:
             return
         async with self._malha_lock:
+            base = self._malha_base
             try:
                 dump = await asyncio.to_thread(
                     dump_paginado, self._store, ["documents", "metadatas"]
                 )
                 await asyncio.to_thread(
-                    self.malha.construir,
+                    base.construir,
                     dump.get("documents") or [],
                     dump.get("metadatas") or [],
                 )
                 telemetry.track(
                     "MALHA",
-                    f"Índice de conceitos: {self.malha.n_conceitos} conceitos "
-                    f"em {self.malha.n_atomos} átomos.",
+                    f"Índice de conceitos: {base.n_conceitos} conceitos "
+                    f"em {base.n_atomos} átomos.",
                 )
             except Exception as exc:
                 telemetry.error("MALHA", "Falha ao montar índice de conceitos", exc)
+                return
+            # As malhas por dono DERIVAM da base — reconstruí-la invalida todas elas.
+            # Refazer só as dos donos com coleção JÁ ABERTA: quem não perguntou neste
+            # processo monta a sua na primeira pergunta (ver `_loja_pessoal`).
+            for dono in [d for d, loja in self._pessoais.items() if loja is not None]:
+                await self._montar_malha_dono(dono)
+
+    async def _reconstruir_malha_dono(self, dono: str) -> None:
+        """A malha de UM dono (o acervo + o vault pessoal dele). Serializada pelo mesmo
+        lock da base: sem ele, derivar de uma base sendo reescrita daria um índice pela
+        metade — e a malha é fail-soft, então isso morreria calado."""
+        async with self._malha_lock:
+            await self._montar_malha_dono(dono)
+
+    async def _montar_malha_dono(self, dono: str) -> None:
+        """Idem, JÁ com o `_malha_lock` na mão (o lock não é reentrante)."""
+        loja = self._pessoais.get(dono)
+        if loja is None:
+            return
+        try:
+            dump = await asyncio.to_thread(
+                dump_paginado, loja, ["documents", "metadatas"]
+            )
+            malha = self._malha_base.derivada()
+            await asyncio.to_thread(
+                malha.estender,
+                dump.get("documents") or [],
+                dump.get("metadatas") or [],
+            )
+            self._malhas_dono[dono] = malha
+            telemetry.track(
+                "MALHA",
+                f"Índice de conceitos de '{dono}': {malha.n_conceitos} conceitos "
+                f"em {malha.n_atomos} átomos (acervo + pessoal).",
+            )
+        except Exception as exc:
+            # Fail-soft como a base: sem malha do dono, `malha` cai na do acervo e a
+            # expansão por conceito só não alcança as notas pessoais dele.
+            telemetry.error("MALHA", f"Falha ao montar a malha de '{dono}'", exc)
+
+    async def _escopos_de_indexacao(self) -> List[Tuple[object, str]]:
+        """(coleção, raiz no vault) que o `sync` varre.
+
+        Um usuário só: a coleção de sempre e o vault INTEIRO — idêntico ao de antes.
+        Multiusuário: `Acervo/` na coleção do acervo, e cada `Pessoal/<dono>/` na
+        coleção daquele dono. A lista de donos sai das PASTAS que existem, não de um
+        campo de config: a pasta é a fronteira (é justamente o que o `where` não sabia
+        ser), então é ela também quem sabe quem existe."""
+        if not multiusuario_ligado():
+            return [(self._store, settings.caminho_obsidian)]
+        escopos: List[Tuple[object, str]] = [(self._store, str(settings.caminho_acervo))]
+        raiz_pessoal = os.path.join(settings.caminho_obsidian, settings.subpasta_pessoal)
+        try:
+            nomes = sorted(e.name for e in os.scandir(raiz_pessoal) if e.is_dir())
+        except OSError:
+            nomes = []       # pasta ainda não criada: não há vault pessoal a varrer
+        for nome in nomes:
+            # Nome de pasta que não é um identificador de dono (acento, espaço, "..")
+            # não vira coleção — `identidade.normalizar` recusa adivinhar, e adivinhar
+            # aqui seria o servidor escolhendo em que coleção a memória de alguém cai.
+            if not (identidade.valido(nome) and identidade.normalizar(nome) == nome):
+                telemetry.warn(
+                    "DB", f"'{nome}' em {raiz_pessoal} não é um nome de dono válido — "
+                          f"as notas dessa pasta NÃO são indexadas.")
+                continue
+            loja = await self._loja_pessoal(nome)
+            if loja is not None:
+                escopos.append((loja, str(settings.caminho_pessoal(nome))))
+        return escopos
 
     async def sync(self) -> bool:
         """Reindex incremental por mtime (novos + modificados) e por `meta_v`
@@ -910,7 +1290,12 @@ class VectorStore:
         o `_malha_e_sync` do boot fazia malha→sync, e o `sync` refazia a malha no
         fim — a primeira era jogada fora segundos depois toda vez que houvesse algo
         a indexar (5,53 s medidos num boot real em 2026-08-02). Com o retorno, ele
-        constrói só quando este aqui não construiu."""
+        constrói só quando este aqui não construiu.
+
+        No multiusuário a varredura é POR ESCOPO (ver `_escopos_de_indexacao`), mas o
+        `glob` do vault continua sendo UM só: varrer 25k arquivos por dono seria pagar
+        a parte cara N vezes para depois jogar fora N-1. Ele é repartido em memória
+        (`repartir_por_raiz`), que também é o que denuncia a nota fora de todo escopo."""
         if self._store is None:
             await self.open()
         if self._store is None:
@@ -921,125 +1306,33 @@ class VectorStore:
         # falha silenciosa, do tipo que só aparece semanas depois. Invalidar aqui custa
         # no máximo uma remontagem de 76 ms por sync, mesmo quando nada mudou.
         self._idx_figuras = None
+        self._idx_figuras_dono.clear()
         try:
             async with self._write_lock:
-                existing = await asyncio.to_thread(
-                    dump_paginado, self._store, ["metadatas"]
-                )
-                # PURGA DE ÓRFÃOS: chunks cujo `source` não vive mais sob o vault atual
-                # (ou sumiu do disco). Conserta o lixo deixado quando o CAMINHO do vault
-                # muda — ex.: a migração de `.../Desktop/projetos/memoria_vetorial/...`
-                # para a pasta do projeto duplicava TODA nota no Chroma (source velho +
-                # novo), pois o delete-by-source do reindex só casa strings idênticas.
-                base = os.path.normcase(os.path.abspath(settings.caminho_obsidian))
-                indexado: dict[str, float] = {}
-                versao: dict[str, int] = {}
-                orfaos: set[str] = set()
-                for md in existing.get("metadatas", []) or []:
-                    src = md.get("source")
-                    if src is None:
-                        continue
-                    ap = os.path.normcase(os.path.abspath(str(src)))
-                    dentro = ap == base or ap.startswith(base + os.sep)
-                    if not dentro or not os.path.exists(str(src)):
-                        orfaos.add(str(src))
-                        continue
-                    indexado[src] = float(md.get("mtime", 0) or 0)
-                    # MIN entre os chunks da nota: se qualquer pedaço ficou para trás
-                    # (lote interrompido no meio), a nota inteira é reprocessada.
-                    v = int(md.get("meta_v", 1) or 1)
-                    versao[src] = min(versao.get(src, v), v)
-
-                for src in orfaos:
-                    await asyncio.to_thread(
-                        lambda s=src: self._store.delete(where={"source": s})
-                    )
-                if orfaos:
-                    telemetry.track(
-                        "DB", f"Purga: {len(orfaos)} fontes órfãs removidas (vault movido/nota apagada)."
-                    )
-                    # Métricas do ciclo (painel): purga persistida como evento.
-                    await asyncio.to_thread(
-                        db.log_etl, "PURGA_ORFAOS", f"{len(orfaos)} fonte(s)", "removidas"
-                    )
-
+                escopos = await self._escopos_de_indexacao()
                 arquivos = glob.glob(
                     os.path.join(settings.caminho_obsidian, "**/*.md"), recursive=True
                 )
-                pendentes: List[Tuple[str, float]] = []
-                for path in arquivos:
-                    try:
-                        mtime = os.path.getmtime(path)
-                    except OSError:
-                        continue
-                    if (
-                        indexado.get(path) is None
-                        or mtime > indexado.get(path, 0)
-                        or versao.get(path, 1) < _META_VERSAO
-                    ):
-                        pendentes.append((path, mtime))
-
-                if not pendentes:
-                    telemetry.track("DB", "VectorDB já sincronizado (nada novo).")
-                    return False
-
-                # remove versões velhas dos arquivos modificados (evita duplicata).
-                # Só quem JÁ estava no índice remove algo — e contamos, porque essa
-                # contagem é metade do veredito "o índice mudou?" logo abaixo.
-                removidos = 0
-                for path, _ in pendentes:
-                    if path in indexado:
-                        await asyncio.to_thread(
-                            lambda p=path: self._store.delete(where={"source": p})
-                        )
-                        removidos += 1
-
-                splits = []
-                for path, mtime in pendentes:
-                    try:
-                        conteudo = await asyncio.to_thread(
-                            lambda p=path: open(p, "r", encoding="utf-8").read()
-                        )
-                    except OSError as exc:
-                        telemetry.warn("DB", f"Não consegui ler {path}: {exc}")
-                        continue
-                    base_meta = metadados_da_nota(path, conteudo, mtime)
-                    # Chunking por cabeçalho Markdown (respeita a estrutura Obsidian)
-                    splits.extend(
-                        split_markdown(
-                            conteudo, base_meta, settings.chunk_size, settings.chunk_overlap
-                        )
-                    )
-
-                # PENDENTE ETERNO (medido em 2026-08-02): uma nota que não produz
-                # chunk nenhum — arquivo de 0 byte, só frontmatter, só espaço — nunca
-                # é gravada, logo nunca ganha entrada no índice, logo volta a ser
-                # `pendente` no boot seguinte. PARA SEMPRE. Com isso o atalho "nada
-                # novo" acima nunca dispara e o `sync` sempre chegava até aqui e
-                # reconstruía a malha à toa: 2,4 s por sync, 2 syncs por boot, todo
-                # boot. O vault do dono tinha 9 desses (7 notas vazias, 1 átomo de
-                # livro truncado, 1 stub de figura), e apagá-los não resolveria — o
-                # importador de figuras gera mais.
-                #
-                # O conserto NÃO é fingir que o arquivo foi indexado (isso mentiria
-                # para a purga de órfãos e para a próxima comparação de mtime). É
-                # reconhecer que, sem nada gravado E sem nada removido, o índice está
-                # IDÊNTICO ao de antes — e reconstruir a malha sobre um índice
-                # idêntico não pode produzir malha diferente.
-                if not splits and not removidos:
-                    telemetry.track(
+                por_raiz, sobras = repartir_por_raiz(
+                    arquivos, [raiz for _loja, raiz in escopos])
+                if sobras:
+                    # Nota que não está em `Acervo/` nem em `Pessoal/<dono>/` não
+                    # pertence a coleção nenhuma — logo, é INVISÍVEL para toda busca.
+                    # Isto é o aviso que a migração do vault ainda não terminou; sem
+                    # ele, a base encolheria em silêncio, que é como este projeto já
+                    # perdeu figura (attach_only) e nota (acervo_suspeito) antes.
+                    telemetry.warn(
                         "DB",
-                        f"{len(pendentes)} arquivo(s) sem conteúdo indexável "
-                        f"(0 chunks, nada removido) — índice inalterado, malha preservada.",
+                        f"{len(sobras)} nota(s) fora de '{settings.subpasta_acervo}/' e de "
+                        f"'{settings.subpasta_pessoal}/<dono>/' — NÃO indexadas, invisíveis "
+                        f"para a busca (ex.: {os.path.basename(sobras[0])}).",
                     )
+                mudou = False
+                for loja, raiz in escopos:
+                    if await self._sync_escopo(loja, raiz, por_raiz.get(raiz, [])):
+                        mudou = True
+                if not mudou:
                     return False
-                for i in range(0, len(splits), settings.chroma_batch):
-                    await asyncio.to_thread(
-                        self._store.add_documents, splits[i : i + settings.chroma_batch]
-                    )
-                telemetry.track(
-                    "DB", f"Indexados/atualizados {len(pendentes)} arquivos ({len(splits)} chunks)."
-                )
             # Fora do write_lock: _reconstruir_malha só LÊ, e o lock não é reentrante.
             await self._reconstruir_malha()
             return True
@@ -1050,6 +1343,130 @@ class VectorStore:
             # falhou seria o boot seguir SEM índice de conceitos achando que tem.
             return False
 
+    async def _sync_escopo(self, loja, raiz: str, arquivos: List[str]) -> bool:
+        """A varredura incremental de UMA coleção contra UMA raiz do vault.
+
+        É o corpo histórico do `sync` — o que mudou foi passar a loja e a raiz como
+        parâmetros, para o multiusuário rodá-lo uma vez por escopo. Devolve **se o
+        índice mudou** (gravou ou removeu algo); o chamador usa isso para decidir se
+        vale remontar a malha. Levanta em erro: quem trata é o `sync`."""
+        existing = await asyncio.to_thread(dump_paginado, loja, ["metadatas"])
+        # PURGA DE ÓRFÃOS: chunks cujo `source` não vive mais sob a raiz DESTE escopo
+        # (ou sumiu do disco). Conserta o lixo deixado quando o CAMINHO do vault
+        # muda — ex.: a migração de `.../Desktop/projetos/memoria_vetorial/...`
+        # para a pasta do projeto duplicava TODA nota no Chroma (source velho +
+        # novo), pois o delete-by-source do reindex só casa strings idênticas.
+        # No multiusuário ela ganha um segundo ofício, de graça: a nota que MUDOU de
+        # dono (a pasta de A para a de B) some da coleção de A por ser órfã lá, e
+        # entra na de B como arquivo novo. Sem isso ela responderia para os dois.
+        base = os.path.normcase(os.path.abspath(raiz))
+        indexado: dict[str, float] = {}
+        versao: dict[str, int] = {}
+        orfaos: set[str] = set()
+        for md in existing.get("metadatas", []) or []:
+            src = md.get("source")
+            if src is None:
+                continue
+            ap = os.path.normcase(os.path.abspath(str(src)))
+            dentro = ap == base or ap.startswith(base + os.sep)
+            if not dentro or not os.path.exists(str(src)):
+                orfaos.add(str(src))
+                continue
+            indexado[src] = float(md.get("mtime", 0) or 0)
+            # MIN entre os chunks da nota: se qualquer pedaço ficou para trás
+            # (lote interrompido no meio), a nota inteira é reprocessada.
+            v = int(md.get("meta_v", 1) or 1)
+            versao[src] = min(versao.get(src, v), v)
+
+        for src in orfaos:
+            await asyncio.to_thread(
+                lambda s=src: loja.delete(where={"source": s})
+            )
+        if orfaos:
+            telemetry.track(
+                "DB", f"Purga: {len(orfaos)} fontes órfãs removidas (vault movido/nota apagada)."
+            )
+            # Métricas do ciclo (painel): purga persistida como evento.
+            await asyncio.to_thread(
+                db.log_etl, "PURGA_ORFAOS", f"{len(orfaos)} fonte(s)", "removidas"
+            )
+
+        pendentes: List[Tuple[str, float]] = []
+        for path in arquivos:
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if (
+                indexado.get(path) is None
+                or mtime > indexado.get(path, 0)
+                or versao.get(path, 1) < _META_VERSAO
+            ):
+                pendentes.append((path, mtime))
+
+        if not pendentes:
+            telemetry.track("DB", "VectorDB já sincronizado (nada novo).")
+            return False
+
+        # remove versões velhas dos arquivos modificados (evita duplicata).
+        # Só quem JÁ estava no índice remove algo — e contamos, porque essa
+        # contagem é metade do veredito "o índice mudou?" logo abaixo.
+        removidos = 0
+        for path, _ in pendentes:
+            if path in indexado:
+                await asyncio.to_thread(
+                    lambda p=path: loja.delete(where={"source": p})
+                )
+                removidos += 1
+
+        splits = []
+        for path, mtime in pendentes:
+            try:
+                conteudo = await asyncio.to_thread(
+                    lambda p=path: open(p, "r", encoding="utf-8").read()
+                )
+            except OSError as exc:
+                telemetry.warn("DB", f"Não consegui ler {path}: {exc}")
+                continue
+            base_meta = metadados_da_nota(path, conteudo, mtime)
+            # Chunking por cabeçalho Markdown (respeita a estrutura Obsidian)
+            splits.extend(
+                split_markdown(
+                    conteudo, base_meta, settings.chunk_size, settings.chunk_overlap
+                )
+            )
+
+        # PENDENTE ETERNO (medido em 2026-08-02): uma nota que não produz
+        # chunk nenhum — arquivo de 0 byte, só frontmatter, só espaço — nunca
+        # é gravada, logo nunca ganha entrada no índice, logo volta a ser
+        # `pendente` no boot seguinte. PARA SEMPRE. Com isso o atalho "nada
+        # novo" acima nunca dispara e o `sync` sempre chegava até aqui e
+        # reconstruía a malha à toa: 2,4 s por sync, 2 syncs por boot, todo
+        # boot. O vault do dono tinha 9 desses (7 notas vazias, 1 átomo de
+        # livro truncado, 1 stub de figura), e apagá-los não resolveria — o
+        # importador de figuras gera mais.
+        #
+        # O conserto NÃO é fingir que o arquivo foi indexado (isso mentiria
+        # para a purga de órfãos e para a próxima comparação de mtime). É
+        # reconhecer que, sem nada gravado E sem nada removido, o índice está
+        # IDÊNTICO ao de antes — e reconstruir a malha sobre um índice
+        # idêntico não pode produzir malha diferente.
+        if not splits and not removidos:
+            telemetry.track(
+                "DB",
+                f"{len(pendentes)} arquivo(s) sem conteúdo indexável "
+                f"(0 chunks, nada removido) — índice inalterado, malha preservada.",
+            )
+            return False
+        for i in range(0, len(splits), settings.chroma_batch):
+            await asyncio.to_thread(
+                loja.add_documents, splits[i : i + settings.chroma_batch]
+            )
+        telemetry.track(
+            "DB", f"Indexados/atualizados {len(pendentes)} arquivos ({len(splits)} chunks)."
+        )
+        return True
+
     async def corpus_com_embeddings(self) -> List[tuple]:
         """Dump (source, texto, embedding) por chunk — p/ a consolidação (Fase 2).
         Fail-open: sem store/erro devolve [] (a consolidação simplesmente não roda).
@@ -1057,33 +1474,40 @@ class VectorStore:
         de array levanta, então o teste é `is None`, nunca `or []`."""
         if not self.ready:
             return []
-        try:
-            dump = await asyncio.to_thread(
-                dump_paginado, self._store, ["documents", "metadatas", "embeddings"]
-            )
-        except Exception as exc:
-            telemetry.error("RAG", "Falha no dump p/ consolidação", exc)
-            return []
-        embs = dump.get("embeddings")
-        embs = [] if embs is None else embs
         out: List[tuple] = []
-        for doc, md, emb in zip(dump.get("documents") or [],
-                                dump.get("metadatas") or [], embs):
-            src = str((md or {}).get("source") or "")
-            if src and emb is not None:
-                out.append((src, doc, [float(x) for x in emb]))
+        for _chave, loja in await self._escopo():
+            try:
+                dump = await asyncio.to_thread(
+                    dump_paginado, loja, ["documents", "metadatas", "embeddings"]
+                )
+            except Exception as exc:
+                telemetry.error("RAG", "Falha no dump p/ consolidação", exc)
+                return []
+            embs = dump.get("embeddings")
+            embs = [] if embs is None else embs
+            for doc, md, emb in zip(dump.get("documents") or [],
+                                    dump.get("metadatas") or [], embs):
+                src = str((md or {}).get("source") or "")
+                if src and emb is not None:
+                    out.append((src, doc, [float(x) for x in emb]))
         return out
 
     async def remover_fontes(self, fontes: List[str]) -> None:
         """Remove chunks por `source` (consolidação: o .md foi ARQUIVADO fora do
-        vault — sem isto o índice seguiria citando arquivos-fantasma)."""
+        vault — sem isto o índice seguiria citando arquivos-fantasma).
+
+        Tenta em todas as coleções do escopo: um `source` vive em exatamente uma, e
+        o delete das outras é um no-op barato. Se o chamador rodar sem dono no
+        contexto (trabalho de fundo), a coleção pessoal fica de fora — e a purga de
+        órfãos do próximo `sync` limpa o resto, porque o arquivo já não existe."""
         if not self.ready:
             return
-        for s in fontes:
-            try:
-                await asyncio.to_thread(lambda s=s: self._store.delete(where={"source": s}))
-            except Exception as exc:
-                telemetry.error("RAG", f"Falha ao remover do índice: {s}", exc)
+        for _chave, loja in await self._escopo():
+            for s in fontes:
+                try:
+                    await asyncio.to_thread(lambda s=s, lj=loja: lj.delete(where={"source": s}))
+                except Exception as exc:
+                    telemetry.error("RAG", f"Falha ao remover do índice: {s}", exc)
 
     async def buscar_conteudos(self, query: str, k: int) -> List[str]:
         """Recuperação CRUA para a Síntese sob Demanda (#23): conteúdo (sem frontmatter)
@@ -1093,12 +1517,16 @@ class VectorStore:
         if self._store is None or not query.strip():
             return []
         try:
-            res = await asyncio.to_thread(
-                self._store.similarity_search_with_score, query, k=k
-            )
+            partes = [
+                await asyncio.to_thread(
+                    lambda lj=loja: lj.similarity_search_with_score(query, k=k)
+                )
+                for _chave, loja in await self._escopo()
+            ]
         except Exception as exc:
             telemetry.error("LOCAL", "Falha na busca para síntese", exc)
             return []
+        res = fundir_por_distancia(partes, k)
         vistos: set[str] = set()
         itens: List[Tuple[str, str]] = []   # (conteúdo, source)
         for doc, _score in res:
@@ -1130,7 +1558,21 @@ class VectorStore:
             return None
 
     async def _buscar_texto(self, consulta: str, k: int) -> list:
-        """Recupera SÓ texto, pedindo o filtro ao Chroma — não filtrando depois.
+        """Recupera SÓ texto no ESCOPO de quem pergunta (acervo + vault pessoal dele).
+
+        O fan-in mora aqui, e não em cada chamador, porque este é o funil por onde
+        passam `search` e `recuperar` — a fase (b) do extrator inclusive. Cada coleção
+        recebe o MESMO pedido de `k`; a fusão por distância e o porquê do `k` estão em
+        `fundir_por_distancia`."""
+        return fundir_por_distancia(
+            [await self._buscar_texto_em(loja, consulta, k)
+             for _chave, loja in await self._escopo()],
+            k,
+        )
+
+    async def _buscar_texto_em(self, loja, consulta: str, k: int) -> list:
+        """Recupera SÓ texto de UMA coleção, pedindo o filtro ao Chroma — não
+        filtrando depois.
 
         A diferença não é estilo, é sobrevivência da busca. Medido em 2026-07-26,
         logo após traduzir 635 legendas para PT-BR: as notas de figura ficaram tão
@@ -1142,10 +1584,14 @@ class VectorStore:
         Fail-open em duas camadas, porque uma base ainda em meta_v<4 não tem o campo
         `tipo` e o filtro devolveria vazio: se o filtro der erro OU vier vazio
         enquanto a busca sem filtro acha coisa, vale a busca sem filtro (é o
-        comportamento anterior, com o descarte em Python fazendo o resto)."""
+        comportamento anterior, com o descarte em Python fazendo o resto).
+
+        ⚠ E é exatamente este fail-open que proíbe o dono de ser um `where`: aqui,
+        filtro que falha vira busca SEM filtro — o que para o `tipo` é sobrevivência
+        e para o dono seria o vault de todo mundo. Ver o bloco `multiusuario_ligado`."""
         try:
             res = await asyncio.to_thread(
-                lambda: self._store.similarity_search_with_score(
+                lambda: loja.similarity_search_with_score(
                     consulta, k=k, filter={"tipo": "texto"})
             )
             if res:
@@ -1153,8 +1599,22 @@ class VectorStore:
         except Exception as exc:
             telemetry.error("LOCAL", "Filtro de tipo indisponível; busca sem ele", exc)
         return await asyncio.to_thread(
-            self._store.similarity_search_with_score, consulta, k
+            loja.similarity_search_with_score, consulta, k
         )
+
+    def _indice_figuras_cacheado(self, chave: str) -> Optional["_IndiceFiguras"]:
+        """A matriz de figuras JÁ montada daquele escopo, ou None. A do acervo continua
+        morando em `_idx_figuras` — é o campo que o `sync` invalida e que os testes
+        montam à mão —, e cada dono ganha a sua no dicionário ao lado."""
+        if not chave:
+            return self._idx_figuras
+        return self._idx_figuras_dono.get(chave)
+
+    def _guardar_indice_figuras(self, chave: str, idx: Optional["_IndiceFiguras"]) -> None:
+        if not chave:
+            self._idx_figuras = idx
+        else:
+            self._idx_figuras_dono[chave] = idx
 
     async def _figuras_candidatas(self, consulta: str) -> List[Tuple[object, float]]:
         """Os candidatos brutos, no formato (doc, score) do Chroma.
@@ -1162,23 +1622,40 @@ class VectorStore:
         Prefere o índice EXATO em memória (`_IndiceFiguras`) e cai no ANN se ele não
         existir — base sem figura, numpy ausente, store fake nos testes. O fallback é o
         que estava no ar até 2026-07-31, então o pior caso é o status quo.
+
+        Uma matriz POR COLEÇÃO (e não uma só, concatenada): as coleções crescem em
+        ritmos diferentes e o `sync` invalida escopo a escopo — remontar a do acervo
+        (1.861 figuras, 76 ms) porque alguém salvou uma foto no vault pessoal seria
+        pagar caro por nada. A fusão é a mesma do texto, por distância.
         """
+        escopo = await self._escopo()
         if settings.figuras_busca_exata:
-            if self._idx_figuras is None:
-                self._idx_figuras = await asyncio.to_thread(montar_indice_figuras, self._store)
-                if self._idx_figuras is not None:
-                    telemetry.track("FIGURAS",
-                                    f"Índice exato de figuras montado ({len(self._idx_figuras)}).")
-            if self._idx_figuras is not None:
+            indices = []
+            for chave, loja in escopo:
+                idx = self._indice_figuras_cacheado(chave)
+                if idx is None:
+                    idx = await asyncio.to_thread(montar_indice_figuras, loja)
+                    self._guardar_indice_figuras(chave, idx)
+                    if idx is not None:
+                        telemetry.track("FIGURAS",
+                                        f"Índice exato de figuras montado ({len(idx)}).")
+                if idx is not None:
+                    indices.append(idx)
+            if indices:
                 vetor = await asyncio.to_thread(
                     self._embeddings.instance.embed_query, consulta)
-                achados = self._idx_figuras.buscar(vetor, settings.figuras_top_k)
-                return [(doc, dist) for dist, doc in achados]
-        return await asyncio.to_thread(
-            lambda: self._store.similarity_search_with_score(
-                consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
+                partes = [[(doc, dist) for dist, doc in idx.buscar(vetor, settings.figuras_top_k)]
+                          for idx in indices]
+                return fundir_por_distancia(partes, settings.figuras_top_k)
+        partes = [
+            await asyncio.to_thread(
+                lambda lj=loja: lj.similarity_search_with_score(
+                    consulta, k=settings.figuras_top_k, filter={"tipo": "figura"}
+                )
             )
-        )
+            for _chave, loja in escopo
+        ]
+        return fundir_por_distancia(partes, settings.figuras_top_k)
 
     async def _buscar_figuras(self, consulta: str, chaves: set) -> List[Tuple[float, object]]:
         """Figuras que passam o gate, num espaço de busca SÓ delas.
@@ -1246,8 +1723,8 @@ class VectorStore:
             aprovadas = [(s, d) for s, d in aprovadas if s <= teto]
         return aprovadas
 
-    async def _irmaos_de_pagina(self, docs: Sequence[object],
-                                vistos: set) -> List[Tuple[Optional[float], object]]:
+    async def _irmaos_de_pagina(self, docs: Sequence[object], vistos: set,
+                                escopo=None) -> List[Tuple[Optional[float], object]]:
         """Os outros átomos da MESMA PÁGINA dos que casaram (H2, 2026-07-29).
 
         Por que existe: a re-atomização com o 8B fatiou o livro mais fino — 8.296
@@ -1294,18 +1771,23 @@ class VectorStore:
             )
         if not origens:
             return []
+        documentos: List[str] = []
+        metadados: List[dict] = []
         try:
-            res = await asyncio.to_thread(
-                lambda: self._store.get(
-                    where={"origem": {"$in": origens}},
-                    include=["metadatas", "documents"],
+            for loja in lojas_do_escopo(escopo, self._store):
+                res = await asyncio.to_thread(
+                    lambda lj=loja: lj.get(
+                        where={"origem": {"$in": origens}},
+                        include=["metadatas", "documents"],
+                    )
                 )
-            )
+                documentos.extend(res.get("documents") or [])
+                metadados.extend(res.get("metadatas") or [])
         except Exception as exc:
             telemetry.error("LOCAL", "Expansão por página indisponível", exc)
             return []
         fora: List[Tuple[Optional[float], object]] = []
-        for texto, md in zip(res.get("documents") or [], res.get("metadatas") or []):
+        for texto, md in zip(documentos, metadados):
             if not texto or texto in vistos:
                 continue
             # Dicionário NOVO, não mutação do que veio do Chroma: a marca é nossa e
@@ -1322,7 +1804,7 @@ class VectorStore:
         return fora
 
     async def _anexos_colocados(self, docs: Sequence[object],
-                                consulta: str = "") -> List[str]:
+                                consulta: str = "", escopo=None) -> List[str]:
         """As figuras da MESMA PÁGINA dos átomos que responderam.
 
         É a outra metade de "encontrável ≠ anexável". A figura sem legenda boa foi
@@ -1397,9 +1879,12 @@ class VectorStore:
             # figura certa pode não repetir uma palavra sequer da pergunta, que é o
             # defeito inteiro que este caminho existe para contornar.
             if consulta and not settings.figuras_anexo_so_attach_only:
-                res = await asyncio.to_thread(
-                    lambda: self._store.similarity_search_with_score(
-                        consulta, k=max(teto, 8), filter={"$and": onde})
+                res = fundir_por_distancia(
+                    [await asyncio.to_thread(
+                        lambda lj=loja: lj.similarity_search_with_score(
+                            consulta, k=max(teto, 8), filter={"$and": onde}))
+                     for loja in lojas_do_escopo(escopo, self._store)],
+                    max(teto, 8),
                 )
                 ordenadas = sorted(res or [], key=lambda ds: ds[1])
                 # SUSPEITA SAI ANTES DO CORTE RELATIVO (2026-07-31). A ordem importa:
@@ -1426,14 +1911,17 @@ class VectorStore:
                     if src and src not in saida:
                         saida.append(src)
                 return saida[:teto]
-            res = await asyncio.to_thread(
-                lambda: self._store.get(where={"$and": onde}, include=["metadatas"])
-            )
+            metadados: List[dict] = []
+            for loja in lojas_do_escopo(escopo, self._store):
+                res = await asyncio.to_thread(
+                    lambda lj=loja: lj.get(where={"$and": onde}, include=["metadatas"])
+                )
+                metadados.extend((res or {}).get("metadatas", []) or [])
         except Exception as exc:
             telemetry.error("FIGURAS", "Anexo por co-locação indisponível", exc)
             return []
         saida: List[str] = []
-        for md in (res or {}).get("metadatas", []) or []:
+        for md in metadados:
             if (md or {}).get("acervo_suspeito"):
                 continue          # mesma marca, mesmo descarte (ver acima)
             src = str((md or {}).get("source") or "")
@@ -1471,6 +1959,11 @@ class VectorStore:
             return LocalResult(NENHUM, None, False)
         consulta = (texto_busca or termos).strip() or termos
         try:
+            # UM escopo para o turno inteiro. Resolver de novo em cada etapa (irmãos de
+            # página, anexo por co-locação) daria a mesma resposta, mas passaria pelo
+            # cache de coleções a cada vez — e, pior, deixaria margem para as etapas
+            # discordarem entre si sobre de quem é este turno.
+            escopo = await self._escopo()
             # Fase (b) (consultoria #9): `recuperados` chega pronto quando o Agent
             # especulou a recuperação em paralelo com o LLM do extrator. A consulta da
             # especulação é a MESMA pergunta crua que seria embeddada aqui, então o
@@ -1650,7 +2143,8 @@ class VectorStore:
             irmaos: List[Tuple[Optional[float], object]] = []
             if settings.rag_expandir_pagina and candidatos:
                 irmaos = await self._irmaos_de_pagina(
-                    [d for _s, d in candidatos[: settings.rag_max_chunks]], vistos)
+                    [d for _s, d in candidatos[: settings.rag_max_chunks]], vistos,
+                    escopo)
 
             usar = selecionar_por_orcamento(
                 list(candidatos[: settings.rag_max_chunks]) + irmaos + figuras + vizinhos,
@@ -1722,7 +2216,8 @@ class VectorStore:
                                 f"Co-locação pulada: melhor texto {melhor_texto:.4f} perde "
                                 f"da melhor figura {figuras[0][0]:.4f}.")
             anexos = await self._anexos_colocados(
-                [d for _s, d in promovidos], consulta) if (usar and not texto_perdeu) else []
+                [d for _s, d in promovidos], consulta,
+                escopo) if (usar and not texto_perdeu) else []
             return LocalResult(texto, melhor, relevante, fontes, anexos)
         except Exception as exc:
             telemetry.error("DB", "Erro na busca local", exc)

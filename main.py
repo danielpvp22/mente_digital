@@ -25,6 +25,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital import acesso  # noqa: E402
+from mente_digital import identidade  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
 from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
@@ -230,6 +231,15 @@ async def lifespan(app: FastAPI):
     ctx.agent = Agent(ctx)
     ctx.etl = EtlProcessor(ctx)
     ctx.scheduler = SchedulerService(ctx)
+    # O castigo por força bruta deixa de ser mudo: quando o bloqueio dispara, o dono é
+    # AVISADO no celular (pedido dele, 2026-08-03). Ligado aqui porque é o único lugar
+    # onde o registro (que conta as falhas) e o scheduler (que sabe empurrar para uma
+    # sessão) existem juntos — o registro não importa o scheduler de propósito, senão o
+    # vigia de 61 MB arrastaria o mundo junto.
+    #
+    # Sem isto a trilha continuaria registrando tudo em `auditoria`, e ninguém lê a
+    # trilha enquanto o ataque acontece — que é o momento em que ela serviria.
+    registro.ao_alerta = ctx.scheduler.alertar_seguranca
     # WATTÍMETRO: acumula energia por dia. Criado aqui e alimentado pelo tick do
     # scheduler; `init()` fora do loop porque criar tabela é IO e o lifespan é o
     # lugar onde IO de boot já mora.
@@ -237,7 +247,18 @@ async def lifespan(app: FastAPI):
         ctx.consumo = RegistroConsumo(settings.db_telemetria)
         await asyncio.to_thread(ctx.consumo.init)
     # #36 Diapasão: carrega o perfil de conversa persistido (o idle o refina depois).
-    ctx.perfil_conversa = db.ler_perfil()
+    #
+    # ⚠ 2026-08-03 — este cache de UM perfil deixou de fazer sentido com quatro usuários:
+    # `perfil_conversa` virou uma linha POR DONO, e um valor único no `AppContext` serviria
+    # o diapasão do dono padrão a todo mundo. Pior: seria silencioso, porque um perfil
+    # errado não dá erro — só faz o assistente responder no tom de outra pessoa.
+    #
+    # Carrega dentro do escopo do dono padrão, e é isso que o lifespan pode saber: no boot
+    # não há sessão nem dono. Quem serve cada usuário é a leitura POR TURNO (o ContextVar
+    # já está marcado quando o turno roda). Este valor fica como o do dono da máquina,
+    # que é o comportamento de hoje enquanto `multiusuario_habilitado` estiver desligado.
+    with identidade.usar_dono(identidade.DONO_PADRAO):
+        ctx.perfil_conversa = db.ler_perfil()
     app.state.ctx = ctx
 
     await _boot(ctx)
@@ -286,7 +307,17 @@ async def exigir_acesso(request: Request) -> None:
         if not acesso.cliente_autorizado(host, token, settings.access_token):
             raise HTTPException(status_code=401, detail="não autorizado")
         return
-    veredito = registro.autorizar(
+    # ⚠ `to_thread` NÃO é zelo: `autorizar` abre SQLite (busca o aparelho e, na recusa,
+    # ESCREVE na trilha) e era chamado SÍNCRONO de dentro desta dependência async —
+    # travando o único event loop a cada requisição, inclusive as SEM credencial
+    # nenhuma. Achado por revisão adversária em 2026-08-03. O efeito não é vazamento,
+    # é contenção: sob rajada de 401 (ou só com os 4 usuários batendo junto), a fila do
+    # loop atrasa exatamente o TTFT/TTFA que este projeto mais protege — e a `auditoria`
+    # só estrangula por (ip, motivo), então um IP novo sempre paga um INSERT.
+    # É também a convenção escrita do projeto: toda chamada bloqueante (SQLite
+    # inclusive) passa por `asyncio.to_thread`. Esta era a exceção não intencional.
+    veredito = await asyncio.to_thread(
+        registro.autorizar,
         token, host, request.url.path,
         habilitado=settings.aparelhos_habilitado,
         token_legado=settings.access_token,
@@ -303,6 +334,15 @@ async def exigir_acesso(request: Request) -> None:
             detail={"erro": "não autorizado", "motivo": veredito.motivo_publico},
         )
     request.state.aparelho_id = veredito.aparelho_id
+    request.state.usuario = veredito.usuario
+    # AQUI a identidade deixa de morrer. Antes, `aparelho_id` era escrito em
+    # `request.state` e lido por UMA rota (`/api/acesso`), que só o ecoava de volta — o
+    # gate sabia quem era e ninguém perguntava. Marcar o ContextVar faz o dono chegar,
+    # sem parâmetro novo, aos ~40 métodos do Database e aos ~10 pontos de query do RAG.
+    #
+    # Não precisa de `reset`: cada requisição roda no seu próprio Task, com contexto
+    # próprio, então isto morre com ela e não vaza para a requisição seguinte.
+    identidade.definir_dono(veredito.usuario)
 
 
 async def exigir_loopback(request: Request) -> None:
@@ -852,7 +892,10 @@ async def listar_aparelhos(request: Request):
         "aparelhos": [
             {"id": a.id, "apelido": a.apelido, "criado_em": a.criado_em,
              "ultimo_uso": a.ultimo_uso, "ultimo_ip": a.ultimo_ip,
-             "expira_em": a.expira_em, "sessoes": reg.sessoes_vivas(a.id)}
+             "expira_em": a.expira_em, "sessoes": reg.sessoes_vivas(a.id),
+             # De quem é o aparelho — o painel precisa mostrar isso, senão revogar vira
+             # adivinhação ("qual desses quatro é o da Ana?").
+             "usuario": a.usuario}
             for a in reg.listar()
         ],
     })
@@ -861,13 +904,27 @@ async def listar_aparelhos(request: Request):
 @app.post("/api/aparelhos/convite", dependencies=[Depends(exigir_loopback)])
 async def convidar_aparelho(request: Request):
     corpo = await request.json()
-    codigo = request.app.state.registro.emitir_codigo(
-        (corpo.get("apelido") or "aparelho")[:40], settings.aparelhos_teto)
+    # O USUÁRIO é escolhido AQUI, pelo dono, na máquina dele (a rota é `exigir_loopback`).
+    # É o que amarra o aparelho a uma memória: quem parear com este código vai ler e
+    # escrever em `Pessoal/<usuario>/` e nas linhas daquele dono no SQLite.
+    # Ausente = o dono padrão, que preserva o comportamento de hoje.
+    bruto = (corpo.get("usuario") or "").strip()
+    try:
+        usuario = identidade.normalizar(bruto) if bruto else identidade.DONO_PADRAO
+    except ValueError as exc:
+        # Falha AQUI, na mão de quem digitou, e não lá adiante quando o nome já viraria
+        # pasta e coleção — um apelido inválido não pode chegar ao disco.
+        return JSONResponse(status_code=400,
+                            content={"erro": "usuario_invalido", "detalhe": str(exc)})
+    codigo = await asyncio.to_thread(
+        request.app.state.registro.emitir_codigo,
+        (corpo.get("apelido") or "aparelho")[:40], settings.aparelhos_teto, usuario)
     if codigo is None:
         return JSONResponse(status_code=409,
                             content={"erro": "teto", "teto": settings.aparelhos_teto})
     return JSONResponse(content={
         "codigo": codigo,
+        "usuario": usuario,     # ecoado para o dono conferir ANTES de ditar o código
         "validade_minutos": settings.aparelhos_codigo_validade_minutos,
     })
 
@@ -942,8 +999,19 @@ async def receber_nota_texto(request: Request):
 async def websocket_endpoint(websocket: WebSocket):
     ctx = get_ctx(websocket=websocket)
     # Gate ANTES do accept (painel #7): 1008 = policy violation. O browser não manda
-    # header custom no handshake de WS, então o token vem por query (?token=...) —
-    # tradeoff documentado; a URL do WS não é logada pelo uvicorn com log_level=error.
+    # header custom no handshake de WS, então o token vem por query (?token=...).
+    #
+    # ⚠ CORRIGIDO em 2026-08-03: este comentário dizia que "a URL do WS não é logada
+    # pelo uvicorn com log_level=error" — e isso só vale para quem sobe por
+    # `python main.py`, que fixa esse nível lá embaixo. O uvicorn 0.51 loga a query
+    # string INTEIRA do handshake (`protocols/utils.get_path_with_query_string`) no
+    # nível `info`, que é o default — e o CLAUDE.md documenta justamente o comando
+    # alternativo `uvicorn main:app --host 0.0.0.0 --port 8000`, que não passa o flag.
+    # Quem seguir a própria documentação grava `?token=mdk1.<id>.<segredo>` em texto
+    # claro a cada handshake, aceito ou recusado. O tradeoff do token na query segue
+    # inevitável (é limitação do browser); o que não é inevitável é acreditar num
+    # comentário. Régua desta casa: comentário que justifica decisão de segurança
+    # precisa ser conferido como código.
     token = websocket.query_params.get("token")
     host = websocket.client.host if websocket.client else None
     registro = getattr(websocket.app.state, "registro", None)   # None = app sem lifespan
@@ -953,7 +1021,10 @@ async def websocket_endpoint(websocket: WebSocket):
             return
         veredito = None
     else:
-        veredito = registro.autorizar(
+        # `to_thread` pelo mesmo motivo de `exigir_acesso`: `autorizar` toca SQLite e
+        # travava o event loop no handshake — inclusive o de quem não tem credencial.
+        veredito = await asyncio.to_thread(
+            registro.autorizar,
             token, host, "/ws/chat_live",
             habilitado=settings.aparelhos_habilitado,
             token_legado=settings.access_token,
@@ -975,11 +1046,16 @@ async def websocket_endpoint(websocket: WebSocket):
         laco.call_soon_threadsafe(lambda: laco.create_task(websocket.close(code=1008)))
 
     if registro is None:
-        await LiveSession(ctx, websocket).run()
+        # App sem lifespan (teste de rota crua): não há registro, logo não há aparelho —
+        # cai no dono padrão, que é o comportamento single-user de sempre.
+        await LiveSession(ctx, websocket, usuario=identidade.DONO_PADRAO).run()
         return
     sid = registro.registrar_sessao(veredito.aparelho_id, derrubar)
     try:
-        await LiveSession(ctx, websocket).run()
+        # ESTA linha era onde a identidade morria: o gate acabava de resolver de quem é
+        # o aparelho e a sessão nascia sem saber. Agora o dono entra pelo construtor e o
+        # `ws.py` marca o ContextVar para o turno inteiro.
+        await LiveSession(ctx, websocket, usuario=veredito.usuario).run()
     finally:
         registro.encerrar_sessao(veredito.aparelho_id, sid)
 

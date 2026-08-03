@@ -21,11 +21,19 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 
 from mente_digital import agenda
+from mente_digital import identidade
 from mente_digital import textutils
 from mente_digital.config import settings
+# O gate do multiusuário é IMPORTADO, não recopiado. Duas cópias da mesma regra
+# divergem no primeiro conserto de uma delas — é a lição escrita em `aparelhos.avaliar`,
+# que chama `acesso.cliente_autorizado` em vez de reimplementá-la. Custo medido do
+# import: 0,26 s, e todo processo que carrega `tools` já carrega `rag` por outro caminho
+# (agent.py). Ver o relatório: o lugar natural desta função é `identidade.py`.
+from mente_digital.rag import multiusuario_ligado
 from mente_digital.telemetry import db
 
 if TYPE_CHECKING:  # evita import circular em runtime
@@ -334,6 +342,108 @@ class ToolRegistry:
 
 
 # ==========================================================================
+# Em QUE pasta do vault esta ferramenta escreve (e quais ela pode ler)
+# ==========================================================================
+# A fronteira de privacidade passou a ser a PASTA (ver o bloco `multiusuario_ligado`
+# em rag.py): o que não está no meu escopo simplesmente não é aberto. Isso transfere
+# para cá uma obrigação que antes não existia — QUEM ESCREVE TEM DE ESCOLHER A PASTA.
+# Uma nota gravada fora de `Acervo/` e de `Pessoal/<dono>/` não pertence a coleção
+# nenhuma e fica INVISÍVEL para a busca (o `sync` avisa, mas o estrago já está feito).
+#
+# As três funções abaixo são o ponto ÚNICO dessa decisão em tools.py. Nenhuma
+# ferramenta monta caminho de vault por conta própria — foi assim que
+# `listar_notas`/`ler_nota` viraram um `glob` no vault INTEIRO, passando ao largo do
+# Chroma e, portanto, de qualquer filtro de índice: a auditoria classificou como
+# vazamento direto entre usuários, e nenhum ajuste no RAG o alcançaria.
+#
+# ⚠ AQUI O `settings` É O DE MÓDULO, e no `etl.py` é o `ctx.settings` INJETADO. A
+# diferença é deliberada e vale a pena registrar, porque a assimetria parece um
+# descuido: no ETL o `Settings` chega por injeção (`EtlProcessor(ctx)`) e ler o global
+# fura o teste que aponta `ctx.settings` para um tmp — custou notas de fixture
+# despejadas no vault REAL do dono. Já as ferramentas recebem um `ctx` DUCK-TYPED: o
+# `FakeCtx` da suíte não tem `.settings`, e `test_agente_tools` calibra o vault
+# monkeypatchando o `settings` GLOBAL. Trocar a convenção deste módulo é mudança do
+# dono desses testes, não efeito colateral do multiusuário. Ver o relatório.
+def raiz_de_escrita() -> Path:
+    """A pasta onde uma nota escrita AGORA cai.
+
+    Um usuário só (o default): a raiz do vault — byte a byte o caminho de hoje.
+    Vários: `Pessoal/<dono>/`, e SEM dono no contexto isto FALHA (`exigir_dono`) em
+    vez de escolher por conta própria. É a metade que importa do contrato de
+    `identidade`: escrever no lugar errado é irreversível (a nota já foi para o
+    disco de outra pessoa), enquanto falhar alto é um erro que se conserta."""
+    if not multiusuario_ligado():
+        return Path(settings.caminho_obsidian)
+    return settings.caminho_pessoal(identidade.exigir_dono())
+
+
+# ⚠ POR QUE ESTES HELPERS LEEM O `settings` DE MÓDULO, e não `ctx.settings`
+#
+# Escolha deliberada, não descuido — e o contraste com `etl.py` é o argumento. Lá o
+# `EtlProcessor` tem `self.ctx.settings`, os testes injetam um `Settings` DIFERENTE do
+# global, e ler o global furava a injeção: em 2026-08-03 isso fez a suíte escrever duas
+# notas de fixture no vault REAL do dono.
+#
+# Aqui é outra situação: são funções de MÓDULO, sem `ctx` no escopo, e o `ctx` que as
+# ferramentas recebem é duck-typed (o fake dos testes não é um `AppContext`). A
+# convenção deste arquivo sempre foi calibrar o global por monkeypatch, e ela funciona
+# porque há um `Settings` só no processo.
+#
+# O que protege isso de virar o bug do `etl.py`: (a) o `conftest` redireciona
+# `MENTE_CAMINHO_OBSIDIAN` para tmp, então nem um descuido alcança o vault de verdade;
+# (b) o `FakeCtx` dos testes agora expõe `.settings` apontando para a MESMA instância
+# global, então trocar para `ctx.settings.` aqui no futuro é seguro e não quebra teste.
+def raizes_de_leitura() -> List[Path]:
+    """As pastas que este turno pode LER: o acervo comum (+ `Figuras/`, que é escopo
+    do acervo) e, quando há dono no contexto, o vault pessoal dele.
+
+    SEM dono devolve só o comum — degrada para MENOS informação, nunca para a de
+    outra pessoa. Mesma escolha do `VectorStore._escopo`, e pelo mesmo motivo:
+    ausência de dono NEGA o dado pessoal em vez de adivinhar de quem ele é."""
+    if not multiusuario_ligado():
+        return [Path(settings.caminho_obsidian)]
+    raizes = [settings.caminho_acervo, settings.dir_figuras]
+    dono = identidade.dono_atual()
+    if dono:
+        raizes.append(settings.caminho_pessoal(dono))
+    return raizes
+
+
+def pasta_do_dono(subpasta: str) -> Path:
+    """Uma subpasta de trabalho (Listas, Agenda) dentro do escopo de escrita.
+
+    Com o multiusuário desligado devolve exatamente `settings.dir_listas` /
+    `settings.dir_agenda` — a lista de compras continua onde sempre esteve. Ligado,
+    cada um tem a sua: a lista de compras de um não pode ser a do outro, e com um
+    caminho único na raiz do vault ela era literalmente o mesmo arquivo."""
+    return raiz_de_escrita() / subpasta
+
+
+def arquivo_inbox() -> Path:
+    """A inbox de Captura Rápida DESTE dono. O nome do arquivo vem de
+    `settings.arquivo_inbox` (não é recopiado aqui): só o diretório muda."""
+    return raiz_de_escrita() / Path(settings.arquivo_inbox).name
+
+
+def _notas_visiveis() -> List[str]:
+    """Todo `.md` que este turno pode abrir. Um `glob` por raiz do escopo.
+
+    Com um usuário só é UM glob no vault inteiro — o mesmo de sempre. As raízes se
+    aninham (`Figuras/` mora dentro do vault, como `Pessoal/<dono>/`), então o
+    resultado é DEDUPLICADO: sem isso, uma nota alcançável por duas raízes apareceria
+    duas vezes na lista falada."""
+    vistos: List[str] = []
+    ja: set = set()
+    for raiz in raizes_de_leitura():
+        for p in glob.glob(os.path.join(str(raiz), "**/*.md"), recursive=True):
+            chave = os.path.normcase(os.path.abspath(p))
+            if chave not in ja:
+                ja.add(chave)
+                vistos.append(p)
+    return vistos
+
+
+# ==========================================================================
 # Ferramentas concretas
 # ==========================================================================
 async def _t_calcular(args: dict, ctx) -> str:
@@ -347,10 +457,8 @@ async def _t_hora(args: dict, ctx) -> str:
 
 async def _t_listar_notas(args: dict, ctx) -> str:
     def _ls() -> List[str]:
-        arquivos = glob.glob(
-            os.path.join(settings.caminho_obsidian, "**/*.md"), recursive=True
-        )
-        return sorted({os.path.splitext(os.path.basename(p))[0] for p in arquivos})
+        return sorted({os.path.splitext(os.path.basename(p))[0]
+                       for p in _notas_visiveis()})
 
     nomes = await asyncio.to_thread(_ls)
     if not nomes:
@@ -365,9 +473,7 @@ async def _t_ler_nota(args: dict, ctx) -> str:
     chaves = textutils.palavras_chave(titulo)
 
     def _achar_e_ler() -> Optional[str]:
-        arquivos = glob.glob(
-            os.path.join(settings.caminho_obsidian, "**/*.md"), recursive=True
-        )
+        arquivos = _notas_visiveis()
         melhor, melhor_score = None, 0
         for p in arquivos:
             nome = os.path.splitext(os.path.basename(p))[0]
@@ -393,9 +499,13 @@ async def _t_salvar_nota(args: dict, ctx) -> str:
     seguro = "".join(c for c in titulo if c.isalnum() or c in " -_")[:40].strip() or "Nota"
     # Carimbo com microssegundos: duas notas no mesmo segundo não se sobrescrevem.
     nome = f"{seguro.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.md"
-    caminho = os.path.join(settings.caminho_obsidian, nome)
+    caminho = os.path.join(str(raiz_de_escrita()), nome)
 
     def _save() -> None:
+        # A pasta do dono pode não existir ainda (usuário novo, 1ª nota). Sem isto o
+        # `open` estouraria FileNotFoundError e a nota se perderia — `ensure_dirs` só
+        # cria as pastas do modo de um usuário só, e não conhece os donos.
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
         with open(caminho, "w", encoding="utf-8") as f:
             f.write(f"# {titulo}\n\n{conteudo}")
 
@@ -492,7 +602,8 @@ async def _t_agendar_briefing(args: dict, ctx) -> str:
 # --- Agente de Listas (compras / tarefas) ----------------------------------------
 def _caminho_lista(nome: str) -> str:
     seguro = "".join(c for c in nome if c.isalnum() or c in " -_").strip()[:40] or "geral"
-    return os.path.join(str(settings.dir_listas), f"Lista_{seguro.replace(' ', '_')}.md")
+    return os.path.join(str(pasta_do_dono(settings.subpasta_listas)),
+                        f"Lista_{seguro.replace(' ', '_')}.md")
 
 
 async def _t_adicionar_item(args: dict, ctx) -> str:
@@ -503,6 +614,10 @@ async def _t_adicionar_item(args: dict, ctx) -> str:
     caminho = _caminho_lista(lista)
 
     def _add() -> None:
+        # `Pessoal/<dono>/Listas` não é criada pelo `ensure_dirs` (que não conhece os
+        # donos): sem o makedirs, a primeira lista de um usuário novo morreria com
+        # FileNotFoundError. No modo de um usuário só é um no-op — a pasta já existe.
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
         novo = not os.path.exists(caminho)
         with open(caminho, "a", encoding="utf-8") as f:
             if novo:
@@ -566,10 +681,11 @@ async def _t_capturar(args: dict, ctx) -> str:
     texto = str(args.get("texto", "")).strip()
     if not texto:
         return "faltou dizer o que anotar."
-    caminho = str(settings.arquivo_inbox)
+    caminho = str(arquivo_inbox())
     carimbo = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     def _add() -> None:
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)   # ver `_t_adicionar_item`
         novo = not os.path.exists(caminho)
         with open(caminho, "a", encoding="utf-8") as f:
             if novo:

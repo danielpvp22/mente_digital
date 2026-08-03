@@ -27,6 +27,16 @@ class FakeCtx:
         self.vectorstore = FakeVS()
         # #38: escrita no vault marca "sujo" (reindex vai pro idle) em vez de sync inline.
         self.vault_pendente_sync = False
+        # O fake precisa ter `.settings` como o `AppContext` de verdade tem. Aponta para
+        # a instância GLOBAL de propósito: é ela que os testes deste arquivo calibram
+        # (`monkeypatch.setattr(settings, "caminho_obsidian", ...)`), então as duas
+        # formas de ler — `settings.x` e `ctx.settings.x` — enxergam o mesmo objeto.
+        #
+        # Sem isto, o dia em que alguém trocar um `settings.` por `ctx.settings.` dentro
+        # de `tools.py` levaria um AttributeError que parece bug do código e é do fake.
+        # Fake que não tem o que o objeto real tem esconde exatamente as mudanças que
+        # ele deveria exercitar.
+        self.settings = settings
 
     def marcar_vault_sujo(self) -> None:
         self.vault_pendente_sync = True

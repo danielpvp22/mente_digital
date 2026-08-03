@@ -20,6 +20,7 @@ from typing import List, Optional
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
+from mente_digital import identidade
 from mente_digital import mestre
 from mente_digital import tools
 from mente_digital.agent import append_chat_dump
@@ -47,9 +48,23 @@ def janela_endpoint(dur_fala: float) -> float:
 
 
 class LiveSession:
-    def __init__(self, ctx: AppContext, websocket: WebSocket) -> None:
+    def __init__(self, ctx: AppContext, websocket: WebSocket,
+                 usuario: Optional[str] = None) -> None:
         self.ctx = ctx
         self.ws = websocket
+        # DE QUEM é esta conexão. Vem do `Veredito` do gate (main.websocket_endpoint) e
+        # é FIXO pela vida da conexão — o cliente nunca o envia, então não há mensagem
+        # que troque de dono no meio da sessão.
+        #
+        # Nasce no dono padrão quando ninguém disse (app sem lifespan, teste de rota
+        # crua, token legado): é o comportamento single-user de sempre.
+        #
+        # ⚠ Guardar aqui não basta — quem faz o dono VALER é o `identidade.definir_dono`
+        # no topo do `run()`. Não pode ser no `__init__`: a instância é construída na
+        # Task do `websocket_endpoint`, e marcar lá vazaria o dono para o contexto do
+        # endpoint. No `run()` o escopo é o da conexão, e `create_task` copia o contexto
+        # vigente — então cada turno nasce sabendo de quem é, sem marcar turno a turno.
+        self.usuario = usuario or identidade.DONO_PADRAO
         self.audio_buffer: List["np.ndarray"] = []
         self.is_recording = False
         self.last_audio_time = time.time()
@@ -170,6 +185,13 @@ class LiveSession:
     # -- loop principal ---------------------------------------------------------
     async def run(self) -> None:
         await self.ws.accept()
+        # O DONO passa a valer aqui, no topo da conexão — e daqui ele desce sozinho para
+        # tudo. Marcar UMA vez basta porque `create_task` COPIA o contexto vigente: todo
+        # turno (`_start_pipeline`), toda task de fundo criada dentro desta conexão
+        # nasce já sabendo de quem é. É a mesma garantia que o `state.turno_falado` usa.
+        #
+        # Sem `reset` no fim: o contexto é desta Task e morre com a conexão.
+        identidade.definir_dono(self.usuario)
         self.ctx.sessoes.add(self)
         # Abrir uma conversa nova adia o idle de conhecimento da conversa ANTERIOR (debounce):
         # a GPU fica livre pro começo desta em vez de disputar com o ETL recém-agendado.

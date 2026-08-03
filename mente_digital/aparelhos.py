@@ -44,7 +44,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Optional
 
-from mente_digital import acesso
+from mente_digital import acesso, identidade
 
 # --- Motivos ------------------------------------------------------------------
 # Dois níveis de propósito. O `motivo` é o da AUDITORIA (fino: o dono precisa saber se
@@ -113,6 +113,18 @@ class Aparelho:
     ultimo_ip: Optional[str] = None
     revogado_em: Optional[str] = None
     expira_em: Optional[str] = None
+    # DE QUEM é este aparelho (multiusuário, 2026-08-03). Fixado no PAREAMENTO e nunca
+    # mais mexido: o dono gera o código já dizendo para quem ele é, e o aparelho herda
+    # isso ao trocar o código pela credencial.
+    #
+    # ⚠ Por que não é mutável por uma rota: trocar o usuário de um aparelho já pareado
+    # seria transferir de mão a memória inteira de alguém — o celular passaria a ler
+    # notas e conversas de outra pessoa sem que ela soubesse. Se um aparelho precisar
+    # mudar de dono, o caminho é REVOGAR e parear de novo, que deixa rastro na trilha.
+    #
+    # O default é o dono padrão porque as linhas que já existem no banco (backfill) são
+    # dele — mesmo raciocínio da migração do SQLite.
+    usuario: str = identidade.DONO_PADRAO
 
     @property
     def ativo(self) -> bool:
@@ -146,6 +158,15 @@ class Veredito:
     # O segredo conferiu? Só quem prova posse merece o motivo fino na resposta HTTP
     # (ver `_SO_COM_POSSE`). Nasce False: o padrão seguro é não contar nada.
     provou_posse: bool = False
+    # DE QUEM é o turno que este veredito autoriza. É o que o gate passou a DEVOLVER —
+    # antes ele dizia só "pode entrar", e a identidade morria ali (medido: o
+    # `aparelho_id` era escrito em `request.state` e lido por UMA rota, que só o ecoava).
+    #
+    # ⚠ SÓ é preenchido quando `autorizado` é True. Num veredito de RECUSA ele fica None
+    # de propósito: dizer de quem é um aparelho recusado contaria ao sondador que aquele
+    # id existe e a quem pertence — exatamente o vazamento que o `provou_posse` fechou
+    # para os motivos. Recusa não conta nada sobre quem está do outro lado.
+    usuario: Optional[str] = None
 
     @property
     def motivo_publico(self) -> str:
@@ -270,7 +291,11 @@ def avaliar(s: Situacao) -> Veredito:
     # é o que garante que ligar/desligar a função nova não muda o caminho legado.
     if not s.habilitado:
         ok = acesso.cliente_autorizado(s.host, s.credencial, s.token_legado)
-        return Veredito(ok, MOTIVO_DESLIGADO_OK if ok else MOTIVO_DESLIGADO_NEGADO)
+        # Sem identidade por aparelho não há de quem separar: quem passa é o dono da
+        # máquina. Devolver `DONO_PADRAO` aqui (em vez de None) é o que faz o caminho
+        # legado continuar ENXERGANDO o vault de hoje quando a função nova está off.
+        return Veredito(ok, MOTIVO_DESLIGADO_OK if ok else MOTIVO_DESLIGADO_NEGADO,
+                        usuario=identidade.DONO_PADRAO if ok else None)
 
     partes = partir_credencial(s.credencial)
 
@@ -302,13 +327,19 @@ def avaliar(s: Situacao) -> Veredito:
             return Veredito(False, MOTIVO_EXPIRADO, aparelho_id, s.segredo_confere)
         if not s.segredo_confere:
             return Veredito(False, MOTIVO_SEGREDO_ERRADO, aparelho_id)
-        return Veredito(True, MOTIVO_OK, aparelho_id)
+        return Veredito(True, MOTIVO_OK, aparelho_id, usuario=ap.usuario)
 
     # Não é credencial de aparelho. Sobra a regra legada — que o dono pode desligar
     # (`aceita_token_legado=False`) depois de migrar os quatro celulares, e aí o
     # segredo único deixa de abrir a porta sem que ninguém precise editar código.
     if s.aceita_token_legado and acesso.cliente_autorizado(s.host, s.credencial, s.token_legado):
-        return Veredito(True, MOTIVO_LOOPBACK if not s.credencial else MOTIVO_TOKEN_LEGADO)
+        # Loopback (a máquina do dono) e o segredo único legado mapeiam os dois para o
+        # dono padrão. ⚠ E é exatamente por isso que o token legado precisa MORRER depois
+        # de parear os quatro celulares: enquanto ele abre a porta, qualquer um que o
+        # tenha entra como o DONO — a identidade por aparelho vira decoração. O
+        # interruptor é `MENTE_APARELHOS_TOKEN_LEGADO=false`.
+        return Veredito(True, MOTIVO_LOOPBACK if not s.credencial else MOTIVO_TOKEN_LEGADO,
+                        usuario=identidade.DONO_PADRAO)
     if not s.credencial:
         return Veredito(False, MOTIVO_SEM_CREDENCIAL)
     return Veredito(False, MOTIVO_DESCONHECIDA)

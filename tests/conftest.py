@@ -41,6 +41,26 @@ os.environ["MENTE_TRANSCRICAO_TURNOS"] = os.path.join(_TMP_DB_DIR, "turnos_teste
 # Cinto (aqui) E suspensório (o `_isola_do_env` aponta para tmp_path por teste): este
 # redirect cobre quem lê o caminho no IMPORT, a fixture cobre quem lê por chamada.
 os.environ["MENTE_ARQUIVO_CHAT_DUMP"] = os.path.join(_TMP_DB_DIR, "chat_dump_teste.md")
+# O VAULT (2026-08-03). O quarto e maior vazamento da mesma família — e este estava
+# aberto desde sempre, sem ninguém notar, porque o estrago não parece estrago.
+#
+# MEDIDO hoje: a `Listas/Lista_compras.md` do dono tem 272 linhas, das quais 4 são a
+# lista dele (v100, 3090, coca cola, toddy) e **268 são "- pão"** — despejados por cinco
+# arquivos de teste (test_agente_tools, test_auditoria, test_confirmacao, test_desfazer,
+# test_encadeamento) a cada rodada da suíte, ao longo de meses. E não para na lista: a
+# rodada de hoje deixou duas notas `Sintese_ideia_*.md` de fixture no
+# `Conhecimento_Novo/`, que o próximo `sync` indexaria como conhecimento de verdade.
+#
+# Por que passou despercebido tanto tempo: teste que escreve no banco QUEBRA outro
+# teste; teste que escreve no vault só engorda um arquivo. O sintoma não é falha, é
+# poluição — e poluição não aparece em suíte verde.
+#
+# ⚠ Isto é CINTO, não substituto do suspensório: o certo continua sendo cada teste
+# apontar `ctx.settings` para o seu `tmp_path`. Este redirect cobre quem lê o caminho no
+# IMPORT (`settings` de módulo) — que foi exatamente o descuido de hoje, um `_destino()`
+# lendo o `settings` global em vez do `ctx.settings` que o teste injetava.
+os.environ["MENTE_CAMINHO_OBSIDIAN"] = os.path.join(_TMP_DB_DIR, "vault_teste")
+os.makedirs(os.environ["MENTE_CAMINHO_OBSIDIAN"], exist_ok=True)
 
 from typing import List, Optional, Tuple
 

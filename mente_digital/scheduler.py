@@ -13,12 +13,28 @@ Tipos de agendamento (coluna `tipo`):
 - 'watcher'  : "me avise quando X". Recorrente por intervalo; a cada checagem busca na
                web e pergunta ao LLM se a condição já é verdadeira; ao SIM, avisa e encerra.
 - 'briefing' : "flash briefing" diário. Monta uma fala curta com os temas do usuário.
+- 'pomodoro' : ciclo foco<->pausa; cada disparo anuncia a transição e reprograma a próxima.
+- 'seguranca': alerta para o MESTRE que não achou ninguém conectado. Não nasce de um
+               pedido do usuário — é a fila durável reusada para o push não se perder.
 
 Pilares respeitados:
 - GPU serializada: watcher e briefing usam o LLM só depois de `interactive_idle.wait()`
   e com `preemptible=True` — a conversa ao vivo sempre passa na frente (igual ao ETL).
 - Nada de push sem ouvinte: se ninguém está conectado, o disparo vira 'pendente_entrega'
   e é entregue na próxima conexão (o próprio loop reentrega, e o WS chama no accept).
+
+MULTIUSUÁRIO (2026-08-03): este é o único serviço do projeto que age SEM um turno — ele
+parte do relógio, não de uma pergunta —, e por isso é o que mais depende do contrato do
+`identidade.py`. Duas regras nasceram daí:
+  (1) as consultas do `tick` usam `todos_os_donos=True`. É a exceção deliberada ao
+      filtro por dono: o loop não tem dono no contexto, então a consulta filtrada
+      levantaria `DonoIndefinido` com a flag ligada, o `except` do `run_forever`
+      engoliria, e os alarmes de TODAS as quatro pessoas parariam EM SILÊNCIO.
+  (2) todo disparo entra em `identidade.usar_dono(ag["dono"])` antes de qualquer coisa.
+      É esse `with` que faz o reagendamento da recorrência, a auditoria, as lacunas do
+      briefing e — sobretudo — a ESCOLHA DE PARA QUEM FALAR caírem na pessoa certa.
+O oposto de (1) é o alarme que não toca; o oposto de (2) é o lembrete de um tocando no
+celular do outro. Os dois defeitos são silenciosos, e é por isso que ambos têm teste.
 """
 from __future__ import annotations
 
@@ -33,6 +49,7 @@ from mente_digital import agenda
 from mente_digital import backup
 from mente_digital import calendario
 from mente_digital import energia
+from mente_digital import identidade
 from mente_digital import potencia
 from mente_digital import tomada
 from mente_digital import prompts
@@ -45,6 +62,16 @@ from mente_digital.telemetry import db, telemetry
 
 if TYPE_CHECKING:
     from mente_digital.state import AppContext
+
+# Estrangulamento do alerta de segurança para o MESTRE. Mesma janela e mesmo espírito do
+# `registro_aparelhos.JANELA_AUDITORIA_SEGUNDOS`, pelo mesmo motivo: sem ela, QUEM ESCOLHE
+# quantas notificações o dono recebe é o atacante — cada 401 dele viraria um push no
+# celular e uma linha no SQLite, e a defesa vira amplificador. Constante de módulo (e não
+# campo de config) porque é um piso de segurança, não uma preferência a calibrar.
+JANELA_ALERTA_SEGURANCA_SEGUNDOS = 300.0
+# Teto do dicionário de estrangulamento: a chave é o IP, e um atacante que roda IPs faria
+# esse dict crescer sem fim. Podar o que já expirou é O(n) e só acontece no estouro.
+MAX_CHAVES_ALERTA = 512
 
 
 class SchedulerService:
@@ -89,6 +116,10 @@ class SchedulerService:
         # ruído que esconde a linha que importa.
         self._standby_em_andamento = False
         self._ultimo_motivo_standby = ""
+        # Alerta de segurança (2026-08-03): chave de estrangulamento -> instante do
+        # último alerta. Só RAM, e isso basta: num restart o pior caso é o dono receber
+        # um aviso a mais — o oposto (perder o aviso) é que não pode acontecer.
+        self._alertado_em: dict[str, datetime] = {}
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -114,12 +145,20 @@ class SchedulerService:
         agora = agora or datetime.now()
         await self._probe_vram()  # #28/#29: amostra a VRAM 1x por tick
         await self._amostrar_consumo()   # wattímetro: energia acumulada por dia
-        vencidos = await asyncio.to_thread(db.get_agendamentos_vencidos, agora.isoformat())
+        # ⚠ `todos_os_donos=True` nas DUAS leituras: ver a regra (1) do cabeçalho. Este
+        # loop roda FORA de turno; a consulta filtrada levantaria `DonoIndefinido` com a
+        # flag ligada e pararia os alarmes de todo mundo sem um único erro visível. O
+        # roteamento acontece linha a linha, dentro do `_disparar`/`_entregar_pendente`.
+        vencidos = await asyncio.to_thread(
+            db.get_agendamentos_vencidos, agora.isoformat(), todos_os_donos=True)
         for ag in vencidos:
             await self._disparar(ag, agora)
         # Reentrega o que ficou pendente por falta de ouvinte — mas só se agora há alguém.
+        # O gate é "QUALQUER sessão viva" só para evitar a leitura do banco com a casa
+        # vazia; quem decide se ESTA linha pode ser falada é o dono dela, lá dentro.
         if self._ha_sessoes():
-            for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
+            for ag in await asyncio.to_thread(db.get_agendamentos_pendentes,
+                                              todos_os_donos=True):
                 await self._entregar_pendente(ag, agora)
         # Pesquisa proativa AGENDADA (#1): dispara em BACKGROUND para NÃO atrasar o loop
         # de alarmes — uma passada leva dezenas de segundos (web + LLM), e um lembrete não
@@ -319,7 +358,15 @@ class SchedulerService:
 
         Sem áudio e sem bolha, ao contrário do `_notificar_falado`: isto é um chip de
         status mudando de cor, não um recado. Também serve ao caso de duas cascas
-        abertas (janela do PC + celular) — quem não clicou fica sabendo."""
+        abertas (janela do PC + celular) — quem não clicou fica sabendo.
+
+        ⚠ Este é o ÚNICO push que continua sendo broadcast depois do multiusuário, e é
+        de propósito: o estado da GPU é da MÁQUINA, não de uma pessoa. Quem está
+        conectado precisa saber que os modelos foram soltos — é dessa variável que
+        depende o religar-antes-de-enviar do front. Filtrar por dono aqui deixaria a
+        sessão dos outros três acreditando estar 'ligado' e faria a próxima pergunta
+        deles sair com o RAG cego, que é justamente a degradação silenciosa que o aviso
+        existe para impedir."""
         payload = {"tipo": "energia", "estado": estado}
         if medida:
             payload["medida"] = medida
@@ -504,19 +551,46 @@ class SchedulerService:
         )
 
     # -- despacho por tipo ------------------------------------------------------
+    def _dono_do(self, ag: dict) -> str:
+        """De quem é este agendamento — com um piso, e o piso tem motivo.
+
+        A migração carimbou `DONO_PADRAO` em toda linha antiga, então `dono` vazio só
+        aparece num INSERT feito à mão. Ainda assim o piso existe em vez de recusar a
+        linha: sem ele, com a flag ligada, cada `atualizar_agendamento` dessa linha
+        falharia, o status nunca mudaria e o alarme dispararia A CADA TICK, para sempre.
+        Trocar um dado faltante por um laço infinito de fala é pior que assumir o dono
+        que o backfill já assumiu — mas assumir CALADO seria pior ainda, daí o aviso."""
+        dono = ag.get("dono")
+        if dono:
+            return str(dono)
+        telemetry.warn(
+            "SCHEDULER",
+            f"Agendamento {ag.get('id')} sem dono — assumindo '{identidade.DONO_PADRAO}'.")
+        return identidade.DONO_PADRAO
+
     async def _disparar(self, ag: dict, agora: datetime) -> None:
-        tipo = ag["tipo"]
-        if tipo == "lembrete":
-            await self._disparar_lembrete(ag, agora)
-        elif tipo == "watcher":
-            await self._checar_watcher(ag, agora)
-        elif tipo == "briefing":
-            await self._disparar_briefing(ag, agora)
-        elif tipo == "pomodoro":
-            await self._disparar_pomodoro(ag, agora)
-        else:
-            telemetry.warn("SCHEDULER", f"Tipo de agendamento desconhecido: {tipo!r} (id {ag['id']}).")
-            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
+        """Despacha por tipo, DENTRO da identidade do dono do agendamento.
+
+        Este `usar_dono` é a regra (2) do cabeçalho e não é cosmético: o `to_thread` das
+        chamadas de banco copia o contexto, então é ele que faz `atualizar_agendamento`,
+        `registrar_auditoria` e `get_lacunas` mirarem a pessoa certa — e é ele que o
+        `_notificar_falado` lê para saber em qual celular falar. Um disparo sem ele, com
+        a flag ligada, ou não acha a linha (o UPDATE tem `AND dono`) ou fala com todos."""
+        with identidade.usar_dono(self._dono_do(ag)):
+            tipo = ag["tipo"]
+            if tipo == "lembrete":
+                await self._disparar_lembrete(ag, agora)
+            elif tipo == "watcher":
+                await self._checar_watcher(ag, agora)
+            elif tipo == "briefing":
+                await self._disparar_briefing(ag, agora)
+            elif tipo == "pomodoro":
+                await self._disparar_pomodoro(ag, agora)
+            elif tipo == "seguranca":
+                await self._disparar_alerta(ag, agora)
+            else:
+                telemetry.warn("SCHEDULER", f"Tipo de agendamento desconhecido: {tipo!r} (id {ag['id']}).")
+                await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
 
     async def _disparar_lembrete(self, ag: dict, agora: datetime) -> None:
         entregue = await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"]))
@@ -533,12 +607,25 @@ class SchedulerService:
             telemetry.track("SCHEDULER", f"Lembrete {ag['id']} sem ouvinte — pendente de entrega.")
 
     async def _entregar_pendente(self, ag: dict, agora: datetime) -> None:
-        if self._espera_ack(str(ag["id"]), agora):
-            return  # enviado há pouco, aguardando o ack — não duplica a fala por tick
-        if not await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"])):
-            return  # ainda sem ouvinte real; tenta no próximo tick
-        self._aguardando_ack[str(ag["id"])] = (ag, agora)
-        telemetry.track("SCHEDULER", f"Agendamento {ag['id']} reenviado — aguardando ack.")
+        """Reentrega UMA linha pendente — sempre sob a identidade do dono dela.
+
+        O `usar_dono` se repete aqui (o `_disparar` já tem o seu) porque este método tem
+        DOIS chamadores: o laço do `tick`, que varre todos os donos e chega sem dono no
+        contexto, e o `entregar_pendentes` do accept, que já sabe de quem é a conexão.
+        Marcar de novo é idempotente; confiar no chamador é que não seria."""
+        with identidade.usar_dono(self._dono_do(ag)):
+            if self._espera_ack(str(ag["id"]), agora):
+                return  # enviado há pouco, aguardando o ack — não duplica a fala por tick
+            if ag["tipo"] == "seguranca":
+                # Alerta guardado por falta de ouvinte: o card rico vai junto com a
+                # bolha falada, para o alerta chegar igual ao que teria chegado ao vivo.
+                dados = self._payload(ag)
+                await self._empurrar_card_seguranca(
+                    dados.get("titulo", "alerta"), dados.get("detalhe", ""), ag["mensagem"])
+            if not await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"])):
+                return  # ainda sem ouvinte real; tenta no próximo tick
+            self._aguardando_ack[str(ag["id"])] = (ag, agora)
+            telemetry.track("SCHEDULER", f"Agendamento {ag['id']} reenviado — aguardando ack.")
 
     def _espera_ack(self, ack_id: str, agora: datetime) -> bool:
         """True se este push foi enviado há pouco e ainda esperamos a confirmação.
@@ -559,15 +646,33 @@ class SchedulerService:
         item = self._aguardando_ack.pop(str(ack_id), None)
         if item is None:
             return
-        ag, _enviado = item
-        agora = datetime.now()
-        if ag["tipo"] == "watcher":
-            await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
-            await asyncio.to_thread(db.registrar_auditoria, "watcher_satisfeito", ag["mensagem"])
-        else:
-            await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
-            await self._reprogramar_ou_concluir(ag, agora)
-        telemetry.track("SCHEDULER", f"Ack recebido — agendamento {ag['id']} confirmado.")
+        ag, enviado = item
+        dono, atual = self._dono_do(ag), identidade.dono_atual()
+        if atual is not None and atual != dono:
+            # O ack chega pelo WebSocket com um id que o CLIENTE escolhe, e a espera é um
+            # dicionário GLOBAL. Sem esta conferência bastava acertar o número para
+            # concluir (ou reprogramar) o lembrete de outra pessoa — que então nunca
+            # tocaria, sem erro nenhum no log. Devolve o item à espera: o ack legítimo
+            # do dono ainda tem de funcionar depois deste.
+            self._aguardando_ack[str(ack_id)] = (ag, enviado)
+            telemetry.warn(
+                "SCHEDULER",
+                f"Ack do agendamento {ag['id']} recusado: veio de {atual!r}, não de {dono!r}.")
+            return
+        with identidade.usar_dono(dono):
+            agora = datetime.now()
+            if ag["tipo"] == "watcher":
+                await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
+                await asyncio.to_thread(db.registrar_auditoria, "watcher_satisfeito", ag["mensagem"])
+            elif ag["tipo"] == "seguranca":
+                # Alerta não recorre e não é "lembrete disparado" na trilha: quem audita
+                # segurança procura pela ação de segurança, não no meio dos alarmes.
+                await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
+                await asyncio.to_thread(db.registrar_auditoria, "alerta_seguranca_entregue", ag["mensagem"])
+            else:
+                await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
+                await self._reprogramar_ou_concluir(ag, agora)
+            telemetry.track("SCHEDULER", f"Ack recebido — agendamento {ag['id']} confirmado.")
 
     async def _reprogramar_ou_concluir(self, ag: dict, agora: datetime) -> None:
         """Recorrente -> agenda a próxima ocorrência (à frente de agora, sem drift).
@@ -730,16 +835,60 @@ class SchedulerService:
 
     # -- push falado para as sessões vivas --------------------------------------
     def _ha_sessoes(self) -> bool:
+        """Tem ALGUÉM usando a máquina? Pergunta de HARDWARE, não de privacidade.
+
+        ⚠ Todo chamador deste método é um gate de trabalho de fundo (ingestão, OCR,
+        consolidação, colheita, pesquisa agendada): o que eles querem saber é se há uma
+        conversa viva disputando a GPU serializada. Trocar isto por "há sessão DESTE
+        dono" seria uma regressão de LATÊNCIA — o crawler voltaria a atropelar a fala de
+        outra pessoa, que é exatamente o que o gate existe para impedir.
+        Para decidir A QUEM FALAR, o método é o `_sessoes_do_dono` abaixo."""
         return bool(self.ctx.sessoes)
 
+    def _sessoes_do_dono(self, dono: Optional[str]) -> list:
+        """As sessões vivas que podem RECEBER este push. Pergunta de PRIVACIDADE.
+
+        Com quatro pessoas, o broadcast de antes entregava o lembrete de um no celular
+        do outro — vazamento de conteúdo pessoal por uma porta que nem parece porta.
+
+        DESLIGADO o multiusuário devolve TODAS as sessões: é o contrato do interruptor
+        (byte a byte o broadcast de sempre), e nesse modo todo mundo é o mesmo dono.
+
+        `getattr(s, "usuario", None)` em vez de `s.usuario` porque o atributo está
+        nascendo no `ws.py`/`main.py` em paralelo a este arquivo: enquanto ele não
+        aterrissa, uma sessão sem o campo não pode derrubar um alarme com AttributeError.
+        Ela também não recebe nada com a flag ligada — não há como adivinhar de quem é —,
+        e esse silêncio é DITO no log, porque push que some calado é o defeito que este
+        projeto mais combate."""
+        sessoes = list(self.ctx.sessoes)
+        if not settings.multiusuario_habilitado:
+            return sessoes
+        minhas, sem_dono = [], 0
+        for s in sessoes:
+            usuario = getattr(s, "usuario", None)
+            if usuario is None:
+                sem_dono += 1
+            elif usuario == dono:
+                minhas.append(s)
+        if sem_dono:
+            telemetry.warn(
+                "SCHEDULER",
+                f"{sem_dono} sessão(ões) sem usuário identificado não recebem o push "
+                f"(alvo: {dono!r}).")
+        return minhas
+
     async def _notificar_falado(self, texto: str, ack_id: Optional[str] = None) -> bool:
-        """Envia texto (bolha 'proativo') + áudio TTS a TODA sessão viva. Devolve True
-        se ao menos uma recebeu (= aceitou no socket; a ENTREGA de verdade só o ack
-        do cliente prova — ver confirmar_entrega). Sintetiza o áudio uma vez só."""
+        """Envia texto (bolha 'proativo') + áudio TTS às sessões DO DONO DO CONTEXTO.
+        Devolve True se ao menos uma recebeu (= aceitou no socket; a ENTREGA de verdade
+        só o ack do cliente prova — ver confirmar_entrega). Sintetiza o áudio uma vez só.
+
+        O dono sai do ContextVar e não de um parâmetro de propósito: quem chama aqui já
+        está dentro do `usar_dono` do disparo, e um parâmetro a mais seria mais um lugar
+        de onde esquecer — esquecimento que, aqui, fala com a pessoa errada."""
         texto = (texto or "").strip()
         if not texto:
             return False
-        sessoes = list(self.ctx.sessoes)
+        sessoes = self._sessoes_do_dono(identidade.dono_atual())
         if not sessoes:
             return False
         audio = None
@@ -759,12 +908,149 @@ class SchedulerService:
             entregue = entregue or ok
         return entregue
 
-    async def entregar_pendentes(self) -> None:
-        """Chamado quando uma conexão nova abre: entrega já o que ficou pendente,
-        sem esperar o próximo tick."""
+    async def entregar_pendentes(self, dono: Optional[str] = None) -> None:
+        """Chamado quando uma conexão nova abre: entrega já o que ficou pendente PARA
+        QUEM acabou de conectar, sem esperar o próximo tick.
+
+        Diferente do laço do `tick` (que varre todos os donos e roteia linha a linha),
+        aqui já se sabe de quem é a conexão — o ws marca o dono no accept e o
+        `create_task` copia o contexto —, então a consulta sai FILTRADA e a linha alheia
+        nem é lida. O parâmetro existe para o chamador que tem o dado mas não o
+        ContextVar (e para o teste); o default preserva a chamada de hoje, sem argumento.
+        """
+        alvo = dono or identidade.dono_atual()
+        if alvo is None and settings.multiusuario_habilitado:
+            # Com a segmentação ligada não há a quem entregar sem saber quem conectou, e
+            # cair no dono padrão seria o vazamento. Alto, não calado: é sintoma de uma
+            # conexão que subiu sem marcar identidade.
+            telemetry.warn("SCHEDULER", "Reentrega pedida sem dono no contexto — nada a entregar.")
+            return
         agora = datetime.now()
-        for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
-            await self._entregar_pendente(ag, agora)
+        # `usar_dono(None)` (multiusuário desligado, sem contexto) é o caminho de sempre:
+        # o `_dono_para_consulta` do telemetry cai em DONO_PADRAO, que é o carimbo do
+        # backfill — as mesmas linhas de antes da migração.
+        with identidade.usar_dono(alvo):
+            for ag in await asyncio.to_thread(db.get_agendamentos_pendentes):
+                await self._entregar_pendente(ag, agora)
+
+    # -- alerta de segurança para o MESTRE (2026-08-03) -------------------------
+    def alertar_seguranca(self, titulo: str, detalhe: str, chave: str) -> None:
+        """GANCHO SÍNCRONO para quem detecta abuso — hoje o `RegistroAparelhos`.
+
+        Assinatura combinada com o lado do acesso: `Callable[[str, str, str], None]`.
+        `titulo` = o que houve, curto e falável; `detalhe` = os números (ip, quantas
+        falhas, em quanto tempo); `chave` = a unidade de estrangulamento, que para o
+        rate limit de autenticação é o IP (`f"auth:{ip}"`).
+
+        Nunca levanta e nunca bloqueia: quem chama está no meio de NEGAR um acesso, e uma
+        falha de notificação não pode virar uma falha do gate. A janela é conferida AQUI,
+        antes de criar a task — senão uma rajada de 500 falhas viraria 500 tasks que
+        existiriam só para descobrir que não deviam falar."""
+        if not self._alerta_devido(chave or titulo, datetime.now()):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError as exc:
+            # Chamada de uma thread sem loop (ou do processo do vigia, que nem tem
+            # scheduler). Não dá para agendar a fala — mas o alerta não pode sumir só
+            # porque veio da thread errada, então ele fica no log de erro.
+            telemetry.error("SEGURANCA", f"Alerta sem loop para entregar: {titulo} — {detalhe}", exc)
+            return
+        self.ctx.track_task(self._alertar_mestre_agora(titulo, detalhe))
+
+    async def alertar_mestre(self, titulo: str, detalhe: str,
+                             chave: Optional[str] = None) -> bool:
+        """Empurra um alerta de segurança ao MESTRE (identidade.MESTRE). True se entregue.
+
+        Versão assíncrona do gancho acima, para quem já está no loop. `chave` é a unidade
+        de estrangulamento; sem ela, o próprio título serve — dois alertas idênticos em
+        seguida são o caso que a janela existe para conter."""
+        if not self._alerta_devido(chave or titulo, datetime.now()):
+            return False
+        return await self._alertar_mestre_agora(titulo, detalhe)
+
+    def _alerta_devido(self, chave: str, agora: datetime) -> bool:
+        """Um alerta por chave por janela — ver JANELA_ALERTA_SEGURANCA_SEGUNDOS.
+        Consome a janela ao devolver True (quem chama já pode falar)."""
+        ultimo = self._alertado_em.get(chave)
+        if ultimo is not None and (agora - ultimo).total_seconds() < JANELA_ALERTA_SEGURANCA_SEGUNDOS:
+            return False
+        if len(self._alertado_em) >= MAX_CHAVES_ALERTA:
+            vencidas = [k for k, t in self._alertado_em.items()
+                        if (agora - t).total_seconds() >= JANELA_ALERTA_SEGURANCA_SEGUNDOS]
+            for k in vencidas:
+                self._alertado_em.pop(k, None)
+        self._alertado_em[chave] = agora
+        return True
+
+    async def _alertar_mestre_agora(self, titulo: str, detalhe: str) -> bool:
+        """A entrega em si, com a janela já decidida. Nunca propaga: isto roda como task
+        de fundo disparada de dentro de um gate de acesso."""
+        texto = f"Alerta de segurança: {titulo}. {detalhe}".strip()
+        # O log vem ANTES da entrega: se o push falhar, o rastro do que aconteceu tem de
+        # existir de qualquer jeito — o celular é o canal, não a fonte da verdade.
+        telemetry.warn("SEGURANCA", f"{titulo} — {detalhe}")
+        try:
+            # O MESTRE é quem ADMINISTRA o acesso (ver identidade.py): é dele o celular
+            # que recebe, e é como ele que este bloco fala — inclusive para gravar o
+            # pendente na fila dele, e não na de quem estava conectado.
+            with identidade.usar_dono(identidade.MESTRE):
+                await self._empurrar_card_seguranca(titulo, detalhe, texto)
+                # A ENTREGA é medida pela bolha falada, não pelo card: é ela que o front
+                # de hoje exibe e acka. Card entregue sem bolha seria "chegou" para um
+                # cliente que ainda não sabe desenhá-lo — e o alerta se perderia.
+                entregue = await self._notificar_falado(texto)
+                if not entregue:
+                    await self._guardar_alerta_pendente(titulo, detalhe, texto)
+                return entregue
+        except Exception as exc:
+            telemetry.error("SEGURANCA", f"Falha ao alertar o mestre sobre '{titulo}'", exc)
+            return False
+
+    async def _empurrar_card_seguranca(self, titulo: str, detalhe: str, texto: str) -> bool:
+        """O payload {"tipo":"seguranca"} para as sessões do dono do contexto.
+
+        Dois payloads (card + bolha falada) e não um, porque são dois públicos: o card
+        carrega os campos separados, que é o que uma tela de segurança desenha; a bolha
+        é o que o front de HOJE já sabe exibir e ACKAR — sem ela, um alerta reentregue
+        nunca receberia ack e voltaria a cada tick para sempre.
+
+        ⚑ PONTO DE EXTENSÃO — o push FCM entra AQUI, não no chamador: é a única função
+        que sabe "este alerta precisa sair da máquina", e ela já roda sob a identidade
+        do destinatário. Hoje, sem app aberto, o alerta cai na fila durável e espera."""
+        rico = {"tipo": "seguranca", "titulo": titulo, "detalhe": detalhe, "texto": texto}
+        entregue = False
+        for s in self._sessoes_do_dono(identidade.dono_atual()):
+            try:
+                entregue = await s.safe_send(rico) or entregue
+            except Exception as exc:            # noqa: BLE001 - sessão morrendo
+                telemetry.warn("SEGURANCA", f"Não consegui enviar o card a uma sessão: {exc}")
+        return entregue
+
+    async def _guardar_alerta_pendente(self, titulo: str, detalhe: str, texto: str) -> None:
+        """Sem ouvinte, o alerta entra na MESMA fila durável dos lembretes em vez de uma
+        máquina nova: é ela que já sabe reentregar na próxima conexão, esperar o ack e
+        não duplicar. O `payload` guarda os campos separados para o card ser remontado
+        igual na reentrega."""
+        agora = datetime.now().isoformat()
+        ag_id = await asyncio.to_thread(
+            db.criar_agendamento, "seguranca", texto, agora,
+            payload=json.dumps({"titulo": titulo, "detalhe": detalhe}))
+        if ag_id is None:
+            telemetry.error("SEGURANCA", f"Alerta sem ouvinte NÃO pôde ser guardado: {texto}")
+            return
+        # Nasce 'ativo' (é o único status que o `criar_agendamento` escreve) e vira
+        # pendente logo em seguida. Se um tick correr nessa fresta, o `_disparar_alerta`
+        # cobre — por isso 'seguranca' também é um tipo conhecido do despacho.
+        await asyncio.to_thread(db.atualizar_agendamento, ag_id, status="pendente_entrega")
+        telemetry.track("SEGURANCA", "Alerta guardado para entrega na próxima conexão do mestre.")
+
+    async def _disparar_alerta(self, ag: dict, agora: datetime) -> None:
+        """Alerta que ficou 'ativo' (o update que o marcaria como pendente falhou, ou um
+        tick correu no meio da gravação). Mesmo desenho pessimista do lembrete: marca
+        pendente JÁ e só o ack conclui."""
+        await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
+        await self._entregar_pendente(ag, agora)
 
     @staticmethod
     def _payload(ag: dict) -> dict:

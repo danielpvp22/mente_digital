@@ -19,10 +19,11 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 from mente_digital import contradicao
 from mente_digital import diapasao
+from mente_digital import identidade
 from mente_digital import obras
 from mente_digital import prompts
 from mente_digital import textutils
@@ -36,10 +37,10 @@ from mente_digital import livro as livro_mod
 from mente_digital import ocr as ocr_mod
 from mente_digital import triagem
 from mente_digital.atomos import _slug_titulo, dividir_atomos, normalizar_atomo
-from mente_digital.config import settings
+from mente_digital.config import Settings, settings
 from mente_digital.llm import InferenciaPreemptada
 from mente_digital.otimizador import lacuna_pesquisavel
-from mente_digital.rag import NENHUM, strip_frontmatter
+from mente_digital.rag import NENHUM, multiusuario_ligado, strip_frontmatter
 from mente_digital.state import AppContext
 from mente_digital.telemetry import db, telemetry
 
@@ -70,10 +71,115 @@ def _evidencia_independente(texto: str) -> str:
     )
 
 
+# ==========================================================================
+# Em QUE pasta este ETL escreve — e por conta de QUEM ele roda
+# ==========================================================================
+# A fronteira de privacidade é a PASTA/COLEÇÃO (ver `multiusuario_ligado` em rag.py),
+# então quem grava tem de ESCOLHER onde. Todo caminho de escrita deste módulo passa
+# pelas duas funções abaixo; nenhuma rotina monta pasta de vault por conta própria.
+#
+# ⚠ O idle é o lugar onde isso é mais fácil de errar, porque ele roda SEM NINGUÉM
+# OLHANDO: o `SchedulerService` chama `pesquisa_proativa`/`pesquisa_temas_quentes`/
+# `consolidar_atomos` a partir do RELÓGIO, sem sessão e portanto sem dono no contexto.
+# Antes do multiusuário isso era irrelevante (havia um vault só); agora, um átomo
+# colhido "de ninguém" ou vai parar na pasta errada ou não é escrito. Por isso as
+# rotinas de idle rodam POR DONO (`_por_dono`), e não uma vez para a máquina.
+#
+# ⚠ TODAS RECEBEM O `Settings` POR PARÂMETRO, e isso não é preciosismo de estilo. A 1ª
+# versão lia o `settings` de MÓDULO, e o `EtlProcessor` recebe o dele por INJEÇÃO
+# (`ctx.settings`): as duas coisas normalmente são o mesmo objeto, mas em teste não são
+# — o `test_preempcao` aponta `ctx.settings` para um `tmp_path` e o código escrevia no
+# vault GLOBAL. Custou duas notas de fixture despejadas no `Conhecimento_Novo` REAL do
+# dono, que o próximo `sync` teria indexado como conhecimento de verdade. Injetar o
+# `Settings` é o que torna essa divergência impossível de acontecer em silêncio.
+def raiz_dos_atomos(st: Settings, acervo: bool = False) -> Path:
+    """A pasta onde um átomo colhido AGORA é gravado. Ponto único da decisão.
+
+    Um usuário só (o default): `Conhecimento_Novo/` na raiz do vault — byte a byte
+    o de hoje. Vários: o átomo colhido de conversa/web/pre-fetch é do DONO daquele
+    turno (`Pessoal/<dono>/Conhecimento_Novo/`), e só a ingestão de OBRA vai para o
+    acervo comum — ela é ato do dono da máquina, rodada offline, e o resultado é
+    biblioteca, não memória de alguém.
+
+    Sem dono no contexto e fora do acervo isto FALHA (`exigir_dono`). É deliberado:
+    herdar "o último dono" escreveria a memória de uma pessoa na pasta de outra, e
+    isso não tem desfazer."""
+    if not multiusuario_ligado():
+        return Path(st.dir_conhecimento_novo)
+    raiz = (st.caminho_acervo if acervo
+            else st.caminho_pessoal(identidade.exigir_dono()))
+    return raiz / st.subpasta_conhecimento_novo
+
+
+def caminho_chat_dump(st: Optional[Settings] = None) -> str:
+    """O dump bruto da conversa DESTE dono.
+
+    Com quatro pessoas, um arquivo único misturaria as conversas e o `summarize_dump`
+    atomizaria a conversa de A dentro do vault de B — o vazamento seria PERMANENTE
+    (vira nota no Zettelkasten). O nome do arquivo deriva do de sempre, então com o
+    multiusuário desligado o caminho é idêntico ao de hoje e nada precisa migrar.
+
+    `st` é opcional aqui, e só aqui, porque `append_chat_dump` é uma função de MÓDULO
+    chamada de `agent`/`ws` sem `ctx` à mão — é o caminho que já lia o global antes."""
+    base = Path((st or settings).arquivo_chat_dump)
+    if not multiusuario_ligado():
+        return str(base)
+    dono = identidade.exigir_dono()
+    return str(base.with_name(f"{base.stem}_{dono}{base.suffix}"))
+
+
+def _donos_com_dump(st: Settings) -> List[str]:
+    """Quem tem conversa esperando atomização. Complementa as pastas de `Pessoal/`:
+    um usuário NOVO conversa antes de ter pasta pessoal (ela nasce na 1ª escrita), e
+    sem isto a primeira conversa dele ficaria no disco para sempre, nunca atomizada."""
+    base = Path(st.arquivo_chat_dump)
+    prefixo = f"{base.stem}_"
+    donos: List[str] = []
+    try:
+        achados = list(base.parent.glob(f"{prefixo}*{base.suffix}"))
+    except OSError:
+        return []
+    for p in achados:
+        nome = p.name[len(prefixo): -len(base.suffix)] if base.suffix else p.name[len(prefixo):]
+        if identidade.valido(nome):
+            donos.append(identidade.normalizar(nome))
+    return donos
+
+
+def _donos_do_vault(st: Settings) -> List[str]:
+    """As pastas de `Pessoal/` que são nome de dono válido.
+
+    Mesma régua do `VectorStore._escopos_de_indexacao`: a PASTA é a fronteira, então
+    é ela também quem sabe quem existe — não um campo de config que alguém esqueceria
+    de atualizar ao criar o quarto usuário. Nome que `identidade.normalizar` recusa
+    não vira dono: adivinhar aqui seria o servidor decidindo de quem é a memória."""
+    raiz = Path(st.caminho_obsidian) / st.subpasta_pessoal
+    try:
+        nomes = [e.name for e in os.scandir(raiz) if e.is_dir()]
+    except OSError:
+        return []       # pasta ainda não criada: não há vault pessoal nenhum
+    return [n for n in nomes if identidade.valido(n) and identidade.normalizar(n) == n]
+
+
+def donos_do_ciclo(st: Optional[Settings] = None) -> List[str]:
+    """Por conta de quem o idle roda nesta passada: quem tem vault pessoal OU
+    conversa pendente. Ordenado (passada reprodutível) e sem repetição.
+
+    Nunca devolve lista vazia: com o multiusuário recém-ligado e nada migrado ainda,
+    cai no `DONO_PADRAO` — o dono das 14.492 notas que já existem. O pior desfecho
+    aqui seria o idle não rodar para NINGUÉM e a base parar de crescer em silêncio,
+    que é exatamente a família de falha que este projeto já pagou (`..._SEGUNDOS`)."""
+    st = st or settings
+    return sorted(set(_donos_do_vault(st)) | set(_donos_com_dump(st))) \
+        or [identidade.DONO_PADRAO]
+
+
 async def append_chat_dump(ator: str, texto: str) -> None:
     """Grava o dump bruto da conversa (Obsidian). IO em thread."""
+    caminho = caminho_chat_dump()
+
     def _write() -> None:
-        with open(settings.arquivo_chat_dump, "a", encoding="utf-8") as f:
+        with open(caminho, "a", encoding="utf-8") as f:
             if ator == "User":
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"\n## [{ts}]\n**Usuário:** {texto}\n")
@@ -94,6 +200,31 @@ class EtlProcessor:
         """Cede a vez para a inferência interativa antes de cada tarefa pesada."""
         await self.ctx.interactive_idle.wait()
 
+    async def _por_dono(self, tarefa: Callable[[], Awaitable[None]]) -> None:
+        """Roda `tarefa` uma vez POR DONO, cada passada sob o contexto dele.
+
+        É o que torna o idle correto SEM depender de quem o disparou: o scheduler o
+        chama a partir do relógio (sem sessão, sem dono) e a sessão o chama no fim da
+        conversa (com dono). Antes, essas duas origens levariam a resultados
+        diferentes — uma escreveria a memória de todos na pasta de uma pessoa, a
+        outra falharia por falta de dono.
+
+        Com o multiusuário DESLIGADO é uma chamada direta, no contexto que chegou:
+        nem `usar_dono` entra em cena, e o comportamento é byte a byte o de hoje.
+
+        A falha de um dono não pode matar a passada dos outros — um vault pessoal
+        corrompido deixaria os outros três sem idle para sempre. Por isso o `except`
+        é POR DONO, e vai alto no log (nada engolido)."""
+        if not multiusuario_ligado():
+            await tarefa()
+            return
+        for dono in await asyncio.to_thread(donos_do_ciclo, self.ctx.settings):
+            with identidade.usar_dono(dono):
+                try:
+                    await tarefa()
+                except Exception as exc:
+                    telemetry.error("IDLE", f"Passada de idle de '{dono}' falhou", exc)
+
     def _max_fundo(self, base: int) -> int:
         """#29: aplica o orçamento de tokens de fundo (calibrado pela VRAM livre pelo
         scheduler). Sem leitura de VRAM (orcamento_fundo None), usa o `base` de sempre."""
@@ -101,10 +232,14 @@ class EtlProcessor:
         return min(base, cap) if cap else base
 
     async def _salvar_atomos(self, texto: str, prefixo: str, tipo_log: str,
-                             origem: Optional[str] = None, subpasta: str = "") -> int:
+                             origem: Optional[str] = None, subpasta: str = "",
+                             acervo: bool = False) -> int:
         """Salva UM ARQUIVO POR ÁTOMO (Zettelkasten puro). Assim a promoção fica
         precisa por ideia: só o átomo realmente reusado perde o #conhecimento_novo,
         não os vizinhos que calharam de estar no mesmo documento. Devolve quantos salvou.
+
+        `acervo=True` manda o átomo para a biblioteca COMUM em vez do vault pessoal do
+        dono do turno — só a ingestão de obra usa isso (ver `raiz_dos_atomos`).
 
         Todo bloco passa por `normalizar_atomo` ANTES de virar arquivo: o formato do
         átomo é imposto no código, não confiado ao LLM (ver a docstring de lá — o A/B
@@ -116,6 +251,10 @@ class EtlProcessor:
         blocos = dividir_atomos(texto)
         if not blocos and texto.strip():
             blocos = [texto.strip()]
+        # A pasta é resolvida UMA vez, ANTES do laço: sem dono no contexto isto levanta
+        # `DonoIndefinido`, e é melhor que aconteça antes de gravar o primeiro átomo do
+        # que no meio — meia atomização salva é o pior dos dois desfechos possíveis.
+        raiz = str(raiz_dos_atomos(self.ctx.settings, acervo))
         agora = datetime.now()
         salvos = 0
         duplicados = 0
@@ -167,8 +306,7 @@ class EtlProcessor:
             # frontmatter de todos. A busca não muda (o índice varre `**/*.md`
             # recursivo e as figuras já viviam em subpasta); o que muda é poder
             # mover uma obra inteira movendo uma pasta.
-            destino = os.path.join(str(self.ctx.settings.dir_conhecimento_novo), subpasta) \
-                if subpasta else str(self.ctx.settings.dir_conhecimento_novo)
+            destino = os.path.join(raiz, subpasta) if subpasta else raiz
             caminho = os.path.join(destino, nome)
 
             def _save(c=caminho, body=bloco, d=destino) -> None:
@@ -267,16 +405,15 @@ class EtlProcessor:
     async def _vizinho_relacionado(self, corpo: str):
         """Vizinho na banda [dedup_dist_max, contradicao_dist_max): próximo o bastante
         para ser o MESMO tema, longe o bastante para não ser duplicata. Devolve
-        (doc, dist) ou None. Barato: 1 embedding + 1 vizinho. Fail-open."""
-        store = self.ctx.vectorstore
-        try:
-            res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
-        except Exception as exc:
-            telemetry.warn("CONTRADICAO", f"Falha ao buscar vizinho (ignorando): {exc}")
+        (doc, dist) ou None. Barato: 1 embedding + 1 vizinho. Fail-open.
+
+        Delega a busca ao `_vizinho_proximo` — é a MESMA consulta (vizinho nº 1), só
+        com outra régua em cima. Eram duas cópias, e cada uma abria o Chroma cru por
+        conta própria; unificar deixou UM ponto sabendo com que coleções falar."""
+        viz = await self._vizinho_proximo(corpo)
+        if viz is None:
             return None
-        if not res:
-            return None
-        doc, dist = res[0]
+        doc, dist = viz
         if settings.dedup_dist_max <= dist < settings.contradicao_dist_max:
             return doc, dist
         return None
@@ -300,12 +437,30 @@ class EtlProcessor:
         vez e decidir duas vezes também poupa um embedding por átomo.
 
         Fail-open: sem embeddings/loja (testes) devolve None — dedup é uma trava de
-        qualidade, não pode virar bloqueio de escrita. Barato: 1 embedding + 1 vizinho."""
+        qualidade, não pode virar bloqueio de escrita. Barato: 1 embedding + 1 vizinho.
+
+        ⚠ ESTE É O ÚNICO PONTO DO ETL QUE CONSULTA O ÍNDICE PARA DEDUP, e por isso é o
+        único lugar onde a pergunta "contra QUAL base eu comparo?" existe. Com o
+        multiusuário ligado, ir direto ao `_store` compararia o átomo de um dono só
+        contra o ACERVO — o dedup deixaria de ver o vault pessoal dele e a mesma ideia
+        entraria de novo a cada passada de idle. `recuperar()` é a porta pública que
+        faz o fan-in (acervo + coleção pessoal do dono do contexto).
+
+        TODO(rag.py): trocar os dois ramos por um `VectorStore.dedup_candidato(corpo)
+        -> Optional[tuple[Doc, float]]` — o vizinho nº 1 do escopo, SEM o filtro
+        `{"tipo": "texto"}` que o `recuperar` aplica. Enquanto ele não existe, o ramo
+        desligado segue no caminho cru para preservar o comportamento de hoje byte a
+        byte (com o filtro, uma nota de FIGURA deixaria de poder ser a duplicata
+        encontrada — provavelmente melhor, mas é mudança não medida)."""
         store = self.ctx.vectorstore
         if store is None or getattr(store, "_store", None) is None or not corpo.strip():
             return None
         try:
-            res = await asyncio.to_thread(store._store.similarity_search_with_score, corpo, 1)
+            if multiusuario_ligado():
+                res = await store.recuperar(corpo, k=1) or []
+            else:
+                res = await asyncio.to_thread(
+                    store._store.similarity_search_with_score, corpo, 1)
         except Exception as exc:
             telemetry.warn("DEDUP", f"Falha ao checar duplicata (seguindo com o save): {exc}")
             return None
@@ -452,8 +607,11 @@ class EtlProcessor:
                 if salvamento is not None:
                     await salvamento      # o do lote anterior já correu sob o decode
                 salvamento = asyncio.ensure_future(
+                    # acervo=True: livro é BIBLIOTECA, comum aos quatro — não a
+                    # memória de quem por acaso estava conversando quando o idle rodou.
                     self._salvar_atomos(conteudo, "Livro", "INGESTAO_LIVRO", origem=origem,
-                                        subpasta=livro_mod.slug(titulo_livro)))
+                                        subpasta=livro_mod.slug(titulo_livro),
+                                        acervo=True))
         finally:
             # Nenhum átomo fica pendurado, nem quando o capítulo aborta acima.
             if salvamento is not None:
@@ -489,7 +647,7 @@ class EtlProcessor:
         corpo = f"## Síntese — {titulo_livro}: {cap}\n{sintese.strip()}\n#sintese_capitulo"
         corpo += figuras_mod.bloco_markdown(list(figuras), settings.subpasta_figuras)
         await self._salvar_atomos(corpo, "LivroSintese", "INGESTAO_LIVRO", origem=origem,
-                                  subpasta=livro_mod.slug(titulo_livro))
+                                  subpasta=livro_mod.slug(titulo_livro), acervo=True)
 
     # -- Pasta vigiada de livros + colheita acadêmica (Fase 4, 2026-07-25) ------
     def _enfileirar_jobs(self, jobs: List[dict], base_nome: str) -> int:
@@ -818,14 +976,39 @@ class EtlProcessor:
         um assunto"). Só o subdir AUTO-COLHIDO (Conhecimento_Novo) — nota escrita à
         mão nunca é tocada. Ordem à prova de falha: a fusão via LLM acontece ANTES
         de qualquer mexida em arquivo; originais são ARQUIVADOS (nunca deletados) e
-        removidos do índice; só então o canônico é salvo. Devolve grupos fundidos."""
+        removidos do índice; só então o canônico é salvo. Devolve grupos fundidos.
+
+        ⚠ UMA PASSADA POR RAIZ DE ESCRITA, nunca uma só sobre tudo que enxergo. O
+        `corpus_com_embeddings` já faz o fan-in (acervo + vault pessoal do dono), e um
+        grupo que misturasse os dois seria FUNDIDO num canônico único — o conteúdo
+        pessoal de alguém acabaria dentro de uma nota da biblioteca comum, que os
+        quatro leem. Não é um risco teórico: é a operação que este método faz de
+        propósito. O acervo entra na lista porque a ingestão de obra escreve nele, e
+        deixá-lo de fora silenciaria a consolidação dos átomos de livro."""
         vs = self.ctx.vectorstore
         if not hasattr(vs, "corpus_com_embeddings"):
             return 0   # fail-open: fakes antigos/índice frio
-        corpus = await vs.corpus_com_embeddings()
+        st = self.ctx.settings
+        if not multiusuario_ligado():
+            return await self._consolidar_raiz(raiz_dos_atomos(st), acervo=False)
+        total = 0
+        total += await self._consolidar_raiz(raiz_dos_atomos(st, acervo=True), acervo=True)
+        for dono in await asyncio.to_thread(donos_do_ciclo, st):
+            with identidade.usar_dono(dono):
+                try:
+                    total += await self._consolidar_raiz(raiz_dos_atomos(st), acervo=False)
+                except Exception as exc:
+                    telemetry.error(
+                        "CONSOLIDACAO", f"Consolidação do vault de '{dono}' falhou", exc)
+        return total
+
+    async def _consolidar_raiz(self, raiz_alvo: Path, acervo: bool) -> int:
+        """A consolidação de UMA raiz do vault. É o corpo histórico do
+        `consolidar_atomos`; o que mudou foi receber a raiz por parâmetro."""
+        corpus = await self.ctx.vectorstore.corpus_com_embeddings()
         if not corpus:
             return 0
-        raiz = os.path.normpath(str(settings.dir_conhecimento_novo))
+        raiz = os.path.normpath(str(raiz_alvo))
         por_fonte: dict = {}
         for src, texto, emb in corpus:
             # 1 chunk representa o átomo (átomo é curto; chunk extra ~ quase-cópia)
@@ -842,14 +1025,14 @@ class EtlProcessor:
         )
         fundidos = 0
         for grupo in grupos[: settings.consolidacao_grupos_por_ciclo]:
-            if await self._consolidar_grupo([fontes[i] for i in grupo]):
+            if await self._consolidar_grupo([fontes[i] for i in grupo], acervo):
                 fundidos += 1
         if fundidos:
             await self.ctx.vectorstore.sync()
             telemetry.track("CONSOLIDACAO", f"{fundidos} grupo(s) fundido(s) em canônicos.")
         return fundidos
 
-    async def _consolidar_grupo(self, caminhos: List[str]) -> bool:
+    async def _consolidar_grupo(self, caminhos: List[str], acervo: bool = False) -> bool:
         """Um grupo → um átomo canônico. False = grupo fica para o próximo ciclo."""
         textos: List[str] = []
         for c in caminhos:
@@ -889,7 +1072,11 @@ class EtlProcessor:
         nomes = ", ".join(Path(c).name for c in caminhos[:5]) + ("…" if len(caminhos) > 5 else "")
         origem = (f"Consolidação de {len(caminhos)} átomos ({nomes}) — "
                   f"originais em _arquivo_consolidacao/{destino.name}/")
-        salvos = await self._salvar_atomos(fundido, "Consolidado", "CONSOLIDACAO", origem=origem)
+        # O canônico volta para a MESMA raiz de onde saíram os originais (ver o ⚠ do
+        # `consolidar_atomos`): fundir dentro de um escopo e gravar em outro seria o
+        # mesmo vazamento, só com um passo a mais.
+        salvos = await self._salvar_atomos(fundido, "Consolidado", "CONSOLIDACAO",
+                                           origem=origem, acervo=acervo)
         if not salvos:
             # Pior caso do design: canônico não entrou, mas NADA se perdeu — os
             # originais estão íntegros no arquivo morto; restaurar = mover de volta.
@@ -973,8 +1160,16 @@ class EtlProcessor:
         Zettelkasten — mesma regra da base — em vez do antigo 'Resumo_Sessao'
         estruturado. Cada ideia trocada vira um átomo recuperável, nascendo como
         #conhecimento_novo (consolida quando usado). O dump só é limpo se a síntese
-        for salva com sucesso — senão a conversa fica pra próxima passada (nada se perde)."""
-        path = settings.arquivo_chat_dump
+        for salva com sucesso — senão a conversa fica pra próxima passada (nada se perde).
+
+        Uma passada POR DONO (ver `_por_dono`): cada um tem o seu dump, e a conversa de
+        um jamais pode virar átomo no vault de outro — esse vazamento seria PERMANENTE,
+        porque o dump morre na atomização e a nota fica."""
+        await self._por_dono(self._summarize_dump_do_dono)
+
+    async def _summarize_dump_do_dono(self) -> None:
+        """A atomização do dump de UM dono — o corpo histórico do `summarize_dump`."""
+        path = caminho_chat_dump(self.ctx.settings)
         if not os.path.exists(path):
             return
         try:
@@ -1074,12 +1269,29 @@ class EtlProcessor:
         # e o perfil é o extra oportunista. Preemptível e best-effort.
         await self._atualizar_perfil(conteudo)
 
+    async def _perfil_vigente(self) -> str:
+        """O perfil de estilo DESTE dono, para o LLM refinar em cima.
+
+        Um usuário só: o cache em `ctx.perfil_conversa`, como sempre. Vários: o BANCO
+        (`db.ler_perfil` já filtra por dono), porque `ctx.perfil_conversa` é UM valor
+        para a máquina inteira — refinar o perfil de B em cima do de A produziria uma
+        voz misturada, e gravá-lo no cache daria a voz de B ao próximo turno de A.
+
+        TODO(main.py/state.py): `ctx.perfil_conversa` precisa virar por-dono (dict ou
+        leitura sob demanda). Enquanto for um valor só, o hot-path que o LÊ
+        (`respostas`) continua entregando o perfil de quem o cacheou no boot — este
+        método corrige a ESCRITA, não a leitura do outro lado."""
+        if not multiusuario_ligado():
+            return self.ctx.perfil_conversa or ""
+        return await asyncio.to_thread(db.ler_perfil) or ""
+
     async def _atualizar_perfil(self, conteudo: str) -> None:
         """#36: destila da conversa uma diretriz de COMO responder ao usuário e a
         persiste (+ atualiza o cache em ctx, lido no hot-path). Preemptível; 'NADA'
         do LLM mantém o perfil atual. Best-effort — nunca derruba a atomização."""
         if not settings.diapasao_habilitado:
             return
+        atual = await self._perfil_vigente()
         await self._esperar_idle()
         try:
             resp = await self.ctx.llama.collect(
@@ -1088,7 +1300,7 @@ class EtlProcessor:
                 # escolha certa, não a preguiçosa — o perfil descreve como falar com o
                 # usuário AGORA, e é o fim da conversa que carrega isso.
                 prompts.prompt_perfil_conversa(conteudo[-settings.etl_perfil_max_chars:],
-                                               self.ctx.perfil_conversa or ""),
+                                               atual),
                 max_tokens=self._max_fundo(settings.max_tokens_perfil),  # #29
                 system_prompt=prompts.SYS_DIAPASAO,
                 preemptible=True,
@@ -1099,8 +1311,11 @@ class EtlProcessor:
             telemetry.warn("DIAPASAO", f"Falha ao refinar perfil (ignorando): {exc}")
             return
         novo = diapasao.parse_perfil(resp)
-        if novo and novo != self.ctx.perfil_conversa:
-            self.ctx.perfil_conversa = novo
+        if novo and novo != atual:
+            # O cache em `ctx` só é escrito quando ele DE FATO representa este dono —
+            # ver `_perfil_vigente`. O banco é gravado sempre (lá o perfil tem dono).
+            if not multiusuario_ligado():
+                self.ctx.perfil_conversa = novo
             await asyncio.to_thread(db.salvar_perfil, novo)
             telemetry.track("DIAPASAO", f"Perfil de conversa atualizado: {novo[:60]}")
 
@@ -1115,7 +1330,16 @@ class EtlProcessor:
         2. ÁTOMO: `_salvar_atomos` descarta o que já está indexado (dedup_dist_max).
 
         Preempção: cada síntese é `preemptible`. Se o usuário volta, InferenciaPreemptada
-        encerra a pesquisa — o idle acabou, e as lacunas não-tocadas ficam para a próxima."""
+        encerra a pesquisa — o idle acabou, e as lacunas não-tocadas ficam para a próxima.
+
+        Uma passada POR DONO (ver `_por_dono`): a tabela `lacunas` tem coluna `dono` e
+        `db.get_lacunas` filtra pelo contexto, então rodar isto sem dono (o caso do
+        scheduler, que dispara pelo RELÓGIO) não traria lacuna nenhuma — a base pararia
+        de crescer em silêncio, que é a pior falha possível numa rotina de fundo."""
+        await self._por_dono(self._pesquisa_proativa_do_dono)
+
+    async def _pesquisa_proativa_do_dono(self) -> None:
+        """A pesquisa proativa de UM dono — o corpo histórico da `pesquisa_proativa`."""
         if not settings.idle_pesquisa_proativa:
             return
         lacunas = await asyncio.to_thread(db.get_lacunas, settings.idle_pesquisa_max * 4)
@@ -1240,7 +1464,14 @@ class EtlProcessor:
 
         Roda DEPOIS da pesquisa_proativa (buraco genuíno tem prioridade sobre refrescar o
         que já se sabe). Preemptível: se o usuário volta, InferenciaPreemptada encerra e os
-        temas não-tocados ficam para a próxima passada de idle. Capado por ciclo."""
+        temas não-tocados ficam para a próxima passada de idle. Capado por ciclo.
+
+        Uma passada POR DONO, pelo mesmo motivo da lacuna: `temas_quentes` tem coluna
+        `dono`, e o favorito de um não é o do outro."""
+        await self._por_dono(self._pesquisa_temas_do_dono)
+
+    async def _pesquisa_temas_do_dono(self) -> None:
+        """A re-pesquisa de temas quentes de UM dono — o corpo histórico do método."""
         if not settings.idle_pesquisa_temas:
             return
         temas = await asyncio.to_thread(
@@ -1357,11 +1588,27 @@ class EtlProcessor:
         a tag #conhecimento_novo (nunca usados numa resposta). 1x/dia, fora do
         hot-path (idle), e com try PRÓPRIO: falha de observabilidade nunca aborta a
         atomização. O scan completo custa poucos MB no tamanho atual (~13k chunks);
-        se a base multiplicar, trocar por count() + amostragem."""
+        se a base multiplicar, trocar por count() + amostragem.
+
+        ⚠ COM O MULTIUSUÁRIO LIGADO ESTE NÚMERO CONTA SÓ O ACERVO. `_store` é a coleção
+        base, e o snapshot roda no idle sem dono no contexto — de propósito: ele é o
+        painel do DONO DA MÁQUINA (mesma família das tabelas que `telemetry` deixou sem
+        segmentar), e somar os vaults pessoais aqui exporia o tamanho da memória de cada
+        um num gráfico que os quatro veem. O que está errado é o número ficar MENOR sem
+        avisar — daí o aviso no log, e não um total silenciosamente incompleto.
+
+        TODO(rag.py): um `VectorStore.dump_escopo(include)` público resolveria o outro
+        lado (snapshot por dono, cada um vendo o seu). Não há hoje porta pública que
+        pagine documents+metadatas do escopo — `corpus_com_embeddings` traz os vetores
+        junto e é caro demais para observabilidade."""
         try:
             store = getattr(self.ctx.vectorstore, "_store", None)
             if store is None:
                 return
+            if multiusuario_ligado():
+                telemetry.track(
+                    "BASE", "Snapshot diário: contando só o acervo comum "
+                            "(os vaults pessoais ficam fora do painel da máquina).")
             if await asyncio.to_thread(db.snapshot_base_hoje):
                 return
             dump = await asyncio.to_thread(

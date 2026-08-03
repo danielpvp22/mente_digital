@@ -399,3 +399,94 @@ def test_zero_desliga_o_encerramento():
 
 def test_nao_encerra_antes_do_tempo():
     assert not standby.deve_encerrar(45, 44 * 60, ocupado=False, ha_vigia=True)
+
+
+# --- Teto de conexões do plantão (revisão de segurança, 2026-08-03) -----------
+#
+# O `ThreadingHTTPServer` cria uma thread por conexão, SEM teto, e a thread nasce ANTES
+# do gate. Numa enxurrada, o processo que existe para viver com dezenas de MB morre por
+# exaustão de thread — e o ataque nega exatamente a função dele, do jeito mais silencioso
+# possível: você tenta acordar o PC pelo celular e a tela diz "o PC está desligado".
+class _PlantaoFalso(vigia._Plantao):
+    """Só o contador de vagas, sem abrir socket (o teste é da contabilidade)."""
+
+    def __init__(self, maximo: int) -> None:      # noqa: D107 - não chama o super
+        self.MAX_CONEXOES = maximo
+        self._vagas = threading.Semaphore(maximo)
+        self.atendidas: list = []
+        self.recusadas: list = []
+
+    # Substitutos dos pontos da stdlib que o override real chama via super().
+    def _super_process_request(self, request, client_address):
+        self.atendidas.append(client_address)
+
+    def handle_error_de_lotacao(self, client_address) -> None:
+        self.recusadas.append(client_address)
+
+
+def _plantao_com_stubs(maximo: int):
+    """Troca os `super()` da stdlib por no-ops, para exercitar só a contabilidade."""
+    p = _PlantaoFalso(maximo)
+    p.process_request = lambda req, addr: _process_request_real(p, req, addr)
+    return p
+
+
+def _process_request_real(p, request, client_address):
+    """Cópia fiel do fluxo de `_Plantao.process_request`, com os super() neutralizados."""
+    if not p._vagas.acquire(timeout=0.05):
+        p.handle_error_de_lotacao(client_address)
+        return                                   # super().shutdown_request: no-op aqui
+    p._super_process_request(request, client_address)
+
+
+def test_o_plantao_recusa_acima_do_teto_em_vez_de_criar_thread():
+    p = _plantao_com_stubs(3)
+    for i in range(3):
+        p.process_request(None, (f"10.0.0.{i}", 1))
+
+    p.process_request(None, ("10.0.0.99", 1))    # o 4º não cabe
+
+    assert len(p.atendidas) == 3
+    assert p.recusadas == [("10.0.0.99", 1)]
+
+
+def test_a_vaga_volta_mesmo_se_o_encerramento_do_socket_falhar():
+    """Duas coisas de uma vez, e a segunda é a que importa.
+
+    (a) A vaga volta quando a conexão termina — sem isso o plantão se estrangularia
+        sozinho após N conexões NORMAIS: uma negação de serviço auto-infligida, pior
+        que a que o teto evita.
+    (b) E volta pelo `finally`, ou seja MESMO quando o encerramento do socket estoura.
+        É o caso real: `shutdown_request` da stdlib toca o socket, e socket já morto
+        (cliente que sumiu, handshake TLS abortado — o cenário mais comum aqui) levanta.
+        Se a liberação estivesse depois do `super()` em vez de no `finally`, cada
+        conexão morta comeria uma vaga para sempre, e o plantão fecharia sozinho
+        justamente sob a rede ruim em que ele mais precisa funcionar.
+    """
+    p = _plantao_com_stubs(2)
+    p.process_request(None, ("10.0.0.1", 1))
+    p.process_request(None, ("10.0.0.2", 1))
+    p.process_request(None, ("10.0.0.3", 1))     # lotado
+    assert len(p.recusadas) == 1
+
+    # `None` no lugar do socket faz o super() da stdlib estourar — de propósito.
+    with pytest.raises(AttributeError):
+        vigia._Plantao.shutdown_request(p, None)
+
+    p.process_request(None, ("10.0.0.4", 1))
+    assert ("10.0.0.4", 1) in p.atendidas
+
+
+def test_recusa_por_lotacao_nao_devolve_vaga_que_nunca_pegou():
+    """O bug que quase entrou: a recusa chamava o `shutdown_request` SOBRESCRITO, que
+    libera o semáforo. O contador cresceria a cada recusa e o teto viraria ficção
+    justamente sob ataque — a única hora em que ele serve para alguma coisa."""
+    p = _plantao_com_stubs(1)
+    p.process_request(None, ("10.0.0.1", 1))     # ocupa a única vaga
+    for i in range(20):                          # 20 recusas seguidas
+        p.process_request(None, (f"10.0.1.{i}", 1))
+
+    assert len(p.recusadas) == 20
+    # Se cada recusa tivesse liberado uma vaga, haveria 20 vagas sobrando agora.
+    p.process_request(None, ("10.0.2.1", 1))
+    assert len(p.atendidas) == 1                 # segue com a vaga única ocupada
