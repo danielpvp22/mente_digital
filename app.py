@@ -895,8 +895,9 @@ def _gerir_inicio_automatico(args) -> Optional[int]:
         print(f"[APP] não consegui instalar o início automático: {exc}")
         return 1
     print(f"[APP] início automático instalado: {destino}")
-    print("[APP] no próximo logon o servidor sobe em modo economia (modelos soltos) "
-          "e fica na bandeja. Para desfazer: python app.py --remover-inicio")
+    print("[APP] no próximo logon fica de plantão o VIGIA (~60 MB, sem modelo nenhum). "
+          "Ele levanta o assistente quando o celular pedir, autenticado.")
+    print("[APP] para desfazer: python app.py --remover-inicio")
     return 0
 
 
