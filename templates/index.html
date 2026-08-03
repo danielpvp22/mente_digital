@@ -644,7 +644,7 @@
         async function renderConversas() {
             const cont = document.getElementById('history-container');
             try {
-                const res = await fetch('/api/conversas', { headers: apiHeaders() }); const data = await res.json();
+                const data = await apiGet('/api/conversas');
                 cont.innerHTML = '';
                 if (!data.length) { cont.innerHTML = '<div class="history-empty">Nenhuma conversa ainda.<br>Comece a escrever ou falar.</div>'; return; }
                 data.forEach(conv => {
@@ -656,7 +656,10 @@
                     div.onclick = () => carregarConversa(conv.id);
                     cont.appendChild(div);
                 });
-            } catch (err) { cont.innerHTML = '<div class="history-empty">Erro ao carregar o histórico.</div>'; }
+            } catch (err) {
+                cont.innerHTML = '<div class="history-empty">Não consegui carregar o histórico.<br>'
+                               + escapeHtml(motivoFalha(err)) + '</div>';
+            }
         }
 
         function limparChatView() {
@@ -680,8 +683,7 @@
         async function carregarConversa(id) {
             fecharSidebar();
             try {
-                const res = await fetch('/api/conversa/' + encodeURIComponent(id), { headers: apiHeaders() });
-                const turnos = await res.json();
+                const turnos = await apiGet('/api/conversa/' + encodeURIComponent(id));
                 limparChatView();
                 turnos.forEach(t => { appendMsg(t.q, 'user'); if (t.a) appendMsg(t.a, 'ia'); });
                 currentIaBubble = null;
@@ -689,7 +691,7 @@
                 setIdle(false);
                 wsEnviar({ tipo: "carregar_conversa", id });
                 descer(true);
-            } catch (err) { toast("Falha ao abrir a conversa."); }
+            } catch (err) { toast("Não abri a conversa. " + motivoFalha(err)); }
         }
 
         // ---------- ciclo de sessão (idle) ----------
@@ -720,9 +722,17 @@
             if (!txt) { toast("Escreva a nota no campo primeiro."); return; }
             limparComposer();
             try {
-                await fetch('/api/nota/texto', { method: 'POST', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ texto: txt }) });
+                // `res.ok` aqui não é higiene, é a diferença entre salvar e MENTIR que
+                // salvou: sem a checagem, um 401 devolvia "salva no Obsidian" e o texto
+                // ia junto com o composer que já foi limpo — a nota some sem rastro.
+                const res = await fetch('/api/nota/texto', { method: 'POST', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ texto: txt }) });
+                if (!res.ok) { const e = new Error('http ' + res.status); e.status = res.status; throw e; }
                 appendMsg("📝 Anotação manual salva no Obsidian.", 'ia');
-            } catch (err) { toast("Falha ao salvar a nota."); }
+            } catch (err) {
+                toast("Falha ao salvar a nota. " + motivoFalha(err));
+                inputTexto.value = txt;      // devolve o texto: o composer já foi limpo
+                ajustarAltura();
+            }
         }
 
         // ---------- markdown seguro ----------
@@ -895,6 +905,28 @@
             const h = Object.assign({}, extra || {});
             if (TOKEN_ACESSO) h['X-Mente-Token'] = TOKEN_ACESSO;
             return h;
+        }
+
+        // Toda leitura de /api passa por aqui. Sem checar `res.ok`, o corpo de ERRO
+        // ({"detail": "não autorizado"}) era consumido como se fosse a resposta boa:
+        // o campo esperado vinha `undefined` e cada tela contava uma história
+        // tranquilizadora. Medido em 2026-08-03 com um 401 real, o banco com 91
+        // conversas e a malha PRONTA: o histórico dizia "Nenhuma conversa ainda" e o
+        // grafo dizia "a malha ainda está sendo montada" — as duas MENTIRAS, e as
+        // duas indistinguíveis de um servidor saudável. É o que fazia o celular
+        // parecer vazio em vez de barrado. Recusa de acesso ≠ ausência de dado.
+        async function apiGet(url) {
+            const res = await fetch(url, { headers: apiHeaders() });
+            if (!res.ok) { const e = new Error('http ' + res.status); e.status = res.status; throw e; }
+            return res.json();
+        }
+        // A mensagem tem que dizer o que FAZER. 401 no celular é quase sempre o
+        // token do aparelho, e é ele que o dono consegue arrumar sozinho.
+        function motivoFalha(err) {
+            const s = err && err.status;
+            if (s === 401) return 'Acesso recusado — o token deste aparelho não confere.';
+            if (s) return 'O servidor respondeu ' + s + '.';
+            return 'Sem resposta do servidor.';
         }
 
         function conectarWS() {
@@ -1307,8 +1339,7 @@
             // deixa os filtros vazios e a busca segue funcionando sem eles.
             if (facetasCarregadas) return;
             try {
-                const res = await fetch('/api/vault/facetas', { headers: apiHeaders() });
-                const d = await res.json();
+                const d = await apiGet('/api/vault/facetas');
                 const opt = (v, t) => `<option value="${escapeHtml(v)}">${escapeHtml(t)}</option>`;
                 document.getElementById('av-f-pasta').innerHTML =
                     opt('', 'Todas as pastas') + d.pastas.map(p => opt(p.valor, `${p.valor} (${p.n})`)).join('');
@@ -1328,8 +1359,7 @@
             lista.innerHTML = '<div class="av-vazio">Buscando…</div>';
             try {
                 const p = new URLSearchParams({ k: 30, q, pasta: f.pasta, origem: f.origem, dias: f.dias });
-                const res = await fetch('/api/notas?' + p.toString(), { headers: apiHeaders() });
-                const d = await res.json();
+                const d = await apiGet('/api/notas?' + p.toString());
                 lista.innerHTML = '';
                 if (!d.itens.length) {
                     // Distingue "não existe" de "seus filtros cortaram" — sem isso o
@@ -1362,7 +1392,7 @@
                     div.onclick = () => abrirNota(it.caminho);
                     lista.appendChild(div);
                 });
-            } catch (err) { lista.innerHTML = '<div class="av-vazio">Falha ao buscar.</div>'; }
+            } catch (err) { lista.innerHTML = '<div class="av-vazio">Falha ao buscar.<br>' + escapeHtml(motivoFalha(err)) + '</div>'; }
         }
 
         let notaAberta = null;
@@ -1375,14 +1405,13 @@
             document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Abrindo…</div>';
             leitor.classList.add('on');
             try {
-                const res = await fetch('/api/nota?caminho=' + encodeURIComponent(caminho), { headers: apiHeaders() });
-                if (!res.ok) throw new Error('http ' + res.status);
-                const d = await res.json();
+                const d = await apiGet('/api/nota?caminho=' + encodeURIComponent(caminho));
                 // Mesmo parseMarkdown do chat: os wikilinks de figura viram <img> e o
                 // escape contra HTML injetado da nota é o mesmo. Um renderizador só.
                 document.getElementById('av-leitor-corpo').innerHTML = parseMarkdown(d.texto);
             } catch (err) {
-                document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Não consegui abrir esta nota.</div>';
+                document.getElementById('av-leitor-corpo').innerHTML =
+                    '<div class="av-vazio">Não consegui abrir esta nota.<br>' + escapeHtml(motivoFalha(err)) + '</div>';
             }
         }
         function fecharNota() {
@@ -1480,9 +1509,14 @@
             let d;
             try {
                 const p = new URLSearchParams({ caminho, saltos: 2, max_nos: 40 });
-                const res = await fetch('/api/vault/grafo?' + p.toString(), { headers: apiHeaders() });
-                d = await res.json();
-            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao montar o grafo.</div>'; return; }
+                d = await apiGet('/api/vault/grafo?' + p.toString());
+            } catch (err) {
+                // NÃO caia no texto de "ainda montando" abaixo: um erro de rede ou de
+                // acesso não é uma malha em construção, e confundir os dois manda o
+                // dono esperar por algo que nunca vai chegar.
+                box.innerHTML = '<div class="av-vazio">Não montei o grafo.<br>' + escapeHtml(motivoFalha(err)) + '</div>';
+                return;
+            }
 
             if (!d.malha_pronta) {
                 // Distinto de "sem vizinhos": a malha vive em RAM e é remontada em
@@ -1540,8 +1574,8 @@
             box.innerHTML = '<div class="av-vazio">Lendo…</div>';
             try {
                 const [m, h] = await Promise.all([
-                    fetch('/api/metrics', { headers: apiHeaders() }).then(r => r.json()),
-                    fetch('/api/health').then(r => r.json()),
+                    apiGet('/api/metrics'),
+                    fetch('/api/health').then(r => r.json()),   // única /api sem gate, de propósito
                 ]);
                 const linha = (r, v) => `<div class="av-linha"><span>${escapeHtml(r)}</span><span>${escapeHtml(String(v))}</span></div>`;
                 let html = '<div class="av-titulo">Serviços</div>';
@@ -1555,7 +1589,7 @@
                 html += linha('eventos de ETL', m.total_etl);
                 for (const [k, v] of Object.entries(m.sessao || {})) html += linha(k, v);
                 box.innerHTML = html;
-            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao ler as métricas.</div>'; }
+            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao ler as métricas.<br>' + escapeHtml(motivoFalha(err)) + '</div>'; }
         }
 
         // Início
