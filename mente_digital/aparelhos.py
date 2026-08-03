@@ -77,6 +77,19 @@ _PUBLICO = {
     MOTIVO_DESLIGADO_NEGADO: "credencial_invalida",
 }
 
+# ⚠ …mas SÓ para quem provou posse do segredo. A 1ª versão liberava "revogado" e
+# "expirado" para qualquer um, com o argumento de que "quem os recebe já tinha a
+# credencial". Uma revisão adversária de 2026-08-03 derrubou o argumento: o `id` é
+# PÚBLICO (aparece na tela de pareamento e em `/api/aparelhos`), e a credencial é
+# `mdk1.<id>.<segredo>` — então bastava montar `mdk1.<id conhecido>.<lixo>` para o
+# servidor responder se aquele aparelho está revogado. Sem acertar segredo nenhum.
+# O bloqueio progressivo impede VARRER ids, não uma sondagem única contra um id que
+# a pessoa já viu.
+#
+# A granularidade continua inteira na AUDITORIA (o dono precisa saber que alguém
+# sondou um aparelho revogado); o que muda é só o que sai na resposta HTTP.
+_SO_COM_POSSE = {MOTIVO_REVOGADO, MOTIVO_EXPIRADO}
+
 PREFIXO = "mdk1"
 _RE_CREDENCIAL = re.compile(r"^mdk1\.([0-9a-f]{16})\.([A-Za-z0-9_-]{16,128})$")
 
@@ -130,9 +143,14 @@ class Veredito:
     autorizado: bool
     motivo: str
     aparelho_id: Optional[str] = None
+    # O segredo conferiu? Só quem prova posse merece o motivo fino na resposta HTTP
+    # (ver `_SO_COM_POSSE`). Nasce False: o padrão seguro é não contar nada.
+    provou_posse: bool = False
 
     @property
     def motivo_publico(self) -> str:
+        if self.motivo in _SO_COM_POSSE and not self.provou_posse:
+            return "credencial_invalida"
         return _PUBLICO.get(self.motivo, self.motivo)
 
 
@@ -273,10 +291,15 @@ def avaliar(s: Situacao) -> Veredito:
         # Revogação e expiração ANTES do segredo: o segredo de um aparelho revogado
         # continua correto para sempre (nada o apaga do celular do ladrão). É o estado
         # do registro que manda, não a posse do segredo.
+        # A ORDEM (estado antes de segredo) não muda: um aparelho revogado é negado
+        # mesmo com o segredo certo. O que o `provou_posse` decide é apenas se o
+        # motivo FINO pode sair na resposta — o celular do dono, que tem o segredo,
+        # continua vendo "revogado" e mostrando a tela certa; quem só chutou o id
+        # recebe o genérico.
         if ap.revogado_em is not None:
-            return Veredito(False, MOTIVO_REVOGADO, aparelho_id)
+            return Veredito(False, MOTIVO_REVOGADO, aparelho_id, s.segredo_confere)
         if _expirado(ap.expira_em, s.agora):
-            return Veredito(False, MOTIVO_EXPIRADO, aparelho_id)
+            return Veredito(False, MOTIVO_EXPIRADO, aparelho_id, s.segredo_confere)
         if not s.segredo_confere:
             return Veredito(False, MOTIVO_SEGREDO_ERRADO, aparelho_id)
         return Veredito(True, MOTIVO_OK, aparelho_id)

@@ -154,6 +154,197 @@ def test_rota_desconhecida_nao_faz_nada(vigia_no_ar):
 
 
 # --------------------------------------------------------------------------- #
+# O gate por APARELHO (2026-08-03)                                             #
+# --------------------------------------------------------------------------- #
+# O plantão ficava um degrau atrás do servidor grande nos DOIS sentidos: o
+# aparelho revogado seguia levantando o PC do dono pelo segredo compartilhado, e o
+# celular já migrado (que não guarda mais o token antigo) não levantava nada.
+class _DbMudo:
+    """A trilha de auditoria sem tocar no banco real — mesmo motivo do vizinho
+    test_registro_aparelhos: não depender da ordem de import dos testes."""
+
+    def registrar_auditoria(self, acao: str, detalhe: str) -> None:
+        pass
+
+
+@pytest.fixture
+def vigia_com_aparelhos(monkeypatch, tmp_path):
+    from mente_digital.registro_aparelhos import RegistroAparelhos
+
+    subidas = []
+    monkeypatch.setattr(vigia, "subir_app", lambda raiz: (subidas.append(raiz) or True))
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    monkeypatch.setattr(vigia.settings, "aparelhos_habilitado", True)
+    monkeypatch.setattr(vigia.settings, "aparelhos_token_legado", True)
+    monkeypatch.setattr(vigia.rede, "porta_em_uso", lambda h, p: False)
+
+    registro = RegistroAparelhos(str(tmp_path / "aparelhos.db"), db=_DbMudo())
+    registro.init()
+    v = vigia.Vigia(tmp_path, registro=registro)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), vigia._montar_handler(v))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", subidas, registro
+    httpd.shutdown()
+
+
+def _parear(registro) -> str:
+    codigo = registro.emitir_codigo("celular", teto=4)
+    r = registro.parear(codigo, ip="127.0.0.1", teto=4, validade_minutos=10, expira_dias=90)
+    assert r.ok, r.motivo
+    return r.credencial
+
+
+def test_aparelho_pareado_acorda_o_pc(vigia_com_aparelhos):
+    """O lado esquecido do problema: quem migrou para a credencial por aparelho
+    apagou o token antigo do celular — e antes disto o plantão só entendia o token
+    antigo. O celular certo batia na porta e ouvia 401."""
+    base, subidas, registro = vigia_com_aparelhos
+    codigo, corpo = _post(base + "/vigia/acordar", token=_parear(registro))
+    assert codigo == 200 and corpo["estado"] == "subindo_agora"
+    assert len(subidas) == 1
+
+
+def test_aparelho_revogado_NAO_acorda_mais_o_pc(vigia_com_aparelhos):
+    """O lado que o dono pediu: revogar tem de valer em TODA porta. Enquanto o
+    plantão só conhecesse o segredo compartilhado, revogar era uma promessa que
+    parava justamente onde o PC está sozinho de madrugada."""
+    from mente_digital import aparelhos as regras
+
+    base, subidas, registro = vigia_com_aparelhos
+    credencial = _parear(registro)
+    registro.revogar(regras.partir_credencial(credencial)[0])
+
+    codigo, _ = _post(base + "/vigia/acordar", token=credencial)
+    assert codigo == 401
+    assert subidas == []
+
+
+def test_o_plantao_atende_em_TLS_com_o_cert_do_servidor(monkeypatch, tmp_path):
+    """O celular DERIVA o endereço do vigia do endereço do assistente, trocando só
+    a porta — inclusive o esquema (`Endereco.vigia`, Android). Ligar o HTTPS no
+    servidor grande e deixar o plantão em HTTP puro faria o app falar `https://` com
+    um socket que não fala TLS, e a falha chegaria na tela como "o PC está
+    desligado": a ambiguidade que o vigia existe para matar, ressuscitada.
+
+    Servidor real com certificado real (gerado aqui pelo `cryptography`, que já é
+    dependência transitiva): handshake é a classe de coisa que passa na leitura e
+    falha na rede."""
+    ssl = pytest.importorskip("ssl")
+    cert, chave = _cert_efemero(tmp_path)
+
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    monkeypatch.setattr(vigia.rede, "porta_em_uso", lambda h, p: False)
+    monkeypatch.setattr(vigia, "subir_app", lambda raiz: True)
+
+    ctx = vigia.contexto_tls(cert, chave)
+    assert ctx is not None
+    httpd = vigia._Plantao(("127.0.0.1", 0), vigia._montar_handler(vigia.Vigia(tmp_path)))
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        porta = httpd.server_address[1]
+        cliente = ssl._create_unverified_context()   # nosec B323 - cert efêmero do teste
+        with urllib.request.urlopen(                 # nosec B310
+                f"https://127.0.0.1:{porta}/vigia/status", timeout=5, context=cliente) as r:
+            assert json.loads(r.read().decode())["vigia"] is True
+    finally:
+        httpd.shutdown()
+
+
+def test_cert_configurado_e_quebrado_MATA_o_plantao(tmp_path):
+    """A 1ª versão caía para HTTP aqui, copiando o fail-soft do `main.py`. Uma
+    revisão adversária derrubou o argumento: se o servidor está configurado para
+    TLS, o CELULAR também está (ele deriva o esquema), então o plantão em HTTP puro
+    **já está mudo para ele** — o fallback não salva ninguém e só deixa a credencial
+    de acordar em claro num socket que escuta em `0.0.0.0`.
+
+    E o aviso era um `print`: no único caminho de "sobe com o Windows"
+    (`inicializacao.script_vbs` → `sh.Run …, 0, False`, janela oculta e sem
+    redirecionamento) ele não tem console nem arquivo onde cair. Silêncio total,
+    meses depois, quando o cert de 90 dias do Tailscale expirasse."""
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.contexto_tls(str(tmp_path / "nao_existe.crt"), str(tmp_path / "nao_existe.key"))
+
+
+def test_cert_ilegivel_tambem_mata(tmp_path):
+    """Arquivo existe mas não é certificado (truncado, trocado, chave que não casa)."""
+    lixo_cert = tmp_path / "lixo.crt"
+    lixo_chave = tmp_path / "lixo.key"
+    lixo_cert.write_text("isto não é um certificado")
+    lixo_chave.write_text("nem isto é uma chave")
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.contexto_tls(str(lixo_cert), str(lixo_chave))
+
+
+def test_a_falha_fatal_deixa_o_motivo_em_DISCO(tmp_path, monkeypatch):
+    """`print` num processo sem console é o mesmo que silêncio. O arquivo é o canal
+    que sobrevive — o dono veria, senão, só o app deixando de se encerrar."""
+    monkeypatch.setattr(vigia.settings, "ssl_cert", str(tmp_path / "nao_existe.crt"))
+    monkeypatch.setattr(vigia.settings, "ssl_key", str(tmp_path / "nao_existe.key"))
+    with pytest.raises(vigia.CertificadoInvalido):
+        vigia.servir(tmp_path, porta=0)
+
+    deixado = (tmp_path / "dados" / "vigia_erro.txt").read_text(encoding="utf-8")
+    assert "nao_existe.crt" in deixado
+    assert "0.0.0.0" in deixado          # diz POR QUE não subiu, não só que não subiu
+
+
+def test_pasta_de_dados_impossivel_nao_troca_a_excecao_original(tmp_path, monkeypatch, capsys):
+    """Se nem o arquivo der para escrever, o processo tem de morrer com a falha do
+    CERTIFICADO — não com uma falha sobre o log dela."""
+    monkeypatch.setattr(vigia.Path, "mkdir",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio")))
+    vigia.registrar_falha(tmp_path, "qualquer coisa")
+    assert "não consegui nem gravar" in capsys.readouterr().out
+
+
+def test_sem_cert_configurado_o_plantao_segue_em_http(tmp_path):
+    """O default do projeto (`ssl_cert=""`): nada muda, nem um aviso a mais."""
+    assert vigia.contexto_tls("", "") is None
+
+
+def _cert_efemero(tmp_path) -> tuple[str, str]:
+    """Cert auto-assinado de 1 dia para 127.0.0.1, feito pelo `openssl` do PATH.
+
+    Nem `cryptography` (NÃO está nesta env — medido: o teste se pulava em silêncio)
+    nem chave commitada no repo (chave privada versionada é cheiro ruim mesmo em
+    teste, e o bandit reclama com razão). `openssl` vem com o Git for Windows na
+    máquina do dono e existe no runner Linux do CI, então a prova roda nos dois —
+    que é o ponto: TLS é a classe de coisa que passa na leitura e falha na rede.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("openssl"):
+        pytest.skip("openssl não está no PATH")
+    p_cert = tmp_path / "t.crt"
+    p_chave = tmp_path / "t.key"
+    r = subprocess.run([                                         # nosec B603 B607
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(p_chave), "-out", str(p_cert), "-days", "1",
+        "-subj", "/CN=mente-teste", "-addext", "subjectAltName=IP:127.0.0.1",
+    ], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return str(p_cert), str(p_chave)
+
+
+def test_com_a_identidade_desligada_o_plantao_nao_ABRE_o_banco(monkeypatch, tmp_path):
+    """A função nasce desligada, e desligada o plantão tem de continuar barato: o
+    celular pergunta a cada tique da tela de carregamento, e abrir SQLite em cada
+    tique seria pagar por uma função que o dono não ligou.
+
+    A prova é o registro seguir None depois de um pedido atendido — construí-lo é
+    o que abriria o arquivo."""
+    monkeypatch.setattr(vigia.settings, "aparelhos_habilitado", False)
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    v = vigia.Vigia(tmp_path)
+
+    assert v.autorizado("segredo-do-dono", "192.168.0.50") is True
+    assert v.autorizado("chute", "192.168.0.50") is False
+    assert v._registro_aparelhos is None
+
+
+# --------------------------------------------------------------------------- #
 # O peso                                                                       #
 # --------------------------------------------------------------------------- #
 def test_o_vigia_nao_arrasta_o_mundo():

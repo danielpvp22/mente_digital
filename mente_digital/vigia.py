@@ -16,14 +16,18 @@ ociosidade, o PC volta a zero e o vigia continua ali.
 ⚠ NÃO IMPORTE NADA PESADO AQUI. O valor deste arquivo é ser barato; um
 `from mente_digital.rag import ...` distraído arrastaria o torch para dentro do
 processo que existe justamente para não ter torch. Só `config` (0,23 s, sem
-torch — medido), `acesso` e `rede` entram, e os três são de propósito minúsculos.
+torch — medido), `acesso`, `rede` e o registro dos aparelhos entram, e os quatro
+são de propósito minúsculos (medido em 2026-08-03: o registro custa +8 módulos e
+nenhum import pesado — 268 ms → 249 ms de import, dentro do ruído).
 
-SEGURANÇA: `acordar` é a única rota que FAZ algo, e ela exige o token — a mesma
-regra do `/api/api` do servidor grande (`acesso.cliente_autorizado`). Sem token
-configurado, só loopback. É o "só abre o servidor quando autenticado" pedido: um
-aparelho qualquer da LAN não levanta o assistente de ninguém. A rota de status
-não tem gate porque não revela nada além de "tem servidor de pé?" — o mesmo
-critério do `/api/health`.
+SEGURANÇA: `acordar` é a única rota que FAZ algo, e ela exige credencial — a MESMA
+regra do servidor grande, e desde 2026-08-03 isso inclui a identidade por aparelho.
+Sem essa parte o vigia ficava um degrau atrás do resto do sistema, nos dois sentidos:
+o aparelho REVOGADO continuava levantando o PC do dono pelo token compartilhado, e o
+aparelho PAREADO (que já não guarda o token antigo) não conseguia levantar nada — o
+celular migrado batia na porta do plantão e ouvia 401. A rota de status não tem gate
+porque não revela nada além de "tem servidor de pé?" — o mesmo critério do
+`/api/health`.
 """
 from __future__ import annotations
 
@@ -35,7 +39,10 @@ import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:      # só para a anotação: `ssl` é carregado sob demanda, e este
+    import ssl         # módulo existe para não carregar o que não vai usar
 
 from mente_digital import acesso, rede
 from mente_digital.config import settings
@@ -113,14 +120,59 @@ class Vigia:
     uma instância de handler POR REQUISIÇÃO — guardar "mandei subir às 22h" lá
     dentro seria guardar em algo que morre no fim da resposta."""
 
-    def __init__(self, raiz: Path, relogio=None) -> None:
+    def __init__(self, raiz: Path, relogio=None, registro=None) -> None:
         self.raiz = raiz
         self._relogio = relogio or __import__("time").monotonic
         self._mandou_subir_em: Optional[float] = None
         self._trava = threading.Lock()
+        # Injetável para o teste; em produção nasce None e só é construído se a
+        # identidade por aparelho estiver LIGADA (ver `_registro`).
+        self._registro_aparelhos = registro
+        # Trava PRÓPRIA, e não a do `acordar`: `threading.Lock` não é reentrante, e
+        # o dia em que alguém autorizar de dentro do `acordar` o plantão travaria
+        # para sempre — em silêncio, que é o pior jeito de um vigia falhar.
+        self._trava_registro = threading.Lock()
 
     def servidor_de_pe(self) -> bool:
         return rede.porta_em_uso(settings.host, settings.port)
+
+    # --- O gate ---------------------------------------------------------------
+    def _registro(self):
+        """Constrói o registro na PRIMEIRA necessidade, e uma vez só.
+
+        Uma vez só porque o castigo progressivo por IP vive na RAM da instância:
+        dois registros seriam dois contadores, e a força bruta ganharia o dobro de
+        tentativas de graça. O `ThreadingHTTPServer` atende cada pedido numa thread,
+        então a construção anda sob a mesma trava do `acordar`.
+        """
+        with self._trava_registro:
+            if self._registro_aparelhos is None:
+                from mente_digital.registro_aparelhos import RegistroAparelhos
+
+                reg = RegistroAparelhos(settings.db_telemetria)
+                reg.init()          # idempotente; o servidor grande faz o mesmo
+                reg.configurar_bloqueio(settings.aparelhos_bloqueio_base_segundos,
+                                        settings.aparelhos_bloqueio_teto_segundos)
+                self._registro_aparelhos = reg
+            return self._registro_aparelhos
+
+    def autorizado(self, credencial: Optional[str], host: Optional[str]) -> bool:
+        """Este pedido pode levantar o assistente?
+
+        ⚠ Com a identidade DESLIGADA o caminho é o de sempre e não toca em disco: o
+        plantão existe para ser barato, e abrir SQLite a cada tique da tela de
+        carregamento do celular seria pagar por uma função que o dono não ligou.
+        `RegistroAparelhos.autorizar(habilitado=False)` daria o mesmo veredito — mas
+        depois de abrir o banco para descobrir que não precisava.
+        """
+        if not settings.aparelhos_habilitado:
+            return acesso.cliente_autorizado(host, credencial, settings.access_token)
+        return self._registro().autorizar(
+            credencial, host, "/vigia/acordar",
+            habilitado=True,
+            token_legado=settings.access_token,
+            aceita_token_legado=settings.aparelhos_token_legado,
+        ).autorizado
 
     def _subindo_ha(self) -> Optional[float]:
         if self._mandou_subir_em is None:
@@ -166,7 +218,7 @@ def _montar_handler(vigia: Vigia):
         def _autorizado(self) -> bool:
             token = self.headers.get("X-Mente-Token")
             host = self.client_address[0] if self.client_address else None
-            return acesso.cliente_autorizado(host, token, settings.access_token)
+            return vigia.autorizado(token, host)
 
         def do_GET(self):                              # noqa: N802 - assinatura da stdlib
             if self.path.rstrip("/") == "/vigia/status":
@@ -196,13 +248,128 @@ def _montar_handler(vigia: Vigia):
     return Handler
 
 
+class CertificadoInvalido(RuntimeError):
+    """TLS pedido no `.env` e impossível de cumprir. Mata o plantão de propósito —
+    ver o ⚠ de `contexto_tls`."""
+
+
+class _Plantao(ThreadingHTTPServer):
+    """O servidor do plantão, só para calar o traceback do handshake errado.
+
+    Com TLS ligado, um cliente que ainda fale `http://` (o celular com a
+    configuração antiga é o caso certo de acontecer) produz um `ssl.SSLError` por
+    tentativa, e o `socketserver` responde a isso com um traceback inteiro. Num
+    processo que existe para ficar calado meses a fio, isso é ruído que esconde o
+    que importa. Vira UMA linha — que continua dizendo quem bateu e por quê; o
+    resto segue com o traceback de sempre, porque erro engolido é o defeito que
+    este projeto mais combate.
+    """
+
+    def handle_error(self, request, client_address):    # noqa: D102 - assinatura da stdlib
+        import ssl
+        import sys
+        import traceback
+
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ssl.SSLError):
+            print(f"[VIGIA] handshake TLS recusado de {client_address[0]}: "
+                  f"{getattr(exc, 'reason', None) or exc} (cliente falando HTTP puro?)",
+                  flush=True)
+            return
+        traceback.print_exc()
+
+
+def contexto_tls(cert: str, chave: str) -> Optional["ssl.SSLContext"]:
+    """O MESMO par de certificados do servidor grande (MENTE_SSL_CERT/KEY), ou None.
+
+    Por que o plantão precisa disto, e por que descobrir tarde sai caro: o app do
+    celular DERIVA o endereço do vigia do endereço do assistente, trocando só a
+    porta (`Endereco.vigia`, Android) — inclusive o ESQUEMA. No dia em que o dono
+    ligar o HTTPS para destravar o microfone de fora de casa, o app passaria a
+    falar `https://…:8765` com um vigia de HTTP puro, e a falha chegaria na tela
+    como "o PC está desligado". Seria a AMBIGUIDADE que o vigia existe para matar,
+    ressuscitada pelo conserto de outra coisa.
+
+    E há o motivo direto: `acordar` é a única rota que carrega o token. Deixá-la em
+    claro enquanto todo o resto vai cifrado seria proteger tudo menos a chave.
+
+    `ssl` é stdlib — não fere a regra de não trazer peso para cá.
+
+    ⚠ NÃO cai para HTTP quando o certificado está configurado e QUEBRADO — levanta.
+    A 1ª versão caía, copiando o fail-soft do `main.py` ("vigia mudo é pior que
+    vigia em claro"), e uma revisão adversária derrubou o argumento: se o servidor
+    está configurado para TLS, o celular também está (ele DERIVA o esquema), então
+    um plantão em HTTP puro **já está mudo para o celular** — o fallback não salva
+    ninguém e só deixa a credencial de acordar em claro num socket que escuta em
+    `0.0.0.0`. Pior: o aviso é um `print`, e no ÚNICO caminho de "sobe com o
+    Windows" que este projeto oferece (`inicializacao.script_vbs` → `sh.Run …, 0,
+    False`, janela oculta e sem redirecionamento) ele não tem console nem arquivo
+    onde cair. Seria uma regressão de confidencialidade completamente silenciosa,
+    meses depois, quando o cert expirasse — e o cert do Tailscale expira em 90
+    dias com renovação manual.
+
+    Caminho vazio continua sendo HTTP sem drama: "não configurei TLS" é uma
+    ESCOLHA, não um erro. O que vira exceção é a contradição entre o que o `.env`
+    pede e o que existe no disco.
+    """
+    import ssl
+
+    if not (cert and chave):
+        return None
+    if not (os.path.exists(cert) and os.path.exists(chave)):
+        raise CertificadoInvalido(
+            f"MENTE_SSL_CERT/KEY apontam para arquivo inexistente ({cert!r}, {chave!r})")
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert, keyfile=chave)
+        return ctx
+    except CertificadoInvalido:
+        raise
+    except Exception as exc:
+        raise CertificadoInvalido(f"não consegui carregar o certificado: {exc}") from exc
+
+
+def registrar_falha(raiz: Path, mensagem: str) -> None:
+    """Deixa o motivo em DISCO antes de morrer.
+
+    O plantão roda sem console (ver o ⚠ acima), então `print` sozinho é o mesmo que
+    silêncio: o dono veria só o app deixando de se encerrar, semanas depois, sem
+    nenhum lugar para olhar. Um arquivo é o canal que sobrevive a um processo sem
+    console — o mesmo recurso que `potencia_cpu` já usa para falar com o servidor.
+
+    Best-effort de propósito: se nem o arquivo der para escrever, o processo ainda
+    tem de morrer com a exceção original, não com uma exceção sobre o log.
+    """
+    try:
+        destino = raiz / "dados"
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "vigia_erro.txt").write_text(mensagem, encoding="utf-8")
+    except Exception as exc:                          # noqa: BLE001 - ver docstring
+        print(f"[VIGIA] não consegui nem gravar o motivo da falha: {exc}", flush=True)
+
+
 def servir(raiz: Path, porta: Optional[int] = None) -> None:
     """Fica de plantão. Bloqueia — é o corpo do processo do vigia."""
     porta = porta or settings.vigia_port
+    # O certificado é resolvido ANTES de abrir a porta: falhar com o socket já no
+    # ar deixaria a porta presa por um instante e, pior, um `server_close` a mais
+    # no caminho de erro. Nada de rede acontece até o TLS estar decidido.
+    try:
+        ctx = contexto_tls(settings.ssl_cert, settings.ssl_key)
+    except CertificadoInvalido as exc:
+        registrar_falha(raiz, f"[VIGIA] {exc}\nO plantão NÃO subiu: o .env pede TLS e o "
+                              f"certificado não serve. Sem isto, a credencial de acordar "
+                              f"iria em claro num socket que escuta em 0.0.0.0.\n")
+        print(f"[VIGIA] {exc} — plantão NÃO vai subir (motivo em dados/vigia_erro.txt).",
+              flush=True)
+        raise
     vigia = Vigia(raiz)
-    httpd = ThreadingHTTPServer((settings.host, porta), _montar_handler(vigia))
+    httpd = _Plantao((settings.host, porta), _montar_handler(vigia))
+    if ctx is not None:
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     protegido = "com token" if settings.access_token else "só loopback"
-    print(f"[VIGIA] de plantão em {settings.host}:{porta} ({protegido}); "
+    esquema = "https" if ctx is not None else "http"
+    print(f"[VIGIA] de plantão em {esquema}://{settings.host}:{porta} ({protegido}); "
           f"o assistente responde na {settings.port} quando subir.", flush=True)
     try:
         httpd.serve_forever()

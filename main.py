@@ -777,6 +777,34 @@ async def obter_conversa(cid: str, request: Request):
     return JSONResponse(content=turnos)
 
 
+@app.get("/api/acesso", dependencies=[Depends(exigir_acesso)])
+async def conferir_acesso(request: Request):
+    """"Eu ainda posso entrar?" — a sondagem BARATA que separa recusa de queda de rede.
+
+    Ela existe por um fato MEDIDO em 2026-08-03 (uvicorn + Chrome, `close(1008)` nas
+    duas posições): o WebSocket recusado ANTES do `accept` não entrega 1008 nenhum ao
+    navegador. O uvicorn responde HTTP 403 ao handshake e o JS recebe `code=1006`,
+    `reason=""` — byte a byte o que ele receberia com o WiFi caído. Só a recusa DEPOIS
+    do accept (a revogação ao vivo, `derrubar()`) chega como 1008 de verdade.
+
+    Ou seja: o aparelho revogado que reabre o app cai no caso mudo, e sem esta rota o
+    front só teria a opção de reconectar para sempre contra um servidor que já disse
+    não. Com ela, o front pergunta em HTTP — onde o 401 tem CORPO e o corpo tem motivo.
+
+    É de propósito a rota mais barata do arquivo: sem GPU, sem vault, sem SQLite no
+    caminho feliz (o gate só lê o banco quando a credencial tem o formato de aparelho).
+    O que ela revela, quem já passou pelo gate podia ver de qualquer jeito.
+    """
+    return JSONResponse(content={
+        "ok": True,
+        # Qual aparelho o servidor acha que é este. `null` = loopback ou token legado
+        # (sem identidade individual) — e é essa distinção que deixa o app dizer
+        # "você ainda está no token antigo" em vez de fingir que já migrou.
+        "aparelho_id": getattr(request.state, "aparelho_id", None),
+        "aparelhos_habilitado": settings.aparelhos_habilitado,
+    })
+
+
 @app.get("/api/aparelhos", dependencies=[Depends(exigir_loopback)])
 async def listar_aparelhos(request: Request):
     """Quem tem acesso, desde quando, de que IP, e quantas sessões vivas."""

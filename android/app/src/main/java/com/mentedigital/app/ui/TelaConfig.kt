@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -11,10 +12,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mentedigital.app.Ajustes
+import com.mentedigital.app.Pareamento
 import com.mentedigital.app.Saude
 import com.mentedigital.app.Servidor
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +38,9 @@ fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
     var token by remember { mutableStateOf(ajustes.token) }
     var testando by remember { mutableStateOf(false) }
     var resultado by remember { mutableStateOf<Saude?>(null) }
+    var codigo by remember { mutableStateOf("") }
+    var pareando by remember { mutableStateOf(false) }
+    var pareamento by remember { mutableStateOf<Pareamento.Resultado?>(null) }
     val escopo = rememberCoroutineScope()
 
     Column(
@@ -59,7 +65,11 @@ fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
         )
         OutlinedTextField(
             value = token, onValueChange = { token = it; resultado = null },
-            label = { Text("Token de acesso") },
+            // "ou credencial": desde a identidade por aparelho este campo guarda
+            // duas coisas com o MESMO papel — o segredo compartilhado de sempre e
+            // a credencial `mdk1...` que o pareamento abaixo escreve aqui sozinho.
+            // Os dois viajam no mesmo header, então é um slot só de propósito.
+            label = { Text("Token de acesso (ou credencial do aparelho)") },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
@@ -70,6 +80,55 @@ fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
             Text("⚠ O cofre do aparelho não está disponível. O token será guardado " +
                 "sem criptografia nesta instalação.", color = Rosa, fontSize = 13.sp)
         }
+
+        // O pareamento fica JUNTO do campo de token, e não depois dos botões, por
+        // uma razão de fluxo: ele é uma das duas formas de PREENCHER aquele campo.
+        // Embaixo do "Salvar e entrar" o dono salvaria sem token antes de descobrir
+        // que existia esta opção.
+        Spacer(Modifier.height(8.dp))
+        Text("Pareamento por código", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+        Text("Se o dono gerou um código para este celular, digite-o aqui. O app o troca " +
+            "por uma credencial só deste aparelho e a guarda no campo acima — nada para " +
+            "copiar à mão.", color = Texto2, fontSize = 13.sp)
+
+        OutlinedTextField(
+            value = codigo, onValueChange = { codigo = it; pareamento = null },
+            label = { Text("Código de pareamento") },
+            placeholder = { Text("A3K7 2M9P XR") },
+            // O contador é o que impede o botão de ficar desligado em silêncio.
+            supportingText = { Text(Pareamento.dica(codigo)) },
+            // Maiúsculas no teclado: o código é emitido só em maiúsculas, e ver na
+            // tela a mesma forma que está no PC é o que deixa o dono conferir.
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+
+        Button(
+            onClick = {
+                pareando = true
+                escopo.launch {
+                    val r = withContext(Dispatchers.IO) { servidor.parear(codigo, base) }
+                    if (r is Pareamento.Resultado.Ok) {
+                        // Grava nos DOIS lugares, e nenhum é redundante. No estado
+                        // da tela porque "Salvar e entrar" escreve `token` por cima
+                        // do que estiver em `ajustes` — sem isto, o valor velho
+                        // apagaria a credencial recém-nascida. E em `ajustes` já,
+                        // porque o código é de uso ÚNICO: sair da tela sem salvar
+                        // queimaria o código e obrigaria a pedir outro ao dono.
+                        token = r.credencial
+                        ajustes.base = base
+                        ajustes.token = r.credencial
+                        codigo = ""     // gasto: reenviá-lo só devolveria "já usado"
+                    }
+                    pareamento = r
+                    pareando = false
+                }
+            },
+            enabled = !pareando && base.isNotBlank() && Pareamento.completo(codigo),
+            shape = CircleShape,
+        ) { Text(if (pareando) "Pareando…" else "Parear este aparelho") }
+
+        pareamento?.let { ResultadoDoPareamento(it) }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
@@ -94,6 +153,31 @@ fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
         }
 
         resultado?.let { ResultadoDoTeste(it) }
+    }
+}
+
+/**
+ * O desfecho do pareamento.
+ *
+ * A cor separa o que a frase já separa: RECUSA e falha de REDE não são a mesma
+ * coisa e não pedem a mesma ação (outro código × esperar e repetir o mesmo). O
+ * texto vem todo de `Pareamento`, que é puro — esta função só o pinta.
+ */
+@Composable
+private fun ResultadoDoPareamento(r: Pareamento.Resultado) {
+    val ok = r is Pareamento.Resultado.Ok
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(Pareamento.titulo(r), color = if (ok) Acento else Rosa,
+                fontWeight = FontWeight.Medium)
+            Text(Pareamento.mensagem(r), color = Texto2, fontSize = 13.sp)
+            // O id do aparelho é PÚBLICO (aparelhos.py: "sozinho não abre nada") e
+            // é por ele que o dono acha esta linha na lista do PC para revogar.
+            if (r is Pareamento.Resultado.Ok && r.aparelhoId.isNotEmpty()) {
+                Text("Identificador deste aparelho: ${r.aparelhoId}",
+                    color = Texto2, fontSize = 12.sp)
+            }
+        }
     }
 }
 
