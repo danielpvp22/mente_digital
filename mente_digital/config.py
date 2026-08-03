@@ -1178,6 +1178,18 @@ class Settings(BaseSettings):
     # quando o celular pede (autenticado). Separada da porta do servidor de
     # propósito: os dois coexistem, e o vigia continua ali depois de o app sair.
     vigia_port: int = 8765
+    # WATT DA CPU — o arquivo que o AJUDANTE ELEVADO publica (scripts/ajudante_watts.py).
+    # VAZIO = `dados/potencia_cpu.json`, derivado de __file__ como todo caminho daqui.
+    #
+    # ⚠ Este campo governa só o lado que LÊ. O ajudante NÃO consulta o .env de
+    # propósito (recebe o caminho na linha de comando): ele roda como administrador, e
+    # quem pode editar um arquivo de texto comum não pode dizer a um processo elevado
+    # onde escrever. Ver o cabeçalho de potencia_cpu.py.
+    potencia_cpu_arquivo: str = ""
+    # Prazo de validade de uma publicação. Um ajudante MORTO deixa o último arquivo
+    # no disco; sem prazo, a faixa mostraria para sempre o watt do instante em que ele
+    # caiu. O ajudante publica a cada 2 s, então cabem 5 tropeços antes de sumir da tela.
+    potencia_cpu_validade_seconds: float = 15.0
     # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
     # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
     # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.
