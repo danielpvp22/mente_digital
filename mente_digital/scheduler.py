@@ -32,7 +32,9 @@ from pathlib import Path
 from mente_digital import agenda
 from mente_digital import backup
 from mente_digital import calendario
+from mente_digital import energia
 from mente_digital import prompts
+from mente_digital import standby
 from mente_digital import textutils
 from mente_digital import vram
 from mente_digital.config import BASE_DIR, settings
@@ -80,6 +82,11 @@ class SchedulerService:
         # OCR de livro escaneado (Fase 3): a fila são os PDFs em aguardando_ocr/; o
         # progresso por página vive em disco, então restart não perde transcrição.
         self._ocr_em_andamento = False
+        # Modo economia automático (2026-08-02): anti-sobreposição e o último motivo
+        # impresso — o watcher roda a cada tick e repetir "faltam 840s" no log seria
+        # ruído que esconde a linha que importa.
+        self._standby_em_andamento = False
+        self._ultimo_motivo_standby = ""
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -145,6 +152,13 @@ class SchedulerService:
         if self._ocr_devido(agora):
             self._ocr_em_andamento = True
             self.ctx.track_task(self._executar_ocr())
+        # MODO ECONOMIA (2026-08-02): o único item deste tick que NÃO exige sessão
+        # vazia — ele existe justamente para o app aberto o dia inteiro. Ver standby.py.
+        # Em background como os vizinhos: `liberar_vram` + `enxugar` levam segundos e
+        # um alarme não pode ficar esperando o PC dormir.
+        if self._standby_devido():
+            self._standby_em_andamento = True
+            self.ctx.track_task(self._executar_standby())
 
     # -- backup diário (painel 2026-07-24, ops-backup-01) -----------------------
     def _backup_devido(self, agora: datetime) -> bool:
@@ -219,6 +233,98 @@ class SchedulerService:
             except Exception as exc:
                 telemetry.error("OCR", "Falha ao restaurar serviços após o OCR", exc)
             self._ocr_em_andamento = False
+
+    # -- modo economia automático (2026-08-02) ----------------------------------
+    def _fundo_ocupado(self) -> bool:
+        """Há trabalho de fundo em curso que PRECISA dos modelos carregados?
+
+        Todos os jobs abaixo religam o LLM por conta própria e contam com ele até
+        terminarem; descarregar no meio não economiza, só desperdiça o que já foi
+        feito. O `idle_em_andamento` vem do `EtlProcessor.run_idle` — é o único que
+        não é despachado por este serviço (nasce do fim de conversa e da /api/idle)."""
+        return any((
+            self._pesquisa_em_andamento, self._backup_em_andamento,
+            self._ingestao_em_andamento, self._consolidacao_em_andamento,
+            self._academico_em_andamento, self._ocr_em_andamento,
+            self._standby_em_andamento, self.ctx.idle_em_andamento,
+        ))
+
+    def _standby_devido(self) -> bool:
+        """Consulta o watcher puro (standby.py) e loga o veredito quando ele MUDA.
+
+        O log condicional não é preciosismo: isto age sozinho na ausência do dono e
+        mexe na GPU. Sem rastro, "por que ele não dormiu ontem à noite?" só se
+        responde reencenando a noite inteira. Com rastro, é uma linha."""
+        situacao = standby.Situacao(
+            minutos=settings.idle_standby_minutos,
+            segundos_sem_uso=self.ctx.segundos_sem_uso(),
+            descansando=self.ctx.descansando,
+            interativo_em_voo=not self.ctx.interactive_idle.is_set(),
+            fundo_ocupado=self._fundo_ocupado(),
+        )
+        veredito = standby.avaliar(situacao)
+        if veredito.dormir:
+            return True
+        # Só interessa o veto que segura um standby JÁ vencido no relógio — "faltam
+        # 840s" a cada tick seria ruído escondendo a linha que importa.
+        vencido = (situacao.minutos > 0
+                   and situacao.segundos_sem_uso >= situacao.minutos * 60
+                   and not situacao.descansando)
+        if vencido and veredito.motivo != self._ultimo_motivo_standby:
+            self._ultimo_motivo_standby = veredito.motivo
+            telemetry.track("ECONOMIA", f"Standby adiado: {veredito.motivo}.")
+        return False
+
+    async def _executar_standby(self) -> None:
+        """Solta os modelos e AVISA quem está conectado.
+
+        O aviso é a parte que não pode faltar. A interface guarda o estado de energia
+        numa variável lida uma vez na abertura (`lerEnergia`), e é ela que faz o
+        "religar ANTES de enviar" funcionar. Se o servidor dormisse calado, a página
+        continuaria acreditando estar 'ligado' e a próxima pergunta seria respondida
+        com o RAG cego — o embedding não auto-carrega, então viria uma resposta bem
+        formada e sem contexto nenhum. Degradação silenciosa é justamente o defeito
+        que este projeto mais combate; por isso dormir sozinho obriga a avisar."""
+        try:
+            # Fecha a corrida entre o `tick` (que checou) e esta task (que age):
+            # um turno pode ter começado no meio. Espera curta — se alguém voltou
+            # a conversar, o standby não é mais devido e o próximo tick reavalia.
+            if not await self.ctx.aguardar_ocio(2.0):
+                telemetry.track("ECONOMIA", "Standby abortado — conversa retomada.")
+                return
+            antes = energia.medir()
+            liberados = await self.ctx.liberar_vram()
+            await asyncio.to_thread(energia.enxugar)
+            depois = energia.medir()
+            self.ctx.descansando = True
+            self._ultimo_motivo_standby = ""
+            minutos = settings.idle_standby_minutos
+            telemetry.track(
+                "ECONOMIA",
+                f"Descansando após {minutos} min sem uso "
+                f"({', '.join(sorted(liberados)) or 'nada a soltar'}) — "
+                f"liberou {energia.resumo(energia.delta(antes, depois))}.",
+            )
+            await self.avisar_energia("descansando", depois)
+        except Exception as exc:
+            telemetry.error("ECONOMIA", "Falha ao entrar em modo economia", exc)
+        finally:
+            self._standby_em_andamento = False
+
+    async def avisar_energia(self, estado: str, medida: Optional[dict] = None) -> None:
+        """Empurra o estado de energia para TODA sessão viva.
+
+        Sem áudio e sem bolha, ao contrário do `_notificar_falado`: isto é um chip de
+        status mudando de cor, não um recado. Também serve ao caso de duas cascas
+        abertas (janela do PC + celular) — quem não clicou fica sabendo."""
+        payload = {"tipo": "energia", "estado": estado}
+        if medida:
+            payload["medida"] = medida
+        for s in list(self.ctx.sessoes):
+            try:
+                await s.safe_send(payload)
+            except Exception as exc:                # noqa: BLE001 - sessão morrendo
+                telemetry.warn("ECONOMIA", f"Não consegui avisar uma sessão: {exc}")
 
     def _academico_devido(self, agora: datetime) -> bool:
         if (not settings.academico_habilitado or self._academico_em_andamento

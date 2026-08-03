@@ -572,6 +572,18 @@ class Agent(ComandosMestre, Respostas):
             rota = "+".join(fontes) if fontes else "web"
 
             if texto_final:
+                # PROVENIÊNCIA PARA A TELA (modo avançado): a MESMA lista que o comando
+                # falado "fonte?" usa, agora também empurrada ao front. Um ponto só, e
+                # de propósito: RAM ("memoria"), Banco ("nota:arquivo.md") e Web
+                # ("web:dominio") já convergem todos em `mem.ultimas_fontes` — enganchar
+                # em cada estágio daria três lugares para esquecer de atualizar quando
+                # surgir um quarto. Nada é recalculado aqui; só é reportado.
+                # Sessão confidencial não emite: o turno vive só na RAM, e listar as
+                # notas que o alimentaram na tela contradiria isso.
+                if not mem.confidencial and mem.ultimas_fontes:
+                    await send_medido({
+                        "tipo": "fontes", "rota": rota, "itens": list(mem.ultimas_fontes),
+                    })
                 # Dump só do que pode virar conhecimento: o idle atomiza este arquivo,
                 # então um turno efêmero aqui vira "## Hora atual" no Zettelkasten. O
                 # turno segue no SQLite (histórico do usuário) e na RAM (follow-up).

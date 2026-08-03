@@ -117,3 +117,38 @@ eval/spike/
 
 # estado retomável da passada de links (gerado)
 scripts/melhorar_links.estado.json
+
+# Casca de aplicativo (app.py) — NUNCA versionar.
+# O perfil do WebView2 guarda o localStorage da SPA, e é lá que o
+# MENTE_ACCESS_TOKEN fica depois da primeira abertura com ?token=. Commitá-lo
+# vazaria o segredo exatamente como o .env.bak vazaria (ver .dockerignore).
+# app_janela.json é só geometria, mas é estado de máquina, não código.
+dados/app_webview/
+dados/app_janela.json
+# O .ico da marca é GERADO por mente_digital/marca.py na subida (~40 ms). O
+# desenho é que é o código; o binário é artefato — e um .ico commitado seria a
+# única cópia da marca que ninguém sabe editar, e a primeira a divergir da
+# paleta. ⚠ dados/ é ignorado ENTRADA POR ENTRADA: sem esta linha, o diretório
+# novo nasceria versionável (foi o defeito nº 5 de 2026-08-02).
+dados/marca/
+
+# Logs de runtime/diagnostico do app -- artefato, nunca codigo.
+dados/*.log
+dados/*.log.err
+
+# Cliente Android (fase 1). O que entra no git é o CÓDIGO; o resto é gerado.
+# ⚠ `local.properties` guarda o caminho do SDK da MÁQUINA — versioná-lo quebra o
+# build de qualquer outro computador com um erro confuso de caminho.
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/*.iml
+android/.kotlin/
+# ⚠ Os mipmaps SÃO versionados, ao contrário do .ico do desktop — e a exceção é
+# deliberada. Lá o Python gera o ícone na subida do próprio app; aqui quem compila
+# é o GRADLE, que não roda Python. Deixá-los fora do git faria o projeto falhar no
+# primeiro build depois de clonar, com um "resource not found" que não diz o que
+# fazer. Continuam GERADOS por scripts/gerar_mipmaps.py (a fonte é marca.py);
+# rode-o de novo se a marca mudar.

@@ -8,6 +8,7 @@ Usa um SQLite temporário e fakes (sem GPU/rede).
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -34,6 +35,34 @@ class FakeCtx:
         self.llama = None
         self.interactive_idle = asyncio.Event()
         self.interactive_idle.set()
+        self.tarefas: list = []
+        # Modo economia (2026-08-02): o `tick` consulta o watcher a cada passada, e
+        # um fake sem estes campos quebraria testes que não falam de energia — a
+        # mesma lição do `track_task` logo abaixo. `ultima_interacao` nasce AGORA,
+        # que é o estado normal de um servidor recém-usado.
+        self.descansando = False
+        self.idle_em_andamento = False
+        self.ultima_interacao = time.monotonic()
+        self.liberados: list = []
+
+    def segundos_sem_uso(self, agora=None) -> float:
+        return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
+
+    async def liberar_vram(self):
+        self.liberados.append(True)
+        return {"llama", "stt", "tts", "embeddings"}
+
+    def track_task(self, coro):
+        """O mesmo contrato do AppContext.track_task (state.py:447): cria a task
+        e SEGURA uma referência forte.
+
+        Existia como buraco no fake até 2026-08-02, quando o dono ligou a pesquisa
+        agendada e um `tick()` de teste de lembrete caiu neste ramo pela primeira
+        vez — `AttributeError` no meio de um teste que não fala de pesquisa. Um
+        fake a que falta um método do objeto real não simplifica: esconde."""
+        tarefa = asyncio.ensure_future(coro)
+        self.tarefas.append(tarefa)
+        return tarefa
 
 
 @pytest.fixture

@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, Optional, Set, Tuple
+from typing import TYPE_CHECKING, AsyncIterator, Coroutine, Deque, List, Optional, Set, Tuple
 
 from mente_digital.config import Settings
 from mente_digital.telemetry import telemetry
@@ -201,6 +202,9 @@ class AppContext:
     # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
     # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
     _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
+    # Só as tarefas que o `_boot` despachou, com o rótulo que a tela de boot mostra.
+    # Ver `track_boot_task` para o porquê de ser lista de PERMISSÃO.
+    _rotulo_boot: dict = field(default_factory=dict, repr=False)
     # #38: escrita no vault via ferramenta (nota/lista/captura) DURANTE a conversa não
     # reindexa na hora — o `sync` re-embeda os chunks E reconstrói a MALHA sobre ~13k
     # átomos na GPU serializada, o que congelava o PRÓXIMO turno (~46s: o STT em cuda e
@@ -227,6 +231,27 @@ class AppContext:
     etl: "EtlProcessor" = None            # type: ignore[assignment]
     scheduler: "SchedulerService" = None  # type: ignore[assignment]
 
+    # MODO ECONOMIA (2026-08-02): os modelos estão soltos e a máquina livre — o
+    # servidor segue de pé atendendo /api, mas LLM/Whisper/voz/embeddings saíram da
+    # VRAM. Vive AQUI, e não em `app.state`, porque quem decide dormir sozinho é o
+    # scheduler (que só enxerga o ctx) e quem responde "como você está?" é a rota
+    # /api/energia: dois donos do mesmo booleano é como um deles fica desatualizado.
+    descansando: bool = False
+    # O ETL do idle está rodando? Marcado por `EtlProcessor.run_idle` (ponto único —
+    # ele é disparado de três lugares: fim de conversa, rota /api/idle e testes). O
+    # watcher de economia lê isto para não descarregar o modelo POR CIMA de uma
+    # atomização em curso: soltar a VRAM debaixo do ETL não economiza nada, só perde
+    # o trabalho que ele já tinha feito.
+    idle_em_andamento: bool = False
+    # Relógio (monotônico) do último turno INTERATIVO — o que o watcher de economia
+    # usa para decidir que ninguém está usando.
+    #
+    # ⚠ Por que atividade e não "não há sessão": todo o resto do trabalho de fundo
+    # (ingestão, OCR, consolidação) usa `ctx.sessoes` vazio como sinal de ócio, e
+    # isso funciona porque são jobs que só rodam com o app FECHADO. O standby é o
+    # oposto: ele existe justamente para o app aberto o dia inteiro, onde a sessão
+    # nunca fecha. Com a régua da sessão ele jamais dispararia.
+    ultima_interacao: float = field(default_factory=time.monotonic)
     # #29: orçamento de tokens de fundo, recalibrado pelo scheduler a cada tick a
     # partir da VRAM livre. None = sem leitura (sem CUDA) -> o fundo usa o max_tokens
     # configurado normalmente.
@@ -258,12 +283,50 @@ class AppContext:
         # Interação nova = adia o idle de conhecimento pendente (debounce). Sem isto, o ETL
         # agendado ao fim da conversa ANTERIOR pousaria na GPU durante ESTE turno.
         self.adiar_idle_conhecimento()
+        self.marcar_uso()
         try:
             yield
         finally:
             self._interativos = max(0, self._interativos - 1)
             if self._interativos == 0:
                 self.interactive_idle.set()
+            # Também na SAÍDA: o relógio do standby conta do FIM do turno. Marcar só na
+            # entrada faria uma resposta longa (síntese de tema, map-reduce) envelhecer
+            # enquanto ainda estava sendo gerada.
+            self.marcar_uso()
+
+    async def aguardar_ocio(self, timeout: float) -> bool:
+        """Espera o turno em voo terminar. False = estourou o tempo e ainda há um.
+
+        Existe por causa do botão de MODO ECONOMIA, que agora existe no celular —
+        e é apertado por quem está longe do PC, sem ver o que acontece nele.
+        Descarregar os modelos no meio de uma resposta não a derruba (o pipeline
+        é fail-soft), faz pior: ela sai DEGRADADA e calada. Medido em 2026-08-02,
+        o `liberar_vram` no meio de um turno levou o embedding junto e a busca de
+        figuras estourou `'NoneType' object has no attribute 'embed_query'` — o
+        pára-quedas segurou ("seguindo só com texto") e a pessoa recebeu uma
+        resposta pior sem nada dizendo que foi por isso.
+
+        O watcher automático já vetava esse caso; o botão manual, não."""
+        try:
+            await asyncio.wait_for(self.interactive_idle.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def marcar_uso(self) -> None:
+        """"Alguém está usando isto agora" — rearma o relógio do modo economia.
+
+        Chamado de todo caminho que significa uso real: turno interativo (acima),
+        religar pela rota de energia e abertura de conexão. Não é chamado por
+        trabalho de FUNDO: o ETL/crawler rodando não é motivo para segurar a VRAM
+        depois que ele terminar."""
+        self.ultima_interacao = time.monotonic()
+
+    def segundos_sem_uso(self, agora: Optional[float] = None) -> float:
+        """Há quanto tempo ninguém interage. `agora` injetado para o teste não
+        depender do relógio (mesmo padrão de `agenda.parse_quando`)."""
+        return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
 
     def agendar_idle_conhecimento(self, itens: list) -> None:
         """Enfileira os itens do fim de conversa e (re)arma o timer de carência (debounce).
@@ -326,6 +389,71 @@ class AppContext:
         if self.etl is not None:
             self.track_task(self.etl.run_idle(itens))
 
+    def track_boot_task(self, coro: Coroutine, rotulo: str) -> "asyncio.Task":
+        """`track_task` + marca a tarefa como sendo DO BOOT.
+
+        A marcação explícita substituiu uma heurística que se mostrou errada em
+        produção (2026-08-02): `tarefas_de_fundo` contava toda task retida menos
+        uma lista de laços perpétuos, e isso era veneno — o app cria trabalho de
+        fundo o tempo TODO em runtime (a passada de consolidação do scheduler, o
+        ETL do idle). Resultado: a tela de boot do app nativo ficava presa em 80%
+        esperando uma pendência que nunca acabava, porque a fila nunca esvazia.
+
+        Lista de PERMISSÃO é a forma certa aqui: "o boot terminou?" é uma pergunta
+        sobre um conjunto FECHADO e conhecido de tarefas, e nenhum trabalho criado
+        depois pode entrar nela por acidente."""
+        tarefa = self.track_task(coro)
+        self._rotulo_boot[tarefa] = rotulo
+        return tarefa
+
+    def tarefas_de_fundo(self) -> List[str]:
+        """Rótulos do trabalho de fundo AINDA em voo — sem os laços perpétuos.
+
+        Existe para a tela de boot do app nativo (app.py). O `_boot` do main.py
+        despacha trabalho que NÃO segura a porta: `llama.load`, `_malha_e_sync`
+        (malha de conceitos + sync do Chroma) e o `preparar_ram` do XTTS. A porta
+        abre antes deles terminarem, então quem só olhasse "os serviços estão
+        `ready`?" anunciaria "tudo pronto" com três jobs disputando GPU e disco.
+
+        Isso não é teórico: medido em 2026-08-02, a primeira pergunta feita logo
+        após o boot decodificou a **44,8 tok/s** contra os 93–113 tok/s das dez
+        amostras anteriores desta máquina, e a busca no vault levou 889 ms contra
+        um p50 de 242 ms. `lock_wait_ms` era 0 — não era fila do executor de GPU,
+        era disputa de recurso bruto com o boot.
+
+        SÓ conta o que `track_boot_task` marcou. Não é genérico de propósito: uma
+        tentativa anterior varria o `_bg_tasks` inteiro excluindo laços perpétuos, e
+        o trabalho de runtime (consolidação, ETL do idle) entrava na conta e travava
+        a tela de boot em 80% para sempre. Ver `track_boot_task`.
+
+        Efeito colateral bom: a lista se limpa sozinha. Task concluída sai do dict,
+        então isto não cresce num processo que fica dias no ar."""
+        pendentes: List[str] = []
+        for task in list(self._rotulo_boot):
+            if task.done():
+                self._rotulo_boot.pop(task, None)
+                continue
+            pendentes.append(self._rotulo_boot[task])
+        return sorted(set(pendentes))
+
+    def _provedor_de_embeddings(self):
+        """O `EmbeddingProvider` de dentro do VectorStore, ou None.
+
+        ⚠ BUG CORRIGIDO em 2026-08-02: isto era um `getattr(vectorstore,
+        "embeddings", None)` inline, mas o `VectorStore.__init__` guarda o
+        provedor em `self._embeddings`, COM underscore (rag.py:708). O getattr
+        devolvia None e o `liberar_vram` pulava o embedding CALADO — desde que a
+        função nasceu, inclusive no caminho do OCR para o qual ela foi escrita.
+        O sintoma era invisível: `liberados` vinha sem "embeddings" e ninguém
+        comparava com o que deveria estar lá.
+
+        O nome público (`embeddings`, sem underscore) fica como primeira opção
+        porque os fakes duck-typed dos testes usam essa forma."""
+        loja = getattr(self, "vectorstore", None)
+        if loja is None:
+            return None
+        return getattr(loja, "embeddings", None) or getattr(loja, "_embeddings", None)
+
     async def liberar_vram(self) -> Set[str]:
         """Descarrega TUDO do projeto que ocupa VRAM — Fase 3 (OCR).
 
@@ -346,8 +474,7 @@ class AppContext:
             liberados.add("llama")     # religa sozinho (ensure_loaded) — não restauramos
         for nome, alvo in (("stt", getattr(self, "stt", None)),
                            ("tts", getattr(self, "tts", None)),
-                           ("embeddings", getattr(getattr(self, "vectorstore", None),
-                                                  "embeddings", None))):
+                           ("embeddings", self._provedor_de_embeddings())):
             if alvo is None or not hasattr(alvo, "unload") or not getattr(alvo, "ready", True):
                 continue
             try:
@@ -355,7 +482,17 @@ class AppContext:
                 liberados.add(nome)
             except Exception as exc:
                 telemetry.error("VRAM", f"Falha ao descarregar {nome}", exc)
-        self._vram_liberada = liberados - {"llama"}
+        # ACUMULA, não sobrescreve. ⚠ Este `|=` era um `=`, e o defeito só aparecia
+        # no SEGUNDO descarregamento seguido — que o modo economia tornou comum
+        # (2026-08-02, visto no celular): o watcher dormiu e guardou
+        # {embeddings, stt}; algo religou só o embedding; o botão "Modo economia"
+        # descarregou de novo e a lista virou {embeddings}, PERDENDO o stt. No
+        # religar, `restaurar_vram` trouxe só o embedding e o Whisper ficou fora
+        # para sempre — sem erro, sem log, com a voz simplesmente não funcionando.
+        # É a degradação silenciosa que o docstring acima existe para evitar.
+        # Serviço que voltou por outro caminho é religado à toa; `load` é
+        # idempotente, e pagar um load a mais é infinitamente melhor que perder um.
+        self._vram_liberada |= liberados - {"llama"}
         if liberados:
             telemetry.track("VRAM", f"VRAM liberada para o OCR: {', '.join(sorted(liberados))}")
         return liberados
@@ -366,7 +503,7 @@ class AppContext:
         silencioso. Cada `load` é síncrono, então vai por to_thread."""
         pendentes, self._vram_liberada = set(self._vram_liberada), set()
         for nome in sorted(pendentes):
-            alvo = (getattr(getattr(self, "vectorstore", None), "embeddings", None)
+            alvo = (self._provedor_de_embeddings()
                     if nome == "embeddings" else getattr(self, nome, None))
             if alvo is None:
                 continue

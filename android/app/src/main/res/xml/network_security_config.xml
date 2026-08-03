@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CLEARTEXT: o servidor do Mente Digital sobe em HTTP por default
+  (config.py: ssl_cert="" / ssl_key=""), e desde o Android 9 (API 28) o
+  `usesCleartextTraffic` é FALSE por padrão. Sem este arquivo o app não conecta
+  em nada out-of-the-box, e o OkHttp reporta isso como falha de conexão genérica
+  — sem explicação útil na tela.
+
+  ⚠ ESCOLHA CONSCIENTE, e o plano (§3.3) exigia que fosse escrita, não silenciosa.
+  O Network Security Config é ESTÁTICO: os domínios são compilados no APK, então
+  não dá para "adicionar o IP que o usuário digitou" em tempo de execução. As
+  opções eram (a) listar IPs fixos aqui, o que quebra quando o DHCP muda o IP do
+  PC, ou (b) permitir cleartext para qualquer destino.
+
+  Escolhido (b) para as Fases 1-2, com o escopo reduzido ao mínimo que ainda
+  funciona: cleartext liberado, mas o app só fala com o endereço que o dono
+  configurou. O estado final é a Saída B2 do plano (TLS com a CA do mkcert
+  empacotada como recurso), na Fase 5 — é ela que dá confidencialidade real ao
+  token, que hoje viaja na query string do WebSocket (§2.2).
+
+  `localhost` fica explícito porque o emulador alcança o host por 10.0.2.2 e é
+  onde este app será exercitado antes de ir para o aparelho.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

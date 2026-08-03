@@ -4,6 +4,7 @@ alterna as fases no SchedulerService (payload {fase}); "mestre, inicia/para o po
 liga/desliga. Sem GPU/rede: db temporário + fakes.
 """
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 from mente_digital import mestre
@@ -65,6 +66,14 @@ class FakeCtx:
         self.llama = None
         self.interactive_idle = asyncio.Event()
         self.interactive_idle.set()
+        # Modo economia (2026-08-02): o `tick` consulta o watcher a cada passada.
+        # Recém-usado e acordado = o estado normal durante um pomodoro.
+        self.descansando = False
+        self.idle_em_andamento = False
+        self.ultima_interacao = time.monotonic()
+
+    def segundos_sem_uso(self, agora=None) -> float:
+        return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
 
 
 async def test_pomodoro_alterna_foco_e_pausa(monkeypatch, tmp_path):

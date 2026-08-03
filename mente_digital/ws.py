@@ -179,9 +179,18 @@ class LiveSession:
         # atrasa o handshake, e o loop do scheduler também os reentregaria no tick.
         if self.ctx.scheduler is not None:
             self.ctx.track_task(self.ctx.scheduler.entregar_pendentes())
+        # MODO ECONOMIA: conectar NÃO acorda o PC. É o oposto do reload oportunista
+        # logo abaixo, e de propósito — o dono pediu que o servidor libere a máquina
+        # e só volte quando ele quiser, e a janela fica aberta o dia inteiro (uma
+        # reconexão de wi-fi acordaria a GPU sozinha, todo dia). Quem acorda é ato
+        # explícito: mandar mensagem (o front religa antes de enviar), a tela de boot
+        # do celular ou a bandeja. O que a conexão faz é AVISAR o estado, para a casca
+        # que acabou de abrir/reconectar não pintar "Ligado" sobre um PC dormindo.
+        if self.ctx.descansando:
+            await self.safe_send({"tipo": "energia", "estado": "descansando"})
         # Abertura do live é sinal de uso: religa o modelo se o idle o descarregou,
         # para a 1ª pergunta não pagar o reload em cima da latência normal.
-        if not self.ctx.llama.ready:
+        elif not self.ctx.llama.ready:
             self.ctx.track_task(self.ctx.llama.ensure_loaded())
             await self.safe_send(
                 {"tipo": "status", "texto": "Modelo religando..."}

@@ -1,149 +1,452 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-tema="escuro">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="color-scheme" content="dark light">
     <title>Mente Digital</title>
+    <!-- A MESMA marca da barra de tarefas e da bandeja, servida do .ico gerado
+         em dados/marca/ (main.py -> /favicon.ico). Sem isto o navegador pede
+         /favicon.ico assim mesmo e leva 404 em todo carregamento. -->
+    <link rel="icon" href="/favicon.ico" sizes="any">
     <!-- 100% local DE VERDADE (painel 2026-07-24): fontes do SISTEMA + ícones SVG
          inline. O fonts.googleapis.com contradizia o pitch "sem telemetria de
          terceiros" (o Google via cada abertura da UI) e, offline na LAN, os
-         ícones-ligadura viravam texto cru ("menu", "bedtime") em todos os botões. -->
+         ícones-ligadura viravam texto cru ("menu", "bedtime") em todos os botões.
+
+         ESTE ARQUIVO SERVE TRÊS CASCAS: aba de navegador, janela nativa sem
+         moldura (app.py / WebView2) e container. A única diferença é a barra de
+         título — desenhada só quando `window.pywebview` existe. Nada de segunda
+         interface para manter em sincronia; é também a base do port Android. -->
     <style>
+        /* ================================================================= *
+         *  PALETA — o único lugar a mexer para re-skinar.
+         *  O acento é o gradiente do próprio app (azul → roxo → rosa), o
+         *  mesmo da tela de boot em app.py, para a casca combinar com as
+         *  transições de tela. Para a leitura literal do ExitLag, troque os
+         *  três --acc do bloco escuro por #F0323C / #E8353E / #8E1219.
+         * ================================================================= */
         :root {
-            --bg: #131314;
-            --surface: #1E1F20;
-            --surface-2: #282A2C;
-            --surface-hover: #333537;
-            --text-primary: #E3E3E3;
-            --text-secondary: #9AA0A6;
-            --accent: #A8C7FA;
-            --accent-strong: #8AB4F8;
-            --grad: linear-gradient(105deg, #4285F4 0%, #9B72CB 50%, #D96570 100%);
-            --border: rgba(255,255,255,0.09);
-            --font: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+            --acc1: #4285F4; --acc2: #9B72CB; --acc3: #D96570;
+            --grad: linear-gradient(100deg, var(--acc1) 0%, var(--acc2) 52%, var(--acc3) 100%);
+            --font: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
             --safe-b: env(safe-area-inset-bottom, 0px);
+            --safe-t: env(safe-area-inset-top, 0px);
+            --barra-h: 0px;                 /* vira 42px quando há barra própria */
+            --curva: cubic-bezier(.22, 1, .36, 1);
+        }
+        :root[data-tema="escuro"] {
+            --bg: #0B0B0D; --sup: #16161A; --sup2: #202126; --sup3: #2A2C32;
+            --txt: #F2F2F3; --txt2: #8B8F96; --linha: rgba(255,255,255,.08);
+            --acc: #8AB4F8; --acc-fraco: rgba(138,180,248,.14);
+            --bolha: #23252B; --sombra: 0 10px 34px rgba(0,0,0,.55);
+            --brilho1: rgba(155,114,203,.16); --brilho2: rgba(217,101,112,.11);
+        }
+        :root[data-tema="claro"] {
+            --bg: #FFFFFF; --sup: #F4F5F7; --sup2: #ECEEF1; --sup3: #E1E4E9;
+            --txt: #1A1B1E; --txt2: #5F646B; --linha: rgba(0,0,0,.10);
+            --acc: #1A73E8; --acc-fraco: rgba(26,115,232,.10);
+            --bolha: #EDF1F7; --sombra: 0 10px 30px rgba(0,0,0,.14);
+            --brilho1: rgba(155,114,203,.10); --brilho2: rgba(217,101,112,.07);
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); -webkit-tap-highlight-color: transparent; }
         html, body { height: 100%; }
-        body { background: var(--bg); color: var(--text-primary); display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
-        button { font-family: var(--font); }
-        /* Ícones SVG inline (traço = cor do texto do elemento): zero rede, zero fonte
-           de ícones. Tamanho fora do padrão (24px) vai inline no próprio <svg>. */
+        body {
+            background: var(--bg); color: var(--txt); overflow: hidden;
+            display: flex; flex-direction: column; height: 100dvh;
+            /* O brilho difuso subindo do rodapé — a assinatura da casca, herdada
+               da tela de boot para a janela não "trocar de identidade" ao abrir. */
+            background-image:
+                radial-gradient(125% 62% at 50% 122%, var(--brilho1) 0%, transparent 60%),
+                radial-gradient(85% 50% at 8% 108%, var(--brilho2) 0%, transparent 58%);
+            background-attachment: fixed;
+        }
+        button, input, textarea { font-family: var(--font); color: inherit; }
         .ico { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background: var(--sup3); border-radius: 99px; }
+        ::-webkit-scrollbar-track { background: transparent; }
 
-        /* ---------- Sidebar (conversas) ---------- */
-        #sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 86vw); background: #1B1C1D; border-right: 1px solid var(--border); transform: translateX(-100%); transition: transform 0.28s cubic-bezier(0.2,0,0,1); z-index: 1000; display: flex; flex-direction: column; }
-        #sidebar.open { transform: translateX(0); }
+        /* ================= barra de título (só na janela nativa) ============ */
+        /* Idêntica à da tela de boot em app.py: mesma altura, mesmo wordmark na
+           mesma posição — assim a troca splash→app não pisca nem "pula". */
+        #janela-barra { display: none; }
+        html.nativo { --barra-h: 42px; }
+        html.nativo #janela-barra {
+            display: flex; align-items: center; height: 42px; flex-shrink: 0;
+            border-bottom: 1px solid var(--linha); position: relative; z-index: 4000;
+            background: var(--bg);
+        }
+        #janela-arrasto { flex: 1; height: 100%; }
+        #janela-marca {
+            position: absolute; left: 50%; transform: translateX(-50%);
+            font-size: .78rem; font-weight: 600; letter-spacing: .22em;
+            pointer-events: none; user-select: none; white-space: nowrap;
+        }
+        #janela-marca b {
+            font-weight: 600; background: var(--grad);
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .janela-btn {
+            width: 46px; height: 42px; border: 0; background: none; color: var(--txt2);
+            cursor: pointer; display: flex; align-items: center; justify-content: center; transition: .15s;
+        }
+        .janela-btn:hover { background: color-mix(in srgb, var(--txt) 12%, transparent); color: var(--txt); }
+        .janela-btn.sair:hover { background: #E81123; color: #fff; }
+
+        /* ========================= sidebar ================================= */
+        /* `top: var(--barra-h)`: na janela nativa os primeiros 42px são a barra de
+           título própria. Com top:0 a lateral passava POR BAIXO dela e o cabeçalho
+           "Conversas" ficava cortado. No navegador a variável é 0 e nada muda. */
+        #sidebar {
+            position: fixed; top: var(--barra-h); left: 0; bottom: 0; width: min(320px, 86vw);
+            background: var(--sup); border-right: 1px solid var(--linha);
+            transform: translateX(-101%); transition: transform .3s var(--curva);
+            z-index: 3000; display: flex; flex-direction: column; padding-top: var(--safe-t);
+        }
+        #sidebar.open { transform: translateX(0); box-shadow: var(--sombra); }
         .sidebar-header { padding: 18px 16px 6px; display: flex; justify-content: space-between; align-items: center; }
-        .sidebar-header span { font-size: 1.05rem; font-weight: 500; }
-        .sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px 10px calc(16px + var(--safe-b)); display: flex; flex-direction: column; gap: 4px; }
-        #btn-novo-chat { display: flex; align-items: center; gap: 10px; margin: 6px 10px 10px; padding: 12px 16px; background: var(--surface-2); color: var(--text-primary); border: none; border-radius: 24px; cursor: pointer; font-size: 0.95rem; font-weight: 500; transition: background 0.2s; }
-        #btn-novo-chat:hover { background: var(--surface-hover); }
-        .hist-label { font-size: 0.72rem; color: var(--text-secondary); padding: 8px 14px 4px; letter-spacing: 0.3px; }
-        .history-item { padding: 11px 14px; border-radius: 12px; cursor: pointer; transition: background 0.15s; overflow: hidden; }
-        .history-item:hover { background: var(--surface-2); }
-        .history-item.active { background: rgba(168,199,250,0.14); }
-        .hi-title { font-size: 0.9rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .hi-meta { font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; }
-        .history-empty { color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 30px 16px; }
+        .sidebar-header span { font-size: 1.05rem; font-weight: 600; }
+        .sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px 10px calc(16px + var(--safe-b)); display: flex; flex-direction: column; gap: 3px; }
+        #btn-novo-chat {
+            display: flex; align-items: center; gap: 10px; margin: 6px 12px 10px; padding: 12px 16px;
+            background: var(--sup2); border: 1px solid var(--linha); border-radius: 24px; cursor: pointer;
+            font-size: .93rem; font-weight: 500; transition: .18s;
+        }
+        #btn-novo-chat:hover { background: var(--sup3); }
+        .hist-label { font-size: .7rem; color: var(--txt2); padding: 8px 14px 4px; letter-spacing: .06em; text-transform: uppercase; }
+        /* `flex-shrink: 0` NÃO é detalhe: a lista é um flex-column de altura fixa, e
+           item de flex ENCOLHE por padrão. Com 30 conversas dentro, o navegador
+           comprimia todas até os títulos se sobreporem — invisível enquanto o título
+           era de uma linha só, escancarado quando virou duas (2026-08-02). */
+        .history-item { padding: 11px 14px; border-radius: 12px; cursor: pointer;
+                        transition: background .15s; overflow: hidden; flex-shrink: 0; }
+        .history-item:hover { background: var(--sup2); }
+        .history-item.active { background: var(--acc-fraco); }
+        /* Título de conversa em DUAS linhas, não uma. Em uma linha o titulo vinha
+           do primeiro turno e era cortado quase sempre -- "Como faco para..." nao
+           distingue conversa nenhuma. Duas linhas cabem o suficiente para escolher,
+           e o clamp mantem a lista alinhada. */
+        .hi-title { font-size: .89rem; line-height: 1.35; display: -webkit-box;
+                    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                    overflow-wrap: anywhere; }
+        .hi-meta { font-size: .71rem; color: var(--txt2); margin-top: 2px; }
+        .history-empty { color: var(--txt2); font-size: .85rem; text-align: center; padding: 34px 16px; line-height: 1.6; }
 
-        #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 999; opacity: 0; pointer-events: none; transition: opacity 0.28s; }
+        #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 2900; opacity: 0; pointer-events: none; transition: opacity .3s; }
         #overlay.show { opacity: 1; pointer-events: all; }
 
-        /* ---------- Header ---------- */
-        header { padding: 12px 10px; display: flex; align-items: center; gap: 6px; z-index: 10; }
-        .icon-btn { background: none; border: none; color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 50%; transition: background 0.2s; flex-shrink: 0; }
-        .icon-btn:hover { background: var(--surface-2); }
-        .brand { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 1.15rem; font-weight: 500; color: var(--text-secondary); }
-        #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #F28B82; transition: background 0.3s; box-shadow: 0 0 8px currentColor; }
-        #conn-dot.online { background: #81C995; }
-        #idle-badge { display: none; align-items: center; gap: 5px; font-size: 0.72rem; font-weight: 500; color: var(--accent); background: rgba(168,199,250,0.1); border: 1px solid rgba(168,199,250,0.22); padding: 5px 10px; border-radius: 20px; white-space: nowrap; }
+        /* ========================= app bar ================================ */
+        header {
+            padding: 8px 8px; display: flex; align-items: center; gap: 4px; z-index: 20;
+            flex-shrink: 0; padding-top: calc(8px + var(--safe-t));
+        }
+        html.nativo header { padding-top: 8px; }
+        .icon-btn {
+            background: none; border: none; cursor: pointer; display: flex; align-items: center;
+            justify-content: center; width: 42px; height: 42px; border-radius: 50%;
+            transition: background .18s, color .18s; flex-shrink: 0; color: var(--txt);
+        }
+        .icon-btn:hover { background: var(--sup2); }
+        .brand { flex: 1; display: flex; align-items: center; gap: 9px; font-size: 1.1rem; font-weight: 600; min-width: 0; }
+        .brand .rotulo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #F28B82; transition: background .3s; box-shadow: 0 0 8px currentColor; flex-shrink: 0; }
+        #conn-dot.online { background: #62C77B; }
+        #idle-badge {
+            display: none; align-items: center; gap: 5px; font-size: .7rem; font-weight: 500;
+            color: var(--acc); background: var(--acc-fraco); border: 1px solid var(--acc-fraco);
+            padding: 5px 10px; border-radius: 20px; white-space: nowrap;
+        }
         body.idle #idle-badge { display: inline-flex; animation: idle-pulse 2.2s ease-in-out infinite; }
-        @keyframes idle-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
-        body.idle #btn-end { color: var(--accent); background: rgba(168,199,250,0.15); }
+        @keyframes idle-pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+        body.idle #btn-end { color: var(--acc); border-color: var(--acc); background: var(--acc-fraco); }
 
-        /* ---------- Welcome ---------- */
-        #welcome-screen { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 24px; }
-        .welcome-text { font-size: clamp(1.7rem, 7vw, 2.6rem); font-weight: 500; background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-        .welcome-sub { margin-top: 10px; color: var(--text-secondary); font-size: 0.95rem; }
+        /* ===================== faixa de controle ========================== */
+        /* Os três interruptores do sistema, sempre visíveis. Ficam FORA do
+           cabeçalho de propósito: lá disputariam espaço com a navegação e, num
+           app que fica aberto o dia inteiro, o ESTADO (ligado? consolidando?)
+           importa tanto quanto os comandos. */
+        #strip { display: flex; gap: 7px; padding: 0 12px 8px; flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+        #strip::-webkit-scrollbar { display: none; }
+        .sw {
+            display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 20px;
+            background: var(--sup); border: 1px solid var(--linha); color: var(--txt2); cursor: pointer;
+            font-size: .76rem; font-weight: 500; white-space: nowrap; transition: .18s var(--curva);
+        }
+        .sw:hover { background: var(--sup2); color: var(--txt); border-color: var(--acc); }
+        .sw:disabled { opacity: .5; cursor: progress; }
+        .sw .led { width: 7px; height: 7px; border-radius: 50%; background: var(--txt2); flex-shrink: 0; transition: .3s; }
+        .sw.on { color: var(--txt); border-color: color-mix(in srgb, var(--acc) 45%, transparent); }
+        .sw.on .led { background: #62C77B; box-shadow: 0 0 8px #62C77B; }
+        .sw.off .led { background: #8B8F96; box-shadow: none; }
+        .sw.ocupado .led { background: var(--acc); animation: pisca 1.2s ease-in-out infinite; }
+        .sw .medida { color: var(--txt2); font-variant-numeric: tabular-nums; font-size: .72rem; }
 
-        /* ---------- Chat ---------- */
-        #chat-container { flex: 1; overflow-y: auto; display: none; flex-direction: column; gap: 18px; scroll-behavior: smooth; width: 100%; max-width: 820px; margin: 0 auto; padding: 12px 16px calc(160px + var(--safe-b)); }
-        .msg-row { display: flex; width: 100%; }
+        /* ====================== modo avançado ============================= */
+        #avancado {
+            position: fixed; inset: var(--barra-h) 0 0 0; z-index: 2500; background: var(--bg);
+            display: flex; flex-direction: column; opacity: 0; pointer-events: none;
+            transform: translateY(14px); transition: .3s var(--curva);
+        }
+        #avancado.active { opacity: 1; pointer-events: auto; transform: translateY(0); }
+        .av-top { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; flex-shrink: 0; }
+        .av-tabs { display: flex; gap: 4px; flex: 1; background: var(--sup); padding: 4px; border-radius: 16px; }
+        .av-tab {
+            flex: 1; border: none; background: none; color: var(--txt2); padding: 9px 8px;
+            border-radius: 12px; cursor: pointer; font-size: .82rem; font-weight: 500; transition: .18s;
+        }
+        .av-tab:hover { color: var(--txt); }
+        .av-tab.on { background: var(--sup2); color: var(--txt); box-shadow: var(--sombra); }
+        .av-corpo { flex: 1; overflow-y: auto; padding: 6px 14px calc(20px + var(--safe-b)); }
+        .av-secao { display: none; flex-direction: column; gap: 10px; }
+        .av-secao.on { display: flex; animation: subir .3s var(--curva); }
+        .av-vazio { color: var(--txt2); font-size: .86rem; text-align: center; padding: 40px 20px; line-height: 1.6; }
+        #av-busca {
+            width: 100%; background: var(--sup); border: 1px solid var(--linha); border-radius: 18px;
+            padding: 12px 16px; font-size: 15px; outline: none; transition: .2s;
+        }
+        #av-busca:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        /* Filtros do vault. `flex-wrap` porque a janela nativa nasce com 430 px
+           de largura: sem ele os três seletores estouram a lateral. */
+        #av-filtros { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+        #av-filtros select, #av-filtros button {
+            background: var(--sup); color: var(--txt); border: 1px solid var(--linha);
+            border-radius: 14px; padding: 7px 11px; font-size: 12.5px; font-family: inherit;
+            outline: none; cursor: pointer; transition: .18s; max-width: 100%;
+        }
+        #av-filtros select:hover, #av-filtros button:hover { border-color: var(--acc); }
+        #av-filtros select:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        #av-filtros button { color: var(--txt2); }
+        .av-item {
+            background: var(--sup); border: 1px solid var(--linha); border-radius: 16px; padding: 12px 14px;
+            cursor: pointer; transition: .18s var(--curva);
+        }
+        .av-item:hover { background: var(--sup2); border-color: var(--acc); transform: translateY(-1px); }
+        .av-item .t { font-size: .88rem; font-weight: 500; overflow-wrap: anywhere; }
+        .av-item .s { font-size: .77rem; color: var(--txt2); margin-top: 4px; line-height: 1.45; overflow-wrap: anywhere; }
+        .av-tag {
+            display: inline-block; font-size: .68rem; padding: 2px 8px; border-radius: 10px;
+            background: var(--acc-fraco); color: var(--acc); margin-right: 6px; vertical-align: 1px;
+        }
+        .av-linha { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--linha); font-size: .84rem; }
+        .av-linha span:last-child { color: var(--txt2); font-variant-numeric: tabular-nums; text-align: right; }
+        .av-titulo { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--txt2); margin: 14px 0 2px; }
+        /* Leitor de nota — empilha SOBRE o painel, com voltar próprio. */
+        #av-leitor {
+            position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column;
+            animation: entra-lado .28s var(--curva);
+        }
+        #av-leitor.on { display: flex; }
+        @keyframes entra-lado { from { opacity: 0; transform: translateX(22px); } }
+        .av-leitor-top { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--linha); flex-shrink: 0; }
+        .av-leitor-top .nome { flex: 1; font-size: .9rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #av-leitor-corpo { flex: 1; overflow-y: auto; padding: 16px 16px calc(24px + var(--safe-b)); font-size: .93rem; line-height: 1.65; }
+        /* Grafo da vizinhança. SVG inline desenhado à mão: as duas páginas do
+           graphify puxam o vis-network do unpkg.com, e servir CDN quebraria o
+           pilar "100% local" — offline elas nem renderizam. Para 1-2 saltos são
+           dezenas de nós, e um layout radial não precisa de biblioteca. */
+        #av-grafo { flex: 1; overflow: auto; display: flex; flex-direction: column;
+                    padding: 8px 8px calc(16px + var(--safe-b)); }
+        /* ⚠ ESTA LINHA NÃO É REDUNDANTE. O atributo `hidden` só esconde porque a
+           folha do navegador traz `[hidden]{display:none}` — e QUALQUER regra de
+           autor com `display` vence, por especificidade. Sem isto o grafo ficava
+           permanentemente visível empilhado sob o texto da nota, e o botão parecia
+           não fazer nada. Medido no navegador em 2026-08-02: `hidden: true` com
+           `getComputedStyle().display === 'flex'`. */
+        #av-grafo[hidden] { display: none; }
+        #av-grafo svg { width: 100%; height: auto; flex: 1; min-height: 0; }
+        #av-grafo .aresta { stroke: var(--acc); fill: none; }
+        #av-grafo .no { cursor: pointer; }
+        #av-grafo .no circle { stroke: var(--bg); stroke-width: 2; transition: .15s; }
+        #av-grafo .no:hover circle { stroke: var(--txt); }
+        #av-grafo .no text { fill: var(--txt2); font-size: 7px; pointer-events: none;
+                             text-anchor: middle; }
+        #av-grafo .no.semente text { fill: var(--txt); font-weight: 600; font-size: 8px; }
+        #av-grafo .legenda { font-size: .72rem; color: var(--txt2); text-align: center;
+                             padding: 6px 4px 2px; flex-shrink: 0; }
+        #av-btn-grafo.on { background: var(--acc-fraco); color: var(--acc); }
+
+        /* ========================= boas-vindas ============================ */
+        #welcome-screen {
+            flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            text-align: center; padding: 0 24px calc(150px + var(--safe-b)); gap: 8px;
+            animation: subir .5s var(--curva);
+        }
+        @keyframes subir { from { opacity: 0; transform: translateY(14px); } }
+        .welcome-text {
+            font-size: clamp(1.9rem, 8vw, 2.7rem); font-weight: 600; letter-spacing: -.02em;
+            background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .welcome-sub { color: var(--txt2); font-size: .95rem; }
+        #chips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-top: 26px; width: 100%; max-width: 440px; }
+        .chip {
+            background: var(--sup); border: 1px solid var(--linha); border-radius: 16px; padding: 13px 14px;
+            text-align: left; font-size: .82rem; line-height: 1.4; color: var(--txt); cursor: pointer;
+            transition: transform .18s var(--curva), background .18s, border-color .18s;
+        }
+        .chip:hover { background: var(--sup2); border-color: var(--acc); transform: translateY(-2px); }
+        .chip .chip-ico { display: block; color: var(--acc); margin-bottom: 7px; }
+
+        /* ========================= chat =================================== */
+        #chat-container {
+            flex: 1; overflow-y: auto; display: none; flex-direction: column; gap: 16px;
+            scroll-behavior: smooth; width: 100%; max-width: 840px; margin: 0 auto;
+            padding: 8px 16px calc(160px + var(--safe-b)); overscroll-behavior: contain;
+        }
+        .msg-row { display: flex; width: 100%; animation: bolha-entra .34s var(--curva); }
+        @keyframes bolha-entra { from { opacity: 0; transform: translateY(10px); } }
         .msg-row.user { justify-content: flex-end; }
-        .msg-row.ia { justify-content: flex-start; }
-        .bubble { max-width: 86%; font-size: 1rem; line-height: 1.6; overflow-wrap: anywhere; }
-        .bubble.user { background: var(--surface-2); padding: 11px 16px; border-radius: 20px 20px 6px 20px; }
-        .bubble.ia { background: transparent; padding: 2px 2px; max-width: 100%; }
-        .bubble h2, .bubble h3, .bubble h4 { margin: 8px 0 4px; line-height: 1.3; }
-        .bubble h2 { font-size: 1.2rem; } .bubble h3 { font-size: 1.08rem; }
-        .bubble code { background: #2a2d2e; padding: 1px 6px; border-radius: 5px; font-family: 'Consolas','Menlo',monospace; font-size: 0.9em; }
-        .bubble pre.code { background: #0d0f11; border: 1px solid var(--border); padding: 12px 14px; border-radius: 12px; overflow-x: auto; margin: 8px 0; }
+        .msg-row.ia { flex-direction: column; align-items: flex-start; gap: 4px; }
+        .bubble { max-width: 86%; font-size: 1rem; line-height: 1.62; overflow-wrap: anywhere; }
+        .bubble.user { background: var(--bolha); padding: 11px 16px; border-radius: 20px 20px 6px 20px; }
+        .bubble.ia { background: transparent; padding: 0; max-width: 100%; }
+        .bubble h2, .bubble h3, .bubble h4 { margin: 10px 0 4px; line-height: 1.3; }
+        .bubble h2 { font-size: 1.18rem; } .bubble h3 { font-size: 1.06rem; } .bubble h4 { font-size: 1rem; }
+        .bubble code { background: var(--sup2); padding: 1px 6px; border-radius: 5px; font-family: 'Cascadia Mono','Consolas',monospace; font-size: .88em; }
+        .bubble pre.code { background: var(--sup); border: 1px solid var(--linha); padding: 12px 14px; border-radius: 12px; overflow-x: auto; margin: 9px 0; }
         .bubble pre.code code { background: none; padding: 0; display: block; white-space: pre; }
-        .bubble a { color: var(--accent); }
+        .bubble a { color: var(--acc); }
         /* Figuras dos livros (Fase 5b): o vault guarda WebP e o átomo traz o
            wikilink; aqui elas aparecem na resposta sem estourar a bolha. */
-        .bubble img.fig { max-width: 100%; height: auto; border-radius: 10px; margin: 8px 0; display: block; background: var(--surface-2); }
+        .bubble img.fig { max-width: 100%; height: auto; border-radius: 12px; margin: 9px 0; display: block; background: var(--sup2); border: 1px solid var(--linha); }
+        /* Ações da resposta — o "copiar" que faltava. Discretas até o ponteiro chegar. */
+        .acoes { display: flex; gap: 2px; opacity: .38; transition: opacity .2s; }
+        .msg-row.ia:hover .acoes, .acoes:focus-within { opacity: 1; }
+        .acao-btn { background: none; border: none; cursor: pointer; color: var(--txt2); width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; transition: .16s; }
+        .acao-btn:hover { background: var(--sup2); color: var(--txt); }
+        /* Pensando: os três pontos até o 1º token chegar. */
+        #pensando { display: none; gap: 5px; padding: 6px 2px; }
+        #pensando.on { display: flex; }
+        #pensando i { width: 7px; height: 7px; border-radius: 50%; background: var(--acc); animation: pisca 1.25s ease-in-out infinite; }
+        #pensando i:nth-child(2) { animation-delay: .18s; } #pensando i:nth-child(3) { animation-delay: .36s; }
+        @keyframes pisca { 0%,80%,100% { opacity: .25; transform: scale(.75); } 40% { opacity: 1; transform: scale(1); } }
 
-        #toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); background: var(--surface-2); color: var(--text-primary); padding: 10px 18px; border-radius: 22px; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 0.85rem; opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 3000; max-width: 90vw; text-align: center; }
-        #toast.show { opacity: 1; }
+        #btn-descer {
+            position: fixed; left: 50%; transform: translateX(-50%) scale(.6); bottom: calc(104px + var(--safe-b));
+            width: 38px; height: 38px; border-radius: 50%; background: var(--sup2); border: 1px solid var(--linha);
+            color: var(--txt); cursor: pointer; display: flex; align-items: center; justify-content: center;
+            opacity: 0; pointer-events: none; transition: .24s var(--curva); z-index: 45; box-shadow: var(--sombra);
+        }
+        #btn-descer.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) scale(1); }
 
-        /* ---------- Composer (input) ---------- */
-        #bottom-bar { position: fixed; bottom: 0; left: 0; width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px 12px calc(14px + var(--safe-b)); background: linear-gradient(to top, var(--bg) 55%, transparent); z-index: 50; }
-        #composer { flex: 1; max-width: 780px; display: flex; align-items: flex-end; gap: 8px; }
-        #input-wrapper { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 26px; display: flex; align-items: center; padding: 4px 6px 4px 6px; transition: border-color 0.2s; min-height: 52px; }
-        #input-wrapper:focus-within { border-color: rgba(168,199,250,0.5); }
-        #texto-input { flex: 1; background: transparent; border: none; color: var(--text-primary); font-size: 16px; padding: 10px 6px; outline: none; min-width: 0; }
-        #texto-input::placeholder { color: var(--text-secondary); }
-        .pill-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.2s, color 0.2s; }
-        .pill-btn:hover { background: var(--surface-2); color: var(--text-primary); }
-        #btn-send-text { color: var(--accent-strong); }
-        /* Botão Live (voz) — entrada do "Gemini Live" */
-        #btn-mic { width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #08131f; background: var(--grad); box-shadow: 0 4px 16px rgba(66,133,244,0.35); flex-shrink: 0; transition: transform 0.2s; }
-        #btn-mic:hover { transform: scale(1.05); }
+        #toast {
+            position: fixed; top: calc(var(--barra-h) + 56px); left: 50%; transform: translateX(-50%) translateY(-8px);
+            background: var(--sup2); padding: 10px 18px; border-radius: 22px; border: 1px solid var(--linha);
+            box-shadow: var(--sombra); font-size: .84rem; opacity: 0; pointer-events: none;
+            transition: .28s var(--curva); z-index: 5000; max-width: 90vw; text-align: center;
+        }
+        #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-        /* ---------- Live overlay (Gemini Live) ---------- */
-        #live-overlay { position: fixed; inset: 0; background: radial-gradient(120% 90% at 50% 15%, #1a2740 0%, #0a0d12 55%, #000 100%); z-index: 2000; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.4s ease; }
-        #live-overlay.active { opacity: 1; pointer-events: auto; }
-        .live-top { position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); left: 0; right: 0; display: flex; justify-content: center; }
-        .live-chip { font-size: 0.8rem; color: var(--text-secondary); background: rgba(255,255,255,0.06); border: 1px solid var(--border); padding: 6px 14px; border-radius: 20px; }
+        /* ========================= composer =============================== */
+        #bottom-bar {
+            position: fixed; bottom: 0; left: 0; width: 100%; display: flex; align-items: flex-end;
+            justify-content: center; gap: 10px; padding: 10px 12px calc(14px + var(--safe-b));
+            background: linear-gradient(to top, var(--bg) 58%, transparent); z-index: 50;
+        }
+        #composer { flex: 1; max-width: 800px; display: flex; align-items: flex-end; gap: 8px; }
+        #input-wrapper {
+            flex: 1; background: var(--sup); border: 1px solid var(--linha); border-radius: 26px;
+            display: flex; align-items: flex-end; padding: 5px 6px; transition: border-color .2s, box-shadow .2s; min-height: 52px;
+        }
+        #input-wrapper:focus-within { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        #texto-input {
+            flex: 1; background: transparent; border: none; font-size: 16px; padding: 11px 6px;
+            outline: none; min-width: 0; resize: none; line-height: 1.4; max-height: 132px; overflow-y: auto;
+        }
+        #texto-input::placeholder { color: var(--txt2); }
+        .pill-btn { background: none; border: none; color: var(--txt2); cursor: pointer; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: .18s; }
+        .pill-btn:hover { background: var(--sup2); color: var(--txt); }
+        #btn-send-text { color: var(--acc); }
+        #btn-mic {
+            width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer; display: flex;
+            align-items: center; justify-content: center; color: #fff; background: var(--grad);
+            box-shadow: 0 5px 18px color-mix(in srgb, var(--acc2) 42%, transparent); flex-shrink: 0;
+            transition: transform .2s var(--curva);
+        }
+        #btn-mic:hover { transform: scale(1.06); }
+        #btn-mic:active { transform: scale(.95); }
+
+        /* ========================= live overlay =========================== */
+        #live-overlay {
+            position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; opacity: 0; pointer-events: none;
+            transform: scale(1.06); transition: opacity .38s var(--curva), transform .38s var(--curva);
+            background:
+                radial-gradient(115% 70% at 50% 118%, var(--brilho1) 0%, transparent 62%),
+                radial-gradient(120% 85% at 50% 12%, color-mix(in srgb, var(--acc1) 14%, transparent) 0%, transparent 58%),
+                var(--bg);
+            padding-top: var(--barra-h);
+        }
+        #live-overlay.active { opacity: 1; pointer-events: auto; transform: scale(1); }
+        .live-top { position: absolute; top: calc(var(--barra-h) + 16px); left: 0; right: 0; display: flex; justify-content: center; }
+        .live-chip { font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; color: var(--txt2); background: var(--sup); border: 1px solid var(--linha); padding: 6px 15px; border-radius: 20px; }
         .live-stage { display: flex; flex-direction: column; align-items: center; }
-        .orb-wrap { position: relative; width: 220px; height: 220px; display: flex; align-items: center; justify-content: center; }
-        .orb { position: relative; width: 150px; height: 150px; border-radius: 50%; background: radial-gradient(circle at 32% 30%, #C2D7FF 0%, #8AB4F8 32%, #4285F4 60%, #9B72CB 100%); box-shadow: 0 0 70px 12px rgba(66,133,244,0.35); transition: background 0.5s ease, box-shadow 0.5s ease; will-change: transform; }
-        .orb::after { content:''; position:absolute; inset:-26px; border-radius:50%; background: radial-gradient(circle, rgba(155,114,203,0.28), transparent 68%); filter: blur(14px); z-index:-1; }
-        .ring { position: absolute; border-radius: 50%; border: 1.5px solid rgba(168,199,250,0.35); inset: 0; opacity: 0; }
-        .orb.listening { animation: orb-breathe 3.2s ease-in-out infinite; }
+        .orb-wrap { position: relative; width: 230px; height: 230px; display: flex; align-items: center; justify-content: center; }
+        /* --nivel (0..1) é o RMS REAL do seu microfone, escrito pelo onaudioprocess:
+           enquanto ouve, o orbe respira com a SUA voz em vez de uma animação fixa. */
+        .orb {
+            --nivel: 0; position: relative; width: 152px; height: 152px; border-radius: 50%;
+            background: radial-gradient(circle at 32% 28%, #C7DAFF 0%, var(--acc1) 34%, var(--acc2) 72%, var(--acc3) 100%);
+            box-shadow: 0 0 72px 12px color-mix(in srgb, var(--acc1) 34%, transparent);
+            transition: background .5s ease, box-shadow .5s ease; will-change: transform;
+        }
+        .orb::after { content: ''; position: absolute; inset: -28px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--acc2) 30%, transparent), transparent 68%); filter: blur(15px); z-index: -1; }
+        .ring { position: absolute; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--acc) 42%, transparent); inset: 0; opacity: 0; }
+        .orb.listening { transform: scale(calc(1 + var(--nivel) * .3)); transition: transform .09s linear; animation: orb-breathe 3.4s ease-in-out infinite; }
         .orb.listening ~ .ring { animation: ring-out 3s ease-out infinite; }
         .orb.listening ~ .ring.r2 { animation-delay: 1.5s; }
-        .orb.thinking { animation: orb-think 1.4s linear infinite; border-radius: 42% 58% 55% 45%; }
-        .orb.speaking { background: radial-gradient(circle at 32% 30%, #FBD3C6 0%, #F5A98F 35%, #D96570 70%, #9B72CB 100%); box-shadow: 0 0 90px 16px rgba(217,101,112,0.4); animation: orb-speak 0.5s ease-in-out infinite alternate; }
-        @keyframes orb-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+        .orb.thinking { animation: orb-think 1.5s linear infinite; border-radius: 42% 58% 55% 45%; }
+        .orb.speaking {
+            background: radial-gradient(circle at 32% 28%, #FBD3C6 0%, #F5A98F 34%, var(--acc3) 70%, var(--acc2) 100%);
+            box-shadow: 0 0 92px 16px color-mix(in srgb, var(--acc3) 40%, transparent);
+            animation: orb-speak .52s ease-in-out infinite alternate;
+        }
+        .orb.dormindo { background: radial-gradient(circle at 32% 28%, #6B7078 0%, #41464D 55%, #2A2E34 100%); box-shadow: none; opacity: .6; }
+        @keyframes orb-breathe { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.14); } }
         @keyframes orb-think { 0% { transform: rotate(0) scale(1.02); } 50% { transform: rotate(180deg) scale(1.1); } 100% { transform: rotate(360deg) scale(1.02); } }
         @keyframes orb-speak { 0% { transform: scale(1.04); } 100% { transform: scale(1.2); } }
-        @keyframes ring-out { 0% { transform: scale(0.7); opacity: 0.5; } 100% { transform: scale(1.9); opacity: 0; } }
-        .live-status-text { margin-top: 40px; font-size: 1.25rem; color: var(--text-primary); text-align: center; padding: 0 24px; font-weight: 500; }
-        .live-controls { position: absolute; bottom: calc(38px + var(--safe-b)); display: flex; align-items: center; gap: 22px; }
-        .live-ctrl { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.1); color: #fff; transition: background 0.2s, transform 0.2s; }
-        .live-ctrl:hover { background: rgba(255,255,255,0.18); transform: scale(1.05); }
-        .live-ctrl.end { background: #F0483E; }
+        @keyframes ring-out { 0% { transform: scale(.7); opacity: .5; } 100% { transform: scale(1.9); opacity: 0; } }
+        .live-status-text { margin-top: 38px; font-size: 1.22rem; text-align: center; padding: 0 24px; font-weight: 500; }
+        #live-legenda { margin-top: 12px; font-size: .84rem; color: var(--txt2); text-align: center; padding: 0 32px; max-width: 460px; min-height: 2.4em; line-height: 1.4; }
+        .live-controls { position: absolute; bottom: calc(40px + var(--safe-b)); display: flex; align-items: center; gap: 20px; }
+        .live-ctrl {
+            width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--linha); cursor: pointer;
+            display: flex; align-items: center; justify-content: center; background: var(--sup2); color: var(--txt);
+            transition: .2s var(--curva);
+        }
+        .live-ctrl:hover { background: var(--sup3); transform: scale(1.06); }
+        .live-ctrl.end { background: #E8453C; border-color: #E8453C; color: #fff; }
+        .live-ctrl.mudo-on { background: var(--acc); border-color: var(--acc); color: #fff; }
 
         @media (max-width: 480px) {
-            #idle-badge .idle-label { display: none; }   /* só a lua no celular (evita apertar o header) */
+            #idle-badge .idle-label { display: none; }
             #idle-badge { padding: 5px 7px; }
-            .brand { font-size: 1.05rem; }
+            .brand { font-size: 1rem; }
+            #chips { grid-template-columns: 1fr; }
         }
-        @media (min-width: 720px) {
-            header { padding: 14px 18px; }
-            .brand { font-size: 1.25rem; }
-        }
+        @media (min-width: 760px) { header { padding: 12px 16px; } html.nativo header { padding-top: 12px; } }
+        @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
     </style>
 </head>
 <body>
+    <!-- Barra de título da janela nativa. `display:none` por padrão: só aparece
+         com a classe `nativo` no <html>, posta quando window.pywebview existe. -->
+    <div id="janela-barra">
+        <div id="janela-arrasto" class="pywebview-drag-region"></div>
+        <div id="janela-marca">MENTE<b>DIGITAL</b></div>
+        <button class="janela-btn" onclick="janelaApi('minimizar')" title="Minimizar" aria-label="Minimizar">
+            <svg width="11" height="11" viewBox="0 0 12 12"><path d="M1 6h10" stroke="currentColor" stroke-width="1.2"/></svg></button>
+        <button class="janela-btn" onclick="janelaApi('alternar_maximizar')" title="Maximizar" aria-label="Maximizar">
+            <svg width="11" height="11" viewBox="0 0 12 12"><rect x="1.6" y="1.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+        <button class="janela-btn sair" onclick="janelaApi('fechar')" title="Fechar" aria-label="Fechar">
+            <svg width="11" height="11" viewBox="0 0 12 12"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    </div>
+
     <div id="overlay" onclick="fecharSidebar()"></div>
 
     <nav id="sidebar">
         <div class="sidebar-header">
-            <span>Mente Digital</span>
+            <span>Conversas</span>
             <button class="icon-btn" onclick="fecharSidebar()" title="Fechar"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>
         <button id="btn-novo-chat" onclick="novoChat()"><svg class="ico" style="width:20px;height:20px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Novo chat</button>
@@ -153,28 +456,119 @@
 
     <header>
         <button class="icon-btn" onclick="abrirSidebar()" title="Conversas"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-        <div class="brand"><span id="conn-dot" title="Conexão"></span> Mente Digital</div>
-        <div id="idle-badge"><svg class="ico" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg><span class="idle-label">Consolidando…</span></div>
-        <button class="icon-btn" id="btn-end" onclick="encerrarConversa()" title="Encerrar conversa (consolidar memória)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg></button>
+        <div class="brand"><span id="conn-dot" title="Conexão"></span> <span class="rotulo">Mente Digital</span></div>
+        <div id="idle-badge"><svg class="ico" style="width:15px;height:15px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg><span class="idle-label">Consolidando…</span></div>
+        <button class="icon-btn" id="btn-tema" onclick="alternarTema()" title="Tema claro/escuro"><svg class="ico" id="ico-tema" viewBox="0 0 24 24" aria-hidden="true"></svg></button>
         <button class="icon-btn" onclick="novoChat()" title="Novo chat"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L13 14l-4 1 1-4 8.5-8.5z"/></svg></button>
     </header>
+
+    <div id="strip">
+        <button class="sw on" id="sw-energia" onclick="alternarEnergia()" title="Solta os modelos da VRAM sem fechar o app">
+            <span class="led"></span><span id="sw-energia-txt">Ligado</span><span class="medida" id="sw-energia-med"></span>
+        </button>
+        <button class="sw" id="btn-end" onclick="encerrarConversa()" title="Consolidar agora: encerra a conversa e roda o ETL do idle">
+            <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg>
+            <span id="sw-idle-txt">Consolidar</span>
+        </button>
+        <button class="sw" id="sw-avancado" onclick="alternarAvancado()" title="Modo avançado: ver as fontes que responderam">
+            <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 7h11l-2 3 2 3H4"/></svg>
+            Avançado
+        </button>
+    </div>
 
     <div id="toast"></div>
 
     <div id="welcome-screen">
         <h2 class="welcome-text">Olá</h2>
         <div class="welcome-sub">Como posso ajudar você hoje?</div>
+        <div id="chips">
+            <button class="chip" onclick="usarChip(this)" data-p="O que eu sei sobre ">
+                <svg class="ico chip-ico" style="width:19px;height:19px" viewBox="0 0 24 24"><path d="M12 3v18M3 8h18M3 16h18"/></svg>
+                Sintetizar um tema do meu vault</button>
+            <button class="chip" onclick="usarChip(this)" data-p="mestre, ">
+                <svg class="ico chip-ico" style="width:19px;height:19px" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg>
+                Dar um comando com a palavra-mestre</button>
+            <button class="chip" onclick="usarChip(this)" data-p="mestre, o que eu fiz hoje?">
+                <svg class="ico chip-ico" style="width:19px;height:19px" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                Revisar o que fiz hoje</button>
+            <button class="chip" onclick="usarChip(this)" data-p="mestre, status do sistema">
+                <svg class="ico chip-ico" style="width:19px;height:19px" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+                Checar a saúde do sistema</button>
+        </div>
     </div>
     <div id="chat-container"></div>
+
+    <button id="btn-descer" onclick="descer(true)" title="Ir para o fim"><svg class="ico" style="width:20px;height:20px" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
 
     <div id="bottom-bar">
         <div id="composer">
             <div id="input-wrapper">
                 <button class="pill-btn" onclick="enviarNotaEscrita()" title="Salvar anotação rápida"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M4 12h6"/><path d="M17.5 8.5a2.12 2.12 0 0 1 3 3L14 18l-4 1 1-4 6.5-6.5z"/></svg></button>
-                <input type="text" id="texto-input" placeholder="Pergunte à Mente Digital" autocomplete="off">
+                <textarea id="texto-input" rows="1" placeholder="Pergunte à Mente Digital" autocomplete="off"></textarea>
                 <button class="pill-btn" id="btn-send-text" onclick="enviarTexto()" style="display:none;" title="Enviar"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
             </div>
             <button id="btn-mic" onclick="toggleLiveMode()" title="Conversar por voz (Live)"><svg class="ico" style="width:26px;height:26px" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6M8 5v14M12 2.5v19M16 5v14M20 9v6"/></svg></button>
+        </div>
+    </div>
+
+    <div id="avancado">
+        <div class="av-top">
+            <div class="av-tabs">
+                <button class="av-tab on" data-aba="fontes" onclick="abrirAba('fontes')">Fontes</button>
+                <button class="av-tab" data-aba="vault" onclick="abrirAba('vault')">Vault</button>
+                <button class="av-tab" data-aba="sistema" onclick="abrirAba('sistema')">Sistema</button>
+            </div>
+            <button class="icon-btn" onclick="alternarAvancado()" title="Fechar"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+        <div class="av-corpo">
+            <section class="av-secao on" id="av-fontes"></section>
+            <section class="av-secao" id="av-vault">
+                <input id="av-busca" placeholder="Buscar nas suas notas…" autocomplete="off">
+                <!-- Filtros (pedido do dono, 2026-08-02). As opções de pasta e
+                     origem são MONTADAS a partir de /api/vault/facetas, não
+                     escritas aqui: uma pasta nova no vault aparece sozinha, e
+                     uma família sem nota nenhuma não é oferecida — oferecer um
+                     filtro que devolve zero faz o usuário achar que quebrou. -->
+                <div id="av-filtros">
+                    <!-- A opção "todas" nasce no HTML, não só no JS que monta as
+                         facetas: um <select> VAZIO renderiza como um cotoco de
+                         ~28 px, e a varredura do vault leva ~1,6 s na primeira
+                         abertura. Sem isto a tela pisca dois cotocos antes de
+                         virar filtro — e continuaria assim para sempre se
+                         /api/vault/facetas falhasse. -->
+                    <select id="av-f-pasta" title="Pasta do vault">
+                        <option value="">Todas as pastas</option>
+                    </select>
+                    <select id="av-f-origem" title="De onde a nota veio">
+                        <option value="">Toda origem</option>
+                    </select>
+                    <select id="av-f-dias" title="Quando a nota foi colhida">
+                        <option value="0">Qualquer data</option>
+                        <option value="1">Colhidas hoje</option>
+                        <option value="7">Últimos 7 dias</option>
+                        <option value="30">Últimos 30 dias</option>
+                        <option value="90">Últimos 90 dias</option>
+                    </select>
+                    <button id="av-f-limpar" type="button" hidden>limpar</button>
+                </div>
+                <div id="av-lista"></div>
+            </section>
+            <section class="av-secao" id="av-sistema"></section>
+        </div>
+        <div id="av-leitor">
+            <div class="av-leitor-top">
+                <button class="icon-btn" onclick="fecharNota()" title="Voltar"><svg class="ico" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+                <span class="nome" id="av-leitor-nome"></span>
+                <!-- O grafo é uma VISTA da nota aberta, não uma quarta aba: a
+                     pergunta que ele responde ("com o que ISTO conversa?") só
+                     existe depois de escolher uma nota. -->
+                <button class="icon-btn" id="av-btn-grafo" onclick="alternarGrafo()"
+                        title="Ver a vizinhança desta nota na malha">
+                    <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="17" r="2.4"/><circle cx="19" cy="17" r="2.4"/><path d="M12 7.4L5.9 14.9M12 7.4l6.1 7.5M7.4 17h9.2"/></svg>
+                </button>
+            </div>
+            <div id="av-leitor-corpo"></div>
+            <div id="av-grafo" hidden></div>
         </div>
     </div>
 
@@ -187,10 +581,12 @@
                 <div class="ring r2"></div>
             </div>
             <div class="live-status-text" id="live-status">Ouvindo…</div>
+            <div id="live-legenda"></div>
         </div>
         <div class="live-controls">
-            <button class="live-ctrl" onclick="toggleLiveMode()" title="Minimizar (a conversa continua)"><svg class="ico" style="width:28px;height:28px" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+            <button class="live-ctrl" id="btn-mudo" onclick="alternarMudo()" title="Silenciar o microfone"><svg class="ico" style="width:26px;height:26px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg></button>
             <button class="live-ctrl end" onclick="encerrarConversa()" title="Encerrar conversa"><svg class="ico" style="width:28px;height:28px" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <button class="live-ctrl" onclick="toggleLiveMode()" title="Minimizar (a conversa continua)"><svg class="ico" style="width:28px;height:28px" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
         </div>
     </div>
 
@@ -203,12 +599,45 @@
         let audioCtx, processor, source, streamGlobal, gainNode;
         let reconnectDelay = 1000;
         let currentIaBubble = null, currentIaRaw = "";
+        let microfoneMudo = false;
+        let colado = true;               // o usuário está no fim da rolagem?
 
         function novoId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
         function wsAberto() { return ws && ws.readyState === WebSocket.OPEN; }
         function wsEnviar(obj) { if (wsAberto()) ws.send(JSON.stringify(obj)); }
 
-        // ---------- Sidebar / histórico ----------
+        // ---------- casca nativa ----------
+        // A barra de título só existe quando há janela sem moldura para arrastar.
+        // O pywebview injeta a ponte de forma assíncrona, daí o evento além do teste.
+        function marcarNativo() { document.documentElement.classList.add('nativo'); }
+        if (window.pywebview) marcarNativo();
+        window.addEventListener('pywebviewready', marcarNativo);
+        function janelaApi(metodo) {
+            if (window.pywebview && window.pywebview.api && window.pywebview.api[metodo]) window.pywebview.api[metodo]();
+        }
+
+        // ---------- tema ----------
+        // Segue o sistema por padrão; o botão fixa uma escolha, que persiste. O
+        // valor 'sistema' é guardado como AUSÊNCIA de chave, então limpar o
+        // localStorage devolve o comportamento automático.
+        const ICO_SOL = '<circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>';
+        const ICO_LUA = '<path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/>';
+        function temaDoSistema() { return window.matchMedia('(prefers-color-scheme: light)').matches ? 'claro' : 'escuro'; }
+        function aplicarTema(tema) {
+            document.documentElement.setAttribute('data-tema', tema);
+            document.getElementById('ico-tema').innerHTML = tema === 'claro' ? ICO_LUA : ICO_SOL;
+        }
+        function alternarTema() {
+            const novo = document.documentElement.getAttribute('data-tema') === 'claro' ? 'escuro' : 'claro';
+            localStorage.setItem('mente_tema', novo);
+            aplicarTema(novo);
+        }
+        aplicarTema(localStorage.getItem('mente_tema') || temaDoSistema());
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+            if (!localStorage.getItem('mente_tema')) aplicarTema(temaDoSistema());
+        });
+
+        // ---------- sidebar / histórico ----------
         function abrirSidebar() { renderConversas(); document.getElementById('sidebar').classList.add('open'); document.getElementById('overlay').classList.add('show'); }
         function fecharSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('overlay').classList.remove('show'); }
 
@@ -233,7 +662,7 @@
         function limparChatView() {
             chatContainer.innerHTML = ''; chatContainer.style.display = 'none';
             document.getElementById('welcome-screen').style.display = 'flex';
-            currentIaBubble = null; currentIaRaw = '';
+            currentIaBubble = null; currentIaRaw = ''; pensando(false);
         }
 
         // "Novo chat": encerra (consolida) a conversa atual se tiver conteúdo, e começa uma limpa.
@@ -259,12 +688,16 @@
                 conversaId = id;
                 setIdle(false);
                 wsEnviar({ tipo: "carregar_conversa", id });
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+                descer(true);
             } catch (err) { toast("Falha ao abrir a conversa."); }
         }
 
-        // ---------- Ciclo de sessão (idle) ----------
-        function setIdle(on) { conversaEncerrada = on; document.body.classList.toggle('idle', on); }
+        // ---------- ciclo de sessão (idle) ----------
+        function setIdle(on) {
+            conversaEncerrada = on;
+            document.body.classList.toggle('idle', on);
+            document.getElementById('sw-idle-txt').textContent = on ? 'Consolidando…' : 'Consolidar';
+        }
         function encerrarConversa() {
             if (conversaEncerrada) return;
             if (isLiveMode) encerrarLiveMode(false);
@@ -285,14 +718,14 @@
         async function enviarNotaEscrita() {
             const txt = inputTexto.value.trim();
             if (!txt) { toast("Escreva a nota no campo primeiro."); return; }
-            inputTexto.value = ''; document.getElementById('btn-send-text').style.display = 'none';
+            limparComposer();
             try {
                 await fetch('/api/nota/texto', { method: 'POST', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ texto: txt }) });
                 appendMsg("📝 Anotação manual salva no Obsidian.", 'ia');
             } catch (err) { toast("Falha ao salvar a nota."); }
         }
 
-        // ---------- Markdown seguro ----------
+        // ---------- markdown seguro ----------
         function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
         function parseMarkdown(text) {
             const blocks = [];
@@ -306,7 +739,7 @@
             // então nada vindo do LLM/vault escapa para dentro do HTML. Só o formato
             // wikilink é aceito — markdown de imagem com URL externa NÃO, senão uma
             // nota envenenada pela web faria o navegador buscar um servidor de fora
-            // (o pilar é 100% local).
+            // (o pilar é 100% local). Ver mente_digital/imagem_web.py.
             text = text.replace(/!\[\[([^\]|]+?\.(?:webp|png|jpe?g|gif|svg))(?:\|[^\]]*)?\]\]/gi, (m, caminho) => {
                 const src = caminho.trim().split('/').map(encodeURIComponent).join('/');
                 const nome = escapeHtml(caminho.split('/').pop());
@@ -324,33 +757,113 @@
             return text;
         }
 
+        // ---------- rolagem ----------
+        // "Colado no fim" é decidido pela posição do usuário, não presumido: quem
+        // rolou para cima lendo uma resposta longa não é arrastado de volta a cada token.
+        chatContainer.addEventListener('scroll', () => {
+            const resto = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
+            colado = resto < 90;
+            document.getElementById('btn-descer').classList.toggle('show', !colado && chatContainer.children.length > 0);
+        });
+        function descer(forcar) {
+            if (!forcar && !colado) return;
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            colado = true;
+            document.getElementById('btn-descer').classList.remove('show');
+        }
+
+        function pensando(on) {
+            let el = document.getElementById('pensando');
+            if (on) {
+                if (!el) {
+                    el = document.createElement('div'); el.id = 'pensando';
+                    el.innerHTML = '<i></i><i></i><i></i>';
+                    chatContainer.appendChild(el);
+                }
+                el.classList.add('on'); descer();
+            } else if (el) { el.remove(); }
+        }
+
         function appendMsg(txt, sender) {
             document.getElementById('welcome-screen').style.display = 'none';
             chatContainer.style.display = 'flex';
+            pensando(false);
             const row = document.createElement('div'); row.className = `msg-row ${sender}`;
-            const bubble = document.createElement('div'); bubble.className = `bubble ${sender}`; bubble.innerHTML = parseMarkdown(txt);
-            row.appendChild(bubble); chatContainer.appendChild(row); chatContainer.scrollTop = chatContainer.scrollHeight;
+            const bubble = document.createElement('div'); bubble.className = `bubble ${sender}`;
+            bubble.innerHTML = parseMarkdown(txt);
+            bubble.dataset.raw = txt;
+            row.appendChild(bubble);
+            if (sender === 'ia') row.appendChild(montarAcoes(bubble));
+            chatContainer.appendChild(row); descer();
             return bubble;
+        }
+
+        function montarAcoes(bubble) {
+            const box = document.createElement('div'); box.className = 'acoes';
+            const b = document.createElement('button');
+            b.className = 'acao-btn'; b.title = 'Copiar'; b.setAttribute('aria-label', 'Copiar resposta');
+            b.innerHTML = '<svg class="ico" style="width:17px;height:17px" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+            b.onclick = () => {
+                navigator.clipboard.writeText(bubble.dataset.raw || bubble.innerText)
+                    .then(() => toast("Copiado."))
+                    .catch(() => toast("Não consegui copiar."));
+            };
+            box.appendChild(b);
+            return box;
         }
 
         function atualizarEstadoOrb(estado) {
             document.getElementById('live-orb').className = 'orb ' + estado;
             const statusText = document.getElementById('live-status');
-            if (estado === 'listening') statusText.innerText = "Ouvindo…";
+            if (estado === 'listening') statusText.innerText = microfoneMudo ? "Microfone silenciado" : "Ouvindo…";
             else if (estado === 'thinking') statusText.innerText = "Processando…";
             else if (estado === 'speaking') statusText.innerText = "Respondendo…";
             else if (estado === 'dormindo') statusText.innerText = "Dormindo — diga 'mestre'";
         }
 
-        inputTexto.addEventListener('input', () => { document.getElementById('btn-send-text').style.display = inputTexto.value.trim() ? 'flex' : 'none'; });
-        inputTexto.addEventListener('keypress', e => { if (e.key === 'Enter') enviarTexto(); });
+        // ---------- composer ----------
+        function ajustarAltura() {
+            inputTexto.style.height = 'auto';
+            inputTexto.style.height = Math.min(inputTexto.scrollHeight, 132) + 'px';
+        }
+        function limparComposer() {
+            inputTexto.value = ''; ajustarAltura();
+            document.getElementById('btn-send-text').style.display = 'none';
+        }
+        inputTexto.addEventListener('input', () => {
+            ajustarAltura();
+            document.getElementById('btn-send-text').style.display = inputTexto.value.trim() ? 'flex' : 'none';
+        });
+        // Enter envia; Shift+Enter quebra a linha (o campo virou textarea).
+        inputTexto.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviarTexto(); }
+        });
+        function usarChip(el) {
+            inputTexto.value = el.dataset.p;
+            ajustarAltura(); inputTexto.focus();
+            inputTexto.setSelectionRange(inputTexto.value.length, inputTexto.value.length);
+            document.getElementById('btn-send-text').style.display = 'flex';
+        }
 
-        function enviarTexto() {
+        async function enviarTexto() {
             const txt = inputTexto.value.trim(); if (!txt) return;
             abrirConversa();
-            inputTexto.value = ''; document.getElementById('btn-send-text').style.display = 'none';
+            limparComposer();
+            // Descansando: religa ANTES de mandar. Sem isto o LLM voltaria sozinho
+            // (ws.py chama ensure_loaded) mas o embedding não, e a resposta viria
+            // sem RAG — certa na forma, cega no conteúdo, e sem nada avisando.
+            if (estadoEnergia === 'descansando') {
+                toast("Religando os modelos…");
+                await alternarEnergia();
+            }
             if (wsAberto()) {
                 currentIaBubble = null;
+                // A bolha do usuário NÃO é desenhada aqui: o servidor devolve o
+                // texto digitado como {tipo:"transcricao"} (ws.py:496), o mesmo
+                // caminho da fala transcrita, e o handler a desenha. Desenhar
+                // localmente também duplicava a mensagem na tela — regressão
+                // introduzida e medida em 2026-08-02. O servidor é a fonte da
+                // verdade do que foi dito; a tela só reflete.
                 wsEnviar({ tipo: "texto", payload: txt });
             } else {
                 toast("Sem conexão com o servidor.");
@@ -400,13 +913,18 @@
                     abrirConversa();
                     currentIaBubble = null;
                     appendMsg(data.texto, 'user');
+                    pensando(true);
                     if (isLiveMode) atualizarEstadoOrb('thinking');  // processando até o 1º áudio
                 }
                 else if (data.tipo === "token") {
                     if (!currentIaBubble) { currentIaBubble = appendMsg("", 'ia'); currentIaRaw = ""; }
                     currentIaRaw += data.texto;
+                    currentIaBubble.dataset.raw = currentIaRaw;
                     currentIaBubble.innerHTML = parseMarkdown(currentIaRaw);
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    // A legenda do Live mostra a MESMA resposta que a bolha, para o
+                    // modo de voz não ficar cego quando o áudio ainda não chegou.
+                    if (isLiveMode) document.getElementById('live-legenda').textContent = currentIaRaw.slice(-190);
+                    descer();
                 }
                 else if (data.tipo === "audio") {
                     // Só enfileira áudio no modo live. Fora dele (resposta a pergunta
@@ -450,13 +968,31 @@
                     audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
                     iaFalando = false; if (isLiveMode) atualizarEstadoOrb('listening');
                 }
+                else if (data.tipo === "energia") {
+                    // O SERVIDOR mudou de energia por conta própria (watcher de economia,
+                    // 20 min sem uso) ou por ordem de OUTRA casca (celular, bandeja).
+                    // Sem receber isso, esta página seguiria acreditando em 'ligado' e
+                    // pularia o religar-antes-de-enviar — a resposta sairia com o RAG
+                    // cego, bem formada e sem contexto, que é o defeito silencioso que
+                    // o `enviarTexto` existe para evitar.
+                    if (energiaOcupada) return;   // este cliente está no meio do próprio clique
+                    pintarEnergia(data.estado, medidaDe(data.medida));
+                    if (data.estado === 'descansando') toast("PC liberado — a próxima pergunta religa.");
+                }
+                else if (data.tipo === "fontes") {
+                    // Proveniência da resposta que acabou de sair (modo avançado).
+                    // Substitui em vez de acumular: a pergunta é "de onde veio ESTA
+                    // resposta", não "tudo que já foi consultado na sessão".
+                    ultimasFontes = { rota: data.rota, itens: data.itens || [] };
+                    if (document.getElementById('avancado').classList.contains('active')) renderFontes();
+                }
                 else if (data.tipo === "status") { toast(data.texto); }
                 else if (data.tipo === "erro") {
                     // UX-01 (painel 2026-07-24): erro do pipeline deixou de ser mudo.
                     // Fecha a bolha em curso e devolve o orbe ao "ouvindo" — a frase
                     // FALADA do servidor chega logo atrás como token+audio normais.
                     toast("Erro: " + data.texto);
-                    currentIaBubble = null;
+                    currentIaBubble = null; pensando(false);
                     if (isLiveMode && !iaFalando) atualizarEstadoOrb('listening');
                 }
             };
@@ -466,6 +1002,16 @@
                 reconnectDelay = Math.min(reconnectDelay * 1.6, 15000);
             };
             ws.onerror = () => { try { ws.close(); } catch (e) {} };
+        }
+
+        // ---------- modo live ----------
+        function alternarMudo() {
+            microfoneMudo = !microfoneMudo;
+            document.getElementById('btn-mudo').classList.toggle('mudo-on', microfoneMudo);
+            // Mudo é do CLIENTE: para de subir PCM, mas mantém o WebSocket e a
+            // sessão vivos. O servidor simplesmente para de ouvir quadros.
+            if (!iaFalando) atualizarEstadoOrb('listening');
+            toast(microfoneMudo ? "Microfone silenciado." : "Microfone ligado.");
         }
 
         function encerrarLiveMode(enviarFim) {
@@ -479,15 +1025,84 @@
                 if (source) source.disconnect();
                 if (streamGlobal) streamGlobal.getTracks().forEach(t => t.stop());
                 if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+                if (window.MenteAndroid) window.MenteAndroid.pararMicrofone();
             } catch (e) { console.warn("teardown de áudio", e); }
             processor = source = streamGlobal = audioCtx = null;
             if (enviarFim) wsEnviar({ tipo: "end_session" });
         }
 
+        // ---------- captura de microfone: UMA lógica, DUAS origens ----------
+        // F5 (barge-in só do dono, Tier 1): só interrompe o narrador com voz ALTA
+        // e SUSTENTADA. Limiar maior (0.08 -> 0.12) descarta ruído/voz de fundo mais
+        // baixa; exigir BARGE_FRAMES seguidos ("mais uma chance") descarta estalos
+        // curtos. NÃO distingue a SUA voz de outra igualmente alta/perto — isso é o
+        // Tier 2 (speaker-ID), adiado. (~64ms/frame @16kHz -> 4 frames ≈ 250ms.)
+        const BARGE_RMS = 0.12, BARGE_FRAMES = 4;
+        let bargeFrames = 0;
+
+        // Um quadro de 1024 amostras, normalizado em -1..1. Vem do
+        // `ScriptProcessor` no navegador e da PONTE NATIVA no app Android — e é
+        // processado pelo MESMO código nos dois casos, de propósito: duplicar o
+        // barge-in daria duas noções de "voz alta" com o mesmo nome, que
+        // envelheceriam separadas.
+        function processarQuadroMic(inputData) {
+            if (!isLiveMode) return;
+            let sum = 0; for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
+            const avg = sum / inputData.length;
+
+            // O orbe respira com a SUA voz enquanto ouve. É o mesmo número já
+            // calculado para o barge-in — custo zero, e transforma a animação
+            // decorativa em resposta real ao microfone.
+            if (!iaFalando) {
+                const orbEl = document.getElementById('live-orb');
+                if (orbEl) orbEl.style.setProperty('--nivel', Math.min(1, avg * 9).toFixed(2));
+            }
+
+            if (iaFalando) {                          // barge-in gateado (F5)
+                bargeFrames = avg > BARGE_RMS ? bargeFrames + 1 : 0;
+                if (bargeFrames >= BARGE_FRAMES) {
+                    bargeFrames = 0;
+                    audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+                    iaFalando = false; atualizarEstadoOrb('listening');
+                    wsEnviar({ tipo: "barge_in" });
+                }
+            } else {
+                bargeFrames = 0;
+                if (wsAberto() && !microfoneMudo) {
+                    const pcm16 = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+                    ws.send(pcm16.buffer);
+                }
+            }
+        }
+
+        // A ponte do app Android chama isto com UM quadro de 1024 amostras em
+        // base64 (PCM16 little-endian), na mesma cadência de 64 ms do
+        // ScriptProcessor. Existe porque `getUserMedia` exige contexto seguro e o
+        // servidor sobe em HTTP — no app nativo quem grava é o `AudioRecord`, que
+        // só depende da permissão RECORD_AUDIO. Mesmo padrão do `window.pywebview`
+        // que a barra de título já usa: uma casca, uma capacidade.
+        window.__micAndroid = function (b64) {
+            try {
+                const bin = atob(b64);
+                const n = bin.length >> 1;
+                const f = new Float32Array(n);
+                for (let i = 0; i < n; i++) {
+                    let v = (bin.charCodeAt(i * 2 + 1) << 8) | bin.charCodeAt(i * 2);
+                    if (v >= 0x8000) v -= 0x10000;      // int16 com sinal
+                    f[i] = v / 32768;
+                }
+                processarQuadroMic(f);
+            } catch (e) { console.warn("quadro do microfone nativo ilegível", e); }
+        };
+
         async function toggleLiveMode() {
             if (isLiveMode) { encerrarLiveMode(false); return; }
 
-            if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            // `window.MenteAndroid` dispensa o contexto seguro: no app nativo quem
+            // grava é o AudioRecord (permissão RECORD_AUDIO), não o getUserMedia.
+            if (!window.MenteAndroid && !window.isSecureContext
+                && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                 toast("Voz precisa de HTTPS fora do localhost. Use o chat por texto no celular.");
                 return;
             }
@@ -499,57 +1114,458 @@
             // sobre o guard do onmessage — cobre também áudio em voo na troca de modo).
             audioQueue = []; iaFalando = false;
             if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+            document.getElementById('live-legenda').textContent = '';
             document.getElementById('live-overlay').classList.add('active');
             atualizarEstadoOrb('listening');
 
             try {
+                if (window.MenteAndroid) {
+                    // App Android: quem grava é o AudioRecord nativo, que chama
+                    // `window.__micAndroid` a cada quadro de 1024 amostras. O
+                    // resto (RMS, barge-in, envio) é o MESMO código do navegador.
+                    if (!window.MenteAndroid.iniciarMicrofone()) {
+                        toast("Microfone não autorizado.");
+                        encerrarLiveMode(false);
+                    }
+                    return;
+                }
                 streamGlobal = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } });
                 audioCtx = new AudioContext({ sampleRate: 16000 });
                 source = audioCtx.createMediaStreamSource(streamGlobal);
                 gainNode = audioCtx.createGain(); gainNode.gain.value = 0;
                 processor = audioCtx.createScriptProcessor(1024, 1, 1);
                 source.connect(processor); processor.connect(gainNode); gainNode.connect(audioCtx.destination);
-
-                // F5 (barge-in só do dono, Tier 1): só interrompe o narrador com voz ALTA
-                // e SUSTENTADA. Limiar maior (0.08 -> 0.12) descarta ruído/voz de fundo mais
-                // baixa; exigir BARGE_FRAMES seguidos ("mais uma chance") descarta estalos
-                // curtos. NÃO distingue a SUA voz de outra igualmente alta/perto — isso é o
-                // Tier 2 (speaker-ID), adiado. Ajuste os dois números conforme o seu ambiente
-                // (~64ms/frame @16kHz -> 4 frames ≈ 250ms de fala contínua).
-                const BARGE_RMS = 0.12, BARGE_FRAMES = 4;
-                let bargeFrames = 0;
-                processor.onaudioprocess = function (e) {
-                    if (!isLiveMode) return;
-                    const inputData = e.inputBuffer.getChannelData(0);
-                    let sum = 0; for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
-                    let avg = sum / inputData.length;
-
-                    if (iaFalando) {                          // barge-in gateado (F5)
-                        bargeFrames = avg > BARGE_RMS ? bargeFrames + 1 : 0;
-                        if (bargeFrames >= BARGE_FRAMES) {
-                            bargeFrames = 0;
-                            audioQueue = []; if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-                            iaFalando = false; atualizarEstadoOrb('listening');
-                            wsEnviar({ tipo: "barge_in" });
-                        }
-                    } else {
-                        bargeFrames = 0;
-                        if (wsAberto()) {
-                            const pcm16 = new Int16Array(inputData.length);
-                            for (let i = 0; i < inputData.length; i++) pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
-                            ws.send(pcm16.buffer);
-                        }
-                    }
-                };
+                processor.onaudioprocess = e => processarQuadroMic(e.inputBuffer.getChannelData(0));
             } catch (err) {
                 toast("Microfone não autorizado.");
                 encerrarLiveMode(false);
             }
         }
 
+        // Esc fecha o que estiver aberto, na ordem que o usuário espera.
+        document.addEventListener('keydown', e => {
+            if (e.key !== 'Escape') return;
+            if (isLiveMode) encerrarLiveMode(false);
+            // Esc desfaz UMA camada por vez: com o grafo aberto ele volta ao texto
+            // da nota, não fecha o leitor inteiro (que perderia o lugar).
+            else if (!document.getElementById('av-grafo').hidden) mostrarGrafo(false);
+            else if (document.getElementById('av-leitor').classList.contains('on')) fecharNota();
+            else if (document.getElementById('avancado').classList.contains('active')) alternarAvancado();
+            else if (document.getElementById('sidebar').classList.contains('open')) fecharSidebar();
+        });
+
+        // ---------- energia (ligar/desligar os modelos) ----------
+        // "Desligado" é desligado MESMO, não sono com despertar automático. O
+        // servidor solta LLM, Whisper, voz e embeddings; desses, só o LLM voltaria
+        // sozinho. O embedding não — e sem ele o RAG responderia sem contexto, o
+        // STT devolveria vazio e o TTS ficaria mudo, os três CALADOS. Por isso
+        // religar é ato explícito, e mandar mensagem enquanto descansa religa
+        // ANTES de enviar (ver enviarTexto).
+        let estadoEnergia = 'ligado', energiaOcupada = false;
+
+        function pintarEnergia(estado, medida) {
+            const el = document.getElementById('sw-energia');
+            estadoEnergia = estado;
+            el.classList.toggle('on', estado === 'ligado');
+            el.classList.toggle('off', estado === 'descansando');
+            el.classList.toggle('ocupado', estado === 'ocupado');
+            document.getElementById('sw-energia-txt').textContent =
+                estado === 'ligado' ? 'Ligado' : estado === 'descansando' ? 'Descansando' : 'Aguarde…';
+            document.getElementById('sw-energia-med').textContent = medida || '';
+            el.disabled = estado === 'ocupado';
+        }
+
+        function medidaDe(dados) {
+            const m = (dados && (dados.depois || dados)) || {};
+            if (m.vram_mb == null) return '';
+            const ram = m.ram_commit_mb != null ? ` · ${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM` : '';
+            return `${(m.vram_mb / 1024).toFixed(1)} GB VRAM${ram}`;
+        }
+
+        async function energiaPost(acao) {
+            const res = await fetch('/api/energia', {
+                method: 'POST', headers: apiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ acao }),
+            });
+            if (!res.ok) throw new Error('http ' + res.status);
+            return res.json();
+        }
+
+        async function alternarEnergia() {
+            if (energiaOcupada) return;
+            const desligar = estadoEnergia === 'ligado';
+            energiaOcupada = true;
+            pintarEnergia('ocupado', '');
+            try {
+                const d = await energiaPost(desligar ? 'desligar' : 'ligar');
+                pintarEnergia(d.estado, medidaDe(d));
+                if (d.adiado) {
+                    // O servidor cedeu a vez a uma resposta em andamento. Sem esta
+                    // mensagem o clique viraria um nada silencioso — o chip
+                    // continuaria "Ligado" e ninguém saberia por quê.
+                    toast("Tem uma resposta em andamento — tente de novo em instantes.");
+                } else if (desligar && d.liberou) {
+                    // Reporta o que REALMENTE caiu, medido antes/depois no servidor.
+                    const v = d.liberou.vram_mb, r = d.liberou.ram_commit_mb;
+                    const partes = [];
+                    if (v != null) partes.push(`${(v / 1024).toFixed(1)} GB de VRAM`);
+                    if (r != null) partes.push(`${(r / 1024).toFixed(1)} GB de RAM`);
+                    toast(partes.length ? 'Liberado: ' + partes.join(' e ') + '.' : 'Modelos soltos.');
+                } else if (!desligar) { toast("Modelos de volta."); }
+            } catch (err) {
+                toast("Falha ao mudar o estado de energia.");
+                pintarEnergia(desligar ? 'ligado' : 'descansando', '');
+            } finally { energiaOcupada = false; }
+        }
+
+        async function lerEnergia() {
+            try { const d = await energiaPost('estado'); pintarEnergia(d.estado, medidaDe(d)); }
+            catch (err) { /* servidor fora do ar: o ponto de conexão já avisa */ }
+        }
+
+        // ---------- modo avançado ----------
+        // Três abas: de onde veio a última resposta, o vault inteiro, e o estado
+        // da máquina. Tudo lê rota que já existe; nada aqui recalcula nada.
+        let ultimasFontes = null;   // null = ainda não houve resposta nesta sessão
+
+        function alternarAvancado() {
+            const el = document.getElementById('avancado');
+            const abrindo = !el.classList.contains('active');
+            el.classList.toggle('active', abrindo);
+            document.getElementById('sw-avancado').classList.toggle('on', abrindo);
+            if (abrindo) { fecharNota(); renderFontes(); }
+        }
+
+        function abrirAba(nome) {
+            document.querySelectorAll('.av-tab').forEach(b => b.classList.toggle('on', b.dataset.aba === nome));
+            document.querySelectorAll('.av-secao').forEach(s => s.classList.toggle('on', s.id === 'av-' + nome));
+            fecharNota();
+            if (nome === 'vault' && !document.getElementById('av-lista').children.length) buscarVault();
+            if (nome === 'sistema') renderSistema();
+        }
+
+        // --- aba 1: fontes da última resposta ---
+        // Os itens chegam no {tipo:"fontes"} que o servidor emite ao fim do
+        // pipeline. Três formatos, um por origem: "memoria", "nota:<arquivo>",
+        // "web:<dominio>". Só "nota:" é clicável — é a única que existe em disco.
+        function renderFontes() {
+            const box = document.getElementById('av-fontes');
+            if (!ultimasFontes || !ultimasFontes.itens.length) {
+                box.innerHTML = '<div class="av-vazio">Nenhuma resposta nesta sessão ainda.<br>Pergunte algo e volte aqui para ver de onde veio.</div>';
+                return;
+            }
+            box.innerHTML = `<div class="av-titulo">Rota: ${escapeHtml(ultimasFontes.rota || '?')}</div>`;
+            ultimasFontes.itens.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'av-item';
+                if (item.startsWith('nota:')) {
+                    const caminho = item.slice(5);
+                    div.innerHTML = `<div class="t"><span class="av-tag">vault</span>${escapeHtml(caminho.split('/').pop())}</div>`
+                                  + `<div class="s">${escapeHtml(caminho)}</div>`;
+                    div.onclick = () => abrirNota(caminho);
+                } else if (item.startsWith('web:')) {
+                    const d = item.slice(4) || '(sem domínio)';
+                    div.innerHTML = `<div class="t"><span class="av-tag">web</span>${escapeHtml(d)}</div>`;
+                    div.style.cursor = 'default';
+                } else {
+                    div.innerHTML = `<div class="t"><span class="av-tag">memória</span>Contexto desta conversa</div>`;
+                    div.style.cursor = 'default';
+                }
+                box.appendChild(div);
+            });
+        }
+
+        // --- aba 2: navegador do vault ---
+        let buscaTimer = null;
+        let facetasCarregadas = false;
+        document.getElementById('av-busca').addEventListener('input', () => {
+            clearTimeout(buscaTimer); buscaTimer = setTimeout(buscarVault, 350);
+        });
+        // Os filtros NÃO usam debounce: um <select> muda por escolha deliberada,
+        // não por digitação, e esperar 350 ms depois do clique parece travamento.
+        ['av-f-pasta', 'av-f-origem', 'av-f-dias'].forEach(id => {
+            document.getElementById(id).addEventListener('change', buscarVault);
+        });
+        document.getElementById('av-f-limpar').addEventListener('click', () => {
+            document.getElementById('av-f-pasta').value = '';
+            document.getElementById('av-f-origem').value = '';
+            document.getElementById('av-f-dias').value = '0';
+            buscarVault();
+        });
+
+        function filtrosVault() {
+            return {
+                pasta: document.getElementById('av-f-pasta').value,
+                origem: document.getElementById('av-f-origem').value,
+                dias: document.getElementById('av-f-dias').value,
+            };
+        }
+
+        async function carregarFacetas() {
+            // Uma vez por sessão: a varredura custa ~1,6 s no vault do dono
+            // (24.838 notas) e o servidor já a cacheia por 2 min. Falhar aqui
+            // deixa os filtros vazios e a busca segue funcionando sem eles.
+            if (facetasCarregadas) return;
+            try {
+                const res = await fetch('/api/vault/facetas', { headers: apiHeaders() });
+                const d = await res.json();
+                const opt = (v, t) => `<option value="${escapeHtml(v)}">${escapeHtml(t)}</option>`;
+                document.getElementById('av-f-pasta').innerHTML =
+                    opt('', 'Todas as pastas') + d.pastas.map(p => opt(p.valor, `${p.valor} (${p.n})`)).join('');
+                document.getElementById('av-f-origem').innerHTML =
+                    opt('', 'Toda origem') + d.familias.map(f => opt(f.valor, `${f.rotulo} (${f.n})`)).join('');
+                facetasCarregadas = true;
+            } catch (err) { /* filtros ficam vazios; a busca continua */ }
+        }
+
+        async function buscarVault() {
+            carregarFacetas();
+            const q = document.getElementById('av-busca').value.trim();
+            const f = filtrosVault();
+            const ativo = !!(f.pasta || f.origem || f.dias !== '0');
+            document.getElementById('av-f-limpar').hidden = !ativo;
+            const lista = document.getElementById('av-lista');
+            lista.innerHTML = '<div class="av-vazio">Buscando…</div>';
+            try {
+                const p = new URLSearchParams({ k: 30, q, pasta: f.pasta, origem: f.origem, dias: f.dias });
+                const res = await fetch('/api/notas?' + p.toString(), { headers: apiHeaders() });
+                const d = await res.json();
+                lista.innerHTML = '';
+                if (!d.itens.length) {
+                    // Distingue "não existe" de "seus filtros cortaram" — sem isso o
+                    // usuário conclui que a busca quebrou e não que ele mesmo filtrou.
+                    lista.innerHTML = ativo
+                        ? '<div class="av-vazio">Nada com estes filtros. Tente limpar um deles.</div>'
+                        : '<div class="av-vazio">Nada encontrado.</div>';
+                    return;
+                }
+                const cab = document.createElement('div');
+                cab.className = 'av-titulo';
+                // Diz QUAL busca rodou: a semântica é a mesma que o assistente usa,
+                // então esta tela também serve para depurar o RAG, não só navegar.
+                let texto = d.modo === 'semantica'
+                    ? 'Busca semântica — a mesma do assistente' : 'Notas modificadas mais recentemente';
+                if (d.total_filtrado != null && d.total_filtrado > d.itens.length)
+                    texto += ` — ${d.itens.length} de ${d.total_filtrado}`;
+                cab.textContent = texto;
+                lista.appendChild(cab);
+                d.itens.forEach(it => {
+                    const div = document.createElement('div');
+                    div.className = 'av-item';
+                    const dist = it.dist != null ? `<span class="av-tag">${it.dist}</span>` : '';
+                    // A origem e a data COLHIDA viram etiqueta: é o que responde
+                    // "de onde veio isto?" sem precisar abrir a nota.
+                    const fam = it.familia ? `<span class="av-tag">${escapeHtml(it.familia)}</span>` : '';
+                    const dt = it.colhido_em ? `<span class="av-tag">${escapeHtml(it.colhido_em)}</span>` : '';
+                    div.innerHTML = `<div class="t">${dist}${fam}${dt}${escapeHtml(it.nome)}</div>`
+                                  + (it.trecho ? `<div class="s">${escapeHtml(it.trecho)}…</div>` : '');
+                    div.onclick = () => abrirNota(it.caminho);
+                    lista.appendChild(div);
+                });
+            } catch (err) { lista.innerHTML = '<div class="av-vazio">Falha ao buscar.</div>'; }
+        }
+
+        let notaAberta = null;
+
+        async function abrirNota(caminho) {
+            const leitor = document.getElementById('av-leitor');
+            notaAberta = caminho;
+            mostrarGrafo(false);          // trocar de nota sempre volta ao texto
+            document.getElementById('av-leitor-nome').textContent = caminho.split('/').pop();
+            document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Abrindo…</div>';
+            leitor.classList.add('on');
+            try {
+                const res = await fetch('/api/nota?caminho=' + encodeURIComponent(caminho), { headers: apiHeaders() });
+                if (!res.ok) throw new Error('http ' + res.status);
+                const d = await res.json();
+                // Mesmo parseMarkdown do chat: os wikilinks de figura viram <img> e o
+                // escape contra HTML injetado da nota é o mesmo. Um renderizador só.
+                document.getElementById('av-leitor-corpo').innerHTML = parseMarkdown(d.texto);
+            } catch (err) {
+                document.getElementById('av-leitor-corpo').innerHTML = '<div class="av-vazio">Não consegui abrir esta nota.</div>';
+            }
+        }
+        function fecharNota() {
+            document.getElementById('av-leitor').classList.remove('on');
+            mostrarGrafo(false);
+            notaAberta = null;
+        }
+
+        // ---------------------- grafo da vizinhança ----------------------
+        // SVG desenhado aqui, sem biblioteca. As duas páginas do graphify puxam
+        // `vis-network` do unpkg.com: servi-las quebraria o pilar "100% local" e,
+        // offline, elas nem renderizam. Para 1-2 saltos (dezenas de nós) um layout
+        // radial resolve — e é determinístico, ao contrário de um force layout,
+        // que redesenha diferente a cada abertura e impede reconhecer a forma.
+        const G = { W: 400, H: 400, RAIO: [0, 118, 178], PONTO: [9, 6, 4.5] };
+
+        function mostrarGrafo(ligado) {
+            document.getElementById('av-grafo').hidden = !ligado;
+            document.getElementById('av-leitor-corpo').style.display = ligado ? 'none' : '';
+            document.getElementById('av-btn-grafo').classList.toggle('on', ligado);
+        }
+
+        function alternarGrafo() {
+            const alvo = document.getElementById('av-grafo').hidden;
+            mostrarGrafo(alvo);
+            if (alvo) desenharGrafo(notaAberta);
+        }
+
+        function corDoSalto(s) { return s === 0 ? 'var(--acc3)' : s === 1 ? 'var(--acc2)' : 'var(--acc1)'; }
+
+        function posicoesDoGrafo(nos, arestas) {
+            // Radial, mas por PARENTESCO: a semente no centro, o 1º salto num anel
+            // em volta dela, e cada nó de 2º salto num leque em volta do SEU PAI.
+            //
+            // Um anel global para o 2º salto (a primeira versão) desenhava um grafo
+            // que MENTIA: com uma semente de um vizinho só, os 38 netos ficavam num
+            // círculo centrado na semente e todas as linhas convergiam no filho —
+            // que passava a parecer o centro do assunto, enquanto a nota aberta
+            // parecia periférica. Visto no navegador em 2026-08-02.
+            const porSalto = {};
+            nos.forEach(n => (porSalto[n.salto] = porSalto[n.salto] || []).push(n));
+            const pos = {};
+            (porSalto[0] || []).forEach(n => (pos[n.id] = { x: 0, y: 0 }));
+
+            const anel1 = porSalto[1] || [];
+            anel1.forEach((n, i) => {
+                const a = (i / anel1.length) * 2 * Math.PI - Math.PI / 2;
+                pos[n.id] = { x: G.RAIO[1] * Math.cos(a), y: G.RAIO[1] * Math.sin(a) };
+            });
+
+            // Pai de cada neto: a primeira aresta que o liga a alguém já posicionado.
+            const filhos = {};
+            (porSalto[2] || []).forEach(n => {
+                const liga = arestas.find(a => (a.de === n.id && pos[a.para]) || (a.para === n.id && pos[a.de]));
+                const pai = liga ? (liga.de === n.id ? liga.para : liga.de) : null;
+                (filhos[pai] = filhos[pai] || []).push(n);
+            });
+            Object.keys(filhos).forEach(pai => {
+                const base = pos[pai] || { x: 0, y: 0 };
+                // O leque aponta para FORA (do centro para o pai): é o que impede os
+                // netos de cair por cima do miolo do desenho.
+                const fora = Math.atan2(base.y, base.x) || -Math.PI / 2;
+                const grupo = filhos[pai], n = grupo.length;
+                // Um pai com muitos filhos precisa da volta inteira; com poucos, um
+                // leque estreito lê melhor do que um círculo quase vazio.
+                const abertura = Math.min(2 * Math.PI, 0.55 * n + 0.9);
+                const r = G.RAIO[2] * (n > 12 ? 1 : 0.72);
+                grupo.forEach((f, i) => {
+                    const a = fora - abertura / 2 + (n === 1 ? abertura / 2 : (i / (n - 1)) * abertura);
+                    pos[f.id] = { x: base.x + r * Math.cos(a), y: base.y + r * Math.sin(a) };
+                });
+            });
+
+            // ENQUADRAMENTO: o leque pode sair do quadro. Em vez de chutar raios que
+            // caibam sempre, mede-se o que foi desenhado e encaixa-se na viewBox.
+            const ps = Object.values(pos);
+            if (!ps.length) return pos;
+            const xs = ps.map(p => p.x), ys = ps.map(p => p.y);
+            const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+            const m = 34, k = Math.min((G.W - 2 * m) / Math.max(x1 - x0, 1),
+                                       (G.H - 2 * m) / Math.max(y1 - y0, 1), 1.6);
+            Object.keys(pos).forEach(id => {
+                pos[id] = {
+                    x: G.W / 2 + (pos[id].x - (x0 + x1) / 2) * k,
+                    y: G.H / 2 + (pos[id].y - (y0 + y1) / 2) * k,
+                };
+            });
+            return pos;
+        }
+
+        async function desenharGrafo(caminho) {
+            const box = document.getElementById('av-grafo');
+            if (!caminho) { box.innerHTML = '<div class="av-vazio">Abra uma nota primeiro.</div>'; return; }
+            box.innerHTML = '<div class="av-vazio">Montando o grafo…</div>';
+            let d;
+            try {
+                const p = new URLSearchParams({ caminho, saltos: 2, max_nos: 40 });
+                const res = await fetch('/api/vault/grafo?' + p.toString(), { headers: apiHeaders() });
+                d = await res.json();
+            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao montar o grafo.</div>'; return; }
+
+            if (!d.malha_pronta) {
+                // Distinto de "sem vizinhos": a malha vive em RAM e é remontada em
+                // segundo plano no boot. Dizer "não tem vizinho" aqui seria mentira.
+                box.innerHTML = '<div class="av-vazio">A malha de conceitos ainda está sendo montada. Tente daqui a pouco.</div>';
+                return;
+            }
+            if (d.nos.length <= 1) {
+                box.innerHTML = '<div class="av-vazio">Esta nota não tem vizinhos fortes na malha.'
+                              + '<br><span style="opacity:.7">Só contam conceitos RAROS — compartilhar um conceito genérico não é evidência de vizinhança.</span></div>';
+                return;
+            }
+
+            const pos = posicoesDoGrafo(d.nos, d.arestas);
+            const pesoMax = Math.max(...d.arestas.map(a => a.peso), 1);
+            const rotular = d.nos.length <= 16;      // acima disso os rótulos se atropelam
+            const partes = [`<svg viewBox="0 0 ${G.W} ${G.H}" preserveAspectRatio="xMidYMid meet" role="img">`];
+            d.arestas.forEach(a => {
+                const p1 = pos[a.de], p2 = pos[a.para];
+                if (!p1 || !p2) return;              // ponta cortada pelo teto de nós
+                const op = (0.22 + 0.6 * (a.peso / pesoMax)).toFixed(2);
+                partes.push(`<line class="aresta" x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}"`
+                    + ` x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" stroke-opacity="${op}"`
+                    + ` stroke-width="${(0.5 + 1.6 * (a.peso / pesoMax)).toFixed(2)}">`
+                    + `<title>${escapeHtml(a.conceito)}</title></line>`);
+            });
+            d.nos.forEach(n => {
+                const p = pos[n.id], r = G.PONTO[Math.min(n.salto, 2)];
+                const curto = n.nome.length > 18 ? n.nome.slice(0, 17) + '…' : n.nome;
+                partes.push(`<g class="no${n.salto === 0 ? ' semente' : ''}" data-caminho="${escapeHtml(n.caminho)}">`
+                    + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" fill="${corDoSalto(n.salto)}"/>`
+                    + ((rotular || n.salto === 0)
+                        ? `<text x="${p.x.toFixed(1)}" y="${(p.y + r + 8).toFixed(1)}">${escapeHtml(curto)}</text>` : '')
+                    + `<title>${escapeHtml(n.nome)}${n.familia ? ' · ' + escapeHtml(n.familia) : ''}</title></g>`);
+            });
+            partes.push('</svg>');
+
+            // Contar SEM silêncio: um grafo que descarta metade dos vizinhos calado
+            // se lê como "é só isso que existe".
+            let legenda = d.truncado
+                ? `${d.nos.length - 1} de ${d.alcancados} vizinhos em até 2 saltos`
+                : `${d.nos.length - 1} vizinhos em até 2 saltos`;
+            if (d.arestas_totais > d.arestas.length)
+                legenda += ` · ${d.arestas.length} das ${d.arestas_totais} ligações`;
+            partes.push(`<div class="legenda">${legenda} · clique num ponto para abrir</div>`);
+            box.innerHTML = partes.join('');
+            box.querySelectorAll('.no').forEach(g => {
+                g.addEventListener('click', () => abrirNota(g.dataset.caminho));
+            });
+        }
+
+        // --- aba 3: diagnóstico ---
+        async function renderSistema() {
+            const box = document.getElementById('av-sistema');
+            box.innerHTML = '<div class="av-vazio">Lendo…</div>';
+            try {
+                const [m, h] = await Promise.all([
+                    fetch('/api/metrics', { headers: apiHeaders() }).then(r => r.json()),
+                    fetch('/api/health').then(r => r.json()),
+                ]);
+                const linha = (r, v) => `<div class="av-linha"><span>${escapeHtml(r)}</span><span>${escapeHtml(String(v))}</span></div>`;
+                let html = '<div class="av-titulo">Serviços</div>';
+                for (const [k, v] of Object.entries(h.servicos || {})) html += linha(k, v ? 'pronto' : 'não');
+                if ((h.tarefas_de_fundo || []).length) html += linha('em segundo plano', h.tarefas_de_fundo.join(', '));
+                const est = (m.waterfall || {}).estagios || {};
+                html += '<div class="av-titulo">Latência por estágio (p50 / p95, ms)</div>';
+                for (const [k, v] of Object.entries(est)) html += linha(k.replace(/_ms$/, ''), `${v.p50} / ${v.p95}   n=${v.n}`);
+                html += '<div class="av-titulo">Base</div>';
+                html += linha('conversas', m.total_conversas);
+                html += linha('eventos de ETL', m.total_etl);
+                for (const [k, v] of Object.entries(m.sessao || {})) html += linha(k, v);
+                box.innerHTML = html;
+            } catch (err) { box.innerHTML = '<div class="av-vazio">Falha ao ler as métricas.</div>'; }
+        }
+
         // Início
         conversaId = novoId();
         conectarWS();
+        ajustarAltura();
+        lerEnergia();
+        // A medida envelhece (o ETL do idle sobe e desce a VRAM sozinho), então a
+        // faixa se atualiza sozinha. 20s é folgado: a rota só mede, não computa.
+        setInterval(lerEnergia, 20000);
     </script>
 </body>
 </html>

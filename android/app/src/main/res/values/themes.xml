@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema mínimo: o visual real é do Compose (Tema.kt). Este existe porque a
+         Activity precisa de um antes do primeiro frame, e o padrão do sistema
+         daria uma barra clara sobre o fundo escuro do app. -->
+    <style name="Theme.MenteDigital" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0B0B0D</item>
+        <item name="android:navigationBarColor">#0B0B0D</item>
+        <item name="android:windowBackground">#0B0B0D</item>
+    </style>
+</resources>

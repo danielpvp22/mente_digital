@@ -1144,6 +1144,40 @@ class Settings(BaseSettings):
     # Descarregar o Qwen ao fim do idle, liberando VRAM p/ outros apps? A 1ª mensagem
     # seguinte paga o reload (~1-2s). Desligue se a máquina é dedicada ao assistente.
     idle_descarregar_modelo: bool = True
+
+    # --- MODO ECONOMIA automático (2026-08-02) ---------------------------------
+    # Minutos SEM turno de conversa até o servidor soltar TUDO sozinho (LLM, Whisper,
+    # voz e embeddings) e ficar de plantão só respondendo /api — o "standby" que
+    # libera ~5 GB de VRAM e ~7 GB de RAM para o dono usar o PC.
+    #
+    # Por que existe: o app foi feito para ficar ABERTO o dia inteiro, então "não há
+    # sessão conectada" (a régua de todo o resto do trabalho de fundo) nunca acontece
+    # — com a janela aberta, `ctx.sessoes` jamais esvazia. A régua aqui é ATIVIDADE:
+    # o relógio conta do último turno interativo (ver AppContext.ultima_interacao),
+    # não da última conexão.
+    #
+    # Acordar é automático em todo caminho de uso: mandar mensagem religa antes de
+    # enviar (index.html), o celular religa na tela de boot (/api/energia) e a bandeja
+    # tem o item de sempre. 0 desliga o watcher (só dorme no botão).
+    idle_standby_minutos: int = 20
+    # Quanto o "desligar" ESPERA por um turno em voo antes de soltar os modelos.
+    # O botão é apertado do celular, por quem não vê o que acontece no PC: sem a
+    # espera, ele derruba o embedding no meio de uma resposta e ela sai degradada
+    # em silêncio. Estourado o tempo, a rota RECUSA com motivo em vez de estragar
+    # a resposta — quem quis economizar aperta de novo daqui a pouco.
+    energia_espera_turno_seconds: float = 20.0
+    # Minutos sem uso até o app.py SE ENCERRAR (não só dormir), devolvendo o PC ao
+    # estado zero. Só faz sentido com o VIGIA de plantão (ver vigia.py): sem ele,
+    # encerrar deixaria o celular sem ninguém para chamar. 0 desliga.
+    #
+    # ⚠ Encerrar FECHA A JANELA se ela estiver aberta. É a consequência aceita da
+    # escolha do dono ("o PC volta a zero"): reabrir é um toque no celular ou um
+    # duplo-clique no atalho, e o vigia garante que sempre há quem atenda.
+    idle_encerrar_minutos: int = 45
+    # Porta do VIGIA — o processo mínimo que fica de plantão e sobe o assistente
+    # quando o celular pede (autenticado). Separada da porta do servidor de
+    # propósito: os dois coexistem, e o vigia continua ali depois de o app sair.
+    vigia_port: int = 8765
     # PESQUISA PROATIVA: no idle, buscar na web as maiores LACUNAS (perguntas que a RAM
     # E o banco não responderam), atomizar e inserir — assim a próxima vez já acha local.
     # Autônomo: consome web e cresce a base sozinho. Desligue para pausar.

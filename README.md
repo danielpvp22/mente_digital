@@ -9,7 +9,7 @@
 📐 **[Arquitetura completa / deep-dive técnico →](ARQUITETURA.md)**  ·  📖 [Como o projeto evoluiu](docs/EVOLUCAO_DO_PROJETO.md)  ·  🇺🇸 [English overview](README.en.md)
 
 ![CI](https://github.com/danielpvp22/mente_digital/actions/workflows/tests.yml/badge.svg)
-![Testes](https://img.shields.io/badge/testes-1378_sem_GPU_nem_rede-success)
+![Testes](https://img.shields.io/badge/testes-1663_sem_GPU_nem_rede-success)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.10.20-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
@@ -24,11 +24,11 @@
 
 <div align="center">
 
-**⏱ A camada de 30 segundos** — oito números, todos medidos neste repositório:
+**⏱ A camada de 30 segundos** — nove números, todos medidos neste repositório:
 
 | | |
 |---:|:---|
-| **1.378 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~12 s — é literalmente o job de CI |
+| **1.663 testes** | a suíte inteira roda **sem GPU e sem rede**, em ~42 s — é literalmente o job de CI |
 | **33% → 8%** | taxa de "não sei" com o contexto na mão, na troca `Qwen2.5-7B` → `Qwen3-8B` — decidida por **A/B próprio** |
 | **~2×** | ranqueamento do RAG na troca de embedding (known-item MRR@10 0.20 → 0.375) |
 | **0.55 → 0.16** | gate de relevância **recalibrado por dados** contra a base real |
@@ -36,6 +36,7 @@
 | **31,7 s → 12,4 s** | boot do servidor, em três passadas medidas |
 | **1.736 figuras** | acervo visual buscável extraído dos livros — contra 777 da heurística que ele substituiu |
 | **8,9 / 10 GB** | o stack inteiro (Qwen3-8B + e5-base + KV `q8_0`) residente na VRAM da 3080 |
+| **dezenas de MB** | o **vigia** de plantão no logon — contra ~7,7 GB de RAM do assistente carregado. Sem uso, o PC volta a zero; o celular o levanta |
 
 </div>
 
@@ -78,13 +79,14 @@ Cascata memória → notas → web, com anti-alucinação.<br>No print: _"o que 
 
 Mas ele não só **responde**. Ele **age** (lembrete, lista, nota, rotina — por voz), **cuida** de coisas por conta própria (alarmes, watchers, briefing diário, pomodoro) e **lembra** (desfazer, corrigir, confirmar — a última ação sempre tem inverso). Três verbos, com uma **parede rígida** entre eles.
 
-O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o código:
+O que separa isto de um "chatbot com RAG" — seis teses que atravessam o código:
 
 1. **A base é sua, e é um vault Obsidian.** Arquivos `.md` que você lê, edita e versiona; o ChromaDB é um índice **derivado e descartável**. Trocar o embedding é uma reindexação, não perda de dado. → [detalhe](ARQUITETURA.md#-o-banco-vetorial-como-ele-é-formado)
 2. **A métrica é a latência *percebida*, não a real.** O sistema persegue **TTFA** (tempo até o 1º *áudio*), não TTFT — token que ninguém ouviu não existe. → [detalhe](ARQUITETURA.md#latência-percebida--latência-real)
 3. **Anti-alucinação é controle de fluxo, não prompt.** O "não sei" é um **sinal interno**: o sistema segura o áudio, detecta o sentinela em streaming, descarta e escala para a web sem vazar uma sílaba. → [detalhe](ARQUITETURA.md#anti-alucinação-como-controle-de-fluxo)
 4. **Comando ≠ conversa, e a fronteira é física.** Uma frase que começa por `"mestre, …"` entra num fluxo **isolado e determinístico** (regex antes de LLM) e **nunca vira conhecimento**. → [detalhe](ARQUITETURA.md#-o-plano-de-comando-a-palavra-mestre)
 5. **O sistema trabalha quando ninguém olha.** Um ETL idle destila conversas, pesquisas e **livros inteiros** em notas atômicas; um scheduler persistente dispara os alarmes — ambos cedendo a GPU para a conversa ao vivo. → [detalhe](ARQUITETURA.md#-o-ciclo-de-vida-do-conhecimento)
+6. **Devolver a máquina faz parte do produto.** O app foi feito para ficar aberto o dia inteiro, então ele aprende a sair da frente: sem uso, solta os modelos sozinho (~5 GB de VRAM, ~7 GB de RAM) e **avisa** quem está conectado; sem uso por mais tempo, **se encerra**. Quem fica de plantão é um vigia de **dezenas de MB** que só levanta o assistente a pedido **autenticado** do celular. → [detalhe](#-o-aplicativo--e-a-máquina-de-volta)
 
 > Pacote modularizado (**V2**) de um MVP monolítico, estendido por três "ondas" de agentes com **zero dependência nova**. Quase toda heurística carrega no comentário o bug real que ela conserta.
 
@@ -102,8 +104,8 @@ O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o códi
 | **Ingestão incremental / CDC** | reindex por `mtime` do filesystem como *change-feed* — só reprocessa o que mudou (`rag.py`) |
 | **Ingestão em lote com fila durável** | um PDF vira dezenas de jobs JSON em disco que **sobrevivem a restart**, drenados no idle ([Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras)) |
 | **Arquitetura relacional + não-relacional** | SQLite (fatos + estado, migrações idempotentes) e ChromaDB (vetorial, cosseno) convivendo |
-| **Qualidade de dados / DataOps** | **1.378 testes sem GPU nem rede** em CI (+ ruff, cobertura com piso, bandit, pip-audit), dedup por Jaccard, proveniência em frontmatter |
-| **Decisão orientada por métrica** | 16 harnesses de A/B em `eval/` — ranqueamento **2×**, erro do modelo **33%→8%** — e features **desligadas** quando os dados não sustentam |
+| **Qualidade de dados / DataOps** | **1.663 testes sem GPU nem rede** em CI (+ ruff, cobertura com piso, bandit, pip-audit), dedup por Jaccard, proveniência/linhagem em frontmatter |
+| **Decisão orientada por métrica** | 16 harnesses de A/B em `eval/` — ranqueamento **2×** (MRR@10 0,20→0,375), erro do modelo **33%→8%** — e features **desligadas** quando os dados não sustentam |
 | **Otimização de performance/custo** | orçamento de 10 GB de VRAM; profiling por estágio com **percentis p50/p95** (`/api/metrics`) |
 | **Orquestração** | `scheduler.py` — loop persistente de trabalho agendado (recorrência, reentrega do que falhou) |
 
@@ -113,7 +115,7 @@ O que separa isto de um "chatbot com RAG" — cinco teses que atravessam o códi
 
 ```mermaid
 flowchart LR
-    subgraph CLIENTE["BROWSER - SPA sem framework"]
+    subgraph CLIENTE["CASCAS - a MESMA SPA sem framework<br/>navegador, janela nativa, container, Android"]
         MIC["Microfone<br/>PCM16 16kHz"]
         SPK["Fila de audio<br/>WAV base64"]
     end
@@ -125,6 +127,7 @@ flowchart LR
         RAG["rag.py<br/>Chroma cosseno + Malha<br/>+ deep-fetch web"]
         SCH["scheduler.py<br/>alarmes, watchers"]
         ETL["EtlProcessor<br/>roda no idle"]
+        STB["standby.py<br/>MODO ECONOMIA<br/>solta os modelos"]
     end
     subgraph DADOS["Fontes de verdade"]
         VAULT["Vault Obsidian<br/>.md + Malha + figuras"]
@@ -140,6 +143,9 @@ flowchart LR
     RAG <--> VAULT
     AG --> SQL
     SCH -.->|"PUSH falado 🔔"| SPK
+    SCH -.->|"sem uso ha 20 min"| STB
+    STB -.->|"solta a VRAM"| LLM
+    STB -.->|"avisa: energia"| SPK
     AG -.->|"fim da sessao"| ETL
     ETL -->|"atomos novos"| VAULT
     ETL -.->|"cede a GPU"| LLM
@@ -156,15 +162,33 @@ A **primeira bifurcação** é a arquitetura inteira em uma imagem: **começou p
 | | O quê | Aprofundar |
 |---|---|---|
 | 🔀 | **Dois planos separados** — *pergunta* (RAG em cascata RAM→banco→web, com guard anti-alucinação) e *comando* (palavra-mestre, regex-first, isolado do conhecimento) | [Os dois planos](ARQUITETURA.md#-os-dois-planos-pergunta-e-comando) |
-| 🎙 | **Voz de baixa latência** — streaming token→frase→áudio, filler falado, barge-in, meia-duplex contra o próprio eco; Piper (CPU, default) ou XTTS-v2 (GPU, opt-in) | [Stack de voz](ARQUITETURA.md#núcleo-de-ia) |
+| 🎙 | **Voz de baixa latência** — streaming token→frase→áudio, filler falado, barge-in, meia-duplex contra o próprio eco; Piper (CPU, default) ou XTTS-v2 (GPU, opt-in), com verbalização PT-BR de números | [Stack de voz](ARQUITETURA.md#núcleo-de-ia) |
 | 🗝 | **Agentes que agem** — lembretes, listas, rotinas compostas, captura rápida (GTD), SRS, hábitos, pomodoro — tudo por voz, reversível (desfazer/corrigir/confirmar) | [A palavra-mestre](ARQUITETURA.md#-o-plano-de-comando-a-palavra-mestre) |
 | 🔔 | **Agentes que cuidam** — scheduler persistente (sobrevive a restart) com alarmes, *watchers* ("me avise quando X"), briefing diário e push falado | [Agentes proativos](ARQUITETURA.md#-agentes-proativos-a-responsabilidade-contínua) |
 | 🔄 | **Ciclo de vida do conhecimento** — notas nascem `#conhecimento_novo` e só "amadurecem" quando você de fato as reusa; a base cresce da sua curiosidade | [O ciclo](ARQUITETURA.md#-o-ciclo-de-vida-do-conhecimento) |
 | 📚 | **Ingestão de obras** — solte um PDF numa pasta: capítulos, OCR do escaneado, triagem editorial e **1.736 figuras buscáveis**, tudo processado no idle | [Ingestão de obras](ARQUITETURA.md#-ingestão-de-obras-livros-pdfs-e-figuras) |
-| 🖼 | **Imagem que chega à tela** — a figura entra depois da frase que fala dela; se o acervo não tem, o **servidor** busca na web, baixa e serve localmente — o browser nunca fala com fora | [Patch Notes](ARQUITETURA.md#-patch-notes) |
+| 🖼 | **Imagem que chega à tela** — a figura entra depois da frase que fala dela; se o acervo não tem, o **servidor** busca na web, valida (SSRF, teto de tamanho), reencoda em WebP e serve localmente — o browser nunca fala com fora. A busca de figura é **exata em memória**: 85× mais rápida que o índice aproximado, que errava a **1ª colocada em 30%** das perguntas | [Patch Notes](ARQUITETURA.md#-patch-notes) |
 | 🕸 | **A Malha** — GraphRAG sobre o vault (aterramento por IDF, hubs, pontes por surpresa) **sem biblioteca de grafo** | [A Malha](ARQUITETURA.md#-a-malha-um-grafo-sobre-as-suas-notas) |
+| 🔌 | **A máquina de volta** — casca de aplicativo (janela nativa, bandeja, e um clone no Android), modo economia que solta os modelos sozinho, encerramento automático e um **vigia** de plantão que o celular levanta | [O aplicativo](#-o-aplicativo--e-a-máquina-de-volta) |
+| 🎛 | **Modo avançado, na mesma página** — de onde veio a última resposta (RAM/nota/web), navegador do vault com filtros de pasta, origem e data, o **grafo local da Malha** em ~90 linhas de JS puro (nenhuma CDN: `vis-network` viria do unpkg e quebraria o "100% local") e o waterfall de latência p50/p95 por estágio | [API e protocolo](ARQUITETURA.md#-api-e-protocolo) |
 
 > Patch notes de cada feature em [`ARQUITETURA.md`](ARQUITETURA.md#-patch-notes) · os bugs que moldaram a arquitetura em [war stories](ARQUITETURA.md#-war-stories-os-bugs-que-moldaram-a-arquitetura) · a história completa em [`docs/EVOLUCAO_DO_PROJETO.md`](docs/EVOLUCAO_DO_PROJETO.md).
+
+---
+
+## 💻 O aplicativo — e a máquina de volta
+
+`python app.py` abre a **mesma SPA** numa janela WebView2 sem moldura, com ícone na bandeja. Não há segunda interface para manter em sincronia: navegador, janela nativa, container e o app Android consomem o mesmo [`templates/index.html`](templates/index.html) e o mesmo WebSocket. O ícone é **desenhado em código** ([`marca.py`](mente_digital/marca.py)) e não um binário versionado — a cor do ícone *é* a cor da interface, por construção.
+
+- **Tela de boot com progresso REAL.** O uvicorn roda no próprio processo, então a barra lê `ctx.llama.ready`/`ctx.stt.ready` direto da memória — inclusive nos ~12 s em que a porta ainda nem existe (o bind só acontece depois do lifespan). O percentual é contagem de **marcos alcançados**, nunca cronômetro disfarçado; sem marco algum, o anel gira sem número em vez de inventar um. E a tela só libera com o **trabalho de fundo** terminado também: medido, os serviços ficam prontos aos 11,6 s e ainda há ~24 s de malha/sync depois disso. A espera não some — sai de dentro da primeira resposta, onde é invisível e irritante, e vai para a barra, onde é esperada. Boot **35,7 s → 25,3 s** depois de descobrir que a malha era reconstruída **3×** por boot.
+- **Modo economia automático.** Sem turno de conversa por `MENTE_IDLE_STANDBY_MINUTOS` (20), o servidor solta LLM, Whisper, voz e embeddings e **avisa** as sessões vivas (`{"tipo":"energia"}`) — um standby calado deixaria a próxima pergunta sair com o RAG cego, bem formada e sem contexto. ⚠ A régua é **atividade**, não sessão conectada: num app feito para ficar aberto o dia inteiro, `ctx.sessoes` nunca esvazia e o watcher jamais dispararia. Decode em voo e trabalho de fundo **vetam** o sono, com o motivo registrado no log; o botão manual (que hoje se aperta do celular, longe do PC) **espera** o turno terminar e, se não terminar, recusa com motivo em vez de degradar a resposta em silêncio.
+- **O PC em zero, e o celular o levanta.** Descansar libera a VRAM, mas o processo Python segue com ~7,7 GB de RAM — "de plantão" não era barato o bastante. Então são **duas camadas**: depois de `MENTE_IDLE_ENCERRAR_MINUTOS` (45) o app **se encerra**, e quem fica no logon é o **vigia** ([`vigia.py`](mente_digital/vigia.py)) — stdlib pura, sem torch, sem FastAPI, **dezenas de MB** (medidos 12 MB recém-subido e 61 MB depois de atender um pedido), duas rotas: `GET /vigia/status` (sem gate, só booleanos) e `POST /vigia/acordar` (**com** token, porque é a única que faz algo). Medido do zero: pedido autenticado → tela de carregamento com progresso real → conversa em **96 s**; sem token ou com token errado, HTTP 401.
+- **Ócio do DONO, não da janela.** Parado o teclado e o mouse por `MENTE_APP_OCIOSO_SEGUNDOS` (300; lido direto do ambiente, não pelo `Settings`), o app pergunta se pode consolidar e, sem resposta em 15 s, consolida. O relógio é o `GetLastInputInfo` do Windows — "há quanto tempo ninguém tocou em nada nesta máquina" —, não um detector em JavaScript: para este, jogar em tela cheia é idêntico a estar longe do teclado, e o idle roubaria a GPU no meio da partida. Quando você volta, o trabalho para e devolve o que ocupou — observado ao vivo: o `parar` chegou **0,27 s** depois do input e a VRAM ficou em 6.578 MiB, porque o contrato é *"libera o que o idle ocupou"*, não *"desliga tudo"*.
+- **Sobe com o Windows.** `python app.py --instalar-inicio` escreve um `.vbs` de quatro linhas na pasta Inicializar **do usuário** (a de todos pediria administrador) que deixa o vigia de plantão. ⚠ Em **UTF-16**: o Windows Script Host lê `.vbs` como ANSI, e falha de script de logon não aparece em lugar nenhum visível.
+
+> A janela precisa de `pywebview`, e a bandeja de `pystray` — **nenhum dos dois está no `requirements.txt`** hoje: `pip install pywebview pystray`. A bandeja é *fail-soft* (sessão sem bandeja, política de grupo ou headless deixam o app exatamente como antes); a janela, não. `python main.py` continua subindo só o servidor.
+
+**📱 No celular:** um cliente magro em [`android/`](android/README.md) — **um clone do `app.py`**, não uma segunda interface: tela de boot nativa com os mesmos marcos e a mesma SPA num WebView. Quando não acha o servidor, ele levanta o PC pelo vigia; e o libera de volta pela folha de utilidades (o menu da bandeja, num telefone sem bandeja). Ver [`android/README.md`](android/README.md).
 
 ---
 
@@ -181,8 +205,10 @@ Nenhuma escolha é "a lib popular" — cada uma resolve a restrição do alvo: *
 | Índice | **ChromaDB** (cosseno) + **A Malha** (código próprio) | Índice derivado; reindex incremental por `mtime` |
 | Persistência | **SQLite** | Turnos, latências, agendamentos, estado dos agentes; migrações idempotentes |
 | Servidor | **FastAPI** + **WebSocket** | Full-duplex (pré-condição de barge-in e do push proativo) |
+| Casca | **pywebview** (WebView2) + **pystray** | Janela sem moldura e bandeja; a mesma SPA, zero interface nova |
+| Celular | **Kotlin** + **WebView** (`android/`) | Clone do `app.py`: boot nativo, ponte de microfone, e a mesma SPA |
 
-> ~21.000 linhas de Python em 52 módulos + **1.378 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
+> ~22.900 linhas de Python em 60 módulos + **1.663 testes** sem GPU nem rede. A justificativa de cada escolha (por que GGUF, por que cosseno, por que ONNX) está em [`ARQUITETURA.md`](ARQUITETURA.md#-por-que-cada-formato).
 
 ---
 
@@ -212,12 +238,31 @@ python main.py                    # ou: uvicorn main:app --host 0.0.0.0 --port 8
 
 Abra `http://localhost:8000` e diga *"mestre, ajuda"* (ou `/ajuda`). O servidor sobe **antes** do LLM terminar de carregar (~12 s até online).
 
-**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, 282 parâmetros documentados em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
+Para a **casca de aplicativo** (janela nativa + bandeja, com a tela de boot de progresso real) em vez da aba do navegador → [detalhe](#-o-aplicativo--e-a-máquina-de-volta):
+
+```bash
+pip install pywebview pystray     # ainda fora do requirements.txt
+python app.py                     # sobe o servidor e abre a janela
+python app.py --vigia             # plantão mínimo (dezenas de MB, sem torch): espera o celular
+python app.py --instalar-inicio   # deixa o vigia de plantão a cada logon do Windows
+python app.py --remoto http://192.168.0.10:8000   # só a janela; servidor alheio (Docker)
+```
+
+**Modelos** (não vêm no repo, ficam em `dados/modelos/`): `scripts/baixar_modelos.py` baixa o LLM `Qwen3-8B-Q4_K_M.gguf` e a voz Piper `pt_BR-cadu-medium.onnx` (+ `.onnx.json`); Whisper e embeddings baixam sozinhos no 1º uso. Configuração 100% por `.env` (prefixo `MENTE_`, cada botão documentado ao lado do campo em [`config.py`](mente_digital/config.py), com um modelo comentado em [.env.example](.env.example)) — **calibrar nunca exige editar código**.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                            # 1.378 testes, sem GPU e sem rede (~12 s)
+pytest                            # 1.663 testes, sem GPU e sem rede (~42 s)
 ```
+
+⚠ O CI tem **quatro portões bloqueantes**, e o job que os roda chama-se `pytest` — uma reprovação "no pytest" pode não ter nada a ver com testes. Rode o mesmo que ele roda antes de empurrar:
+
+```bash
+ruff check . && pytest -q --cov=mente_digital --cov-fail-under=77
+bandit -c pyproject.toml -r mente_digital main.py -q --severity-level medium && pip-audit
+```
+
+`requirements.txt` e `requirements-ci.txt` divergem **de propósito** (o do CI é mínimo, para o job durar ~1 minuto). Dependência usada por **teste** precisa entrar nos dois — senão passa na máquina de desenvolvimento e reprova lá.
 
 **→ Setup detalhado (CUDA, Docker, `.env`, download dos modelos) em [`ARQUITETURA.md`](ARQUITETURA.md#-setup--instalação) · calibração em [`docs/CALIBRACAO.md`](docs/CALIBRACAO.md).**
 
@@ -229,8 +274,12 @@ pytest                            # 1.378 testes, sem GPU e sem rede (~12 s)
 |---|---|
 | **[ARQUITETURA.md](ARQUITETURA.md)** | O deep-dive: papel de cada módulo, fluxos, war stories, casos de uso, API, configuração |
 | **[docs/EVOLUCAO_DO_PROJETO.md](docs/EVOLUCAO_DO_PROJETO.md)** | Como o projeto chegou aqui: as cinco eras, lidas commit a commit e PR a PR |
+| [android/README.md](android/README.md) | O app do celular: como abrir no Studio, o que a casca faz e o que continua sendo da SPA |
 | [docs/CALIBRACAO.md](docs/CALIBRACAO.md) | Como calibrar o gate de relevância e os botões dos agentes |
 | [docs/CONSULTORIA_TTFT.md](docs/CONSULTORIA_TTFT.md) | Rodada de latência TTFT/TTFA (banca, ranking, implementação) |
+| [docs/PLANO_APP_ANDROID.md](docs/PLANO_APP_ANDROID.md) | O plano de 4 fases do app, e as três armadilhas que o quebrariam em silêncio |
+| [docs/UPGRADE_BLACKWELL.md](docs/UPGRADE_BLACKWELL.md) | Roteiro para rodar numa GPU Blackwell (sm_120), com o gate que confere a toolchain |
+| [docs/MALHA_TEXTO_2026-07-31.md](docs/MALHA_TEXTO_2026-07-31.md) | A passada de links nas 6.324 notas de texto — e as duas ideias que a medição derrubou |
 | [docs/TESTE_MANUAL.md](docs/TESTE_MANUAL.md) | Roteiro de verificação (o que exige microfone) |
 
 ---

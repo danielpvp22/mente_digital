@@ -71,7 +71,18 @@ def _isola_do_env(monkeypatch, tmp_path):
     campos .env-sensíveis voltam ao default por teste; quem precisa de outro valor
     sobrescreve depois (o monkeypatch do próprio teste roda DEPOIS deste, então vence)."""
     for campo in ("rag_score_confident", "embedding_query_prefix", "embedding_passage_prefix",
-                  "llm_no_think", "llm_strip_think"):
+                  "llm_no_think", "llm_strip_think",
+                  # PESQUISA AGENDADA (2026-08-02): entrou aqui no dia em que o dono a
+                  # LIGOU no .env (commit 47ac4ba3). O default do código é 0 (desligada),
+                  # e com 7200 no .env um `tick()` de scheduler em teste de LEMBRETE
+                  # passava a disparar a passada de pesquisa — quebrando
+                  # test_sem_ouvinte_vira_pendente_e_entrega_depois num ramo que o teste
+                  # nem queria exercitar. Suíte não pode depender de arquivo ignorado
+                  # pelo git: o mesmo commit deixaria a suíte verde no CI e vermelha na
+                  # máquina do dono. Os testes que exercitam a pesquisa agendada
+                  # (test_pesquisa_idle_*) ligam o campo eles mesmos, e rodam DEPOIS
+                  # deste fixture — então nada de cobertura se perde aqui.
+                  "pesquisa_agendada_intervalo_seconds"):
         monkeypatch.setattr(_settings, campo, getattr(_DEFAULTS_LIMPOS, campo), raising=False)
     # Backup diário (ops-backup-01): default LIGADO em produção, mas um tick de
     # scheduler dentro da suíte zipar o vault REAL seria efeito colateral em disco.
