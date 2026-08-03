@@ -1335,6 +1335,19 @@ class Settings(BaseSettings):
     # cifra transcrições/trechos do vault em trânsito. Gere o par com
     # scripts/gerar_cert.py (mkcert = CA local, sem aviso no browser). Vazio = HTTP
     # (comportamento atual). O front já deriva ws/wss de location.protocol sozinho.
+    # --- Wattímetro (2026-08-03) ------------------------------------------
+    # Passo entre amostras de energia. 20 s é o mesmo ritmo da janela de watts do
+    # chip: fino o bastante para a curva do dia, grosso o bastante para não virar
+    # uma escrita por segundo no banco que também serve o histórico de chat.
+    consumo_intervalo_seconds: float = 20.0
+    consumo_habilitado: bool = True
+    # Estimativa da tomada. O TGP muda no dia em que a placa muda -- 320 na 3080,
+    # 360 na 5080 -- e o valor honesto sai do próprio driver (`potencia.limite_gpu`);
+    # isto aqui é só o fallback de quando a NVML não responde.
+    tomada_gpu_tgp_w: float = 360.0
+    tomada_fonte_capacidade_w: float = 850.0
+    tomada_monitores: int = 2
+
     ssl_cert: str = ""
     ssl_key: str = ""
     # Acesso (painel 2026-07, #7): VAZIO = só loopback usa as rotas /api e o WS (a

@@ -215,6 +215,22 @@ def _ler_uint(nome: str) -> Optional[int]:
         return None
 
 
+def energia_acumulada_mj() -> Optional[int]:
+    """O contador MONOTÔNICO de milijoules desde que o driver subiu, cru.
+
+    Público porque o wattímetro (`consumo.py`) precisa dele DIRETO, e não do watt
+    que este módulo deriva: para somar energia do dia, a subtração de dois valores
+    do contador é exata, enquanto multiplicar um watt médio pelo intervalo perde
+    exatamente o que o contador preserva — quanto tempo cada pico durou.
+
+    ⚠ Este módulo mantém um baseline PRÓPRIO para a média de 20 s. Ler aqui NÃO o
+    consome: são dois leitores independentes do mesmo contador, e é assim que tem
+    de ser — se o wattímetro comesse a janela do chip, o número da tela cairia para
+    o instante para sempre.
+    """
+    return _ler_energia_mj()
+
+
 def _ler_energia_mj() -> Optional[int]:
     """Joules acumulados (em MILIjoules) desde que o driver subiu. None em placa
     anterior a Volta, onde a NVML devolve NOT_SUPPORTED para este contador."""

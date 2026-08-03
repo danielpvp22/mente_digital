@@ -32,6 +32,7 @@ from mente_digital import energia  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
 from mente_digital import rede  # noqa: E402
+from mente_digital.consumo import RegistroConsumo
 from mente_digital.registro_aparelhos import RegistroAparelhos  # noqa: E402
 from mente_digital.scheduler import SchedulerService  # noqa: E402
 from mente_digital.state import AppContext  # noqa: E402
@@ -229,6 +230,12 @@ async def lifespan(app: FastAPI):
     ctx.agent = Agent(ctx)
     ctx.etl = EtlProcessor(ctx)
     ctx.scheduler = SchedulerService(ctx)
+    # WATTÍMETRO: acumula energia por dia. Criado aqui e alimentado pelo tick do
+    # scheduler; `init()` fora do loop porque criar tabela é IO e o lifespan é o
+    # lugar onde IO de boot já mora.
+    if settings.consumo_habilitado:
+        ctx.consumo = RegistroConsumo(settings.db_telemetria)
+        await asyncio.to_thread(ctx.consumo.init)
     # #36 Diapasão: carrega o perfil de conversa persistido (o idle o refina depois).
     ctx.perfil_conversa = db.ler_perfil()
     app.state.ctx = ctx
@@ -802,6 +809,36 @@ async def conferir_acesso(request: Request):
         # "você ainda está no token antigo" em vez de fingir que já migrou.
         "aparelho_id": getattr(request.state, "aparelho_id", None),
         "aparelhos_habilitado": settings.aparelhos_habilitado,
+    })
+
+
+@app.get("/api/consumo", dependencies=[Depends(exigir_acesso)])
+async def consumo_energia(request: Request, dias: int = 30, meses: int = 12):
+    """O WATTÍMETRO: energia por dia e por mês.
+
+    ⚠ Três números por período, e eles NÃO são intercambiáveis — é por isso que a
+    rota não devolve um total só:
+
+    - `gpu_wh`  é MEDIDO e exato (contador de energia do driver, não amostragem);
+    - `cpu_wh`  é MEDIDO, integrado por trapézio entre amostras (aproximação);
+    - `parede_*_wh` é ESTIMATIVA de modelo (`tomada.py`) e vem como FAIXA, porque a
+      incerteza de fonte, monitores e placa-mãe é real.
+
+    E `cobertura` viaja junto de cada dia: barra baixa por falta de medição é
+    indistinguível de barra baixa por economia sem ela.
+    """
+    registro = getattr(request.app.state, "ctx", None)
+    registro = getattr(registro, "consumo", None) if registro else None
+    if registro is None:
+        return JSONResponse(content={"habilitado": False, "diario": [], "mensal": []})
+    diario = await asyncio.to_thread(registro.diario, max(1, min(dias, 366)))
+    mensal = await asyncio.to_thread(registro.mensal, max(1, min(meses, 60)))
+    return JSONResponse(content={
+        "habilitado": True,
+        "diario": diario,
+        "mensal": mensal,
+        "descartes": registro.descartes(),
+        "intervalo_s": settings.consumo_intervalo_seconds,
     })
 
 
