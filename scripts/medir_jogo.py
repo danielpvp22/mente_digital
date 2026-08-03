@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import csv
 import shutil
-import statistics
 import subprocess
 import sys
 import time

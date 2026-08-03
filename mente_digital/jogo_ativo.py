@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import enum
-from ctypes import wintypes
+import functools
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -111,6 +111,14 @@ def comando_pnputil(habilitar: bool, instance_id: str = PAWNIO_INSTANCE_ID) -> l
 # A unica parte suja: perguntar ao Windows quem esta rodando.
 # ctypes/Toolhelp em vez de psutil de proposito -- psutil nao e stdlib, e este
 # modulo e importado pelo processo elevado.
+#
+# ⚠ TUDO QUE TOCA `ctypes.wintypes` E PREGUICOSO, e isso nao e estilo: o modulo
+# `ctypes.wintypes` NAO EXISTE fora do Windows -- importa-lo no Linux levanta
+# ValueError na hora. Com o import no topo, este arquivo quebraria no IMPORT em
+# qualquer runner Linux; como o modulo de teste o importa, a suite inteira
+# morreria no CI enquanto passa verde no Windows do dono. Ja aconteceu neste
+# repo com `os.name`/pathlib, e o teste `test_import_nao_toca_wintypes` existe
+# para que nao aconteca uma terceira vez.
 # --------------------------------------------------------------------------
 
 TH32CS_SNAPPROCESS = 0x00000002
@@ -118,19 +126,26 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 MAX_PATH = 260
 
 
-class PROCESSENTRY32W(ctypes.Structure):
-    _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
-        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", ctypes.c_long),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * MAX_PATH),
-    ]
+@functools.lru_cache(maxsize=1)
+def _estrutura_processentry32w():
+    """Monta PROCESSENTRY32W na PRIMEIRA chamada, nunca no import."""
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * MAX_PATH),
+        ]
+
+    return PROCESSENTRY32W
 
 
 def processos_em_execucao() -> set[str]:
@@ -140,11 +155,14 @@ def processos_em_execucao() -> set[str]:
     privilegio nenhum e nao falha em processo protegido -- que e exatamente o
     caso de um jogo com anti-cheat.
     """
+    from ctypes import wintypes
+
+    entry = _estrutura_processentry32w()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(entry)]
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(entry)]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
     snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -153,8 +171,8 @@ def processos_em_execucao() -> set[str]:
 
     nomes: set[str] = set()
     try:
-        entrada = PROCESSENTRY32W()
-        entrada.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        entrada = entry()
+        entrada.dwSize = ctypes.sizeof(entry)
         if not kernel32.Process32FirstW(snap, ctypes.byref(entrada)):
             return nomes
         while True:

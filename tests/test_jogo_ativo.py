@@ -121,3 +121,31 @@ class TestPurezaStdlib:
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "", (
             f"jogo_ativo arrastou dependências pesadas: {r.stdout.strip()}")
+
+    def test_import_nao_toca_wintypes(self, tmp_path):
+        """`ctypes.wintypes` NÃO EXISTE fora do Windows — importá-lo no Linux
+        levanta ValueError na hora. Com o import no topo do módulo, este arquivo
+        quebraria no IMPORT em qualquer runner Linux e derrubaria a suíte
+        inteira no CI, enquanto passa verde no Windows do dono. Já custou um CI
+        vermelho neste repo com `os.name`/pathlib; a régua é: onde o código toca
+        API de plataforma, verde local não prova nada.
+
+        Roda em subprocesso porque outro teste pode já ter importado wintypes.
+        """
+        raiz = Path(jogo_ativo.__file__).resolve().parent.parent
+        script = textwrap.dedent(f"""
+            import sys
+            sys.path.insert(0, {str(raiz)!r})
+            import mente_digital.jogo_ativo as j
+            print("VAZOU" if "ctypes.wintypes" in sys.modules else "ok")
+            # e as funções puras têm de responder sem nunca tocar no Windows
+            assert j.detectar(["EscapeFromTarkov.exe"]) == "escapefromtarkov.exe"
+            assert j.comando_pnputil(False)[1] == "/disable-device"
+        """)
+        arq = tmp_path / "prova_wintypes.py"
+        arq.write_text(script, encoding="utf-8")
+        r = subprocess.run([sys.executable, str(arq)], capture_output=True,
+                           text=True, timeout=120)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "ok", (
+            "importar jogo_ativo puxou ctypes.wintypes — isso quebra o CI no Linux")
