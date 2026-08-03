@@ -90,6 +90,42 @@ class TestComandoPnputil:
             assert comando_pnputil(habilitar)[0] == "pnputil"
 
 
+class TestAfinidade:
+    def test_mascara_e_o_ccd_de_baixo(self):
+        # 0xFFFF = CPUs 0-15. Medido: esse CCD perdeu o teste de clock por 11,2%
+        # e ganhou o de cache por 44,1%, e no jogo deu +28% de FPS.
+        assert jogo_ativo.MASCARA_VCACHE == 0xFFFF
+        assert bin(jogo_ativo.MASCARA_VCACHE).count("1") == 16
+
+    def test_anticheat_nao_vai_para_o_vcache(self):
+        """A diferença entre as duas listas é deliberada: o BEService dispara a
+        PAUSA (sobe antes do jogo, é o gatilho certo para soltar o kernel a
+        tempo), mas não renderiza nada — prendê-lo no V-Cache só tiraria núcleo
+        de quem precisa."""
+        assert "beservice.exe" in jogo_ativo.JOGOS_PADRAO
+        assert "beservice.exe" not in jogo_ativo.JOGOS_AFINIDADE
+        assert "battleye.exe" not in jogo_ativo.JOGOS_AFINIDADE
+        assert jogo_ativo.JOGOS_AFINIDADE < jogo_ativo.JOGOS_PADRAO
+
+    def test_alvos_filtra_por_nome_e_devolve_pid(self):
+        procs = [(10, "chrome.exe"), (20, "EscapeFromTarkovArena.exe"),
+                 (30, "BEService.exe"), (40, "escapefromtarkov.exe")]
+        assert jogo_ativo.alvos_de_afinidade(procs) == [
+            (20, "escapefromtarkovarena.exe"), (40, "escapefromtarkov.exe")]
+
+    def test_alvos_sem_jogo(self):
+        assert jogo_ativo.alvos_de_afinidade([(1, "explorer.exe")]) == []
+
+    def test_precisa_fixar_compara_mascara(self):
+        assert jogo_ativo.precisa_fixar(0xFFFFFFFF, 0xFFFF) is True
+        assert jogo_ativo.precisa_fixar(0xFFFF, 0xFFFF) is False
+
+    def test_afinidade_ilegivel_conta_como_precisa(self):
+        # Tentar é barato e o pior caso é um erro logado; NÃO tentar deixaria o
+        # jogo no CCD errado em silêncio, que é o defeito a corrigir.
+        assert jogo_ativo.precisa_fixar(None, 0xFFFF) is True
+
+
 class TestProcessosEmExecucao:
     @pytest.mark.skipif(sys.platform != "win32", reason="Toolhelp é do Windows")
     def test_enxerga_o_proprio_interpretador(self):
@@ -97,6 +133,29 @@ class TestProcessosEmExecucao:
         assert nomes, "nenhum processo listado"
         assert all(n == n.lower() for n in nomes), "nomes devem vir normalizados"
         assert any("python" in n for n in nomes)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Toolhelp é do Windows")
+    def test_com_pid_traz_o_proprio_processo(self):
+        import os
+
+        procs = jogo_ativo.processos_com_pid()
+        assert any(pid == os.getpid() for pid, _ in procs)
+        assert all(isinstance(pid, int) and pid >= 0 for pid, _ in procs)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Toolhelp é do Windows")
+    def test_afinidade_do_proprio_processo_e_legivel(self):
+        import os
+
+        atual = jogo_ativo.afinidade_atual(os.getpid())
+        assert atual is not None and atual > 0
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Toolhelp é do Windows")
+    def test_afinidade_de_pid_inexistente_nao_estoura(self):
+        # Fail-soft é contrato: o plantão não pode morrer porque um jogo fechou
+        # entre a enumeração e a leitura.
+        assert jogo_ativo.afinidade_atual(0x7FFFFFFF) is None
+        ok, msg = jogo_ativo.fixar_afinidade(0x7FFFFFFF)
+        assert ok is False and msg
 
 
 class TestPurezaStdlib:
