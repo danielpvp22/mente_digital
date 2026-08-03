@@ -153,6 +153,65 @@ async def test_turno_interativo_marca_uso_na_saida():
 
 
 # --------------------------------------------------------------------------- #
+# Dormir DUAS vezes seguidas — o defeito que o celular achou                   #
+# --------------------------------------------------------------------------- #
+class _ServicoFalso:
+    def __init__(self, nome: str) -> None:
+        self.nome = nome
+        self.ready = True
+        self.loads = 0
+
+    def unload(self) -> None:
+        self.ready = False
+
+    def load(self) -> None:
+        self.ready = True
+        self.loads += 1
+
+
+def _ctx_com_servicos() -> AppContext:
+    ctx = AppContext(settings=Settings())
+    ctx.stt = _ServicoFalso("stt")
+    ctx.tts = _ServicoFalso("tts")
+    ctx.vectorstore = type("Loja", (), {"embeddings": _ServicoFalso("embeddings")})()
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_dois_descarregamentos_seguidos_nao_perdem_o_que_restaurar():
+    """⚠ O defeito que o teste no celular achou em 2026-08-02.
+
+    O watcher dormiu e guardou {embeddings, stt}; algo religou só o embedding; o
+    botão "Modo economia" descarregou DE NOVO e a lista virou {embeddings},
+    perdendo o stt. No religar, só o embedding voltou — o Whisper ficou fora para
+    SEMPRE, sem erro e sem log, com a voz simplesmente não funcionando. A tela de
+    boot do celular travou em 85% esperando "Escuta" que não vinha mais.
+
+    Era um `=` onde tinha de ser `|=`."""
+    ctx = _ctx_com_servicos()
+    embeddings = ctx.vectorstore.embeddings
+
+    await ctx.liberar_vram()                       # 1º: solta stt, tts e embeddings
+    assert ctx._vram_liberada == {"stt", "tts", "embeddings"}
+
+    embeddings.load()                              # algo religa SÓ o embedding
+    await ctx.liberar_vram()                       # 2º: só o embedding estava ready
+
+    assert ctx._vram_liberada == {"stt", "tts", "embeddings"}, "perdeu o que restaurar"
+
+    await ctx.restaurar_vram()
+    assert ctx.stt.ready and ctx.tts.ready and embeddings.ready
+    assert ctx._vram_liberada == set()             # restaurou = lista zerada
+
+
+@pytest.mark.asyncio
+async def test_restaurar_nao_repete_se_nada_foi_solto():
+    ctx = _ctx_com_servicos()
+    await ctx.restaurar_vram()
+    assert ctx.stt.loads == 0
+
+
+# --------------------------------------------------------------------------- #
 # O resumo do que foi liberado (vai para o log do watcher)                     #
 # --------------------------------------------------------------------------- #
 def test_resumo_em_portugues_com_virgula():

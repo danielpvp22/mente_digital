@@ -482,7 +482,17 @@ class AppContext:
                 liberados.add(nome)
             except Exception as exc:
                 telemetry.error("VRAM", f"Falha ao descarregar {nome}", exc)
-        self._vram_liberada = liberados - {"llama"}
+        # ACUMULA, não sobrescreve. ⚠ Este `|=` era um `=`, e o defeito só aparecia
+        # no SEGUNDO descarregamento seguido — que o modo economia tornou comum
+        # (2026-08-02, visto no celular): o watcher dormiu e guardou
+        # {embeddings, stt}; algo religou só o embedding; o botão "Modo economia"
+        # descarregou de novo e a lista virou {embeddings}, PERDENDO o stt. No
+        # religar, `restaurar_vram` trouxe só o embedding e o Whisper ficou fora
+        # para sempre — sem erro, sem log, com a voz simplesmente não funcionando.
+        # É a degradação silenciosa que o docstring acima existe para evitar.
+        # Serviço que voltou por outro caminho é religado à toa; `load` é
+        # idempotente, e pagar um load a mais é infinitamente melhor que perder um.
+        self._vram_liberada |= liberados - {"llama"}
         if liberados:
             telemetry.track("VRAM", f"VRAM liberada para o OCR: {', '.join(sorted(liberados))}")
         return liberados
