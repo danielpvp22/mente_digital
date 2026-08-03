@@ -1331,6 +1331,37 @@ class Settings(BaseSettings):
     # no aparelho, abra a página uma vez com ?token=SEGREDO (o front guarda).
     access_token: str = ""
 
+    # --- Identidade por APARELHO (acesso remoto, 2026-08-03) -------------------
+    # O `access_token` acima é um segredo ÚNICO: não distingue celular, não tem teto e
+    # não revoga um sem revogar todos. Para sair da LAN o dono pediu credencial POR
+    # APARELHO, teto de 4 e revogação individual — a regra pura vive em aparelhos.py e
+    # o registro em registro_aparelhos.py.
+    # ⚠ NASCE DESLIGADA: com `false` o gate é, byte a byte, o de hoje (a própria
+    # `acesso.cliente_autorizado` é chamada). Ligar não invalida nada do que já existe.
+    aparelhos_habilitado: bool = False
+    # O pedido foi "só 4 aparelhos". <= 0 remove o teto (não é o default).
+    aparelhos_teto: int = 4
+    # Ponte de migração: com a função LIGADA, o `access_token` de hoje continua abrindo a
+    # porta. Vire para false depois de parear os quatro celulares — aí o segredo único
+    # deixa de valer e cada aparelho responde por si. Deixá-lo true para sempre mantém o
+    # elo mais fraco vivo: quem tiver o token antigo entra sem identidade e sem revogação.
+    aparelhos_token_legado: bool = True
+    # Rotação: a credencial morre sozinha passado esse prazo (o celular pede pareamento
+    # de novo). 0 = não expira. 90 dias é o meio-termo entre "nunca gira" e "reparear
+    # toda semana vira ritual que o dono automatiza mal".
+    aparelhos_expira_dias: int = 90
+    # O código de pareamento é a peça de BAIXA entropia (digitada à mão), então vive
+    # pouco: o dono gera no PC e digita no celular em minutos, não em dias.
+    aparelhos_codigo_validade_minutos: int = 10
+    # Bloqueio progressivo por IP: dobra a cada falha DEPOIS das 2 livres (que cobrem o
+    # dedo errado do dono e não podem virar castigo). 2s na 3ª falha, teto de 900s.
+    # MEDIDO (test_aparelhos): com estes números cabem 11 chutes nos 10 min de vida do
+    # código de pareamento, contra 31**10 ≈ 8,2e14 códigos possíveis. É essa conta que
+    # deixa o código curto o bastante para ser digitado à mão sem virar o elo fraco —
+    # ao mexer em qualquer um dos três (base, teto, validade), refaça-a.
+    aparelhos_bloqueio_base_segundos: float = 2.0
+    aparelhos_bloqueio_teto_segundos: float = 900.0
+
     # --- Instrumentação de latência (trace por turno + saneamento de outliers) --
     # O dono pediu "coletar quanto tempo cada ação demorou (inferência ou espera),
     # para testes futuros". Estes botões são ADITIVOS e best-effort: NÃO mudam nenhum
