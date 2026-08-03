@@ -1319,6 +1319,32 @@
             el.disabled = estado === 'ocupado';
         }
 
+        // O detalhe que SAIU do chip: vai para o tooltip do próprio número, onde há
+        // espaço para as ressalvas que um botão de cabeçalho não comporta. Nada foi
+        // perdido — só deixou de disputar atenção com o total.
+        function detalheDe(dados) {
+            const m = (dados && (dados.depois || dados)) || {};
+            const l = [];
+            if (m.watts_total != null) {
+                l.push(`Total ${Math.round(m.watts_total)} W = GPU ${Math.round(m.gpu_watts)} W`
+                     + ` + CPU ${Math.round(m.cpu_watts)} W`);
+            }
+            if (m.gpu_watts_limite != null) l.push(`Teto do driver da GPU: ${m.gpu_watts_limite} W`);
+            if (m.cpu_watts == null && m.cpu_watts_motivo) {
+                // Por que falta a metade da conta, em vez de um campo mudo.
+                const porque = { ausente: 'o ajudante elevado não está de pé',
+                                 vencido: 'o ajudante parou de publicar',
+                                 invalido: 'a publicação do ajudante está ilegível' };
+                l.push(`Sem a parcela da CPU: ${porque[m.cpu_watts_motivo] || m.cpu_watts_motivo}.`);
+            }
+            if (m.vram_mb != null) l.push(`VRAM ${(m.vram_mb / 1024).toFixed(1)} GB`);
+            if (m.ram_commit_mb != null) l.push(`RAM ${(m.ram_commit_mb / 1024).toFixed(1)} GB`);
+            l.push('Watts do DISPOSITIVO inteiro, não do assistente: a GPU soma tudo que tem '
+                 + 'contexto nela (desktop, navegador, jogos) e a CPU é o pacote inteiro.');
+            l.push('O til (~) marca leitura instantânea; sem til é a média dos últimos ~20 s.');
+            return l.join('\n');
+        }
+
         // O que a faixa do chip mostra: memória e, desde 2026-08-03, WATTS.
         //
         // ⚠ Cada campo entra por conta própria, sem `return ''` adiantado. Antes
@@ -1332,33 +1358,27 @@
         // salta de 96 W parada para 320 W decodificando, os dois contam
         // histórias diferentes, e o til é o que separa uma da outra. O tooltip
         // do próprio span explica de quem são estes watts.
+        // O que fica no CHIP é só o watt total (pedido do dono): num botão que vive
+        // no cabeçalho, quatro números competindo viram nenhum. VRAM e RAM não se
+        // perderam — mudaram de lugar, para o tooltip (`detalheDe`) e para a tela
+        // de Consumo no Avançado, onde há espaço para lê-las com calma.
         function medidaDe(dados) {
             const m = (dados && (dados.depois || dados)) || {};
             const partes = [];
-            if (m.vram_mb != null) partes.push(`${(m.vram_mb / 1024).toFixed(1)} GB VRAM`);
-            if (m.ram_commit_mb != null) partes.push(`${(m.ram_commit_mb / 1024).toFixed(1)} GB RAM`);
 
             // O til é da GPU, mas contamina o TOTAL: se a parcela maior é o
             // instante sorteado, a soma também é — não dá para rotular de média.
             const instante = m.gpu_watts_origem === 'nvml_instantaneo' ? '~' : '';
             if (m.watts_total != null) {
-                // O pedido do dono: um número só, GPU + CPU. As parcelas ficam
-                // entre parênteses porque sem elas "238 W" não diz onde apertar —
-                // e o teto do driver (96/320) só faz sentido colado na GPU, que é
-                // de quem ele é; pendurá-lo no total seria comparar com a régua
-                // errada.
-                const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
-                partes.push(`${instante}${Math.round(m.watts_total)} W `
-                          + `(GPU ${Math.round(m.gpu_watts)}${teto} + CPU ${Math.round(m.cpu_watts)})`);
+                partes.push(`${instante}${Math.round(m.watts_total)} W`);
             } else if (m.gpu_watts != null) {
-                // Falta a parcela da CPU (o estado NORMAL: sem o ajudante elevado
-                // de pé, o Windows não entrega a potência do pacote). Aqui o
-                // número vai ROTULADO "GPU" de propósito: mostrá-lo sem rótulo,
-                // no lugar onde antes vinha o total, faria ~96 W passar por
-                // consumo da máquina inteira, que gasta bem mais. Número plausível
-                // e errado não levanta suspeita nenhuma.
-                const teto = m.gpu_watts_limite != null ? `/${m.gpu_watts_limite}` : '';
-                partes.push(`${instante}${Math.round(m.gpu_watts)}${teto} W GPU`);
+                // Falta a parcela da CPU (acontece sempre que o ajudante elevado
+                // não está de pé). O número vai ROTULADO "GPU" de propósito:
+                // mostrá-lo pelado, no mesmo lugar onde o total aparece, faria
+                // ~96 W passar por consumo da máquina inteira, que gasta bem mais.
+                // Número plausível e errado não levanta suspeita nenhuma — e é por
+                // isso que este é o único caso em que o chip usa duas palavras.
+                partes.push(`${instante}${Math.round(m.gpu_watts)} W GPU`);
             } else if (m.cpu_watts != null) {
                 partes.push(`${Math.round(m.cpu_watts)} W CPU`);
             }
@@ -1383,6 +1403,7 @@
             try {
                 const d = await energiaPost(desligar ? 'desligar' : 'ligar');
                 pintarEnergia(d.estado, medidaDe(d));
+                document.getElementById('sw-energia-med').title = detalheDe(d);
                 if (d.adiado) {
                     // O servidor cedeu a vez a uma resposta em andamento. Sem esta
                     // mensagem o clique viraria um nada silencioso — o chip
@@ -1403,7 +1424,13 @@
         }
 
         async function lerEnergia() {
-            try { const d = await energiaPost('estado'); pintarEnergia(d.estado, medidaDe(d)); }
+            try {
+                const d = await energiaPost('estado');
+                pintarEnergia(d.estado, medidaDe(d));
+                // O tooltip acompanha a medida. Deixá-lo fixo no HTML faria o
+                // detalhe envelhecer enquanto o numero na frente dele atualiza.
+                document.getElementById('sw-energia-med').title = detalheDe(d);
+            }
             catch (err) { /* servidor fora do ar: o ponto de conexão já avisa */ }
         }
 
