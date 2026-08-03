@@ -16,14 +16,18 @@ ociosidade, o PC volta a zero e o vigia continua ali.
 ⚠ NÃO IMPORTE NADA PESADO AQUI. O valor deste arquivo é ser barato; um
 `from mente_digital.rag import ...` distraído arrastaria o torch para dentro do
 processo que existe justamente para não ter torch. Só `config` (0,23 s, sem
-torch — medido), `acesso` e `rede` entram, e os três são de propósito minúsculos.
+torch — medido), `acesso`, `rede` e o registro dos aparelhos entram, e os quatro
+são de propósito minúsculos (medido em 2026-08-03: o registro custa +8 módulos e
+nenhum import pesado — 268 ms → 249 ms de import, dentro do ruído).
 
-SEGURANÇA: `acordar` é a única rota que FAZ algo, e ela exige o token — a mesma
-regra do `/api/api` do servidor grande (`acesso.cliente_autorizado`). Sem token
-configurado, só loopback. É o "só abre o servidor quando autenticado" pedido: um
-aparelho qualquer da LAN não levanta o assistente de ninguém. A rota de status
-não tem gate porque não revela nada além de "tem servidor de pé?" — o mesmo
-critério do `/api/health`.
+SEGURANÇA: `acordar` é a única rota que FAZ algo, e ela exige credencial — a MESMA
+regra do servidor grande, e desde 2026-08-03 isso inclui a identidade por aparelho.
+Sem essa parte o vigia ficava um degrau atrás do resto do sistema, nos dois sentidos:
+o aparelho REVOGADO continuava levantando o PC do dono pelo token compartilhado, e o
+aparelho PAREADO (que já não guarda o token antigo) não conseguia levantar nada — o
+celular migrado batia na porta do plantão e ouvia 401. A rota de status não tem gate
+porque não revela nada além de "tem servidor de pé?" — o mesmo critério do
+`/api/health`.
 """
 from __future__ import annotations
 
@@ -113,14 +117,59 @@ class Vigia:
     uma instância de handler POR REQUISIÇÃO — guardar "mandei subir às 22h" lá
     dentro seria guardar em algo que morre no fim da resposta."""
 
-    def __init__(self, raiz: Path, relogio=None) -> None:
+    def __init__(self, raiz: Path, relogio=None, registro=None) -> None:
         self.raiz = raiz
         self._relogio = relogio or __import__("time").monotonic
         self._mandou_subir_em: Optional[float] = None
         self._trava = threading.Lock()
+        # Injetável para o teste; em produção nasce None e só é construído se a
+        # identidade por aparelho estiver LIGADA (ver `_registro`).
+        self._registro_aparelhos = registro
+        # Trava PRÓPRIA, e não a do `acordar`: `threading.Lock` não é reentrante, e
+        # o dia em que alguém autorizar de dentro do `acordar` o plantão travaria
+        # para sempre — em silêncio, que é o pior jeito de um vigia falhar.
+        self._trava_registro = threading.Lock()
 
     def servidor_de_pe(self) -> bool:
         return rede.porta_em_uso(settings.host, settings.port)
+
+    # --- O gate ---------------------------------------------------------------
+    def _registro(self):
+        """Constrói o registro na PRIMEIRA necessidade, e uma vez só.
+
+        Uma vez só porque o castigo progressivo por IP vive na RAM da instância:
+        dois registros seriam dois contadores, e a força bruta ganharia o dobro de
+        tentativas de graça. O `ThreadingHTTPServer` atende cada pedido numa thread,
+        então a construção anda sob a mesma trava do `acordar`.
+        """
+        with self._trava_registro:
+            if self._registro_aparelhos is None:
+                from mente_digital.registro_aparelhos import RegistroAparelhos
+
+                reg = RegistroAparelhos(settings.db_telemetria)
+                reg.init()          # idempotente; o servidor grande faz o mesmo
+                reg.configurar_bloqueio(settings.aparelhos_bloqueio_base_segundos,
+                                        settings.aparelhos_bloqueio_teto_segundos)
+                self._registro_aparelhos = reg
+            return self._registro_aparelhos
+
+    def autorizado(self, credencial: Optional[str], host: Optional[str]) -> bool:
+        """Este pedido pode levantar o assistente?
+
+        ⚠ Com a identidade DESLIGADA o caminho é o de sempre e não toca em disco: o
+        plantão existe para ser barato, e abrir SQLite a cada tique da tela de
+        carregamento do celular seria pagar por uma função que o dono não ligou.
+        `RegistroAparelhos.autorizar(habilitado=False)` daria o mesmo veredito — mas
+        depois de abrir o banco para descobrir que não precisava.
+        """
+        if not settings.aparelhos_habilitado:
+            return acesso.cliente_autorizado(host, credencial, settings.access_token)
+        return self._registro().autorizar(
+            credencial, host, "/vigia/acordar",
+            habilitado=True,
+            token_legado=settings.access_token,
+            aceita_token_legado=settings.aparelhos_token_legado,
+        ).autorizado
 
     def _subindo_ha(self) -> Optional[float]:
         if self._mandou_subir_em is None:
@@ -166,7 +215,7 @@ def _montar_handler(vigia: Vigia):
         def _autorizado(self) -> bool:
             token = self.headers.get("X-Mente-Token")
             host = self.client_address[0] if self.client_address else None
-            return acesso.cliente_autorizado(host, token, settings.access_token)
+            return vigia.autorizado(token, host)
 
         def do_GET(self):                              # noqa: N802 - assinatura da stdlib
             if self.path.rstrip("/") == "/vigia/status":

@@ -154,6 +154,88 @@ def test_rota_desconhecida_nao_faz_nada(vigia_no_ar):
 
 
 # --------------------------------------------------------------------------- #
+# O gate por APARELHO (2026-08-03)                                             #
+# --------------------------------------------------------------------------- #
+# O plantão ficava um degrau atrás do servidor grande nos DOIS sentidos: o
+# aparelho revogado seguia levantando o PC do dono pelo segredo compartilhado, e o
+# celular já migrado (que não guarda mais o token antigo) não levantava nada.
+class _DbMudo:
+    """A trilha de auditoria sem tocar no banco real — mesmo motivo do vizinho
+    test_registro_aparelhos: não depender da ordem de import dos testes."""
+
+    def registrar_auditoria(self, acao: str, detalhe: str) -> None:
+        pass
+
+
+@pytest.fixture
+def vigia_com_aparelhos(monkeypatch, tmp_path):
+    from mente_digital.registro_aparelhos import RegistroAparelhos
+
+    subidas = []
+    monkeypatch.setattr(vigia, "subir_app", lambda raiz: (subidas.append(raiz) or True))
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    monkeypatch.setattr(vigia.settings, "aparelhos_habilitado", True)
+    monkeypatch.setattr(vigia.settings, "aparelhos_token_legado", True)
+    monkeypatch.setattr(vigia.rede, "porta_em_uso", lambda h, p: False)
+
+    registro = RegistroAparelhos(str(tmp_path / "aparelhos.db"), db=_DbMudo())
+    registro.init()
+    v = vigia.Vigia(tmp_path, registro=registro)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), vigia._montar_handler(v))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", subidas, registro
+    httpd.shutdown()
+
+
+def _parear(registro) -> str:
+    codigo = registro.emitir_codigo("celular", teto=4)
+    r = registro.parear(codigo, ip="127.0.0.1", teto=4, validade_minutos=10, expira_dias=90)
+    assert r.ok, r.motivo
+    return r.credencial
+
+
+def test_aparelho_pareado_acorda_o_pc(vigia_com_aparelhos):
+    """O lado esquecido do problema: quem migrou para a credencial por aparelho
+    apagou o token antigo do celular — e antes disto o plantão só entendia o token
+    antigo. O celular certo batia na porta e ouvia 401."""
+    base, subidas, registro = vigia_com_aparelhos
+    codigo, corpo = _post(base + "/vigia/acordar", token=_parear(registro))
+    assert codigo == 200 and corpo["estado"] == "subindo_agora"
+    assert len(subidas) == 1
+
+
+def test_aparelho_revogado_NAO_acorda_mais_o_pc(vigia_com_aparelhos):
+    """O lado que o dono pediu: revogar tem de valer em TODA porta. Enquanto o
+    plantão só conhecesse o segredo compartilhado, revogar era uma promessa que
+    parava justamente onde o PC está sozinho de madrugada."""
+    from mente_digital import aparelhos as regras
+
+    base, subidas, registro = vigia_com_aparelhos
+    credencial = _parear(registro)
+    registro.revogar(regras.partir_credencial(credencial)[0])
+
+    codigo, _ = _post(base + "/vigia/acordar", token=credencial)
+    assert codigo == 401
+    assert subidas == []
+
+
+def test_com_a_identidade_desligada_o_plantao_nao_ABRE_o_banco(monkeypatch, tmp_path):
+    """A função nasce desligada, e desligada o plantão tem de continuar barato: o
+    celular pergunta a cada tique da tela de carregamento, e abrir SQLite em cada
+    tique seria pagar por uma função que o dono não ligou.
+
+    A prova é o registro seguir None depois de um pedido atendido — construí-lo é
+    o que abriria o arquivo."""
+    monkeypatch.setattr(vigia.settings, "aparelhos_habilitado", False)
+    monkeypatch.setattr(vigia.settings, "access_token", "segredo-do-dono")
+    v = vigia.Vigia(tmp_path)
+
+    assert v.autorizado("segredo-do-dono", "192.168.0.50") is True
+    assert v.autorizado("chute", "192.168.0.50") is False
+    assert v._registro_aparelhos is None
+
+
+# --------------------------------------------------------------------------- #
 # O peso                                                                       #
 # --------------------------------------------------------------------------- #
 def test_o_vigia_nao_arrasta_o_mundo():
