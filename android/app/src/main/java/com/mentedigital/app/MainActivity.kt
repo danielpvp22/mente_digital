@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
                             // sem uso o `app.py` se ENCERRA e o PC volta a zero — aí não
                             // há `/api/health` para perguntar, e sem esta pergunta o app
                             // ficaria em "procurando o servidor…" para sempre, como o dono
-                            // viu em 2026-08-02. O vigia é um processo de ~30 MB que
+                            // viu em 2026-08-02. O vigia é um processo de dezenas de MB que
                             // atende, valida o TOKEN e levanta o assistente.
                             if (!s.alcancavel && !pediuAoVigia) {
                                 val v = withContext(Dispatchers.IO) { servidor.vigiaStatus() }

@@ -102,7 +102,7 @@ class Servidor(private val conf: () -> Conf) {
      *
      * Por que existe: depois de 45 min sem uso o assistente se ENCERRA e o PC
      * volta a zero — então não há `/api/health` para perguntar. Quem atende é o
-     * vigia, num processo de ~30 MB sem torch. Ele é a diferença entre "o PC está
+     * vigia, num processo de algumas dezenas de MB sem torch. Ele é a diferença entre "o PC está
      * desligado/fora da rede" e "o assistente está dormindo e eu posso acordá-lo".
      */
     fun vigiaStatus(base: String = conf().base): VigiaStatus? {
