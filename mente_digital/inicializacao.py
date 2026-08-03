@@ -39,6 +39,26 @@ from typing import Optional
 NOME_ARQUIVO = "Mente Digital.vbs"
 
 
+def e_windows() -> bool:
+    """Se estamos no Windows.
+
+    Existe como FUNÇÃO — e não como um `os.name != "nt"` solto dentro do
+    `instalar` — porque o teste precisa simular o Windows, e simular trocando
+    `os.name` envenena o processo INTEIRO: o `Path.__new__` do pathlib lê
+    `os.name` A CADA CHAMADA para escolher entre `WindowsPath` e `PosixPath`.
+    Num runner POSIX, portanto, todo `Path(...)` do processo passa a levantar
+    `NotImplementedError` enquanto o patch está de pé — inclusive os que o
+    próprio pytest constrói para formatar a falha, o que transforma um teste
+    vermelho em INTERNALERROR e mata a sessão inteira (visto no CI em
+    2026-08-03: 49 testes e a suíte morreu).
+
+    O detalhe cruel é que isso é INVISÍVEL na máquina do dono, onde `os.name`
+    já é "nt" e o patch é no-op: verde no Windows, sessão destruída no Linux.
+    Este seam é o ponto único que o teste troca, e `os.name` fica intocado.
+    """
+    return os.name == "nt"
+
+
 def pasta_inicializar() -> Path:
     """A pasta Inicializar DO USUÁRIO — não a de todos os usuários, que exigiria
     administrador. Fora do Windows devolve um caminho que simplesmente não existe;
@@ -98,7 +118,7 @@ def instalar(raiz: Path, argumentos: str = "--vigia") -> Path:
     """Escreve o `.vbs` na pasta Inicializar e devolve o caminho. Levanta em vez de
     falhar calado: isto roda por pedido EXPLÍCITO do dono, e "não deu certo" tem de
     aparecer na hora — descobrir no próximo logon que nada subiu seria pior."""
-    if os.name != "nt":
+    if not e_windows():
         raise RuntimeError("início automático só está implementado no Windows.")
     destino = caminho_atalho()
     destino.parent.mkdir(parents=True, exist_ok=True)
