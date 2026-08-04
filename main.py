@@ -219,6 +219,11 @@ async def lifespan(app: FastAPI):
     # Sem memória de sessão aqui: ela é POR CONEXÃO (LiveSession.memory). O AppContext
     # é container de SERVIÇOS, que são compartilháveis; estado de conversa não é.
     ctx = AppContext(settings=settings)
+    # O loop do servidor, guardado ANTES de qualquer serviço existir. É o que permite a
+    # uma THREAD disparar trabalho de fundo — hoje o alerta de segurança, que nasce
+    # dentro do `asyncio.to_thread` do gate de acesso (ver `exigir_acesso` abaixo) e até
+    # 2026-08-04 morria com "no running event loop" no caminho mais comum dele.
+    ctx.capturar_loop()
     ctx.llama = LlamaManager()
     ctx.stt = SttService()
     ctx.tts = build_tts()   # Piper (default) ou XTTS-v2 conforme MENTE_TTS_ENGINE

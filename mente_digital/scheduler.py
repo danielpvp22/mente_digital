@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
@@ -120,6 +121,13 @@ class SchedulerService:
         # último alerta. Só RAM, e isso basta: num restart o pior caso é o dono receber
         # um aviso a mais — o oposto (perder o aviso) é que não pode acontecer.
         self._alertado_em: dict[str, datetime] = {}
+        # ⚠ O ÚNICO estado deste serviço tocado de FORA do event loop: `alertar_seguranca`
+        # é chamada do gate de acesso, que roda no pool de threads do `asyncio.to_thread`
+        # — vários workers, em paralelo, sob rajada. Sem a trava, a poda do dicionário
+        # (que itera) contra uma inserção de outra thread levanta "dictionary changed size
+        # during iteration": o `_avisar_alerta` engoliria, e o alerta se perderia no meio
+        # de um ataque. Todo o resto aqui é single-threaded no loop e não precisa dela.
+        self._trava_alerta = threading.Lock()
 
     # -- loop principal ---------------------------------------------------------
     async def run_forever(self) -> None:
@@ -945,15 +953,26 @@ class SchedulerService:
         Nunca levanta e nunca bloqueia: quem chama está no meio de NEGAR um acesso, e uma
         falha de notificação não pode virar uma falha do gate. A janela é conferida AQUI,
         antes de criar a task — senão uma rajada de 500 falhas viraria 500 tasks que
-        existiriam só para descobrir que não deviam falar."""
+        existiriam só para descobrir que não deviam falar.
+
+        ⚠ O CAMINHO NORMAL É O DE FORA DO LOOP, e isso custou o defeito de 2026-08-04: o
+        `main.py` chama `registro.autorizar` por `asyncio.to_thread` (ele abre SQLite e
+        travava o event loop a cada requisição), então quem chega aqui vindo do gate está
+        numa thread do pool — sem loop corrente. A primeira versão tratava isso como o
+        caso raro do vigia e só logava, ou seja: TODO alerta nascido do gate — que é a
+        origem de praticamente todos — morria no log, exatamente quando servia. Agora a
+        thread agenda no loop do servidor (`track_task_threadsafe`), e o log de erro fica
+        para o caso em que realmente não há loop nenhum a que recorrer."""
         if not self._alerta_devido(chave or titulo, datetime.now()):
             return
         try:
             asyncio.get_running_loop()
         except RuntimeError as exc:
-            # Chamada de uma thread sem loop (ou do processo do vigia, que nem tem
-            # scheduler). Não dá para agendar a fala — mas o alerta não pode sumir só
-            # porque veio da thread errada, então ele fica no log de erro.
+            if self.ctx.track_task_threadsafe(self._alertar_mestre_agora(titulo, detalhe)):
+                return
+            # Sem loop capturado: processo do vigia (que nem tem scheduler), ctx montado
+            # fora do lifespan, ou shutdown em curso. Não dá para agendar a fala — mas o
+            # alerta não pode sumir só porque veio da thread errada, então fica no log.
             telemetry.error("SEGURANCA", f"Alerta sem loop para entregar: {titulo} — {detalhe}", exc)
             return
         self.ctx.track_task(self._alertar_mestre_agora(titulo, detalhe))
@@ -971,17 +990,22 @@ class SchedulerService:
 
     def _alerta_devido(self, chave: str, agora: datetime) -> bool:
         """Um alerta por chave por janela — ver JANELA_ALERTA_SEGURANCA_SEGUNDOS.
-        Consome a janela ao devolver True (quem chama já pode falar)."""
-        ultimo = self._alertado_em.get(chave)
-        if ultimo is not None and (agora - ultimo).total_seconds() < JANELA_ALERTA_SEGURANCA_SEGUNDOS:
-            return False
-        if len(self._alertado_em) >= MAX_CHAVES_ALERTA:
-            vencidas = [k for k, t in self._alertado_em.items()
-                        if (agora - t).total_seconds() >= JANELA_ALERTA_SEGURANCA_SEGUNDOS]
-            for k in vencidas:
-                self._alertado_em.pop(k, None)
-        self._alertado_em[chave] = agora
-        return True
+        Consome a janela ao devolver True (quem chama já pode falar).
+
+        Sob a trava porque este é o único ponto do scheduler que roda em VÁRIAS threads
+        (ver `_trava_alerta`). A trava não segura nada além de operações de dicionário —
+        a fala em si acontece depois, no loop."""
+        with self._trava_alerta:
+            ultimo = self._alertado_em.get(chave)
+            if ultimo is not None and (agora - ultimo).total_seconds() < JANELA_ALERTA_SEGURANCA_SEGUNDOS:
+                return False
+            if len(self._alertado_em) >= MAX_CHAVES_ALERTA:
+                vencidas = [k for k, t in self._alertado_em.items()
+                            if (agora - t).total_seconds() >= JANELA_ALERTA_SEGURANCA_SEGUNDOS]
+                for k in vencidas:
+                    self._alertado_em.pop(k, None)
+            self._alertado_em[chave] = agora
+            return True
 
     async def _alertar_mestre_agora(self, titulo: str, detalhe: str) -> bool:
         """A entrega em si, com a janela já decidida. Nunca propaga: isto roda como task
