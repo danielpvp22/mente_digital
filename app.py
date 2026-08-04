@@ -942,6 +942,50 @@ def _gerir_inicio_automatico(args) -> Optional[int]:
     return 0
 
 
+def _nome_no_certificado(cert: str) -> Optional[str]:
+    """O primeiro nome DNS que o certificado cobre, ou None.
+
+    Tenta LER o certificado antes de confiar no nome do arquivo: quem gera o cert é
+    o `configurar_tailscale.py`, que o salva como `<nome-magicdns>.crt` — mas um
+    cert posto à mão pode se chamar qualquer coisa, e aí o nome do arquivo mentiria.
+
+    `ssl._ssl._test_decode_cert` é API privada do CPython, e é por isso que ela vem
+    dentro de um try com queda para o nome do arquivo: se um dia sumir, a janela
+    volta a abrir pelo caminho de antes em vez de quebrar."""
+    if not cert or not os.path.exists(cert):
+        return None
+    try:
+        import ssl
+
+        dados = ssl._ssl._test_decode_cert(cert)        # type: ignore[attr-defined]
+        for tipo, valor in dados.get("subjectAltName", ()):
+            if tipo == "DNS" and valor:
+                return valor
+    except Exception:
+        pass
+    caule = os.path.splitext(os.path.basename(cert))[0]
+    # Só aceita o nome do arquivo se ele PARECE um host — um `cert.crt` genérico
+    # viraria a URL `https://cert:8000`, que não resolve em lugar nenhum.
+    return caule if ("." in caule and " " not in caule) else None
+
+
+def _host_da_janela(esquema: str, cert: str) -> str:
+    """Que host a janela nativa deve carregar. PURO — a regra mora aqui.
+
+    ⚠ POR QUE NÃO É SEMPRE `127.0.0.1` (regressão medida em 2026-08-04). Era, e no
+    dia em que o TLS entrou a janela passou a pedir `https://127.0.0.1:8000` — que
+    NENHUM certificado público pode cobrir, porque não se emite cert para IP de
+    loopback. O Chrome parava em `ERR_CERT_COMMON_NAME_INVALID` e a única saída era
+    o dono clicar em "Avançado → permitir" toda vez, guardando uma exceção de
+    certificado para usar o próprio app.
+
+    Em `http` o IP continua sendo o certo: é o caminho que não depende de DNS
+    nenhum, e o vizinho `_vigia_no_ar` já explica por que não se crava esquema."""
+    if esquema != "https":
+        return "127.0.0.1"
+    return _nome_no_certificado(cert) or "127.0.0.1"
+
+
 def main() -> int:
     args = _argumentos()
     saida = _gerir_inicio_automatico(args)
@@ -967,7 +1011,7 @@ def main() -> int:
         ler_marcos = lambda: _prontos_remotos(url, settings.access_token)   # noqa: E731
         alvo_host, alvo_porta = _host_porta_da_url(url)
     else:
-        url = f"{esquema}://127.0.0.1:{porta}"
+        url = f"{esquema}://{_host_da_janela(esquema, settings.ssl_cert)}:{porta}"
         ler_marcos = _prontos_locais
         alvo_host, alvo_porta = host, porta
         if rede.porta_em_uso(host, porta):

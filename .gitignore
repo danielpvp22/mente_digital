@@ -161,3 +161,10 @@ android/.kotlin/
 dados/lhm/
 # Publicacao do ajudante elevado: estado de runtime, reescrito a cada 2 s.
 dados/potencia_cpu.json
+
+# Certificados TLS do Tailscale (2026-08-04). A pasta guarda a CHAVE PRIVADA do
+# servidor — ela estava fora daqui e a um `git add -A` de ir parar no GitHub. O
+# .gitignore lista as pastas de dados/ uma a uma, entao uma pasta nova nasce
+# rastreavel por padrao: ao criar qualquer pasta em dados/, pergunte se ela tem
+# segredo dentro. Renovar o cert reescreve estes arquivos a cada 90 dias.
+dados/certs/
