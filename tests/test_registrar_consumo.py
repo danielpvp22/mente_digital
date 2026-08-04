@@ -131,11 +131,19 @@ def test_nao_arrasta_torch_NEM_DEPOIS_DE_MEDIR():
         + str(RAIZ / "scripts" / "registrar_consumo.py") + "');"
         "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m);"
         "m.medir_sensores();"          # <- a CHAMADA, que é onde o torch entrava
-        "print(','.join(x for x in ('torch','transformers','sentence_transformers',"
-        "'llama_cpp','chromadb','faster_whisper') if x in sys.modules))"
+        "print('PESADOS=' + ','.join(x for x in ('torch','transformers',"
+        "'sentence_transformers','llama_cpp','chromadb','faster_whisper')"
+        " if x in sys.modules))"
     )
     saida = subprocess.run([sys.executable, "-c", codigo], capture_output=True,  # nosec B603
                            text=True, timeout=180)
     assert saida.returncode == 0, saida.stderr
-    pesados = saida.stdout.strip()
+    # ⚠ A RESPOSTA VEM MARCADA, e não como "o stdout inteiro". A primeira versão
+    # comparava `saida.stdout.strip() == ""` e quebrou no CI: sem driver NVIDIA o
+    # `potencia` emite um telemetry "NVML indisponível" — no stdout, que não é só
+    # meu. O teste então acusava peso morto citando uma linha de log. Verde na
+    # máquina com GPU o tempo todo; vermelho no runner, pelo motivo errado.
+    linhas = [ln for ln in saida.stdout.splitlines() if ln.startswith("PESADOS=")]
+    assert linhas, f"o subprocesso não respondeu:\n{saida.stdout}\n{saida.stderr}"
+    pesados = linhas[-1].split("=", 1)[1].strip()
     assert pesados == "", f"o amostrador tocou a GPU do jogo: carregou {pesados}"
