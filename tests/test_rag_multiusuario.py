@@ -46,11 +46,19 @@ class _Config:
         self.caminho_obsidian = str(vault)
         self.subpasta_acervo = "Acervo"
         self.subpasta_pessoal = "Pessoal"
+        self.subpasta_figuras = "Figuras"
         self.colecao_acervo = "acervo"
 
     @property
     def caminho_acervo(self) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_acervo
+
+    @property
+    def dir_figuras(self) -> Path:
+        """PRECISA estar aqui, e não cair no `__getattr__`. O `dir_figuras` do settings
+        real é property sobre o `caminho_obsidian` REAL — delegado, ele apontaria para o
+        vault de produção e o teste indexaria a máquina do dono em vez do `tmp_path`."""
+        return Path(self.caminho_obsidian) / self.subpasta_figuras
 
     def caminho_pessoal(self, dono: str) -> Path:
         return Path(self.caminho_obsidian) / self.subpasta_pessoal / dono
@@ -554,6 +562,66 @@ async def test_sync_manda_cada_pasta_para_a_sua_colecao(monkeypatch, tmp_path):
     assert _fontes("acervo") == {"livro.md"}
     assert _fontes("pessoal_ana") == {"diario.md"}
     assert _fontes("pessoal_bob") == {"notas.md"}
+
+
+async def test_sync_indexa_as_figuras_da_raiz_no_acervo(monkeypatch, tmp_path):
+    """`Figuras/` fica na RAIZ do vault, não dentro de `Acervo/` — e mesmo assim é
+    escopo do acervo.
+
+    Medido em 2026-08-04, no vault real, ANTES de ligar a flag: com os escopos
+    cobrindo só `Acervo/` e `Pessoal/<dono>/`, as **1.817** notas de figura caíam
+    todas em `sobras` — avisadas e NÃO indexadas. Como `montar_indice_figuras` lê do
+    store, a matriz exata nasceria vazia e o fallback ANN também (não sobraria doc
+    `tipo=figura` em coleção nenhuma): ligar o multiusuário APAGARIA a busca de
+    figuras inteira.
+
+    A pasta não pode simplesmente mudar de lugar: 3.663 embeds a referenciam por
+    CAMINHO (`![[Figuras/...]]`) e o `/api/imagem` resolve com `is_file()` — movê-la
+    daria 404 silencioso em todas elas. Logo, é o ESCOPO que vai até ela.
+
+    O teste anterior a este usava figura em `/v/Acervo/f1.md`, que é o layout que o
+    vault real não tem: foi por essa costura que o defeito passou pela suíte verde."""
+    vault = tmp_path / "vault"
+    _escrever(vault / "Acervo" / "livro.md", "# Livro\nCapítulo sobre solo.")
+    _escrever(vault / "Figuras" / "obra" / "p0001_f1.md", "# Figura\nTricomas ao micro.")
+    _escrever(vault / "Pessoal" / "ana" / "diario.md", "# Diário\nHoje plantei alface.")
+    vs, lojas = _montar(monkeypatch, vault, pessoais={"ana": []})
+    avisos: list = []
+    monkeypatch.setattr(rag.telemetry, "warn", lambda mod, msg: avisos.append(msg))
+
+    assert await vs.sync() is True
+
+    def _fontes(nome):
+        return {os.path.basename(d.metadata["source"]) for d in lojas[nome].adicionados}
+
+    assert _fontes("acervo") == {"livro.md", "p0001_f1.md"}
+    assert _fontes("pessoal_ana") == {"diario.md"}
+    # E nada de figura foi dado como perdido — a régua é "não sobrou", não "entrou".
+    assert not [a for a in avisos if "invisíveis" in a], avisos
+
+
+async def test_acervo_e_figuras_dividem_o_store_sem_se_purgarem(monkeypatch, tmp_path):
+    """Duas raízes no MESMO store não podem se apagar uma à outra.
+
+    A purga de órfãos do `_sync_escopo` remove todo chunk cujo `source` não vive sob a
+    raiz daquele escopo. Se `Acervo/` e `Figuras/` entrassem como dois ESCOPOS
+    separados apontando para a mesma coleção, cada passada declararia a outra órfã e a
+    deletaria — o índice terminaria com o que fosse indexado por último. Por isso as
+    duas viajam como raízes de um escopo SÓ.
+
+    A segunda passada é o que dá o veredicto: na primeira o store está vazio e a purga
+    não tem o que apagar."""
+    vault = tmp_path / "vault"
+    _escrever(vault / "Acervo" / "livro.md", "# Livro\nTexto.")
+    _escrever(vault / "Figuras" / "obra" / "f1.md", "# Figura\nLegenda.")
+    vs, lojas = _montar(monkeypatch, vault)
+
+    await vs.sync()
+    await vs.sync()      # aqui a purga enxerga o que a 1ª passada gravou
+
+    vivos = {os.path.basename(str(d.metadata["source"])) for d, _s in lojas["acervo"].itens}
+    assert vivos == {"livro.md", "f1.md"}, f"purga mútua comeu um dos dois: {vivos}"
+    assert lojas["acervo"].deletados == [], lojas["acervo"].deletados
 
 
 async def test_sync_avisa_da_nota_que_ficou_fora_de_todo_escopo(monkeypatch, tmp_path):
