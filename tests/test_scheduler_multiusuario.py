@@ -28,7 +28,9 @@ import pytest
 
 from mente_digital import identidade, telemetry
 from mente_digital.config import settings
+from mente_digital.registro_aparelhos import RegistroAparelhos
 from mente_digital.scheduler import SchedulerService
+from mente_digital.state import AppContext
 
 from conftest import FakeTts
 
@@ -86,6 +88,21 @@ class FakeCtx:
         tarefa = asyncio.ensure_future(coro)
         self.tarefas.append(tarefa)
         return tarefa
+
+    def track_task_threadsafe(self, coro) -> bool:
+        """Este fake NUNCA tem loop capturado — ele existe para o caminho DEGRADADO
+        (vigia / ctx fora do lifespan). O agendamento de verdade é exercitado com o
+        `AppContext` real, em `test_o_alerta_nascido_no_gate_atravessa_o_to_thread`;
+        reimplementá-lo aqui seria testar a cópia em vez do original."""
+        coro.close()
+        return False
+
+
+class DbMudo:
+    """A trilha de auditoria não é o assunto destes testes."""
+
+    def registrar_auditoria(self, acao: str, detalhe: str) -> None:
+        pass
 
 
 @pytest.fixture
@@ -392,8 +409,10 @@ async def test_o_gancho_sincrono_do_registro_de_aparelhos(db_tmp, multiusuario):
 
 
 async def test_o_gancho_fora_do_loop_nao_levanta_e_deixa_rastro(db_tmp, monkeypatch):
-    """Chamado de uma thread sem event loop (ou do processo do vigia): não dá para
-    agendar a fala, mas o alerta não pode sumir só porque veio da thread errada."""
+    """Sem NENHUM loop a que recorrer (o processo do vigia, um ctx montado fora do
+    lifespan): não dá para agendar a fala, mas o alerta não pode sumir só porque veio da
+    thread errada. Note o `FakeCtx` SEM `capturar_loop()` — é essa a diferença para o
+    teste abaixo, que é o caminho de produção."""
     erros: list = []
     monkeypatch.setattr(telemetry.telemetry, "error",
                         lambda mod, msg, exc=None: erros.append(msg))
@@ -402,6 +421,45 @@ async def test_o_gancho_fora_do_loop_nao_levanta_e_deixa_rastro(db_tmp, monkeypa
     await asyncio.to_thread(sched.alertar_seguranca, "rajada", "ip=1.2.3.4", "auth:1.2.3.4")
 
     assert any("sem loop" in e for e in erros), erros
+
+
+async def test_o_alerta_nascido_no_gate_atravessa_o_to_thread(tmp_path, db_tmp, multiusuario):
+    """A REGRESSÃO de 2026-08-04 — o traceback que o boot imprimiu e engoliu.
+
+    O gate de acesso NÃO roda no event loop: `main.py` chama `registro.autorizar` por
+    `asyncio.to_thread` (ele abre SQLite, e chamá-lo direto travava o loop a cada
+    requisição — inclusive as sem credencial nenhuma). Só que é de DENTRO dele que o
+    castigo por força bruta dispara o alerta, e `asyncio.get_running_loop()` numa thread
+    de trabalho levanta. Resultado medido: todo alerta nascido do gate — que é a origem
+    de praticamente todos — morria no log, exatamente quando servia.
+
+    Por isso o caminho aqui é o de produção inteiro (registro real, castigo real,
+    `to_thread` real): o defeito não estava em nenhum dos dois lados isolados, e sim na
+    fronteira entre eles. Só o socket é fake."""
+    ctx = AppContext(settings=settings)
+    ctx.tts = FakeTts()
+    cel = FakeSession(identidade.MESTRE)
+    ctx.sessoes.add(cel)
+    ctx.capturar_loop()                      # o que o lifespan faz
+    sched = SchedulerService(ctx)
+
+    registro = RegistroAparelhos(str(tmp_path / "aparelhos.db"), db=DbMudo())
+    registro.init()
+    registro.ao_alerta = sched.alertar_seguranca
+    registro.configurar_bloqueio(2.0, 900.0)
+
+    for _ in range(3):                       # na 3ª o castigo dispara (medido no boot)
+        await asyncio.to_thread(
+            registro.autorizar, "mdk1.0123456789abcdef.errado", "127.0.0.1", "/api/conversas",
+            habilitado=True, token_legado="", aceita_token_legado=False)
+
+    # `call_soon_threadsafe` só entrega na próxima passada do loop; a espera é pela
+    # CRIAÇÃO da task, e o `drenar_tasks` cuida da execução dela.
+    await asyncio.sleep(0.05)
+    await ctx.drenar_tasks(timeout=5.0)
+
+    assert any(m.get("tipo") == "seguranca" for m in cel.recebidos), cel.recebidos
+    assert any("127.0.0.1" in m.get("texto", "") for m in _proativos(cel))
 
 
 # ==========================================================================

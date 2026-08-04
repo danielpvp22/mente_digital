@@ -202,6 +202,11 @@ class AppContext:
     # Referências fortes das tasks de background (ver track_task). Vive tanto quanto
     # o app, então tasks disparadas dentro de uma sessão sobrevivem ao fim dela.
     _bg_tasks: Set["asyncio.Task"] = field(default_factory=set, repr=False)
+    # O event loop do servidor, capturado no lifespan (ver capturar_loop). Existe para
+    # quem precisa disparar trabalho de fundo SEM estar no loop — hoje o gate de acesso,
+    # que roda em `asyncio.to_thread`. None = ninguém capturou (vigia, scripts, ctx de
+    # teste), e aí `track_task_threadsafe` RECUSA em vez de fingir que agendou.
+    _loop: Optional["asyncio.AbstractEventLoop"] = field(default=None, repr=False)
     # Só as tarefas que o `_boot` despachou, com o rótulo que a tela de boot mostra.
     # Ver `track_boot_task` para o porquê de ser lista de PERMISSÃO.
     _rotulo_boot: dict = field(default_factory=dict, repr=False)
@@ -529,9 +534,54 @@ class AppContext:
         até terminar, quando o done-callback a remove.
         """
         task = asyncio.create_task(coro)
+        # Quem chama `track_task` está, por definição, DENTRO do loop — então aproveita-se
+        # para (re)guardar a referência de que o `track_task_threadsafe` precisa. Não é
+        # redundância com o `capturar_loop` do lifespan: é a rede que impede o caminho de
+        # fora do loop de voltar a quebrar EM SILÊNCIO se alguém apagar aquela linha (ou
+        # montar um AppContext fora do lifespan, como fazem eval/ e scripts/). Reatribui
+        # sempre, sem `if is None`: referência ANTIGA é o estado perigoso, não a repetida.
+        self._loop = task.get_loop()
         self._bg_tasks.add(task)
         task.add_done_callback(self._task_done)
         return task
+
+    def capturar_loop(self) -> None:
+        """Guarda o loop do servidor. Chamado UMA vez, do lifespan — que é, por
+        construção, código rodando dentro dele. Explícito porque o alerta de segurança
+        pode chegar ANTES de qualquer trabalho de fundo existir (o gate atende na primeira
+        requisição), e aí a rede do `track_task` ainda não teria pegado nada."""
+        self._loop = asyncio.get_running_loop()
+
+    def track_task_threadsafe(self, coro: Coroutine) -> bool:
+        """`track_task` para quem NÃO está no event loop. False = não deu para agendar.
+
+        Existe por causa de um defeito medido em 2026-08-04: o gate de acesso roda em
+        `asyncio.to_thread` (ele abre SQLite e travava o loop a cada requisição), e é de
+        dentro dele que sai o alerta de segurança para o celular do dono. Numa thread de
+        trabalho não há loop corrente — `asyncio.create_task` levanta `RuntimeError: no
+        running event loop` —, então o alerta morria no log exatamente quando servia.
+
+        A travessia é a MESMA que o `derrubar()` do WebSocket em main.py já usa:
+        `call_soon_threadsafe` acorda o loop e o `track_task` roda LÁ DENTRO. Assim a
+        task nasce com a referência forte de sempre, em vez do `concurrent.Future` solto
+        que `run_coroutine_threadsafe` devolveria (que ninguém aqui vai guardar — e é
+        justamente o footgun de GC que o `track_task` existe para evitar).
+
+        Não bloqueia e não espera resultado: quem chama está no meio de NEGAR um acesso.
+        """
+        laco = self._loop
+        if laco is None or laco.is_closed():
+            # Fecha a corrotina para não deixar um "never awaited" solto no log — o
+            # rastro do que se perdeu é responsabilidade de quem chamou, que recebe False.
+            coro.close()
+            return False
+        try:
+            laco.call_soon_threadsafe(self.track_task, coro)
+        except RuntimeError:
+            # Corrida com o shutdown: o loop fechou entre o `is_closed()` e agora.
+            coro.close()
+            return False
+        return True
 
     def marcar_vault_sujo(self) -> None:
         """#38: uma escrita no vault (nota/lista/captura) ficou pendente de reindexação.
