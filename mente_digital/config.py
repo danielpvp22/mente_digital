@@ -1341,6 +1341,19 @@ class Settings(BaseSettings):
     # uma escrita por segundo no banco que também serve o histórico de chat.
     consumo_intervalo_seconds: float = 20.0
     consumo_habilitado: bool = True
+    # Em quantos MINUTOS o Windows apaga as telas. É o que permite ao `tela.py`
+    # inferir se os monitores estão acesos — a parcela que sozinha responde por 89
+    # dos 164 W de largura da faixa da parede (medido em 2026-08-04).
+    #
+    # ⚠ TEM DE CASAR COM O WINDOWS (`powercfg /change monitor-timeout-ac 5`). Não é
+    # lido de lá de propósito: a saída do `powercfg` é LOCALIZADA e o parse
+    # posicional quebraria calado numa atualização, trocando um "não sei" honesto por
+    # um palpite errado. Aqui a divergência é visível — o número está escrito.
+    #
+    # 0 = "não sei / nunca apaga": mantém a faixa larga standby..aceso, que é o
+    # comportamento de antes deste campo existir. Ausência de informação nunca vira
+    # chute, aqui como no resto do módulo.
+    tela_timeout_minutos: float = 0.0
     # Estimativa da tomada. O TGP muda no dia em que a placa muda -- 320 na 3080,
     # 360 na 5080 -- e o valor honesto sai do próprio driver (`potencia.limite_gpu`);
     # isto aqui é só o fallback de quando a NVML não responde.
