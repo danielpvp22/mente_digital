@@ -50,7 +50,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mente_digital import potencia, potencia_cpu, rede, tomada     # noqa: E402
+from mente_digital import potencia, potencia_cpu, rede, tela, tomada   # noqa: E402
 from mente_digital.config import settings                          # noqa: E402
 from mente_digital.consumo import RegistroConsumo                  # noqa: E402
 
@@ -105,6 +105,13 @@ def medir_sensores() -> dict:
         # BattlEye) o certo é "não sei", e o `tomada` modela a faixa. Um zero aqui
         # afirmaria que a CPU não gastou nada durante horas de jogo.
         "cpu_watts": getattr(cpu, "watts", None),
+        # A tela apagada é o maior ganho de precisão disponível de graça: sozinha,
+        # essa parcela responde por 89 dos 164 W de largura da faixa da parede. E
+        # justamente no uso remoto (dono codando pelo celular) ela fica apagada com
+        # a máquina trabalhando — o caso em que a faixa larga mais mente.
+        # `None` quando não dá para saber, e aí nada muda.
+        "monitores_ligados": tela.monitores_ligados(
+            settings.tela_timeout_minutos * 60.0 or None),
     }
 
 

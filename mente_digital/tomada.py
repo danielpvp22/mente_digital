@@ -510,7 +510,15 @@ def a_partir_de_energia(medida: dict, cenario: Cenario = CENARIO_PADRAO) -> Toma
     Existe para eliminar um erro de fiação com número plausível: o dict tem
     `gpu_watts`, `cpu_watts` E `watts_total` — passar o total já somado no lugar da
     GPU produziria uma conta errada que ninguém nota. Aqui os nomes ficam num só
-    lugar. Campo ausente é `None` e cai na parcela modelada, como manda o contrato."""
+    lugar. Campo ausente é `None` e cai na parcela modelada, como manda o contrato.
+
+    `monitores_ligados` (2026-08-04) segue a MESMA regra dos watts: vem pronto no
+    dict, e este módulo continua sem tocar em ctypes (quem lê o Windows é `tela.py`).
+    Ausente ou None deixa o cenário como está — ou seja, a faixa larga de sempre —,
+    então nenhum chamador antigo muda de resultado por causa deste campo."""
+    monitores = medida.get("monitores_ligados")
+    if monitores is not None:
+        cenario = replace(cenario, monitores_ligados=bool(monitores))
     return estimar(
         gpu_watts=medida.get("gpu_watts"),
         cpu_watts=medida.get("cpu_watts"),
