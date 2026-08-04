@@ -413,6 +413,7 @@ def test_pendentes_tem_a_mesma_porta(tmp_path, ligado):
 # ---------------------------------------------------------------------------
 # 5. Auditoria: a exceção no outro sentido (linha SEM dono não pode se perder)
 # ---------------------------------------------------------------------------
+@pytest.mark.sem_dono
 def test_auditoria_grava_sem_dono_e_admin_ve_tudo(tmp_path, ligado):
     """Recusa de acesso é auditada ANTES de existir dono — exigir um perderia a linha
     que mais importa. E a visão de admin (dono=None) enxerga a trilha inteira."""
@@ -427,6 +428,7 @@ def test_auditoria_grava_sem_dono_e_admin_ve_tudo(tmp_path, ligado):
     assert _uma(d.path, "SELECT COUNT(*) FROM auditoria WHERE dono IS NULL")[0] == 1
 
 
+@pytest.mark.sem_dono
 def test_backfill_nao_reescreve_auditoria_sem_dono(tmp_path, ligado):
     """O UPDATE do backfill mora DENTRO do ramo do ALTER: se rodasse a cada boot, ele
     atribuiria a 'daniel' a recusa de acesso que ninguém fez."""
@@ -492,6 +494,7 @@ def test_desligado_ainda_honra_o_dono_marcado(tmp_path):
     assert d.get_history() == []                                   # sem marcação: padrão
 
 
+@pytest.mark.sem_dono
 def test_ligado_sem_dono_falha_alto(tmp_path, ligado):
     """O ⚠ de identidade.py: filtro ausente devolve a memória de todo mundo, calado.
     Melhor um erro visível — quem esqueceu de marcar o dono descobre na hora."""

@@ -244,12 +244,36 @@ def test_o_contrato_com_o_config_e_o_que_o_rag_de_fato_usa():
     suíte roda sobre um proxy de settings, então este é o único teste que olha o objeto
     de verdade."""
     vault = Path(_settings_real.caminho_obsidian)
-    assert _settings_real.multiusuario_habilitado is False        # nasce desligado
+    # ⚠ "NASCE desligado" se prova na CLASSE, não na instância (2026-08-04). A linha
+    # anterior era `_settings_real.multiusuario_habilitado is False`, e ela media a
+    # máquina de quem roda: no dia em que o dono LIGOU a flag no `.env`, este teste
+    # passou a falhar sem que uma linha de código mudasse. E hoje seria pior — o
+    # `_isola_do_env` do conftest devolve o campo ao default por teste, então a
+    # asserção na instância passaria lendo o valor que o próprio fixture escreveu,
+    # provando o fixture em vez do contrato. O default do campo é o que se quer aqui.
+    assert type(_settings_real).model_fields[
+        "multiusuario_habilitado"].default is False
     assert _settings_real.caminho_acervo == vault / _settings_real.subpasta_acervo
     assert _settings_real.caminho_pessoal("ana") == (
         vault / _settings_real.subpasta_pessoal / "ana")
     assert _settings_real.colecao_pessoal("ana") != _settings_real.colecao_acervo
     assert _settings_real.colecao_pessoal("ana") != _settings_real.colecao_pessoal("bob")
+    assert rag.multiusuario_ligado() is False
+
+
+def test_a_suite_nao_herda_a_flag_do_env_do_dono():
+    """O defeito de 2026-08-04, virado teste.
+
+    O dono ligou `MENTE_MULTIUSUARIO_HABILITADO=true` no `.env` — que é ignorado pelo
+    git — e o `pytest` na máquina dele passou a dar **134 falhas** enquanto o CI
+    seguia verde, porque o CI roda com o default. Suíte que muda de resultado
+    conforme a máquina não é suíte: ela deixa de arbitrar qualquer coisa.
+
+    O `_isola_do_env` do conftest devolve o campo ao default por teste. Aqui a gente
+    afirma isso de fora, para que remover aquela linha do fixture quebre ALGUMA
+    coisa — é o mesmo espírito do `pesquisa_agendada_intervalo_seconds`, que entrou
+    naquela lista pelo mesmo motivo e sem teste nenhum guardando a decisão."""
+    assert _settings_real.multiusuario_habilitado is False
     assert rag.multiusuario_ligado() is False
 
 

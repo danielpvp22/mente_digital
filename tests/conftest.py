@@ -120,6 +120,43 @@ def _os_name_intocado(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _dono_do_turno(request):
+    """Todo teste roda COM um dono marcado, porque toda produção também roda.
+
+    `identidade.exigir_dono()` levanta `DonoIndefinido` quando ninguém marcou, e isso
+    é a funcionalidade — não um defeito a contornar. Só que os caminhos reais SEMPRE
+    marcam: o `ws.run()` marca a conexão inteira (e `create_task` copia o contexto,
+    então todo turno nasce sabendo de quem é) e o `scheduler._disparar` entra em
+    `usar_dono(ag["dono"])` a cada disparo. Um teste que chama `Database`/`Agent`
+    direto pula esse degrau e falha por um motivo que a produção não tem.
+
+    Medido em 2026-08-04, com o multiusuário ligado: 134 falhas, 94 delas
+    `DonoIndefinido` cru e as outras 40 a MESMA raiz vista depois de um `except`
+    engolir — o roteador devolvendo "opa, deu um erro aqui do meu lado" em vez do
+    resultado. Este fixture é o degrau que faltava.
+
+    ⚠ E ele NÃO enfraquece a garantia: quem EXERCITA a ausência de dono marca
+    `@pytest.mark.sem_dono` e escapa daqui — `test_ligado_sem_dono_falha_alto`,
+    `test_escrita_sem_dono_falha_em_vez_de_escolher` e companhia continuam provando
+    que `exigir_dono` levanta. O que este fixture remove é o falso-negativo de quem
+    NÃO estava testando identidade, não a trava.
+
+    O marcador é declarativo de propósito, em vez de cada teste chamar
+    `definir_dono(None)` no corpo: a precondição fica visível na assinatura, e
+    `grep sem_dono` lista de uma vez quem roda fora da identidade padrão."""
+    from mente_digital import identidade
+
+    if request.node.get_closest_marker("sem_dono"):
+        yield                     # o próprio teste é dono do estado de identidade
+        return
+    token = identidade.definir_dono(identidade.DONO_PADRAO)
+    try:
+        yield
+    finally:
+        identidade.restaurar(token)
+
+
+@pytest.fixture(autouse=True)
 def _isola_do_env(monkeypatch, tmp_path):
     """Isola a suíte do .env de PRODUÇÃO.
 
@@ -143,6 +180,21 @@ def _isola_do_env(monkeypatch, tmp_path):
                   # deste fixture — então nada de cobertura se perde aqui.
                   "pesquisa_agendada_intervalo_seconds"):
         monkeypatch.setattr(_settings, campo, getattr(_DEFAULTS_LIMPOS, campo), raising=False)
+    # MULTIUSUÁRIO (2026-08-04): entrou aqui pelo MESMO motivo do campo acima, e no
+    # mesmo dia em que o dono o LIGOU no .env. Medido na hora: `pytest` na máquina
+    # dele dava 134 FALHAS enquanto o CI ficava verde, porque o CI roda com o default
+    # (desligado) e não lê o .env dele. É o "verde no CI, vermelho na máquina do dono"
+    # que este fixture existe para impedir.
+    #
+    # ⚠ E NÃO é buraco de cobertura, ao contrário do que parecia: o modo ligado é
+    # exercitado pelos arquivos que o LIGAM eles mesmos (test_escrita_por_dono,
+    # test_dono_telemetry, test_scheduler_multiusuario, test_rag_multiusuario), e
+    # eles rodam depois deste fixture. Forçar a flag globalmente foi tentado e
+    # DESCARTADO: produzia 53 falhas sem significado — testes do modo de um usuário
+    # só (caminho do vault na raiz, coleção `langchain`) obrigados a rodar no outro
+    # modo. Um vermelho que não denuncia nada treina a gente a ignorar vermelho.
+    monkeypatch.setattr(_settings, "multiusuario_habilitado",
+                        _DEFAULTS_LIMPOS.multiusuario_habilitado, raising=False)
     # Backup diário (ops-backup-01): default LIGADO em produção, mas um tick de
     # scheduler dentro da suíte zipar o vault REAL seria efeito colateral em disco.
     # Off aqui; o módulo backup é testado direto (test_backup.py) com tmp_path.
