@@ -122,6 +122,7 @@ async def test_atomo_de_livro_cai_no_acervo_comum(multi, monkeypatch):
     assert _achar(settings.caminho_pessoal("ana"), "Livro") == []
 
 
+@pytest.mark.sem_dono
 async def test_atomo_sem_dono_falha_alto_em_vez_de_escolher(multi, monkeypatch):
     """O ⚠ de `identidade`: herdar "o último dono" escreveria a memória de uma pessoa
     na pasta de outra, e isso não tem desfazer. Falhar é o desfecho BOM."""
@@ -334,6 +335,7 @@ def test_agenda_e_por_dono(multi):
     assert da_ana.parent == settings.caminho_pessoal("ana")
 
 
+@pytest.mark.sem_dono
 def test_escrita_sem_dono_falha_em_vez_de_cair_na_raiz(multi):
     """Uma nota gravada fora de `Acervo/` e de `Pessoal/<dono>/` não pertence a coleção
     nenhuma: fica INVISÍVEL para a busca. Melhor falhar do que sumir em silêncio."""
@@ -361,6 +363,7 @@ def test_desligado_caminhos_das_ferramentas_intactos(vault):
     assert tools.raizes_de_leitura() == [Path(settings.caminho_obsidian)]
 
 
+@pytest.mark.sem_dono
 def test_desligado_nao_exige_dono(vault):
     """Nenhum caminho de hoje passa a pedir dono: o app de um usuário só continua
     funcionando sem que ninguém marque nada."""
@@ -420,6 +423,7 @@ async def test_atomo_respeita_o_settings_injetado_no_ctx(tmp_path, monkeypatch):
     assert _achar(Path(settings.dir_conhecimento_novo), "Sintese") == []
 
 
+@pytest.mark.sem_dono
 async def test_desligado_idle_roda_uma_vez_no_contexto_que_chegou(vault, monkeypatch):
     """Nem `usar_dono` entra em cena: uma chamada direta, como sempre foi."""
     etl = _etl(monkeypatch)

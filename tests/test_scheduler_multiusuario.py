@@ -187,6 +187,7 @@ async def test_o_alarme_de_um_nao_toca_no_celular_do_outro(db_tmp, multiusuario)
     assert cel_bob.recebidos == [], "a sessão do outro não pode receber NADA do turno alheio"
 
 
+@pytest.mark.sem_dono
 async def test_a_recorrencia_e_reagendada_sob_o_dono_certo(db_tmp, multiusuario):
     """Reprogramar é um UPDATE com `AND dono`: fora da identidade certa ele não casa
     linha nenhuma, o status nunca muda e o alarme volta a cada tick, para sempre."""
@@ -245,6 +246,7 @@ async def test_entregar_pendentes_do_accept_nao_le_a_linha_alheia(db_tmp, multiu
     assert "segredo da ana" in _textos(cel_ana)
 
 
+@pytest.mark.sem_dono
 async def test_entregar_pendentes_sem_dono_com_a_flag_ligada_nao_entrega_nada(
         db_tmp, multiusuario, monkeypatch):
     """Conexão sem identidade + segmentação ligada: entregar "para o padrão" seria o

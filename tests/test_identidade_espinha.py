@@ -186,6 +186,7 @@ def test_sem_dono_marcado_o_acesso_a_dado_pessoal_falha_alto():
             identidade.exigir_dono()
 
 
+@pytest.mark.sem_dono
 def test_o_dono_nao_vaza_de_um_escopo_para_o_outro():
     with identidade.usar_dono("ana"):
         assert identidade.exigir_dono() == "ana"
