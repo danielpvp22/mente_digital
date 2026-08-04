@@ -38,6 +38,31 @@ from typing import Optional
 
 NOME_ARQUIVO = "Mente Digital.vbs"
 
+#: O segundo morador da pasta Inicializar (2026-08-04): o wattímetro de plantão.
+#: Arquivo PRÓPRIO, e não um argumento a mais no do vigia, porque são dois
+#: processos independentes com ciclos de vida diferentes — o vigia morre quando
+#: levanta o assistente, o wattímetro atravessa o dia inteiro. Um `.vbs` por
+#: processo também deixa o dono desinstalar um sem derrubar o outro, e ler no
+#: bloco de notas exatamente o que cada um faz.
+NOME_WATTIMETRO = "Mente Digital - Wattimetro.vbs"
+
+_CABECALHO_VIGIA = (
+    "' Mente Digital — deixa o VIGIA de plantão junto com o Windows.\n"
+    "' Ele não carrega modelo nenhum: só espera o celular pedir (autenticado)\n"
+    "' e então levanta o assistente. O PC amanhece em zero.\n"
+    "' Gerado por `python app.py --instalar-inicio`. Para desfazer, rode\n"
+    "' `python app.py --remover-inicio` ou simplesmente apague este arquivo.\n"
+)
+
+_CABECALHO_WATTIMETRO = (
+    "' Mente Digital — o WATTÍMETRO de plantão.\n"
+    "' Mede o consumo enquanto o assistente NÃO está de pé (jogo, madrugada) e\n"
+    "' se cala sozinho quando ele sobe, para a energia não contar dobrado.\n"
+    "' Não carrega modelo nenhum e não toca a GPU.\n"
+    "' Gerado por `python scripts/registrar_consumo.py --instalar-inicio`.\n"
+    "' Para desfazer, rode `--remover-inicio` ou apague este arquivo.\n"
+)
+
 
 def e_windows() -> bool:
     """Se estamos no Windows.
@@ -67,8 +92,10 @@ def pasta_inicializar() -> Path:
     return Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def caminho_atalho() -> Path:
-    return pasta_inicializar() / NOME_ARQUIVO
+def caminho_atalho(nome: str = NOME_ARQUIVO) -> Path:
+    """O `.vbs` de UM dos moradores da pasta Inicializar. O default é o vigia, que
+    é quem existia primeiro — todo chamador antigo continua valendo sem mudar."""
+    return pasta_inicializar() / nome
 
 
 def interpretador(executavel: Optional[str] = None) -> str:
@@ -84,7 +111,8 @@ def interpretador(executavel: Optional[str] = None) -> str:
     return str(candidato if candidato.exists() else exe)
 
 
-def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--vigia") -> str:
+def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--vigia",
+               cabecalho: str = _CABECALHO_VIGIA) -> str:
     """O conteúdo do `.vbs`. PURO — é o que permite testar as aspas sem escrever
     na pasta de inicialização de ninguém.
 
@@ -97,12 +125,8 @@ def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--vi
 
     comando = f"{entre_aspas(python)} {entre_aspas(script)} {argumentos}".strip()
     return (
-        "' Mente Digital — deixa o VIGIA de plantão junto com o Windows.\n"
-        "' Ele não carrega modelo nenhum: só espera o celular pedir (autenticado)\n"
-        "' e então levanta o assistente. O PC amanhece em zero.\n"
-        "' Gerado por `python app.py --instalar-inicio`. Para desfazer, rode\n"
-        "' `python app.py --remover-inicio` ou simplesmente apague este arquivo.\n"
-        "'\n"
+        cabecalho
+        + "'\n"
         "' O 0 do Run é o modo de janela: oculto. O False é 'não espere terminar'.\n"
         'Set sh = CreateObject("WScript.Shell")\n'
         f'sh.CurrentDirectory = "{diretorio}"\n'
@@ -110,19 +134,27 @@ def script_vbs(python: str, script: str, diretorio: str, argumentos: str = "--vi
     )
 
 
-def instalado() -> bool:
-    return caminho_atalho().exists()
+def instalado(nome: str = NOME_ARQUIVO) -> bool:
+    return caminho_atalho(nome).exists()
 
 
-def instalar(raiz: Path, argumentos: str = "--vigia") -> Path:
+def instalar(raiz: Path, argumentos: str = "--vigia", nome: str = NOME_ARQUIVO,
+             alvo: str = "app.py", cabecalho: str = _CABECALHO_VIGIA) -> Path:
     """Escreve o `.vbs` na pasta Inicializar e devolve o caminho. Levanta em vez de
     falhar calado: isto roda por pedido EXPLÍCITO do dono, e "não deu certo" tem de
-    aparecer na hora — descobrir no próximo logon que nada subiu seria pior."""
+    aparecer na hora — descobrir no próximo logon que nada subiu seria pior.
+
+    `nome`/`alvo`/`cabecalho` existem desde 2026-08-04, quando o wattímetro virou o
+    segundo morador da pasta. Os defaults são o vigia, então nada que chamava isto
+    antes precisou mudar — e é de propósito que o alvo seja um NOME RELATIVO à raiz
+    e não um caminho livre: quem instala escolhe entre os scripts do projeto, não
+    entre arquivos quaisquer do disco."""
     if not e_windows():
         raise RuntimeError("início automático só está implementado no Windows.")
-    destino = caminho_atalho()
+    destino = caminho_atalho(nome)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    conteudo = script_vbs(interpretador(), str(raiz / "app.py"), str(raiz), argumentos)
+    conteudo = script_vbs(interpretador(), str(raiz / alvo), str(raiz), argumentos,
+                          cabecalho)
     # ⚠ UTF-16, não UTF-8. O Windows Script Host lê `.vbs` como ANSI a menos que
     # haja BOM de UTF-16 — em UTF-8 os acentos dos comentários chegam como lixo
     # (visto em 2026-08-02: "MODO ECONOMIA â€” sobe o assistente"). Aqui isso só
@@ -133,9 +165,9 @@ def instalar(raiz: Path, argumentos: str = "--vigia") -> Path:
     return destino
 
 
-def remover() -> bool:
+def remover(nome: str = NOME_ARQUIVO) -> bool:
     """Apaga o arquivo. Devolve se havia algo para apagar."""
-    destino = caminho_atalho()
+    destino = caminho_atalho(nome)
     if not destino.exists():
         return False
     destino.unlink()
