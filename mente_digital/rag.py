@@ -1252,17 +1252,34 @@ class VectorStore:
             # expansão por conceito só não alcança as notas pessoais dele.
             telemetry.error("MALHA", f"Falha ao montar a malha de '{dono}'", exc)
 
-    async def _escopos_de_indexacao(self) -> List[Tuple[object, str]]:
-        """(coleção, raiz no vault) que o `sync` varre.
+    async def _escopos_de_indexacao(self) -> List[Tuple[object, Tuple[str, ...]]]:
+        """(coleção, RAÍZES no vault) que o `sync` varre.
 
         Um usuário só: a coleção de sempre e o vault INTEIRO — idêntico ao de antes.
-        Multiusuário: `Acervo/` na coleção do acervo, e cada `Pessoal/<dono>/` na
-        coleção daquele dono. A lista de donos sai das PASTAS que existem, não de um
-        campo de config: a pasta é a fronteira (é justamente o que o `where` não sabia
-        ser), então é ela também quem sabe quem existe."""
+        Multiusuário: `Acervo/` **e `Figuras/`** na coleção do acervo, e cada
+        `Pessoal/<dono>/` na coleção daquele dono. A lista de donos sai das PASTAS que
+        existem, não de um campo de config: a pasta é a fronteira (é justamente o que o
+        `where` não sabia ser), então é ela também quem sabe quem existe.
+
+        POR QUE UMA COLEÇÃO PODE TER VÁRIAS RAÍZES (2026-08-04). `Figuras/` mora na
+        RAIZ do vault, fora de `Acervo/`, e isso é decisão firme: 3.663 embeds a
+        referenciam por CAMINHO (`![[Figuras/...]]`) e o `/api/imagem` resolve com
+        `is_file()` — movê-la daria 404 silencioso em todas elas. Enquanto os escopos
+        cobriam só `Acervo/` e `Pessoal/<dono>/`, as 1.817 notas de figura do vault real
+        caíam em `sobras`: avisadas e NÃO indexadas. Como `montar_indice_figuras` lê do
+        STORE, a matriz exata nasceria vazia e o ANN de reserva também (nenhum doc
+        `tipo=figura` sobraria em coleção alguma) — ligar o multiusuário apagaria a busca
+        de figuras inteira. Medido antes de ligar a flag, não depois.
+
+        E por que RAÍZES no mesmo escopo em vez de dois escopos para a mesma coleção: a
+        purga de órfãos do `_sync_escopo` apaga todo chunk fora da raiz daquele escopo,
+        então dois escopos sobre um store só se declarariam órfãos mutuamente e o índice
+        terminaria com o que fosse indexado por último."""
         if not multiusuario_ligado():
-            return [(self._store, settings.caminho_obsidian)]
-        escopos: List[Tuple[object, str]] = [(self._store, str(settings.caminho_acervo))]
+            return [(self._store, (settings.caminho_obsidian,))]
+        escopos: List[Tuple[object, Tuple[str, ...]]] = [
+            (self._store, (str(settings.caminho_acervo), str(settings.dir_figuras)))
+        ]
         raiz_pessoal = os.path.join(settings.caminho_obsidian, settings.subpasta_pessoal)
         try:
             nomes = sorted(e.name for e in os.scandir(raiz_pessoal) if e.is_dir())
@@ -1279,7 +1296,7 @@ class VectorStore:
                 continue
             loja = await self._loja_pessoal(nome)
             if loja is not None:
-                escopos.append((loja, str(settings.caminho_pessoal(nome))))
+                escopos.append((loja, (str(settings.caminho_pessoal(nome)),)))
         return escopos
 
     async def sync(self) -> bool:
@@ -1313,8 +1330,12 @@ class VectorStore:
                 arquivos = glob.glob(
                     os.path.join(settings.caminho_obsidian, "**/*.md"), recursive=True
                 )
+                # ACHATADA para o repartidor: ele escolhe, arquivo a arquivo, a raiz
+                # mais LONGA que casa, e isso só decide certo com todas na MESMA lista
+                # (`Pessoal/daniel` tem de vencer `Pessoal`). Reagrupada por coleção
+                # logo abaixo, que é a unidade em que o sync de fato escreve.
                 por_raiz, sobras = repartir_por_raiz(
-                    arquivos, [raiz for _loja, raiz in escopos])
+                    arquivos, [r for _loja, raizes in escopos for r in raizes])
                 if sobras:
                     # Nota que não está em `Acervo/` nem em `Pessoal/<dono>/` não
                     # pertence a coleção nenhuma — logo, é INVISÍVEL para toda busca.
@@ -1323,13 +1344,15 @@ class VectorStore:
                     # perdeu figura (attach_only) e nota (acervo_suspeito) antes.
                     telemetry.warn(
                         "DB",
-                        f"{len(sobras)} nota(s) fora de '{settings.subpasta_acervo}/' e de "
-                        f"'{settings.subpasta_pessoal}/<dono>/' — NÃO indexadas, invisíveis "
-                        f"para a busca (ex.: {os.path.basename(sobras[0])}).",
+                        f"{len(sobras)} nota(s) fora de '{settings.subpasta_acervo}/', "
+                        f"'{settings.subpasta_figuras}/' e '{settings.subpasta_pessoal}"
+                        f"/<dono>/' — NÃO indexadas, invisíveis para a busca "
+                        f"(ex.: {os.path.basename(sobras[0])}).",
                     )
                 mudou = False
-                for loja, raiz in escopos:
-                    if await self._sync_escopo(loja, raiz, por_raiz.get(raiz, [])):
+                for loja, raizes in escopos:
+                    do_escopo = [a for r in raizes for a in por_raiz.get(r, [])]
+                    if await self._sync_escopo(loja, raizes, do_escopo):
                         mudou = True
                 if not mudou:
                     return False
@@ -1343,13 +1366,20 @@ class VectorStore:
             # falhou seria o boot seguir SEM índice de conceitos achando que tem.
             return False
 
-    async def _sync_escopo(self, loja, raiz: str, arquivos: List[str]) -> bool:
-        """A varredura incremental de UMA coleção contra UMA raiz do vault.
+    async def _sync_escopo(self, loja, raizes, arquivos: List[str]) -> bool:
+        """A varredura incremental de UMA coleção contra as raízes do vault que ela cobre.
 
-        É o corpo histórico do `sync` — o que mudou foi passar a loja e a raiz como
+        É o corpo histórico do `sync` — o que mudou foi passar a loja e as raízes como
         parâmetros, para o multiusuário rodá-lo uma vez por escopo. Devolve **se o
         índice mudou** (gravou ou removeu algo); o chamador usa isso para decidir se
-        vale remontar a malha. Levanta em erro: quem trata é o `sync`."""
+        vale remontar a malha. Levanta em erro: quem trata é o `sync`.
+
+        `raizes` aceita uma string solta além da sequência: a coleção do acervo cobre
+        DUAS pastas (`Acervo/` e `Figuras/`, ver `_escopos_de_indexacao`), mas os
+        chamadores de um caminho só — e os testes que exercitam esta função direto —
+        continuam podendo passar a raiz sozinha."""
+        if isinstance(raizes, (str, os.PathLike)):
+            raizes = (raizes,)
         existing = await asyncio.to_thread(dump_paginado, loja, ["metadatas"])
         # PURGA DE ÓRFÃOS: chunks cujo `source` não vive mais sob a raiz DESTE escopo
         # (ou sumiu do disco). Conserta o lixo deixado quando o CAMINHO do vault
@@ -1359,7 +1389,7 @@ class VectorStore:
         # No multiusuário ela ganha um segundo ofício, de graça: a nota que MUDOU de
         # dono (a pasta de A para a de B) some da coleção de A por ser órfã lá, e
         # entra na de B como arquivo novo. Sem isso ela responderia para os dois.
-        base = os.path.normcase(os.path.abspath(raiz))
+        bases = [os.path.normcase(os.path.abspath(r)) for r in raizes]
         indexado: dict[str, float] = {}
         versao: dict[str, int] = {}
         orfaos: set[str] = set()
@@ -1368,7 +1398,7 @@ class VectorStore:
             if src is None:
                 continue
             ap = os.path.normcase(os.path.abspath(str(src)))
-            dentro = ap == base or ap.startswith(base + os.sep)
+            dentro = any(ap == b or ap.startswith(b + os.sep) for b in bases)
             if not dentro or not os.path.exists(str(src)):
                 orfaos.add(str(src))
                 continue
