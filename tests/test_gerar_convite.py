@@ -89,7 +89,15 @@ def test_endereco_sai_do_CERTIFICADO_e_nao_de_config_solta(monkeypatch):
     """O nome tem de ser o MESMO para o qual o cert foi emitido — derivá-lo do
     arquivo faz os dois baterem por construção. Um campo separado poderia divergir,
     e a divergência apareceria como "conexão falhou", sem dizer por quê."""
-    monkeypatch.setattr(gc.settings, "ssl_cert", r"C:\certs\maquina.tail9.ts.net.crt")
+    # ⚠ O caminho é montado com `Path`, e não cravado como `r"C:\certs\..."`. A
+    # primeira versão cravou, e quebrou SÓ no CI: no runner POSIX o `Path.stem` não
+    # separa por barra invertida, então o "nome do arquivo" virava a string inteira
+    # e o endereço saía `https://C:\certs\maquina...`. Verde no Windows o tempo todo.
+    # É a terceira vez que esta família morde este projeto (`os.name`→`pathlib`,
+    # `ctypes.wintypes`): teste que crava convenção de plataforma testa a plataforma,
+    # não o código.
+    cert = Path("certs") / "maquina.tail9.ts.net.crt"
+    monkeypatch.setattr(gc.settings, "ssl_cert", str(cert))
     monkeypatch.setattr(gc.settings, "port", 8000)
 
     assert gc.endereco_do_assistente() == "https://maquina.tail9.ts.net:8000"
