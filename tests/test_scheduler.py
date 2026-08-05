@@ -219,12 +219,22 @@ class _LlamaCarga:
 
 
 class _CtxPesquisa:
-    def __init__(self, sessoes=()) -> None:
+    """Ctx mínimo da pesquisa agendada.
+
+    `ultima_interacao` nasce LONGE (uma hora atrás) porque o estado que este fake
+    encena é o da madrugada — máquina parada, janela aberta. Quem quer testar o
+    contrário mexe no campo, que é o mesmo botão que o servidor real usa."""
+
+    def __init__(self, sessoes=(), sem_uso: float = 3600.0) -> None:
         self.sessoes = set(sessoes)
         self.etl = _EtlGravador()
         self.llama = _LlamaCarga()
         self.interactive_idle = asyncio.Event()
         self.interactive_idle.set()
+        self.ultima_interacao = time.monotonic() - sem_uso
+
+    def segundos_sem_uso(self, agora=None) -> float:
+        return max(0.0, (agora if agora is not None else time.monotonic()) - self.ultima_interacao)
 
 
 def test_pesquisa_idle_devida_gating(monkeypatch):
@@ -252,13 +262,47 @@ def test_pesquisa_idle_devida_gating(monkeypatch):
     assert sched._pesquisa_idle_devida(agora) is False
 
 
-def test_pesquisa_idle_nao_concorre_com_sessao(monkeypatch):
+def test_pesquisa_idle_dispara_com_sessao_aberta_mas_ociosa(monkeypatch):
+    """A REGRESSÃO de 2026-08-05, no caso que ela cega: a janela aberta.
+
+    Com a régua velha (`ctx.sessoes` vazio) este teste era impossível de passar — e
+    era exatamente o estado do PC do dono o dia inteiro, com a função configurada e
+    nunca disparando depois dos primeiros 17 s de boot."""
     from mente_digital.config import settings
 
     monkeypatch.setattr(settings, "pesquisa_agendada_intervalo_seconds", 7200)
-    sched = SchedulerService(_CtxPesquisa(sessoes=[object()]))
-    # Sessão viva: o run_idle dela já cobre; não competimos pela GPU serializada.
+    monkeypatch.setattr(settings, "pesquisa_agendada_ocio_seconds", 600.0)
+    # Sessão VIVA (webview conectada) e nenhum turno há uma hora.
+    sched = SchedulerService(_CtxPesquisa(sessoes=[object()], sem_uso=3600.0))
+    assert sched._pesquisa_idle_devida(datetime(2026, 7, 22, 3, 0)) is True
+
+
+def test_pesquisa_idle_nao_dispara_com_conversa_recente(monkeypatch):
+    """Quem falou há pouco volta a falar: o crawler não entra na frente do próximo
+    turno. Este é o valor que a régua velha PRETENDIA proteger — e agora protege de
+    verdade, porque olha o turno e não a conexão."""
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "pesquisa_agendada_intervalo_seconds", 7200)
+    monkeypatch.setattr(settings, "pesquisa_agendada_ocio_seconds", 600.0)
+    sched = SchedulerService(_CtxPesquisa(sem_uso=30.0))
     assert sched._pesquisa_idle_devida(datetime(2026, 7, 22, 3, 0)) is False
+
+
+def test_pesquisa_idle_nao_dispara_com_decode_em_voo(monkeypatch):
+    """GPU serializada: uma resposta pode estar sendo gerada mesmo com o relógio de
+    ócio vencido (síntese de tema, map-reduce, briefing). `interactive_idle` é quem
+    enxerga isso — `ctx.sessoes` nunca enxergou."""
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "pesquisa_agendada_intervalo_seconds", 7200)
+    monkeypatch.setattr(settings, "pesquisa_agendada_ocio_seconds", 600.0)
+    ctx = _CtxPesquisa(sem_uso=3600.0)
+    ctx.interactive_idle.clear()          # inferência em voo
+    sched = SchedulerService(ctx)
+    assert sched._pesquisa_idle_devida(datetime(2026, 7, 22, 3, 0)) is False
+    ctx.interactive_idle.set()
+    assert sched._pesquisa_idle_devida(datetime(2026, 7, 22, 3, 0)) is True
 
 
 async def test_executar_pesquisa_idle_religa_chama_etl_e_descarrega(monkeypatch):
@@ -275,6 +319,27 @@ async def test_executar_pesquisa_idle_religa_chama_etl_e_descarrega(monkeypatch)
     assert ctx.etl.proativa == 1 and ctx.etl.temas == 1
     assert ctx.llama.unloaded == 1        # devolveu a VRAM (idle, sem sessão)
     assert sched._pesquisa_em_andamento is False   # flag sempre reseta
+
+
+async def test_executar_pesquisa_idle_nao_solta_a_vram_se_o_dono_voltou(monkeypatch):
+    """O usuário voltou a conversar DURANTE a passada -> a VRAM fica onde está.
+
+    A saída usa a mesma régua da entrada: soltar o modelo em cima de quem acabou de
+    fazer uma pergunta cobraria o reload no turno seguinte, que é justamente a
+    latência que todo o gate existe para poupar."""
+    from mente_digital.config import settings
+
+    monkeypatch.setattr(settings, "idle_descarregar_modelo", True)
+    monkeypatch.setattr(settings, "pesquisa_agendada_ocio_seconds", 600.0)
+    ctx = _CtxPesquisa(sem_uso=5.0)       # turno há 5 segundos
+    sched = SchedulerService(ctx)
+    sched._pesquisa_em_andamento = True
+
+    await sched._executar_pesquisa_idle()
+
+    assert ctx.llama.loaded == 1
+    assert ctx.llama.unloaded == 0        # segurou o modelo para o próximo turno
+    assert sched._pesquisa_em_andamento is False
 
 
 async def test_executar_pesquisa_idle_erro_nao_propaga_e_reseta_flag():

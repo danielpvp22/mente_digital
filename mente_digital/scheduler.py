@@ -465,11 +465,38 @@ class SchedulerService:
 
         Gatilho POR TEMPO (não por fim-de-sessão): o run_idle roda 1x quando o chat
         para; sem sessão a base não cresce. Guardas: desligado por default (intervalo
-        0); nunca concorre com sessão viva (o run_idle dela já cobre e disputaria a GPU
-        serializada); uma passada por vez; respeita o intervalo configurado."""
+        0); uma passada por vez; respeita o intervalo configurado; e — o veto que
+        importa — não disputa a GPU com quem está usando o assistente.
+
+        ⚠ QUAL É ESSE VETO, E POR QUE ELE MUDOU (2026-08-05). Até aqui a régua era
+        `_ha_sessoes()`, e esta docstring prometia "nunca concorre com sessão viva". A
+        promessa era verdadeira e INÚTIL: a sessão só sai de `ctx.sessoes` quando o
+        WebSocket DESCONECTA (ws.py), e o app foi feito para ficar ABERTO o dia inteiro
+        — então o gate fechava no primeiro cliente e não abria mais. Medido no log de
+        boot de 2026-08-05, com o intervalo de 2 h configurado certo: uma única passada,
+        aos 17,4 s, na fresta antes de a webview conectar o socket; depois disso, nunca
+        mais. Um "cresce a noite toda" que só cresce nos 17 segundos em que ninguém
+        abriu a janela não cresce nada.
+
+        A régua nova é ATIVIDADE — quanto tempo faz desde o último turno interativo
+        (`ctx.ultima_interacao`) — mais o veto de decode em voo (`interactive_idle`).
+        Não é um terceiro critério inventado aqui: é o MESMO remédio que o `standby.py`
+        já tinha adotado para o MESMO defeito (ver o comentário do
+        `AppContext.ultima_interacao`), aplicado ao segundo job que sofria dele.
+
+        O que a régua velha queria proteger continua protegido, e melhor: quem disputa a
+        GPU serializada é a INFERÊNCIA, não uma aba esquecida aberta — `interactive_idle`
+        enxerga a primeira, `ctx.sessoes` só enxergava a segunda."""
         if settings.pesquisa_agendada_intervalo_seconds <= 0:
             return False
-        if self._pesquisa_em_andamento or self._ha_sessoes():
+        if self._pesquisa_em_andamento:
+            return False
+        # Pergunta em voo: a GPU é serializada, o crawler entraria na fila do turno.
+        if not self.ctx.interactive_idle.is_set():
+            return False
+        # Conversa recente: quem acabou de falar volta a falar. É este limiar que
+        # substitui "não há sessão aberta".
+        if self.ctx.segundos_sem_uso() < settings.pesquisa_agendada_ocio_seconds:
             return False
         ult = self._ultima_pesquisa_idle
         if ult is not None and (agora - ult).total_seconds() < settings.pesquisa_agendada_intervalo_seconds:
@@ -477,20 +504,23 @@ class SchedulerService:
         return True
 
     async def _executar_pesquisa_idle(self) -> None:
-        """Uma passada de pesquisa proativa + temas quentes, SEM sessão aberta.
+        """Uma passada de pesquisa proativa + temas quentes, com a casa em silêncio.
 
         Religa o modelo (o idle o descarrega e `collect` NÃO auto-carrega — só `stream`)
         e devolve a VRAM ao fim. Os métodos do ETL já cedem a vez à conversa
         (interactive_idle + preemptible) e são auto-capados, então rodar em background é
         seguro. NUNCA propaga: é trabalho de fundo, não pode derrubar o scheduler."""
         try:
-            telemetry.track("PESQUISA_IDLE", "Passada agendada iniciada (sem sessão).")
+            telemetry.track("PESQUISA_IDLE", "Passada agendada iniciada (sem uso recente).")
             await self.ctx.llama.ensure_loaded()
             await self.ctx.etl.pesquisa_proativa()
             await self.ctx.etl.pesquisa_temas_quentes()
             # Devolve a GPU entre as passadas (pilar do idle), mas só se ninguém voltou.
+            # A régua é a MESMA da porta de entrada (ver `_pesquisa_idle_devida`): com
+            # `_ha_sessoes()` aqui, o app aberto o dia inteiro significava "religa o
+            # modelo a cada 2 h e nunca mais o solta" — o oposto do que a linha promete.
             if (settings.idle_descarregar_modelo and self.ctx.interactive_idle.is_set()
-                    and not self._ha_sessoes()):
+                    and self.ctx.segundos_sem_uso() >= settings.pesquisa_agendada_ocio_seconds):
                 await self.ctx.llama.unload()
             telemetry.track("PESQUISA_IDLE", "Passada agendada concluída.")
         except Exception as exc:
@@ -845,12 +875,18 @@ class SchedulerService:
     def _ha_sessoes(self) -> bool:
         """Tem ALGUÉM usando a máquina? Pergunta de HARDWARE, não de privacidade.
 
-        ⚠ Todo chamador deste método é um gate de trabalho de fundo (ingestão, OCR,
-        consolidação, colheita, pesquisa agendada): o que eles querem saber é se há uma
-        conversa viva disputando a GPU serializada. Trocar isto por "há sessão DESTE
-        dono" seria uma regressão de LATÊNCIA — o crawler voltaria a atropelar a fala de
-        outra pessoa, que é exatamente o que o gate existe para impedir.
-        Para decidir A QUEM FALAR, o método é o `_sessoes_do_dono` abaixo."""
+        ⚠ Os chamadores deste método são gates de trabalho de fundo (ingestão, OCR,
+        consolidação, colheita): o que eles querem saber é se há uma conversa viva
+        disputando a GPU serializada. Trocar isto por "há sessão DESTE dono" seria uma
+        regressão de LATÊNCIA — o job voltaria a atropelar a fala de outra pessoa, que é
+        exatamente o que o gate existe para impedir.
+        Para decidir A QUEM FALAR, o método é o `_sessoes_do_dono` abaixo.
+
+        ⚠ ISTO NÃO É UM DETECTOR DE ÓCIO, e confundir os dois já custou uma função morta:
+        a sessão só sai do conjunto quando o WebSocket DESCONECTA, e o app fica aberto o
+        dia inteiro — então "há sessão" é verdade quase sempre, inclusive às 4 da manhã.
+        Quem precisa saber se a MÁQUINA está parada usa `ctx.segundos_sem_uso()`
+        (standby.py, e desde 2026-08-05 a pesquisa agendada)."""
         return bool(self.ctx.sessoes)
 
     def _sessoes_do_dono(self, dono: Optional[str]) -> list:
