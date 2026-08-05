@@ -908,6 +908,12 @@ def _argumentos() -> argparse.Namespace:
                    help="registra o app na pasta Inicializar do Windows (modo standby).")
     p.add_argument("--remover-inicio", action="store_true",
                    help="desfaz o --instalar-inicio.")
+    p.add_argument("--instalar-atalho", action="store_true",
+                   help="cria o atalho do app no Menu Iniciar (onde a busca do Windows "
+                        "acha) e na Área de Trabalho. É o que faz 'Fixar na barra de "
+                        "tarefas' fixar o Mente Digital em vez do python.exe.")
+    p.add_argument("--remover-atalho", action="store_true",
+                   help="desfaz o --instalar-atalho.")
     p.add_argument("--largura", type=int, default=430)
     p.add_argument("--altura", type=int, default=900)
     p.add_argument("--com-moldura", action="store_true",
@@ -939,6 +945,37 @@ def _gerir_inicio_automatico(args) -> Optional[int]:
     print("[APP] no próximo logon fica de plantão o VIGIA (~60 MB, sem modelo nenhum). "
           "Ele levanta o assistente quando o celular pedir, autenticado.")
     print("[APP] para desfazer: python app.py --remover-inicio")
+    return 0
+
+
+def _gerir_atalho(args) -> Optional[int]:
+    """Cria/apaga os atalhos do app e ENCERRA. Devolve o código de saída, ou None
+    quando não era esse o pedido.
+
+    Sai em vez de seguir para a janela pelo mesmo motivo do `--instalar-inicio`:
+    quem digita isto quer configurar o sistema, não abrir o assistente."""
+    if not (args.instalar_atalho or args.remover_atalho):
+        return None
+    from mente_digital import atalho_windows as atalho
+
+    if args.remover_atalho:
+        apagados = atalho.remover()
+        print(f"[APP] atalhos removidos: {len(apagados)}")
+        for caminho in apagados:
+            print(f"       {caminho}")
+        return 0
+    try:
+        destinos = atalho.instalar(BASE_DIR, APP_ID)
+    except Exception as exc:                       # noqa: BLE001 - pedido explícito: falha aparece
+        print(f"[APP] não consegui criar o atalho: {exc}")
+        return 1
+    for caminho in destinos:
+        print(f"[APP] atalho criado: {caminho}")
+    print("[APP] o Menu Iniciar e a busca do Windows já acham 'Mente Digital'.")
+    print("[APP] ⚠ se você JÁ tinha fixado o app na barra, DESAFIXE e fixe de novo: "
+          "o Windows guarda o pin antigo (que apontava para o python.exe) e não o "
+          "reescreve sozinho.")
+    print("[APP] para desfazer: python app.py --remover-atalho")
     return 0
 
 
@@ -1029,6 +1066,9 @@ def main() -> int:
     saida = _gerir_inicio_automatico(args)
     if saida is not None:
         return saida
+    saida = _gerir_atalho(args)
+    if saida is not None:
+        return saida
 
     if args.vigia:
         # Sai por aqui ANTES de qualquer coisa: o valor do vigia é não ter
@@ -1059,7 +1099,25 @@ def main() -> int:
         alvo_host, alvo_porta = host, porta
         if rede.porta_em_uso(host, porta):
             # Já tem um servidor de pé — não sobe um segundo (seria o zumbi de
-            # VRAM que o rede.py documenta). Só abre a janela nele.
+            # VRAM que o rede.py documenta). Resta decidir entre TRAZER a janela
+            # dele (instância única) ou criar uma apontada nele.
+            from mente_digital import janela_unica
+
+            # Só quem ia MESMO abrir uma janela nativa visível. `--standby` e
+            # `--oculto` não querem nada na frente (quem pediu está em outro
+            # cômodo); `--sem-janela` e `--navegador` nem chegam a criar janela —
+            # e ambos são decididos mais ABAIXO nesta função, então precisam ser
+            # antecipados aqui ou o app sairia sem fazer o que foi pedido.
+            quer_janela = not (args.standby or args.oculto
+                               or args.sem_janela or args.navegador)
+            hwnd = janela_unica.achar_janela(TITULO) if quer_janela else 0
+            if janela_unica.decidir(True, bool(hwnd), quer_janela) == "restaurar":
+                if janela_unica.trazer_para_frente(hwnd):
+                    print("[APP] o Mente Digital já estava aberto — trouxe a janela "
+                          "para a frente em vez de subir outro.")
+                    return 0
+                # Não veio para a frente: seguimos para o caminho antigo (criar uma
+                # janela nova). Melhor duas janelas do que nenhuma.
             print(f"[APP] porta {porta} já ocupada — abrindo a janela no servidor existente.")
             # Rota aberta (`/api/health`) — ver o comentário do ramo `--remoto` acima.
             ler_marcos = lambda: _prontos_remotos(url, settings.access_token)   # noqa: E731

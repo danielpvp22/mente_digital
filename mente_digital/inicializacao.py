@@ -14,12 +14,19 @@ quem prefere o assistente sempre a 30 s de distância.
 
 POR QUE UM `.vbs` E NÃO UM ATALHO `.lnk`
 ----------------------------------------
-Criar `.lnk` exige COM (`WScript.Shell` via pywin32), e pywin32 NÃO está nesta
-env — medido em 2026-08-02. As alternativas sem dependência nova eram um `.cmd`,
-que pisca um console preto em todo logon e ainda deixa a janela do prompt aberta
-segurando o processo, ou este `.vbs` de quatro linhas, que roda com o modo de
-janela `0` (oculto) e sai na hora. O `.vbs` é também o mais fácil de auditar: o
-dono abre o arquivo no bloco de notas e lê exatamente o que vai rodar.
+As alternativas sem dependência nova eram um `.cmd`, que pisca um console preto em
+todo logon e ainda deixa a janela do prompt aberta segurando o processo, ou este
+`.vbs` de quatro linhas, que roda com o modo de janela `0` (oculto) e sai na hora.
+O `.vbs` é também o mais fácil de auditar: o dono abre o arquivo no bloco de notas
+e lê exatamente o que vai rodar.
+
+⚠ CORRIGIDO em 2026-08-05: este bloco dizia que `.lnk` "exige COM via pywin32, e
+pywin32 NÃO está nesta env". A segunda metade continua verdadeira, a PRIMEIRA não
+era — COM se chama por `ctypes` sem pywin32, e é o que `atalho.py` faz desde
+então. A escolha do `.vbs` AQUI segue certa por outro motivo, que é o que valia o
+tempo todo: nesta pasta o objetivo é RODAR algo no logon, não ser fixado na barra.
+Quem precisa de `.lnk` é o atalho fixável, porque só um `.lnk` carrega o
+`System.AppUserModel.ID` — ver `atalho.py`.
 
 Nada aqui é instalado por conta própria. Escrever na pasta Inicializar é mexer no
 sistema do dono, então acontece só por comando explícito (`--instalar-inicio`), e
