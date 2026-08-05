@@ -31,6 +31,7 @@ from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital import energia  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
+from mente_digital import mensageiro  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
 from mente_digital import rede  # noqa: E402
 from mente_digital.consumo import RegistroConsumo
@@ -360,6 +361,62 @@ async def exigir_loopback(request: Request) -> None:
     host = request.client.host if request.client else None
     if not acesso.cliente_autorizado(host, None, ""):
         raise HTTPException(status_code=403, detail="só na máquina do assistente")
+
+
+def _usuario_do_request(request: Request) -> str:
+    """Quem está falando, na visão da rota.
+
+    Três fontes, nesta ordem, e a ordem é a garantia: o que o GATE decidiu
+    (`request.state.usuario`, escrito por `exigir_acesso` a partir do veredito), depois
+    o ContextVar, e só então o dono padrão. O último degrau existe para o caminho
+    DEGRADADO do próprio `exigir_acesso` — app montada sem lifespan, sem `registro` —,
+    onde ninguém marcou identidade e a máquina tem um usuário só. É o mesmo default do
+    `_dono_para_consulta` do telemetry, pelo mesmo motivo: com a segmentação desligada,
+    tudo é do dono padrão, e inventar um erro aqui quebraria o app de hoje."""
+    return (getattr(request.state, "usuario", None)
+            or identidade.dono_atual()
+            or identidade.DONO_PADRAO)
+
+
+async def exigir_mestre(request: Request) -> None:
+    """Gate das rotas de ADMINISTRAÇÃO do mensageiro (a caixa do mestre e a resposta).
+
+    ⚠ POR QUE NÃO `exigir_loopback`, que é o gate das outras rotas de dono
+    -----------------------------------------------------------------------
+    O `exigir_loopback` guarda o CONTROLE DE ACESSO — emitir convite, revogar aparelho.
+    Ali ele é obrigatório: um celular já pareado passaria no gate normal e poderia
+    inscrever o quinto aparelho ou revogar os outros três, e o teto de 4 viraria
+    decoração. É uma fronteira de raiz de confiança, e por isso ela exige estar na
+    máquina.
+
+    A caixa de mensagens não é nada disso. É CONTEÚDO — a mesma classe de
+    `/api/conversas` e `/api/historico`, que já vivem atrás de `exigir_acesso` mais o
+    filtro por dono. Ler uma mensagem endereçada a você não muda quem entra na casa.
+
+    E há a razão funcional, que decide: com `exigir_loopback` o mestre RECEBERIA o push
+    no celular (o `_notificar_falado` fala na sessão dele, onde quer que ela esteja) e
+    não poderia responder de lá — pelo Tailscale ele não é loopback. Um canal que
+    chega ao bolso e só se responde na escrivaninha é meio canal, e o dono pediu isto
+    justamente para o caso em que alguém está travado e precisa dele AGORA.
+
+    Então o critério é IDENTIDADE DE MESTRE, que o projeto já tem pronto: o veredito do
+    gate devolve `usuario`, `identidade.MESTRE` diz quem administra, e o scheduler já
+    roteia os alertas de segurança por esse mesmo nome. Esta dependência roda DEPOIS do
+    `exigir_acesso` (a ordem da lista em `dependencies=` é a de execução), então quem
+    chega aqui já provou credencial.
+
+    ⚠ O que isto NÃO conserta, dito com todas as letras: enquanto
+    `MENTE_APARELHOS_TOKEN_LEGADO=true`, quem tem o segredo único entra COMO o dono
+    padrão — que é o mestre. Ou seja, hoje estas rotas são exatamente tão fortes quanto
+    o token legado. Isso não é uma fraqueza deste gate: é a mesma para `/api/conversas`
+    e para toda linha pessoal do banco, e o conserto já está escrito no roteiro do dono
+    (matar o token legado depois de parear os aparelhos). Trocar por `exigir_loopback`
+    não compraria segurança nenhuma contra esse cenário — quem tem o token legado
+    também é o dono aos olhos do vault inteiro."""
+    if _usuario_do_request(request) != identidade.MESTRE:
+        # 403 e não 404: quem chegou aqui está autenticado, e esconder a existência da
+        # rota de um usuário legítimo só o faria reportar um bug que não existe.
+        raise HTTPException(status_code=403, detail="só o mestre")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -855,6 +912,152 @@ async def conferir_acesso(request: Request):
         "aparelho_id": getattr(request.state, "aparelho_id", None),
         "aparelhos_habilitado": settings.aparelhos_habilitado,
     })
+
+
+# ---- Mensageiro: o canal usuário <-> MESTRE (2026-08-05) ---------------------
+# A regra de quem lê o quê é PURA e mora em mensageiro.py; aqui só se extrai a
+# identidade, se grava e se empurra. As duas listagens passam o resultado do banco por
+# `mensageiro.visiveis()` de propósito: a SQL já filtrou pelas duas pontas, mas é a
+# função pura que DECLARA a regra — se um dia as duas divergirem, quem vale é ela.
+def _pagina(limite: int) -> int:
+    """Teto E piso do `limit`. O piso não é zelo: `LIMIT -1` no SQLite significa SEM
+    limite, então um `?limite=-1` vindo do cliente anularia o teto — e o cliente é quem
+    escolhe o número."""
+    return max(1, min(limite, 500))
+
+
+async def _entregar_em_background(request: Request, msg: mensageiro.Mensagem) -> None:
+    """Empurra o aviso pelo mecanismo que já existe (scheduler), sem segurar a resposta.
+
+    Sem scheduler (app montada sem lifespan, boot pela metade) a mensagem JÁ ESTÁ
+    gravada e aparece na caixa do destinatário na próxima listagem — o que se perde é o
+    aviso imediato, não o conteúdo. Falhar a rota aqui seria trocar uma notificação por
+    uma mensagem não enviada."""
+    ctx = getattr(request.app.state, "ctx", None)
+    scheduler = getattr(ctx, "scheduler", None) if ctx is not None else None
+    if scheduler is None:
+        telemetry.warn("MENSAGEIRO",
+                       f"Mensagem {msg.id} gravada sem agendador — sem aviso ao vivo.")
+        return
+    ctx.track_task(scheduler.entregar_mensagem(msg))
+
+
+@app.post("/api/mensagens", dependencies=[Depends(exigir_acesso)])
+async def enviar_mensagem(request: Request):
+    """Falar com o mestre: reportar um bug, pedir uma mudança, ou só escrever.
+
+    O DESTINATÁRIO não vem do corpo — é sempre o mestre (ver
+    `mensageiro.destinatario_padrao`). Um `para` livre transformaria isto numa rede
+    social entre os cinco usuários; o dono pediu um canal com ele."""
+    corpo = await request.json()
+    remetente = _usuario_do_request(request)
+    try:
+        texto = mensageiro.limpar_texto(corpo.get("texto"))
+        tipo = mensageiro.normalizar_tipo(corpo.get("tipo"))
+    except ValueError as exc:
+        # Falha na mão de quem digitou, como no convite de aparelho: campo vazio e tipo
+        # desconhecido são erros do cliente, não do servidor.
+        return JSONResponse(status_code=400,
+                            content={"erro": "mensagem_invalida", "detalhe": str(exc)})
+    destinatario = mensageiro.destinatario_padrao()
+    criada_em = mensageiro.agora_iso()
+    msg_id = await asyncio.to_thread(
+        db.salvar_mensagem, remetente, destinatario, texto, tipo, criada_em)
+    if msg_id is None:
+        # O erro já foi para o log em `salvar_mensagem`. O que não pode acontecer é
+        # responder "ok" para uma mensagem que não existe — quem reportou um bug ficaria
+        # esperando resposta de algo que ninguém recebeu.
+        return JSONResponse(status_code=500, content={"erro": "nao_gravou"})
+    msg = mensageiro.Mensagem(id=msg_id, remetente=remetente, destinatario=destinatario,
+                              texto=texto, tipo=tipo, criada_em=criada_em)
+    await _entregar_em_background(request, msg)
+    return JSONResponse(content={"status": "ok", "mensagem": msg.para_json()})
+
+
+@app.get("/api/mensagens", dependencies=[Depends(exigir_acesso)])
+async def listar_minhas_mensagens(request: Request, limite: int = 100,
+                                  nao_lidas: bool = False):
+    """A MINHA caixa: o que escrevi e o que me endereçaram, mais novas primeiro."""
+    eu = _usuario_do_request(request)
+    linhas = await asyncio.to_thread(db.listar_mensagens, _pagina(limite), nao_lidas)
+    msgs = mensageiro.visiveis(eu, [mensageiro.Mensagem.de_linha(x) for x in linhas])
+    return JSONResponse(content={"usuario": eu,
+                                 "mensagens": [m.para_json() for m in msgs]})
+
+
+@app.post("/api/mensagens/{msg_id}/lida", dependencies=[Depends(exigir_acesso)])
+async def marcar_lida(msg_id: int, request: Request):
+    """Marca como lida uma mensagem endereçada A MIM.
+
+    `lida: false` não é erro — é idempotência: a segunda chamada (ou a de quem só
+    escreveu a mensagem) não muda nada e diz isso. O 404 fica para o id que não existe
+    OU não é seu, que o banco não distingue de propósito (ver `get_mensagem`)."""
+    linha = await asyncio.to_thread(db.get_mensagem, msg_id)
+    if linha is None:
+        raise HTTPException(status_code=404, detail="mensagem não encontrada")
+    msg = mensageiro.Mensagem.de_linha(linha)
+    if not mensageiro.pode_marcar_lida(_usuario_do_request(request), msg).permitido:
+        return JSONResponse(content={"lida": False, "motivo": mensageiro.MOTIVO_ALHEIA})
+    mudou = await asyncio.to_thread(db.marcar_mensagem_lida, msg_id, mensageiro.agora_iso())
+    return JSONResponse(content={"lida": mudou})
+
+
+@app.get("/api/mestre/mensagens",
+         dependencies=[Depends(exigir_acesso), Depends(exigir_mestre)])
+async def caixa_do_mestre(request: Request, limite: int = 200, nao_lidas: bool = False):
+    """A caixa do mestre — tudo que os usuários mandaram para ele, e o que ele respondeu.
+
+    ⚠ "Listar tudo" aqui quer dizer TUDO QUE É DELE, e não tudo que existe: não há
+    rota que mostre a conversa entre outras duas pessoas, porque o mestre ADMINISTRA
+    mas não lê a memória alheia (ver identidade.py e mensageiro.py). Ele recebe tudo
+    porque todos escrevem para ele — o que é uma consequência do desenho, não um poder
+    de leitura. A prova de que a diferença existe está em
+    `test_o_mestre_nao_le_a_conversa_entre_outros_dois`."""
+    eu = _usuario_do_request(request)
+    linhas = await asyncio.to_thread(db.listar_mensagens, _pagina(limite), nao_lidas)
+    msgs = mensageiro.visiveis(eu, [mensageiro.Mensagem.de_linha(x) for x in linhas])
+    return JSONResponse(content={
+        # Conta dentro do que foi DEVOLVIDO, não na tabela inteira: o número tem de bater
+        # com a lista que está na tela. Um crachá maior que o visível manda o mestre
+        # procurar uma mensagem que a página não trouxe.
+        "usuario": eu,
+        "nao_lidas": len(mensageiro.nao_lidas(eu, msgs)),
+        "mensagens": [m.para_json() for m in msgs],
+    })
+
+
+@app.post("/api/mestre/mensagens/{msg_id}/responder",
+          dependencies=[Depends(exigir_acesso), Depends(exigir_mestre)])
+async def responder_mensagem(msg_id: int, request: Request):
+    """A resposta do mestre a UMA mensagem.
+
+    As pontas saem da mensagem original (`mensageiro.responder`), nunca de um campo
+    `para` no corpo: derivar é o que impede responder para a pessoa errada com um id
+    trocado — e um `para` livre reabriria o canal usuário->usuário que o desenho
+    fechou."""
+    corpo = await request.json()
+    linha = await asyncio.to_thread(db.get_mensagem, msg_id)
+    if linha is None:
+        raise HTTPException(status_code=404, detail="mensagem não encontrada")
+    original = mensageiro.Mensagem.de_linha(linha)
+    try:
+        remetente, destinatario, texto = mensageiro.responder(original, corpo.get("texto"))
+    except ValueError as exc:
+        return JSONResponse(status_code=400,
+                            content={"erro": "mensagem_invalida", "detalhe": str(exc)})
+    criada_em = mensageiro.agora_iso()
+    novo_id = await asyncio.to_thread(
+        db.salvar_mensagem, remetente, destinatario, texto, mensageiro.TIPO_LIVRE, criada_em)
+    if novo_id is None:
+        return JSONResponse(status_code=500, content={"erro": "nao_gravou"})
+    # Responder É ler: a original vira lida no mesmo ato, senão a caixa do mestre
+    # continuaria acusando não-lido para o que ele acabou de responder.
+    await asyncio.to_thread(db.marcar_mensagem_lida, msg_id, criada_em)
+    resposta = mensageiro.Mensagem(id=novo_id, remetente=remetente,
+                                   destinatario=destinatario, texto=texto,
+                                   tipo=mensageiro.TIPO_LIVRE, criada_em=criada_em)
+    await _entregar_em_background(request, resposta)
+    return JSONResponse(content={"status": "ok", "mensagem": resposta.para_json()})
 
 
 @app.get("/api/consumo", dependencies=[Depends(exigir_acesso)])
