@@ -41,6 +41,22 @@ def test_traz_os_tres_passos_que_a_pessoa_nao_adivinha():
     assert "apk" in pagina.lower() or "aplicativo" in pagina.lower()
 
 
+def test_o_app_NAO_e_oferecido_por_link_publico():
+    """O dono publicou o APK numa release e RETIROU: o repositório é público, e
+    publicar ali deixa o app que fala com o assistente dele baixável por qualquer
+    pessoa da internet. O convite não pode reintroduzir isso por um link.
+
+    E um link para release apagada seria pior que nenhum: `/releases/latest` passa a
+    responder **HTTP 200** apontando para uma página VAZIA — a pessoa vê "deu certo"
+    e não tem arquivo nenhum. Medido ao apagar a release em 2026-08-05."""
+    pagina = _html()
+
+    assert "releases" not in pagina, "o convite voltou a apontar para uma release"
+    assert "github.com" not in pagina
+    # O caminho certo é o arquivo que viaja junto pelo WhatsApp.
+    assert "veio junto com este convite" in pagina
+
+
 def test_diz_que_a_ORDEM_importa():
     """Sem isso a pessoa instala o app primeiro, ele diz "computador desligado", e
     ela conclui que está quebrado — quando só falta a rede."""
