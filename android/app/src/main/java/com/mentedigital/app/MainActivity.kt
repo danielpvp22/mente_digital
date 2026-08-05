@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
                     var saude by remember { mutableStateOf(Saude(false)) }
                     var segundos by remember { mutableIntStateOf(0) }
                     var forcou by remember { mutableStateOf(false) }
+                    var vigiaRespondeu by remember { mutableStateOf(false) }
                     // Estado da CASCA (não da conversa — essa é toda da SPA).
                     var folhaAberta by remember { mutableStateOf(false) }
                     var consolidando by remember { mutableStateOf(false) }
@@ -116,7 +117,7 @@ class MainActivity : ComponentActivity() {
                     // ---- o laço de boot -------------------------------------
                     LaunchedEffect(tela) {
                         if (tela != Tela.BOOT) return@LaunchedEffect
-                        forcou = false
+                        forcou = false; vigiaRespondeu = false
                         var acordou = false
                         var pediuAoVigia = false
                         while (true) {
@@ -131,6 +132,11 @@ class MainActivity : ComponentActivity() {
                             // atende, valida o TOKEN e levanta o assistente.
                             if (!s.alcancavel && !pediuAoVigia) {
                                 val v = withContext(Dispatchers.IO) { servidor.vigiaStatus() }
+                                // Quem atendeu compra tempo: o vigia responder
+                                // prova que a máquina está na rede e o endereço
+                                // está certo — então o silêncio do `/api/health`
+                                // é o assistente subindo, não erro de config.
+                                if (v != null) vigiaRespondeu = true
                                 if (v != null && !v.servidorDePe && !v.subindo) {
                                     pediuAoVigia = true
                                     when (withContext(Dispatchers.IO) { servidor.vigiaAcordar() }) {
@@ -216,8 +222,10 @@ class MainActivity : ComponentActivity() {
                             Tela.BOOT -> TelaBoot(
                                 saude = saude,
                                 segundos = segundos,           // segundos de PAREDE
-                                escapeOferecido = Boot.ofereceSaida(segundos),
+                                oferta = Boot.oferta(
+                                    saude.alcancavel, vigiaRespondeu, segundos),
                                 aoForcarEntrada = { forcou = true },
+                                aoConfigurar = { tela = Tela.CONFIG },
                             )
 
                             Tela.DORMINDO -> {

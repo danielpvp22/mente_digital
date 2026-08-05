@@ -38,8 +38,9 @@ import com.mentedigital.app.Saude
 fun TelaBoot(
     saude: Saude,
     segundos: Int,
-    escapeOferecido: Boolean,
+    oferta: Boot.Oferta,
     aoForcarEntrada: () -> Unit,
+    aoConfigurar: () -> Unit,
 ) {
     val marcos = Boot.marcosDe(saude)
     val (pct, _) = Boot.progresso(marcos)
@@ -65,17 +66,40 @@ fun TelaBoot(
         Spacer(Modifier.height(26.dp))
         Servicos(marcos)
 
-        if (escapeOferecido) {
-            Spacer(Modifier.height(28.dp))
-            Text(
-                faltando(marcos).joinToString(", ") + " não subiu em ${segundos}s. " +
-                    "O app funciona sem, com a função correspondente indisponível.",
-                color = Texto2, fontSize = 12.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = aoForcarEntrada, shape = CircleShape) {
-                Text("Entrar assim mesmo")
+        // A saída. Nunca as duas juntas: cada situação tem UMA ação útil, e
+        // oferecer a outra ao lado é convidar para o caminho errado.
+        when (oferta) {
+            Boot.Oferta.ENTRAR_ASSIM_MESMO -> {
+                Spacer(Modifier.height(28.dp))
+                Text(
+                    faltando(marcos).joinToString(", ") + " não subiu em ${segundos}s. " +
+                        "O app funciona sem, com a função correspondente indisponível.",
+                    color = Texto2, fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = aoForcarEntrada, shape = CircleShape) {
+                    Text("Entrar assim mesmo")
+                }
             }
+
+            // O conserto do "trancado fora do próprio app": aqui o servidor não
+            // respondeu, e a frase DIZ o que isso significa em vez de deixar a
+            // pessoa adivinhar por que a barra não anda.
+            Boot.Oferta.CONFIGURAR -> {
+                Spacer(Modifier.height(28.dp))
+                Text(
+                    "Sem resposta do PC em ${segundos}s. Isso costuma ser o endereço, " +
+                        "a rede (VPN desligada) ou o PC fora do ar — não é o " +
+                        "assistente carregando.",
+                    color = Texto2, fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = aoConfigurar, shape = CircleShape) {
+                    Text("Rever configuração")
+                }
+            }
+
+            Boot.Oferta.NENHUMA -> Unit
         }
 
         Spacer(Modifier.height(40.dp))

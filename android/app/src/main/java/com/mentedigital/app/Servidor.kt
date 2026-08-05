@@ -386,7 +386,40 @@ object Boot {
     fun ofereceSaida(segundosDecorridos: Int): Boolean =
         segundosDecorridos >= SEGUNDOS_ATE_OFERECER_SAIDA
 
+    /** O que a tela de boot pode oferecer a quem está esperando. */
+    enum class Oferta { NENHUMA, CONFIGURAR, ENTRAR_ASSIM_MESMO }
+
+    /**
+     * A ÚNICA saída da tela de boot, decidida aqui e não na tela. Puro/testável.
+     *
+     * ⚠ Nasce de um defeito medido em 2026-08-04: com o endereço errado, o
+     * `uiautomator dump` da tela de boot trouxe ZERO elementos clicáveis. O dono
+     * ficava trancado FORA do próprio app, sem rota para a configuração — que é
+     * justamente a única coisa capaz de consertar a situação.
+     *
+     * O erro oposto seria oferecer "reveja a configuração" cedo demais. Quando o
+     * assistente está ENCERRADO, o vigia o levanta e o `/api/health` fica mudo
+     * por ~45 s inteiramente legítimos; acusar o endereço aí é mandar mexer no
+     * que está certo. Por isso quem compra o tempo é o VIGIA e não o relógio: se
+     * ele atendeu, a máquina está na rede e o endereço está certo — o silêncio é
+     * o assistente subindo. Se NINGUÉM atendeu, não há o que esperar.
+     *
+     * É a mesma distinção que o resto do projeto faz entre recusa e queda de
+     * rede, aqui na forma "espera ≠ travado".
+     */
+    fun oferta(alcancavel: Boolean, vigiaRespondeu: Boolean, segundos: Int): Oferta = when {
+        // Alcançou: o endereço está certo, e o que falta é serviço. Mandar para a
+        // configuração seria acusar o inocente.
+        alcancavel -> if (ofereceSaida(segundos)) Oferta.ENTRAR_ASSIM_MESMO else Oferta.NENHUMA
+        vigiaRespondeu -> if (ofereceSaida(segundos)) Oferta.CONFIGURAR else Oferta.NENHUMA
+        segundos >= SEGUNDOS_ATE_OFERECER_CONFIG -> Oferta.CONFIGURAR
+        else -> Oferta.NENHUMA
+    }
+
     const val SEGUNDOS_ATE_OFERECER_SAIDA = 150
+
+    /** Curto de propósito: aqui não há ninguém do outro lado para esperar. */
+    const val SEGUNDOS_ATE_OFERECER_CONFIG = 20
 
     /** Traduz o `/api/health` nos marcos da tela. */
     fun marcosDe(s: Saude): Map<String, Boolean> {

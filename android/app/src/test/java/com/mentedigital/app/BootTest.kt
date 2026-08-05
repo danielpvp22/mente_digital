@@ -171,6 +171,64 @@ class BootTest {
         assertTrue(voltasNaReguaAntiga * 8 / 60 > 25)             // minutos
     }
 
+    // ------------------------------------------- a SAÍDA da tela de boot ----
+    // O defeito irmão do contador: com o endereço errado a tela de boot não
+    // tinha rota para a configuração — o `uiautomator dump` de 2026-08-04 mostrou
+    // ZERO elementos clicáveis. O dono ficava trancado fora do próprio app.
+    //
+    // Mas oferecer "reveja a configuração" cedo demais é o erro oposto: quando o
+    // assistente está ENCERRADO, o vigia o levanta e o `/api/health` fica mudo
+    // por ~45 s legítimos. Mandar mexer no endereço aí é acusar o que está certo.
+    // Por isso quem decide é o VIGIA, não o relógio sozinho.
+
+    @Test
+    fun `servidor alcancavel e incompleto oferece ENTRAR, nunca CONFIGURAR`() {
+        // Alcançou = o endereço está certo. Sugerir mexer nele seria mentira.
+        assertEquals(Boot.Oferta.NENHUMA, Boot.oferta(true, false, 30))
+        assertEquals(Boot.Oferta.ENTRAR_ASSIM_MESMO,
+            Boot.oferta(true, false, Boot.SEGUNDOS_ATE_OFERECER_SAIDA))
+    }
+
+    @Test
+    fun `ninguem respondeu oferece CONFIGURAR cedo`() {
+        // Nem o assistente nem o vigia: ou o endereço está errado, ou o PC não
+        // está na rede. Nos dois casos a tela de configuração é a única ação útil.
+        assertEquals(Boot.Oferta.CONFIGURAR,
+            Boot.oferta(false, false, Boot.SEGUNDOS_ATE_OFERECER_CONFIG))
+    }
+
+    @Test
+    fun `antes do teto curto a tela nao assusta ninguem`() {
+        // Um boot normal passa alguns segundos sem resposta. Oferecer saída no
+        // primeiro tique transformaria o normal em alarme.
+        assertEquals(Boot.Oferta.NENHUMA,
+            Boot.oferta(false, false, Boot.SEGUNDOS_ATE_OFERECER_CONFIG - 1))
+    }
+
+    @Test
+    fun `vigia que respondeu compra tempo — a espera e legitima`() {
+        // ESTE é o teste que separa o conserto do falso alarme: o vigia atendeu,
+        // então a máquina ESTÁ na rede e o endereço ESTÁ certo. O silêncio do
+        // `/api/health` é o assistente subindo, e leva ~45 s.
+        assertEquals(Boot.Oferta.NENHUMA,
+            Boot.oferta(false, true, Boot.SEGUNDOS_ATE_OFERECER_CONFIG + 5))
+    }
+
+    @Test
+    fun `vigia respondeu mas o assistente nunca sobe — ainda ha saida`() {
+        // Rede de segurança: se o boot morreu no meio, a rota para a configuração
+        // é a única que existe. Tarde, mas existe.
+        assertEquals(Boot.Oferta.CONFIGURAR,
+            Boot.oferta(false, true, Boot.SEGUNDOS_ATE_OFERECER_SAIDA))
+    }
+
+    @Test
+    fun `o teto curto e MUITO menor que o longo`() {
+        // Se os dois convergissem, o caso "endereço errado" voltaria a esperar
+        // dois minutos e meio — que é o defeito, não o conserto.
+        assertTrue(Boot.SEGUNDOS_ATE_OFERECER_CONFIG * 4 < Boot.SEGUNDOS_ATE_OFERECER_SAIDA)
+    }
+
     @Test
     fun `a sonda de saude tem orcamento curto`() {
         // O `/api/health` é um dict — responde em milissegundos ou não está lá.
