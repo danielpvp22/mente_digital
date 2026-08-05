@@ -185,8 +185,8 @@ def test_trocar_a_3080_pela_5080_sobe_o_teto_na_ordem_de_grandeza_do_TGP():
     """40 W a mais de TGP (320 → 360) viram um pouco MAIS de 40 W na parede, porque
     passam pela fonte. Muito mais que isso seria fator inventado; menos, seria a
     perda da fonte tendo sumido."""
-    t3080 = tomada.estimar(cenario=tomada.CENARIO_PADRAO)
-    t5080 = tomada.estimar(cenario=tomada.CENARIO_5080)
+    t3080 = tomada.estimar(cenario=tomada.CENARIO_3080)
+    t5080 = tomada.estimar(cenario=tomada.CENARIO_PADRAO)
 
     delta = t5080.total.maximo - t3080.total.maximo
     diferenca_de_tgp = tomada.RTX_5080.tgp_w - tomada.RTX_3080.tgp_w
@@ -198,8 +198,8 @@ def test_a_troca_de_placa_mexe_so_no_teto_porque_so_o_teto_e_conhecido():
     """O repouso da 5080 é HERDADO da 3080 de propósito (o repouso alto aqui é dos
     dois monitores segurando os clocks de VRAM, não da placa). Enquanto for
     suposição, o piso não pode se mexer — mexer fingiria uma medição que não existe."""
-    t3080 = tomada.estimar(cenario=tomada.CENARIO_PADRAO)
-    t5080 = tomada.estimar(cenario=tomada.CENARIO_5080)
+    t3080 = tomada.estimar(cenario=tomada.CENARIO_3080)
+    t5080 = tomada.estimar(cenario=tomada.CENARIO_PADRAO)
 
     assert t5080.total.minimo == pytest.approx(t3080.total.minimo)
     assert t5080.fora_da_fonte == t3080.fora_da_fonte       # monitor não muda com a GPU
@@ -208,10 +208,25 @@ def test_a_troca_de_placa_mexe_so_no_teto_porque_so_o_teto_e_conhecido():
 def test_a_placa_medida_ignora_o_perfil_e_a_troca_nao_muda_nada():
     """Com a NVML respondendo, o TGP de catálogo não entra na conta — o sensor
     manda. Trocar o perfil de placa não pode mexer num número medido."""
-    medido_3080 = tomada.estimar(gpu_watts=250.0, cenario=tomada.CENARIO_PADRAO)
-    medido_5080 = tomada.estimar(gpu_watts=250.0, cenario=tomada.CENARIO_5080)
+    medido_3080 = tomada.estimar(gpu_watts=250.0, cenario=tomada.CENARIO_3080)
+    medido_5080 = tomada.estimar(gpu_watts=250.0, cenario=tomada.CENARIO_PADRAO)
 
     assert medido_5080.total == medido_3080.total
+
+
+def test_o_cenario_padrao_descreve_a_placa_QUE_ESTA_na_maquina():
+    """A regressão de 2026-08-04, travada.
+
+    A 5080 entrou em 2026-08-03 e o `Cenario` seguiu com o perfil da 3080, porque
+    NENHUM chamador passa `cenario=` — todos herdam o default. Não doeu na hora por
+    sorte de arquitetura (com a NVML respondendo, o perfil é ignorado e vale o
+    sensor), então o erro esperava calado o dia em que a medição faltasse: o teto
+    sairia 320 W numa placa de 360 W, justo quando não há sensor para desmentir.
+
+    Um default que descreve hardware é um dado que ENVELHECE — e dado que envelhece
+    sem alarme precisa de um teste que o acorde.
+    """
+    assert tomada.CENARIO_PADRAO.placa is tomada.RTX_5080
 
 
 # --------------------------------------------------------------------------- #
