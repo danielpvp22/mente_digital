@@ -986,6 +986,22 @@ def _host_da_janela(esquema: str, cert: str) -> str:
     return _nome_no_certificado(cert) or "127.0.0.1"
 
 
+def credencial_da_janela(janela: str, legado: str) -> str:
+    """Que segredo a janela nativa carrega no `?token=`. PURO — a regra mora aqui.
+
+    ⚠ Existe para destravar o `aparelhos_token_legado=false`. A janela abria SEMPRE
+    com o `access_token` — o segredo legado —, então desligá-lo trancava o dono fora
+    do próprio aplicativo. E reparear não resolvia: o front sobrescreve o
+    `localStorage` com o `?token=` da URL a cada abertura, de modo que a credencial
+    boa era apagada pelo token morto no lance seguinte.
+
+    A credencial de janela vem primeiro; o legado é a QUEDA, não a preferência. Assim
+    quem não configurou nada continua exatamente como estava, e quem pareou a janela
+    pode matar o segredo único sem perder a porta de casa.
+    """
+    return (janela or "").strip() or (legado or "").strip()
+
+
 def main() -> int:
     args = _argumentos()
     saida = _gerir_inicio_automatico(args)
@@ -1026,9 +1042,10 @@ def main() -> int:
             threading.Thread(target=_subir_uvicorn, args=(host, porta, ssl_kwargs),
                              daemon=True, name="uvicorn").start()
 
-    if settings.access_token:
+    credencial = credencial_da_janela(settings.janela_credencial, settings.access_token)
+    if credencial:
         # O front guarda o token no localStorage na primeira visita com ?token=.
-        url_abrir = f"{url}/?token={settings.access_token}"
+        url_abrir = f"{url}/?token={credencial}"
     else:
         url_abrir = url
 

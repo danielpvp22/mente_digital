@@ -1384,6 +1384,15 @@ class Settings(BaseSettings):
     # deixa de valer e cada aparelho responde por si. Deixá-lo true para sempre mantém o
     # elo mais fraco vivo: quem tiver o token antigo entra sem identidade e sem revogação.
     aparelhos_token_legado: bool = True
+    # A credencial que a JANELA NATIVA carrega, e a razão de o desligamento acima ser
+    # possível. O `app.py` abria a janela em `?token={access_token}` — o segredo LEGADO —
+    # então virar `aparelhos_token_legado=false` trancava o dono fora do próprio
+    # aplicativo, e reparear não adiantava: o front SOBRESCREVE o localStorage com o
+    # `?token=` da URL a cada abertura (index.html), apagando a credencial boa.
+    # Vazio = comportamento de sempre (cai no `access_token`). Preencher é ato do dono,
+    # via `scripts/parear_janela.py` — o app não emite credencial para si mesmo, pela
+    # mesma razão que nenhum aparelho pede a própria entrada.
+    janela_credencial: str = ""
     # Rotação: a credencial morre sozinha passado esse prazo (o celular pede pareamento
     # de novo). 0 = não expira. 90 dias é o meio-termo entre "nunca gira" e "reparear
     # toda semana vira ritual que o dono automatiza mal".
