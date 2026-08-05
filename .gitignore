@@ -168,3 +168,11 @@ dados/potencia_cpu.json
 # rastreavel por padrao: ao criar qualquer pasta em dados/, pergunte se ela tem
 # segredo dentro. Renovar o cert reescreve estes arquivos a cada 90 dias.
 dados/certs/
+
+# Convites gerados (2026-08-05). Cada arquivo carrega um CÓDIGO DE PAREAMENTO vivo,
+# que é credencial de acesso ao assistente — e este repositório é PÚBLICO. É a mesma
+# armadilha do `dados/certs/` logo acima, e o aviso escrito lá não me impediu de cair
+# nela: criei a pasta e ela nasceu rastreável, com o código da 'ana' dentro. O código
+# expira em minutos e serve uma vez, mas "expira rápido" não é motivo para publicar
+# credencial — é motivo para o estrago ser menor quando alguém publicar.
+dados/convites/
