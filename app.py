@@ -1002,6 +1002,28 @@ def credencial_da_janela(janela: str, legado: str) -> str:
     return (janela or "").strip() or (legado or "").strip()
 
 
+def _credencial() -> str:
+    """A credencial que a CASCA usa para falar com o próprio servidor. Ponto único.
+
+    ⚠ Existe porque a janela não é a única coisa que se autentica aqui. Em volta
+    dela roda automação que também bate nas rotas GATEADAS: a bandeja (`/api/energia`,
+    `/api/idle`), o laço de ociosidade e o religar do `--standby`. Todas passavam o
+    `settings.access_token` CRU, então `MENTE_APARELHOS_TOKEN_LEGADO=false` as
+    quebrava em SILÊNCIO — o pior formato de defeito possível: a janela abriria
+    normalmente (ela já usava `credencial_da_janela`) e só horas depois o dono
+    notaria que o botão da bandeja não faz nada e que o PC nunca mais dormiu.
+
+    Desligar o segredo legado não pode quebrar a casca de aplicativo. Por isso a
+    regra mora num lugar só — quem precisa de credencial chama isto, nunca o
+    `settings.access_token` direto.
+
+    O import é tardio de propósito: o caminho `--vigia` sai do `main()` antes de
+    tocar em `config`, e é justamente não carregar nada pesado que o justifica."""
+    from mente_digital.config import settings
+
+    return credencial_da_janela(settings.janela_credencial, settings.access_token)
+
+
 def main() -> int:
     args = _argumentos()
     saida = _gerir_inicio_automatico(args)
@@ -1024,6 +1046,11 @@ def main() -> int:
 
     if args.remoto:
         url = args.remoto.rstrip("/")
+        # `settings.access_token` cru aqui é DE PROPÓSITO, e é a única exceção: o
+        # `_prontos_remotos` bate em `/api/health`, a única `/api` SEM gate (ver a
+        # docstring dela em main.py — a tela de boot precisa ler prontidão de onde o
+        # gate não deixaria). O servidor ignora este `?token=`, então desligar o
+        # legado não muda nada por este caminho e não há credencial a migrar.
         ler_marcos = lambda: _prontos_remotos(url, settings.access_token)   # noqa: E731
         alvo_host, alvo_porta = _host_porta_da_url(url)
     else:
@@ -1034,6 +1061,7 @@ def main() -> int:
             # Já tem um servidor de pé — não sobe um segundo (seria o zumbi de
             # VRAM que o rede.py documenta). Só abre a janela nele.
             print(f"[APP] porta {porta} já ocupada — abrindo a janela no servidor existente.")
+            # Rota aberta (`/api/health`) — ver o comentário do ramo `--remoto` acima.
             ler_marcos = lambda: _prontos_remotos(url, settings.access_token)   # noqa: E731
         else:
             ssl_kwargs = {}
@@ -1042,7 +1070,7 @@ def main() -> int:
             threading.Thread(target=_subir_uvicorn, args=(host, porta, ssl_kwargs),
                              daemon=True, name="uvicorn").start()
 
-    credencial = credencial_da_janela(settings.janela_credencial, settings.access_token)
+    credencial = _credencial()
     if credencial:
         # O front guarda o token no localStorage na primeira visita com ?token=.
         url_abrir = f"{url}/?token={credencial}"
@@ -1141,12 +1169,12 @@ def main() -> int:
             # espera; sem isto o servidor acordaria e a janela ficaria eternamente
             # na tela de repouso, esperando um clique que já aconteceu.
             ponte._acordar.set()
-        estado = _api(url, "/api/energia", "ligar" if ligando else "desligar", settings.access_token)
+        estado = _api(url, "/api/energia", "ligar" if ligando else "desligar", _credencial())
         bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
 
     def _consolidar() -> None:
         alvo = "parar" if bandeja.consolidando else "rodar"
-        _api(url, "/api/idle", alvo, settings.access_token)
+        _api(url, "/api/idle", alvo, _credencial())
         bandeja.marcar(consolidando=(alvo == "rodar"))
 
     def _adiar() -> None:
@@ -1189,7 +1217,7 @@ def main() -> int:
         caminho ficaria carregado e a economia seria parcial e imprevisível. Pagar o
         boot uma vez, no logon, e só então soltar tudo deixa a máquina num estado
         conhecido: modelos fora, servidor de pé."""
-        resposta = _api(url, "/api/energia", "desligar", settings.access_token)
+        resposta = _api(url, "/api/energia", "desligar", _credencial())
         medida = resposta.get("depois") or {}
         vram = medida.get("vram_mb")
         detalhe = f"PC livre · {vram / 1024:.1f} GB de VRAM em uso".replace(".", ",") if vram else "PC livre"
@@ -1211,7 +1239,7 @@ def main() -> int:
         # mesmo número é indistinguível de app travado, e é exatamente o defeito que
         # a tela de progresso existe para não ter.
         threading.Thread(
-            target=_api, args=(url, "/api/energia", "ligar", settings.access_token),
+            target=_api, args=(url, "/api/energia", "ligar", _credencial()),
             daemon=True, name="religar",
         ).start()
         bandeja.marcar(ligado=True)
@@ -1223,7 +1251,7 @@ def main() -> int:
         # Fora do `--standby` (que vai DORMIR daqui a pouco), abrir a janela num
         # servidor de plantão significa querer usá-lo. Ver `_acordar_se_dormindo`.
         if not args.standby:
-            _acordar_se_dormindo(url, settings.access_token)
+            _acordar_se_dormindo(url, _credencial())
         _acompanhar_boot(janela, ponte, ler_marcos, alvo_host, alvo_porta)
         # A bandeja sobe ANTES do standby: no `--standby` ela é a única porta de
         # entrada (a janela nasce oculta), então esperar o fim do ciclo para criá-la
@@ -1231,7 +1259,7 @@ def main() -> int:
         if bandeja.iniciar():
             threading.Thread(
                 target=_laco_ocioso,
-                args=(url, settings.access_token, bandeja, parar_laco, _sair),
+                args=(url, _credencial(), bandeja, parar_laco, _sair),
                 daemon=True, name="ocioso",
             ).start()
         if args.standby:

@@ -18,11 +18,17 @@ import app
 # --------------------------------------------------------------------------- #
 # A regra                                                                      #
 # --------------------------------------------------------------------------- #
-def test_sem_tls_continua_no_ip_de_loopback():
+def test_sem_tls_continua_no_ip_de_loopback(tmp_path):
     """Em `http` o IP é o certo: não depende de DNS nenhum, e é o caminho que
-    funciona antes de existir Tailscale, cert ou rede."""
+    funciona antes de existir Tailscale, cert ou rede.
+
+    ⚠ O caminho vem de `tmp_path`, não de um literal `C:\\certs\\...`: no Linux do
+    CI a contrabarra não separa componente nenhum, então `basename` devolveria a
+    string inteira e o caso testaria outra coisa. Aqui ele passa por acidente (o
+    ramo `http` retorna antes de olhar o arquivo), e um acidente desses é o que
+    esconde a próxima regressão — mesma família do `os.name`/`pathlib` de 08-03."""
     assert app._host_da_janela("http", "") == "127.0.0.1"
-    assert app._host_da_janela("http", r"C:\certs\qualquer.crt") == "127.0.0.1"
+    assert app._host_da_janela("http", str(tmp_path / "certs" / "qualquer.crt")) == "127.0.0.1"
 
 
 def test_a_janela_prefere_a_credencial_de_aparelho():
