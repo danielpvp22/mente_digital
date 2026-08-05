@@ -219,10 +219,16 @@ class Cenario:
     PC do dono, e as parcelas sem sensor são ESTIMATIVA declarada (campo `fonte` de
     cada `Parcela` no resultado).
 
-    Trocar a GPU é trocar UM campo: `dataclasses.replace(CENARIO_PADRAO, placa=RTX_5080)`
-    — ou o `CENARIO_5080` já pronto logo abaixo."""
+    Trocar a GPU é trocar UM campo: `dataclasses.replace(CENARIO_PADRAO, placa=RTX_3080)`
+    — ou o `CENARIO_3080` já pronto logo abaixo."""
 
-    placa: Placa = RTX_3080
+    # ⚠ Este é o perfil da placa QUE ESTÁ na máquina, e ele envelhece calado: a 5080
+    # entrou em 2026-08-03 e o default seguiu na 3080 até 2026-08-04, porque nenhum
+    # chamador passa `cenario=` — todos herdam este campo. Não doeu antes por sorte
+    # de arquitetura (com a NVML respondendo, `_parcela_gpu` IGNORA o perfil e usa o
+    # sensor), então o erro só apareceria no dia em que a medição faltasse: o teto
+    # sairia 320 W numa placa de 360 W, justo quando não há sensor para desmentir.
+    placa: Placa = RTX_5080
     cpu: Cpu = RYZEN_7950X3D
 
     fonte_nome: str = "Corsair RM850e (850 W, 80 Plus Gold, full modular)"
@@ -256,9 +262,11 @@ class Cenario:
 
 
 CENARIO_PADRAO = Cenario()
-# O "e quando a 5080 chegar?" — um campo de diferença, para o número da troca sair
-# do mesmo modelo e não de uma segunda conta feita à mão.
-CENARIO_5080 = replace(CENARIO_PADRAO, placa=RTX_5080)
+# A placa ANTERIOR desta máquina, mantida como perfil de comparação — é ela que dá
+# sentido aos testes de "quanto a troca de placa move a parede", e serve de exemplo
+# para quem tiver outra GPU. Um campo de diferença, para o número sair do mesmo
+# modelo e não de uma segunda conta feita à mão.
+CENARIO_3080 = replace(CENARIO_PADRAO, placa=RTX_3080)
 
 
 @dataclass(frozen=True)
