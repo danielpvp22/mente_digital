@@ -1264,9 +1264,26 @@ class Settings(BaseSettings):
     # mesmo SEM sessão aberta. O run_idle só dispara ao fim de uma conversa (oportunista);
     # sem isto a base não cresce enquanto o app fica ocioso. Intervalo entre passadas, em
     # segundos. 0 = DESLIGADO (default seguro; o idle por fim-de-sessão segue como o único
-    # gatilho). Dispara em background (não atrasa o loop de alarmes) e nunca concorre com
-    # sessão viva. Ex.: MENTE_PESQUISA_AGENDADA_INTERVALO_SEGUNDOS=7200 (a cada 2h).
+    # gatilho). Dispara em background (não atrasa o loop de alarmes) e cede a vez a quem
+    # está usando o assistente. Ex.: MENTE_PESQUISA_AGENDADA_INTERVALO_SECONDS=7200 (2h).
     pesquisa_agendada_intervalo_seconds: int = 0
+    # Quanto SILÊNCIO a passada acima exige antes de tocar a GPU. Esta é a régua que
+    # substituiu "não há sessão aberta" em 2026-08-05: a sessão só fecha quando o
+    # WebSocket cai, e o app foi feito para ficar ABERTO o dia inteiro — com aquela régua
+    # a pesquisa agendada disparava UMA vez, na fresta antes de a janela conectar, e nunca
+    # mais (medido no boot: 17,4 s, 6 ms de passada, silêncio pelo resto do dia). É o
+    # mesmo remédio do `idle_standby_minutos`, pelo mesmo motivo — ver standby.py.
+    #
+    # Default CONSERVADOR e deliberadamente MENOR que o standby (20 min): 10 min de
+    # silêncio total já é sinal firme de que ninguém está digitando, e a passada ainda
+    # cabe na janela antes de a máquina dormir. Subir isto acima de `idle_standby_minutos`
+    # não "protege mais" — só empurra a passada para depois do sono.
+    #
+    # ⚠ Grafia em INGLÊS (`_SECONDS`), igual à vizinha de cima, e isso não é capricho: o
+    # `.env` do dono viveu meses com `..._SEGUNDOS`, que o `extra="ignore"` do pydantic
+    # engole CALADO — ele acreditava ter ligado a função e ela estava desligada. Duas
+    # linhas do mesmo bloco com idiomas diferentes convidariam o erro de volta.
+    pesquisa_agendada_ocio_seconds: float = 600.0
     # ACK de aplicação do push proativo (painel 2026-07): o disparo só é CONCLUÍDO
     # quando o cliente confirma que exibiu ({"tipo":"ack_proativo"}); sem ack neste
     # prazo, volta à reentrega normal (pendente_entrega). O send "com sucesso" num
