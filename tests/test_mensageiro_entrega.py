@@ -75,6 +75,26 @@ async def test_a_mensagem_chega_a_sessao_do_destinatario(db_tmp, multiusuario):
     assert db_tmp.get_agendamentos_pendentes(todos_os_donos=True) == []
 
 
+async def test_o_card_diz_que_tipo_de_mensagem_e(db_tmp, multiusuario):
+    """O rótulo (bug/pedido/livre) tem de SOBREVIVER ao envelope, e este teste existe
+    porque ele não sobrevivia.
+
+    A chave `tipo` do card é do ENVELOPE — é por ela que o front roteia o push, como em
+    "proativo" e "energia". O tipo da MENSAGEM tinha o mesmo nome, então o `**para_json()`
+    sobrescrevia o envelope e a linha seguinte o restaurava: o card chegava íntegro,
+    entregue, ACKado — e sem o rótulo que o mestre usa para triar. Um relato de problema
+    ficava indistinguível de um "oi", e nada falhava. Daí `classe`.
+    """
+    celular = FakeSession(identidade.MESTRE)
+    sched = SchedulerService(FakeCtx([celular]))
+
+    await sched.entregar_mensagem(_msg("ana", identidade.MESTRE, "a voz travou"))
+
+    card = _de_tipo(celular, "mensagem")[0]
+    assert card["tipo"] == "mensagem"            # o envelope, que o front roteia
+    assert card["classe"] == mensageiro.TIPO_BUG  # o rótulo, que o mestre tria
+
+
 async def test_a_mensagem_nao_chega_na_sessao_de_quem_nao_e_o_destinatario(db_tmp, multiusuario):
     """O defeito espelho do broadcast dos alarmes: conteúdo pessoal na tela de estranho.
     O que se afirma é a AUSÊNCIA — a sessão da Ana não recebeu nada."""
@@ -135,7 +155,12 @@ async def test_o_pendente_e_reentregue_quando_o_mestre_conecta(db_tmp, multiusua
     assert "o app não abre" in _falado(celular)
     # O CARD volta junto, remontado do payload gravado: reentregar só a fala deixaria a
     # mensagem sem o botão de responder — ela chegou, mas não dá para agir sobre ela.
-    assert _de_tipo(celular, "mensagem")[0]["remetente"] == "ana"
+    card = _de_tipo(celular, "mensagem")[0]
+    assert card["remetente"] == "ana"
+    # E com o rótulo intacto: o payload do pendente é gravado pelo MESMO `_card_mensagem`
+    # do ao vivo, então perder `classe` aqui significaria que o gravado e o ao vivo
+    # divergiram — a reentrega desenharia um cartão diferente do original.
+    assert card["classe"] == mensageiro.TIPO_BUG
 
 
 async def test_a_reentrega_do_accept_nao_entrega_o_pendente_alheio(db_tmp, multiusuario):

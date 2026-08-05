@@ -181,6 +181,17 @@
         .sw.off .led { background: #8B8F96; box-shadow: none; }
         .sw.ocupado .led { background: var(--acc); animation: pisca 1.2s ease-in-out infinite; }
         .sw .medida { color: var(--txt2); font-variant-numeric: tabular-nums; font-size: .72rem; }
+        /* Crachá de não-lidas do mensageiro. Mora no interruptor porque a faixa é o
+           único lugar SEMPRE visível: recado esperando dentro de um painel fechado é
+           indistinguível de recado nenhum. `[hidden]` precisa da regra explícita — o
+           `display` do seletor acima vence o `hidden` do HTML, e o crachá ficaria
+           aceso com zero recado. */
+        .sw .cracha {
+            min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+            background: var(--acc3); color: #fff; font-size: .66rem; font-weight: 600;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .sw .cracha[hidden] { display: none; }
 
         /* ====================== modo avançado ============================= */
         #avancado {
@@ -191,9 +202,13 @@
         #avancado.active { opacity: 1; pointer-events: auto; transform: translateY(0); }
         .av-top { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; flex-shrink: 0; }
         .av-tabs { display: flex; gap: 4px; flex: 1; background: var(--sup); padding: 4px; border-radius: 16px; }
+        /* `min-width: 0` desde que a 5ª aba (Recados) entrou: item de flex não encolhe
+           abaixo do min-content por padrão, e na janela nativa (430 px) os cinco
+           rótulos estouravam a barra em vez de repartir o espaço. */
         .av-tab {
-            flex: 1; border: none; background: none; color: var(--txt2); padding: 9px 8px;
+            flex: 1; min-width: 0; border: none; background: none; color: var(--txt2); padding: 9px 6px;
             border-radius: 12px; cursor: pointer; font-size: .82rem; font-weight: 500; transition: .18s;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .av-tab:hover { color: var(--txt); }
         .av-tab.on { background: var(--sup2); color: var(--txt); box-shadow: var(--sombra); }
@@ -231,6 +246,33 @@
         .av-linha { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--linha); font-size: .84rem; }
         .av-linha span:last-child { color: var(--txt2); font-variant-numeric: tabular-nums; text-align: right; }
         .av-titulo { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--txt2); margin: 14px 0 2px; }
+        /* ---- aba Recados: o canal com o mestre ---- */
+        /* Reusa `.av-item` (mesma linguagem do vault e das fontes) e só desfaz o que
+           não vale aqui: item de recado não abre nada, então não pode se comportar
+           como link ao passar o ponteiro. */
+        /* A lista precisa do gap PRÓPRIO (medido: 0 px entre os itens sem ele). No
+           vault os itens colados passam por linhas de uma tabela; aqui cada um é um
+           cartão com moldura, e dois colados leem como um recado só. */
+        #rec-lista { display: flex; flex-direction: column; gap: 8px; }
+        .rec-item { cursor: default; }
+        .rec-item:hover { background: var(--sup); border-color: var(--linha); transform: none; }
+        /* `.av-item .t` é bloco; aqui vira flex porque a hora se alinha à direita por
+           `margin-left:auto` — sem isto ela cola no nome. */
+        .rec-item .t { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+        .rec-item.nova { border-color: color-mix(in srgb, var(--acc) 50%, transparent); background: var(--acc-fraco); }
+        .rec-item.minha { opacity: .72; }          /* o que EU mandei fica em segundo plano */
+        #rec-form { display: flex; flex-direction: column; gap: 9px; }
+        #rec-tipos { display: flex; gap: 6px; flex-wrap: wrap; }
+        #rec-form textarea, .rec-resposta textarea {
+            width: 100%; min-height: 80px; resize: vertical; background: var(--sup);
+            border: 1px solid var(--linha); border-radius: 14px; padding: 11px 14px;
+            font-size: 14.5px; line-height: 1.5; outline: none; transition: .2s;
+        }
+        #rec-form textarea:focus, .rec-resposta textarea:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-fraco); }
+        #rec-form .linha { display: flex; align-items: center; gap: 8px; }
+        #rec-form .conta { color: var(--txt2); font-size: .72rem; margin-left: auto; font-variant-numeric: tabular-nums; }
+        .rec-resposta { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+        .rec-resposta textarea { min-height: 62px; }
         /* Leitor de nota — empilha SOBRE o painel, com voltar próprio. */
         #av-leitor {
             position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column;
@@ -320,6 +362,37 @@
         #pensando i { width: 7px; height: 7px; border-radius: 50%; background: var(--acc); animation: pisca 1.25s ease-in-out infinite; }
         #pensando i:nth-child(2) { animation-delay: .18s; } #pensando i:nth-child(3) { animation-delay: .36s; }
         @keyframes pisca { 0%,80%,100% { opacity: .25; transform: scale(.75); } 40% { opacity: 1; transform: scale(1); } }
+
+        /* ============ recado: mensagem de OUTRA PESSOA no meio do chat ==========
+           Ela NÃO pode parecer o assistente falando, e isso não é gosto: a bolha da
+           IA é transparente, sem moldura e sem autor — um pedido escrito por outra
+           pessoa renderizado ali vira instrução com a autoridade do assistente. Daí
+           o cartão com moldura, o nome de quem escreveu no cabeçalho e uma linha que
+           diz, em palavras, que aquilo não é a Mente Digital. */
+        .msg-row.recado { justify-content: flex-start; }
+        .recado {
+            max-width: 86%; background: var(--sup); border: 1px solid var(--linha);
+            border-left: 3px solid var(--acc2); border-radius: 6px 16px 16px 6px;
+            padding: 11px 15px; font-size: .95rem; line-height: 1.55;
+        }
+        .rec-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 5px; }
+        .rec-top .ico { width: 16px; height: 16px; color: var(--acc2); }
+        .rec-de { font-weight: 600; overflow-wrap: anywhere; }
+        .rec-hora { color: var(--txt2); font-size: .72rem; margin-left: auto; font-variant-numeric: tabular-nums; }
+        /* `pre-wrap` e não markdown: ver o comentário de `mostrarRecado()`. O texto de
+           outra pessoa entra por textContent, então a quebra de linha só sobrevive
+           aqui — e é a ÚNICA formatação que ele ganha. */
+        .rec-corpo { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .rec-nota { color: var(--txt2); font-size: .7rem; margin-top: 8px; }
+        .rec-acoes { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+        .rec-btn {
+            background: var(--sup2); border: 1px solid var(--linha); color: var(--txt2);
+            border-radius: 14px; padding: 5px 11px; font-size: .74rem; cursor: pointer; transition: .16s;
+        }
+        .rec-btn:hover { border-color: var(--acc); color: var(--txt); }
+        .rec-btn:disabled { opacity: .5; cursor: progress; }
+        .rec-btn.forte { background: var(--acc-fraco); color: var(--acc); border-color: transparent; }
+        .rec-btn.on { background: var(--acc-fraco); color: var(--acc); border-color: color-mix(in srgb, var(--acc) 45%, transparent); }
 
         #btn-descer {
             position: fixed; left: 50%; transform: translateX(-50%) scale(.6); bottom: calc(104px + var(--safe-b));
@@ -504,6 +577,18 @@
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/></svg>
             <span id="sw-idle-txt">Consolidar</span>
         </button>
+        <!-- O canal com o mestre (mensageiro.py). O crachá de não-lidas fica AQUI, e
+             não só dentro do painel: a faixa é a única coisa sempre na tela, e um
+             recado esperando atrás de um painel fechado não avisa ninguém.
+             ⚠ E fica ANTES do "Avançado" por medida, não por gosto: a faixa ROLA na
+             horizontal, e na janela nativa (430 px) o 4º botão termina em 449 px — ou
+             seja, fora da tela. O botão que carrega o aviso tem de caber sem rolar; o
+             "Avançado", que não tem estado a mostrar, é quem pode ficar para depois. -->
+        <button class="sw" id="sw-recados" onclick="abrirRecados()" title="Falar com o mestre: reportar um problema, pedir uma mudança ou mandar um recado">
+            <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3.6 7l8.4 5.6L20.4 7"/></svg>
+            Recados
+            <span class="cracha" id="recados-cracha" hidden></span>
+        </button>
         <button class="sw" id="sw-avancado" onclick="alternarAvancado()" title="Modo avançado: ver as fontes que responderam">
             <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 7h11l-2 3 2 3H4"/></svg>
             Avançado
@@ -556,6 +641,7 @@
                 <button class="av-tab on" data-aba="fontes" onclick="abrirAba('fontes')">Fontes</button>
                 <button class="av-tab" data-aba="vault" onclick="abrirAba('vault')">Vault</button>
                 <button class="av-tab" data-aba="consumo" onclick="abrirAba('consumo')">Consumo</button>
+                <button class="av-tab" data-aba="recados" onclick="abrirAba('recados')">Recados</button>
                 <button class="av-tab" data-aba="sistema" onclick="abrirAba('sistema')">Sistema</button>
             </div>
             <button class="icon-btn" onclick="alternarAvancado()" title="Fechar"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
@@ -594,6 +680,32 @@
                 <div id="av-lista"></div>
             </section>
             <section class="av-secao" id="av-consumo"></section>
+            <!-- Recados: o canal com o mestre. Uma aba só serve as duas pontas — quem
+                 escreve vê a própria conversa com ele; o mestre vê a caixa e responde
+                 dali. Quem é quem NÃO é decidido aqui: o front pergunta ao servidor
+                 (GET /api/mestre/mensagens responde 403 a quem não é), que é a mesma
+                 chamada que enche a lista. Ver `carregarRecados()`. -->
+            <section class="av-secao" id="av-recados">
+                <div id="rec-form">
+                    <!-- O botão de bug pedido pelo dono: abre ESTE canal já como
+                         'bug', sem formulário separado nem outro destino. -->
+                    <button class="rec-btn forte" type="button" onclick="reportarProblema()">Reportar um problema</button>
+                    <div id="rec-tipos">
+                        <button class="rec-btn on" type="button" data-tipo="livre" onclick="escolherTipoRecado('livre')">Recado</button>
+                        <button class="rec-btn" type="button" data-tipo="bug" onclick="escolherTipoRecado('bug')">Problema</button>
+                        <button class="rec-btn" type="button" data-tipo="pedido" onclick="escolherTipoRecado('pedido')">Pedido</button>
+                    </div>
+                    <!-- 4000 = mensageiro.TEXTO_MAX. O servidor CORTA em vez de recusar
+                         (quem escreveu muito não perde tudo), então o limite aqui é
+                         para avisar antes, não para valer no lugar dele. -->
+                    <textarea id="rec-texto" maxlength="4000" placeholder="Escreva ao mestre…"></textarea>
+                    <div class="linha">
+                        <button class="sw" type="button" id="rec-enviar" onclick="enviarRecado()">Enviar ao mestre</button>
+                        <span class="conta" id="rec-conta"></span>
+                    </div>
+                </div>
+                <div id="rec-lista"></div>
+            </section>
             <section class="av-secao" id="av-sistema"></section>
         </div>
         <div id="av-leitor">
@@ -961,6 +1073,19 @@
             if (!res.ok) throw await erroHttp(res);
             return res.json();
         }
+        // O gêmeo de escrita. Existe pelo mesmo motivo do bloco acima: sem um ponto
+        // único, cada POST novo repete o `res.ok` na mão — e o que esquecer vai tratar
+        // um 401 como "enviado", que é exatamente a mentira que o `enviarNotaEscrita`
+        // já teve de consertar uma vez.
+        async function apiPost(url, corpo) {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: apiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(corpo || {}),
+            });
+            if (!res.ok) throw await erroHttp(res);
+            return res.json();
+        }
         // O 401 do gate por aparelho tem CORPO — {"detail":{"erro":…,"motivo":"revogado"}} —
         // e é o motivo que separa o insolúvel do consertável: "revogado" só o dono
         // resolve (código novo), "credencial_invalida" o usuário resolve sozinho. Jogar
@@ -1084,10 +1209,31 @@
                     audioQueue.push(data.base64);
                     if (!iaFalando) tocarProximoAudio();
                 }
+                else if (data.tipo === "mensagem") {
+                    // RECADO DE PESSOA (mensageiro.py). Vem sempre em DOIS pushes: este
+                    // cartão, rico (id, quem, quando, que tipo), e logo atrás a bolha
+                    // falada {tipo:"proativo"} — que é o que o servidor usa para medir a
+                    // entrega e para o TTS. Desenhar os dois mostraria o mesmo recado
+                    // duas vezes, e a segunda vez com a cara do assistente; por isso o
+                    // cartão marca a fala gêmea e `ehEcoDeRecado` a engole. O ÁUDIO
+                    // continua tocando: quem está no modo voz ouve o recado normalmente.
+                    abrirConversa();
+                    currentIaBubble = null;
+                    mostrarRecado(data);
+                    recFalaPendente = { trecho: (data.texto || '').trim().slice(0, 40), ate: Date.now() + 15000 };
+                    carregarRecados(true);      // o crachá de não-lidas na faixa
+                }
                 else if (data.tipo === "proativo") {
                     // Mensagem que o servidor INICIA (alarme/lembrete/watcher/briefing): abre
                     // uma bolha própria com o sino, sem se colar à resposta anterior. O áudio
                     // chega em mensagens {tipo:"audio"} separadas, logo depois.
+                    if (ehEcoDeRecado(data.texto)) {
+                        // Gêmea do cartão que acabou de ser desenhado. O ack continua
+                        // saindo: quem conclui o pendente na fila é ele, não a bolha —
+                        // engolir os dois deixaria o recado sendo reentregue para sempre.
+                        if (data.ack_id) wsEnviar({ tipo: "ack_proativo", id: data.ack_id });
+                        return;
+                    }
                     abrirConversa();
                     currentIaBubble = null;
                     appendMsg("🔔 " + data.texto, 'ia');
@@ -1469,7 +1615,316 @@
             fecharNota();
             if (nome === 'vault' && !document.getElementById('av-lista').children.length) buscarVault();
             if (nome === 'consumo') renderConsumo();
+            if (nome === 'recados') carregarRecados();
             if (nome === 'sistema') renderSistema();
+        }
+
+        // ---------- mensageiro: o canal com o MESTRE ----------
+        // Servidor: mente_digital/mensageiro.py (a regra, pura) + as cinco rotas do
+        // main.py. Aqui NÃO mora regra de privacidade nenhuma, e isso é deliberado: a
+        // tela pinta o que a rota devolveu e nada mais. Quem decide quem lê o quê é o
+        // `pode_ler` de lá; cruzar esta lista com qualquer outra fonte seria justamente
+        // o furo que ele existe para fechar (o mestre administra, não lê conversa alheia).
+        const REC_ROTULO = { bug: 'Problema', pedido: 'Pedido', livre: 'Recado' };
+        const REC_TETO = 4000;                  // = mensageiro.TEXTO_MAX
+        let recTipo = 'livre';                  // o tipo escolhido no formulário
+        let recEuSouMestre = null;              // null = ainda não perguntei ao servidor
+        let recDados = { usuario: '', mensagens: [], nao_lidas: 0 };
+        let recRespondendo = null;              // id da mensagem com a resposta aberta
+        let recFalaPendente = null;             // ver `ehEcoDeRecado`
+
+        // O rótulo sai de uma LISTA FECHADA, nunca do valor cru: um `tipo` novo (ou
+        // inventado) vira "Recado" em vez de ir para a tela como veio.
+        function rotuloRecado(tipo) { return REC_ROTULO[tipo] || REC_ROTULO.livre; }
+
+        function quandoRecado(iso) {
+            const d = new Date(iso || '');
+            if (isNaN(d.getTime())) return '';   // carimbo estranho não vira texto na tela
+            const dois = n => String(n).padStart(2, '0');
+            const hora = dois(d.getHours()) + ':' + dois(d.getMinutes());
+            return d.toDateString() === new Date().toDateString()
+                ? hora : dois(d.getDate()) + '/' + dois(d.getMonth() + 1) + ' ' + hora;
+        }
+
+        function abaRecadosVisivel() {
+            return document.getElementById('avancado').classList.contains('active')
+                && document.getElementById('av-recados').classList.contains('on');
+        }
+
+        function abrirRecados(tipo) {
+            if (!document.getElementById('avancado').classList.contains('active')) alternarAvancado();
+            abrirAba('recados');
+            if (tipo) { escolherTipoRecado(tipo); document.getElementById('rec-texto').focus(); }
+        }
+        // O botão de bug do dono: mesmo canal, mesma caixa, já marcado como problema.
+        // Um formulário separado teria de reaprender entrega, não-lidas e resposta.
+        function reportarProblema() { abrirRecados('bug'); }
+
+        function escolherTipoRecado(t) {
+            recTipo = REC_ROTULO[t] ? t : 'livre';
+            document.querySelectorAll('#rec-tipos .rec-btn')
+                    .forEach(b => b.classList.toggle('on', b.dataset.tipo === recTipo));
+        }
+
+        function contarRecado() {
+            const n = document.getElementById('rec-texto').value.length;
+            document.getElementById('rec-conta').textContent = n ? (n + '/' + REC_TETO) : '';
+        }
+        document.getElementById('rec-texto').addEventListener('input', contarRecado);
+
+        async function enviarRecado() {
+            const campo = document.getElementById('rec-texto');
+            const txt = campo.value.trim();
+            if (!txt) { toast("Escreva o recado antes de enviar."); campo.focus(); return; }
+            const btn = document.getElementById('rec-enviar');
+            btn.disabled = true;
+            try {
+                await apiPost('/api/mensagens', { texto: txt, tipo: recTipo });
+                campo.value = ''; contarRecado(); escolherTipoRecado('livre');
+                toast("Enviado ao mestre.");
+                await carregarRecados();
+            } catch (err) {
+                // O texto FICA no campo. Limpar antes da confirmação apagaria justamente
+                // o relato de bug que a pessoa acabou de escrever — o mesmo estrago que
+                // o `enviarNotaEscrita` teve de desfazer devolvendo o texto ao composer.
+                toast("Não consegui enviar. " + motivoFalha(err));
+            } finally { btn.disabled = false; }
+        }
+
+        // Duas rotas, uma tela. A do mestre é tentada PRIMEIRO, e o 403 dela é a
+        // RESPOSTA — não uma falha a esconder: é assim que o front descobre de que lado
+        // está sem existir uma rota nova só para perguntar "eu sou o mestre?". Qualquer
+        // outro status é falha de verdade e cai no catch.
+        async function carregarRecados(silencioso) {
+            const lista = document.getElementById('rec-lista');
+            if (abaRecadosVisivel() && !silencioso && !lista.children.length) {
+                lista.innerHTML = '<div class="av-vazio">Lendo os recados…</div>';
+            }
+            try {
+                if (recEuSouMestre !== false) {
+                    try {
+                        const d = await apiGet('/api/mestre/mensagens?limite=200');
+                        recEuSouMestre = true;
+                        recDados = { usuario: d.usuario || '', mensagens: d.mensagens || [],
+                                     nao_lidas: d.nao_lidas || 0 };
+                        pintarRecados();
+                        return;
+                    } catch (err) {
+                        if (!err || err.status !== 403) throw err;
+                        recEuSouMestre = false;
+                    }
+                }
+                const d = await apiGet('/api/mensagens?limite=200');
+                const eu = d.usuario || '', msgs = d.mensagens || [];
+                recDados = {
+                    usuario: eu, mensagens: msgs,
+                    // A MESMA conta do `mensageiro.nao_lidas`: só o que chegou PARA mim e
+                    // ainda não foi aberto. O que eu escrevi nunca está "não lido" para
+                    // mim, e contá-lo faria o crachá pedir uma leitura que não existe.
+                    nao_lidas: msgs.filter(m => !m.lida && m.destinatario === eu).length,
+                };
+                pintarRecados();
+            } catch (err) {
+                // Recusa de HTTP não é caixa vazia — é o defeito de 2026-08-03 outra vez
+                // (401 virando "nenhuma conversa" com 91 no banco). O crachá APAGA porque
+                // o número passou a ser desconhecido, e a lista diz o motivo.
+                atualizarCrachaRecados(null);
+                if (abaRecadosVisivel()) {
+                    lista.innerHTML = '<div class="av-vazio">Não consegui ler os recados.<br>'
+                                    + escapeHtml(motivoFalha(err)) + '</div>';
+                }
+            }
+        }
+
+        function pintarRecados() {
+            atualizarCrachaRecados(recDados.nao_lidas);
+            // O crachá SEMPRE atualiza; a lista, não: um recado novo chegando enquanto o
+            // mestre digita a resposta redesenharia a lista inteira e apagaria o que ele
+            // escreveu — perder o texto de quem está respondendo é pior que a lista
+            // ficar um recado atrás por alguns segundos.
+            if (abaRecadosVisivel() && !respostaEmEdicao()) renderRecados();
+        }
+
+        function respostaEmEdicao() {
+            const ta = document.querySelector('.rec-resposta textarea');
+            return !!(ta && ta.value.trim());
+        }
+
+        function atualizarCrachaRecados(n) {
+            const el = document.getElementById('recados-cracha');
+            const tem = typeof n === 'number' && n > 0;
+            el.textContent = tem ? (n > 99 ? '99+' : String(n)) : '';
+            el.hidden = !tem;
+            document.getElementById('sw-recados').classList.toggle('on', tem);
+        }
+
+        function renderRecados() {
+            const lista = document.getElementById('rec-lista');
+            lista.innerHTML = '';
+            const msgs = recDados.mensagens || [];
+            if (!msgs.length) {
+                lista.innerHTML = '<div class="av-vazio">Nenhum recado ainda.<br>' + (recEuSouMestre
+                    ? 'Quando alguém escrever, aparece aqui.'
+                    : 'Escreva acima para falar com o mestre.') + '</div>';
+                return;
+            }
+            const titulo = document.createElement('div');
+            titulo.className = 'av-titulo';
+            titulo.textContent = recEuSouMestre ? 'Caixa do mestre' : 'Sua conversa com o mestre';
+            lista.appendChild(titulo);
+            msgs.forEach(m => lista.appendChild(itemRecado(m)));
+        }
+
+        // ⚠ TODO texto de mensagem entra por textContent, aqui e no cartão do chat.
+        // Ele foi escrito por OUTRA PESSOA — é o único conteúdo do app que não veio nem
+        // do dono nem do modelo —, então não passa por parseMarkdown nem por innerHTML.
+        function itemRecado(m) {
+            const minha = m.remetente === recDados.usuario;
+            const div = document.createElement('div');
+            div.className = 'av-item rec-item' + (minha ? ' minha' : (m.lida ? '' : ' nova'));
+
+            const t = document.createElement('div'); t.className = 't';
+            const tag = document.createElement('span'); tag.className = 'av-tag';
+            tag.textContent = rotuloRecado(m.tipo);
+            const quem = document.createElement('span');
+            quem.textContent = minha ? ('para ' + (m.destinatario || '?'))
+                                     : ('de ' + (m.remetente || '?'));
+            const hora = document.createElement('span'); hora.className = 'rec-hora';
+            hora.textContent = quandoRecado(m.criada_em);
+            t.appendChild(tag); t.appendChild(quem); t.appendChild(hora);
+
+            const corpo = document.createElement('div');
+            corpo.className = 's rec-corpo';
+            corpo.textContent = m.texto || '';
+            div.appendChild(t); div.appendChild(corpo);
+
+            const acoes = document.createElement('div'); acoes.className = 'rec-acoes';
+            // Responder é rota SÓ do mestre (main.py), então o botão só existe para ele —
+            // e nunca na própria mensagem: responder a si mesmo não é caminho nenhum.
+            if (recEuSouMestre === true && !minha) {
+                acoes.appendChild(botaoRecado('Responder', () => abrirResposta(m.id)));
+            }
+            if (!minha && !m.lida) {
+                acoes.appendChild(botaoRecado('Marcar como lida', () => marcarRecadoLido(m.id)));
+            }
+            if (acoes.children.length) div.appendChild(acoes);
+            if (recRespondendo === m.id) div.appendChild(caixaResposta(m.id));
+            return div;
+        }
+
+        function botaoRecado(rotulo, fn) {
+            const b = document.createElement('button');
+            b.type = 'button'; b.className = 'rec-btn'; b.textContent = rotulo; b.onclick = fn;
+            return b;
+        }
+
+        function abrirResposta(id) {
+            recRespondendo = id;
+            if (abaRecadosVisivel()) renderRecados();
+            else abrirRecados();          // veio do cartão do chat: abre o painel já nela
+        }
+
+        function caixaResposta(id) {
+            const box = document.createElement('div'); box.className = 'rec-resposta';
+            const ta = document.createElement('textarea');
+            ta.placeholder = 'Responder…'; ta.maxLength = REC_TETO;
+            const linha = document.createElement('div'); linha.className = 'rec-acoes';
+            const enviar = botaoRecado('Enviar resposta', async () => {
+                const txt = ta.value.trim();
+                if (!txt) { toast("Escreva a resposta primeiro."); ta.focus(); return; }
+                enviar.disabled = true;
+                try {
+                    // O destinatário NÃO vai no corpo: o servidor o deriva da mensagem
+                    // original (mensageiro.responder). Mandar um `para` daqui seria
+                    // reabrir o canal usuário→usuário que o desenho fechou.
+                    await apiPost('/api/mestre/mensagens/' + encodeURIComponent(id) + '/responder',
+                                  { texto: txt });
+                    recRespondendo = null;
+                    toast("Resposta enviada.");
+                    await carregarRecados();
+                } catch (err) {
+                    toast("Não consegui responder. " + motivoFalha(err));
+                    enviar.disabled = false;
+                }
+            });
+            enviar.classList.add('forte');
+            linha.appendChild(enviar);
+            linha.appendChild(botaoRecado('Cancelar', () => { recRespondendo = null; renderRecados(); }));
+            box.appendChild(ta); box.appendChild(linha);
+            setTimeout(() => ta.focus(), 0);
+            return box;
+        }
+
+        async function marcarRecadoLido(id) {
+            try {
+                const d = await apiPost('/api/mensagens/' + encodeURIComponent(id) + '/lida', {});
+                // `lida:false` não é erro — é "nada mudou" (já estava lida, ou eu só a
+                // escrevi). Tratá-lo como falha faria a tela acusar problema onde o
+                // servidor está sendo idempotente de propósito.
+                if (!d.lida) toast("Este recado já estava lido.");
+                await carregarRecados();
+            } catch (err) { toast("Não consegui marcar como lida. " + motivoFalha(err)); }
+        }
+
+        // O par cartão+fala sai do mesmo `entregar_mensagem` (scheduler.py), nesta ordem
+        // e no MESMO socket. A fala é `mensageiro.falar()`: "<rótulo> de <quem>: " mais o
+        // texto cortado em 280 chars — então os 40 primeiros caracteres do texto do
+        // cartão estão SEMPRE contidos nela. É casamento por construção, não adivinhação;
+        // se um dia o formato da fala mudar, o pior caso é a bolha voltar a aparecer.
+        function ehEcoDeRecado(texto) {
+            if (!recFalaPendente) return false;
+            if (Date.now() > recFalaPendente.ate) { recFalaPendente = null; return false; }
+            if (!recFalaPendente.trecho || !(texto || '').includes(recFalaPendente.trecho)) return false;
+            recFalaPendente = null;     // consumo único: a próxima proativa é alarme de verdade
+            return true;
+        }
+
+        // O cartão do recado dentro do chat. Não é `appendMsg`: aquilo desenha uma bolha
+        // (do assistente ou do usuário) e passa o texto pelo markdown. Ver o CSS `.recado`
+        // para o porquê de um recado NUNCA poder parecer o assistente falando.
+        function mostrarRecado(card) {
+            document.getElementById('welcome-screen').style.display = 'none';
+            chatContainer.style.display = 'flex';
+            pensando(false);
+
+            const row = document.createElement('div'); row.className = 'msg-row recado';
+            const cx = document.createElement('div'); cx.className = 'recado';
+
+            const top = document.createElement('div'); top.className = 'rec-top';
+            const ico = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            ico.setAttribute('class', 'ico'); ico.setAttribute('viewBox', '0 0 24 24');
+            ico.setAttribute('aria-hidden', 'true');
+            const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            p.setAttribute('d', 'M12 12.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM4.5 20a7.5 7.5 0 0 1 15 0');
+            ico.appendChild(p);
+            const de = document.createElement('span'); de.className = 'rec-de';
+            de.textContent = card.remetente || 'alguém';
+            const tag = document.createElement('span'); tag.className = 'av-tag';
+            // `card.classe` é o tipo da MENSAGEM (bug/pedido/livre). O `card.tipo` do
+            // envelope vale "mensagem" — é o que o WebSocket roteia —, então ler dele
+            // daria "Recado" para todo relato de bug. Ver `_card_mensagem` no scheduler.
+            tag.textContent = rotuloRecado(card.classe);
+            const hora = document.createElement('span'); hora.className = 'rec-hora';
+            hora.textContent = quandoRecado(card.criada_em);
+            top.appendChild(ico); top.appendChild(de); top.appendChild(tag); top.appendChild(hora);
+
+            const corpo = document.createElement('div'); corpo.className = 'rec-corpo';
+            corpo.textContent = card.texto || '';       // ⚠ ver `itemRecado`: outra pessoa escreveu
+
+            const nota = document.createElement('div'); nota.className = 'rec-nota';
+            nota.textContent = 'Recado de pessoa — não é a Mente Digital falando.';
+
+            cx.appendChild(top); cx.appendChild(corpo); cx.appendChild(nota);
+
+            const acoes = document.createElement('div'); acoes.className = 'rec-acoes';
+            if (recEuSouMestre === true) {
+                acoes.appendChild(botaoRecado('Responder', () => abrirResposta(card.id)));
+            }
+            acoes.appendChild(botaoRecado('Marcar como lida', () => marcarRecadoLido(card.id)));
+            acoes.appendChild(botaoRecado('Ver recados', () => abrirRecados()));
+            cx.appendChild(acoes);
+
+            row.appendChild(cx); chatContainer.appendChild(row); descer();
         }
 
 
@@ -1913,6 +2368,11 @@
         conectarWS();
         ajustarAltura();
         lerEnergia();
+        // O crachá de recados na abertura: sem isto, quem recebeu um recado com o app
+        // fechado só descobriria abrindo o painel — e o pendente do scheduler já teria
+        // sido entregue e concluído. `true` = silencioso: se o servidor recusar, a tela
+        // não ganha um erro que ninguém pediu (a barra de acesso já cobre esse caso).
+        carregarRecados(true);
         // A medida envelhece (o ETL do idle sobe e desce a VRAM sozinho), então a
         // faixa se atualiza sozinha. 20s é folgado: a rota só mede, não computa.
         setInterval(lerEnergia, 20000);

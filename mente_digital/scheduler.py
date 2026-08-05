@@ -1168,8 +1168,16 @@ class SchedulerService:
     @staticmethod
     def _card_mensagem(msg: mensageiro.Mensagem) -> dict:
         """O payload rico. Guardado no `payload` do pendente EXATAMENTE como vai para o
-        socket, para a reentrega desenhar o mesmo card do ao vivo."""
-        return {"tipo": "mensagem", **msg.para_json()}
+        socket, para a reentrega desenhar o mesmo card do ao vivo.
+
+        ⚠ `classe` carrega o tipo da MENSAGEM (bug/pedido/livre) porque a chave `tipo`
+        já é do ENVELOPE — é por ela que o front roteia o push, como em "proativo" e
+        "energia". As duas colidiam: o `**msg.para_json()` sobrescrevia o envelope com
+        "bug", e o `_empurrar_card_mensagem` o restaurava logo em seguida, de modo que a
+        mensagem chegava íntegra e SEM o rótulo que o mestre usa para triar — um relato
+        de problema indistinguível de um "oi", sem nada falhar em lugar nenhum. Duplicar
+        num nome próprio é o que impede a colisão de voltar no próximo campo novo."""
+        return {**msg.para_json(), "tipo": "mensagem", "classe": msg.tipo}
 
     async def _empurrar_card_mensagem(self, card: dict) -> bool:
         """`{"tipo":"mensagem", ...}` para as sessões do dono do contexto.
