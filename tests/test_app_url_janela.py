@@ -25,6 +25,37 @@ def test_sem_tls_continua_no_ip_de_loopback():
     assert app._host_da_janela("http", r"C:\certs\qualquer.crt") == "127.0.0.1"
 
 
+def test_a_janela_prefere_a_credencial_de_aparelho():
+    """A credencial de janela vem PRIMEIRO; o legado é queda, não preferência.
+
+    Sem isto, `MENTE_APARELHOS_TOKEN_LEGADO=false` tranca o dono fora do próprio
+    aplicativo: a janela abria sempre com o `access_token`, e o front sobrescreve
+    o `localStorage` com o `?token=` da URL a cada abertura — de modo que
+    reparear a janela não adiantava, o token morto apagava a credencial boa no
+    lance seguinte.
+    """
+    assert app.credencial_da_janela("mdk1.abc.segredo", "legado") == "mdk1.abc.segredo"
+
+
+def test_sem_credencial_de_janela_nada_muda_para_quem_nao_configurou():
+    """Quem não fez nada continua exatamente como estava — a ponte de migração
+    do `aparelhos_token_legado` depende disso."""
+    assert app.credencial_da_janela("", "legado") == "legado"
+    assert app.credencial_da_janela("   ", "legado") == "legado"
+
+
+def test_sem_segredo_nenhum_a_url_sai_limpa():
+    """Vazio dos dois lados = servidor sem gate (loopback), e a URL não deve
+    ganhar um `?token=` vazio."""
+    assert app.credencial_da_janela("", "") == ""
+
+
+def test_espaco_em_volta_nao_vira_credencial():
+    """Um `.env` com espaço sobrando não pode virar um token com espaço — ele
+    viajaria na query e o gate recusaria sem dizer por quê."""
+    assert app.credencial_da_janela(" mdk1.abc.segredo ", "") == "mdk1.abc.segredo"
+
+
 def test_com_tls_usa_o_nome_do_certificado(tmp_path, monkeypatch):
     cert = tmp_path / "sechex-blrzc2v.tail412b37.ts.net.crt"
     cert.write_text("não é um PEM de verdade", encoding="utf-8")
