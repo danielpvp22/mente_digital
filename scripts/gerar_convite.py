@@ -34,8 +34,18 @@ from mente_digital.config import settings                              # noqa: E
 from mente_digital.registro_aparelhos import RegistroAparelhos         # noqa: E402
 
 DESTINO = Path(__file__).resolve().parents[1] / "dados" / "convites"
-URL_APK = "https://github.com/danielpvp22/mente_digital/releases/latest"
 URL_TAILSCALE = "https://play.google.com/store/apps/details?id=com.tailscale.ipn"
+
+#: O APK, tal como o dono o distribui. Fica em `android/app/build/outputs/apk/debug/`
+#: e vai JUNTO com este arquivo, pelo WhatsApp.
+#:
+#: ⚠ NÃO aponte para uma release do GitHub. Houve uma (`app-2026.08.05`) e o dono a
+#: RETIROU: o repositório é PÚBLICO, e publicar ali significa deixar o app que fala
+#: com o assistente dele baixável por qualquer pessoa da internet. O convite não pode
+#: reintroduzir isso por um link — e um link para release apagada é pior ainda, porque
+#: `/releases/latest` passa a cair numa página vazia com HTTP 200: a pessoa vê "deu
+#: certo" e não tem arquivo nenhum.
+NOME_APK = "app-debug.apk"
 
 
 def endereco_do_assistente() -> str:
@@ -127,11 +137,12 @@ def montar_html(apelido: str, usuario: str, codigo: str, endereco: str,
 
   <li class="passo">
     <h2>Instale o aplicativo</h2>
+    <p>O arquivo <code>{e(NOME_APK)}</code> veio junto com este convite, na mesma
+       conversa. Toque nele para instalar.</p>
     <p>O Android vai avisar que é de "fonte desconhecida" — é esperado, o app não
        está na Play Store. Autorize a instalação.</p>
-    <a class="botao" href="{e(URL_APK)}">Baixar o aplicativo</a>
-    <p>Se você recebeu o arquivo <code>.apk</code> junto com este convite, pode
-       instalar direto por ele.</p>
+    <p>Não achou o arquivo? Peça de novo a quem te convidou: ele não está publicado
+       em lugar nenhum, e é assim de propósito.</p>
   </li>
 
   <li class="passo">
