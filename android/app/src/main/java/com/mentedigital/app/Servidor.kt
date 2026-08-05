@@ -48,10 +48,18 @@ class Servidor(private val conf: () -> Conf) {
         .readTimeout(200, TimeUnit.SECONDS)    // `ligar` carrega modelo: demora
         .build()
 
+    /**
+     * ⚠ `httpCurto` e NÃO `http`: o cliente de cima tem 200 s de LEITURA, que
+     * existem para o `ligar` carregar modelo. A sonda de boot herdava esse teto,
+     * e um TCP que CONECTA e não responde (endereço de LAN visto de fora, proxy
+     * que aceita e cala) pendurava a volta do laço por mais de três minutos —
+     * sem nada mudar na tela. O `/api/health` é um dict: responde em
+     * milissegundos ou não está lá, e não responder é uma resposta útil.
+     */
     fun saude(base: String = conf().base): Saude {
         if (base.isBlank()) return Saude(false, detalhe = "sem endereço")
         return try {
-            http.newCall(Request.Builder().url(Endereco.api(base, "/api/health")).build())
+            httpCurto.newCall(Request.Builder().url(Endereco.api(base, "/api/health")).build())
                 .execute().use { r ->
                     if (!r.isSuccessful) return Saude(false, detalhe = "HTTP ${r.code}")
                     val o = JSONObject(r.body?.string().orEmpty())
@@ -189,8 +197,14 @@ class Servidor(private val conf: () -> Conf) {
 
     /** Cliente de tempo curto: o vigia responde em milissegundos ou não está lá.
      *  O `http` normal tem 200 s de leitura por causa do `ligar`, e esperar isso
-     *  para descobrir que não há vigia deixaria a tela de boot muda. */
+     *  para descobrir que não há vigia deixaria a tela de boot muda.
+     *
+     *  ⚠ O `callTimeout` é o teto do PEDIDO INTEIRO — DNS, TLS, redirecionamento
+     *  e corpo. Sem ele, connect + read são tetos por ETAPA e uma sonda podia
+     *  somar bem mais que a soma dos dois; é ele que garante a cadência do laço
+     *  de boot, e não a boa vontade da rede. */
     private val httpCurto = OkHttpClient.Builder()
+        .callTimeout(ORCAMENTO_SONDA_MS, TimeUnit.MILLISECONDS)
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .build()
@@ -218,6 +232,16 @@ class Servidor(private val conf: () -> Conf) {
         } catch (e: Exception) {
             null
         }
+    }
+
+    companion object {
+        /**
+         * Teto de UMA sonda de boot (health, vigia, pareamento), em ms.
+         *
+         * Não é preferência de estilo: o laço de boot roda as sondas em série, e
+         * o que ele gasta aqui é o intervalo em que a tela não tem notícia nova.
+         */
+        const val ORCAMENTO_SONDA_MS = 8_000L
     }
 }
 
@@ -328,6 +352,41 @@ object Boot {
         prontos["fundo"] != true -> "Terminando o índice"
         else -> "Tudo pronto"
     }
+
+    // ---- o RELÓGIO da tela de boot -----------------------------------------
+    /**
+     * Segundos de PAREDE desde que a tela de boot abriu. Puro/testável.
+     *
+     * ⚠ Existe porque o que havia não era um relógio: o laço de boot fazia
+     * `segundos += 1` a cada VOLTA e a tela exibia `× 0,7 s` — o valor do
+     * `delay`, como se a volta custasse só ele. Só que cada volta faz de 1 a 3
+     * chamadas de rede bloqueantes ANTES do delay, e com o servidor inalcançável
+     * ela custa ~8 s. O número então mentia duas vezes ao mesmo tempo: ficava
+     * congelado no intervalo da rede e contava um décimo do tempo real (medido
+     * no Redmi em 2026-08-04 — "7s" parados por mais de dois minutos).
+     *
+     * Um número que só anda quando a rede responde descreve a REDE, não o tempo.
+     * E quem olha a tela não lê "a rede está lenta", lê "travou".
+     */
+    fun segundosDecorridos(inicioMs: Long, agoraMs: Long): Int =
+        ((agoraMs - inicioMs).coerceAtLeast(0L) / 1_000L).toInt()
+
+    /**
+     * Depois disto a tela oferece entrar assim mesmo e DIZ quem não subiu — a
+     * mesma régua do `app.py`, que é a rede de segurança da degradação graciosa:
+     * um serviço pode falhar no load e ficar `ready=False` PARA SEMPRE (cada
+     * `load` do servidor tem pára-quedas próprio), e sem teto "esperar tudo"
+     * vira deadlock.
+     *
+     * ⚠ Mora aqui, e não no laço, porque pendia do contador defeituoso: na régua
+     * antiga eram 215 voltas para marcar "150 s", quase meia hora de parede num
+     * endereço inalcançável. A saída existia e não chegava — que é o mesmo que
+     * não existir para quem está olhando.
+     */
+    fun ofereceSaida(segundosDecorridos: Int): Boolean =
+        segundosDecorridos >= SEGUNDOS_ATE_OFERECER_SAIDA
+
+    const val SEGUNDOS_ATE_OFERECER_SAIDA = 150
 
     /** Traduz o `/api/health` nos marcos da tela. */
     fun marcosDe(s: Saude): Map<String, Boolean> {

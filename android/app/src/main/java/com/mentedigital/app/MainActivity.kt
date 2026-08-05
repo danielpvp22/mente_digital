@@ -3,6 +3,7 @@ package com.mentedigital.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -90,10 +91,32 @@ class MainActivity : ComponentActivity() {
                         if (aviso != null) { delay(3200); aviso = null }
                     }
 
+                    // ---- o RELÓGIO da tela de boot --------------------------
+                    // Em coroutine PRÓPRIA, de propósito. O laço de sondagem
+                    // abaixo passa a maior parte do tempo BLOQUEADO na rede, e um
+                    // contador que só anda entre as chamadas dele congela na tela
+                    // — foi o "7s" parado por dois minutos no Redmi, que se lê
+                    // como app travado. Aqui o número anda sempre, mesmo quando a
+                    // notícia não vem.
+                    //
+                    // ⚠ `elapsedRealtime` e não `currentTimeMillis`: o relógio de
+                    // parede pode SALTAR (NTP, fuso, ajuste do dono) e um salto
+                    // para trás no meio do boot poria tempo negativo no visor.
+                    LaunchedEffect(tela) {
+                        if (tela != Tela.BOOT) return@LaunchedEffect
+                        val inicio = SystemClock.elapsedRealtime()
+                        segundos = 0
+                        while (true) {
+                            segundos = Boot.segundosDecorridos(
+                                inicio, SystemClock.elapsedRealtime())
+                            delay(TIQUE_RELOGIO_MS)
+                        }
+                    }
+
                     // ---- o laço de boot -------------------------------------
                     LaunchedEffect(tela) {
                         if (tela != Tela.BOOT) return@LaunchedEffect
-                        segundos = 0; forcou = false
+                        forcou = false
                         var acordou = false
                         var pediuAoVigia = false
                         while (true) {
@@ -142,8 +165,9 @@ class MainActivity : ComponentActivity() {
                             }
                             val (_, tudoPronto) = Boot.progresso(Boot.marcosDe(s))
                             if (tudoPronto || forcou) { tela = Tela.APP; break }
+                            // Cadência da SONDAGEM, não do visor — quem conta o
+                            // tempo é o relógio acima, e ele não depende disto.
                             delay(700)
-                            segundos += 1
                         }
                     }
 
@@ -191,12 +215,8 @@ class MainActivity : ComponentActivity() {
 
                             Tela.BOOT -> TelaBoot(
                                 saude = saude,
-                                segundos = segundos * 7 / 10,      // tiques de 700 ms
-                                // Rede de segurança da degradação graciosa: um serviço
-                                // pode falhar no load e ficar `ready=False` PARA SEMPRE
-                                // (cada `load` do servidor tem pára-quedas próprio).
-                                // Sem este teto, "espera tudo" viraria deadlock.
-                                escapeOferecido = segundos * 7 / 10 >= SEGUNDOS_ATE_OFERECER_SAIDA,
+                                segundos = segundos,           // segundos de PAREDE
+                                escapeOferecido = Boot.ofereceSaida(segundos),
                                 aoForcarEntrada = { forcou = true },
                             )
 
@@ -277,8 +297,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        /** Igual ao `app.py`: depois disto a tela oferece entrar assim mesmo e DIZ
-         *  quem não subiu — não entra escondido. */
-        const val SEGUNDOS_ATE_OFERECER_SAIDA = 150
+        /** De quanto em quanto o relógio da tela de boot se atualiza. Menor que
+         *  um segundo para o visor nunca "pular" um número; o estado só muda
+         *  quando o inteiro muda, então isto não recompõe a tela à toa. */
+        const val TIQUE_RELOGIO_MS = 200L
     }
 }
