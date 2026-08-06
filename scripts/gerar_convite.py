@@ -2,6 +2,7 @@
 Gera o CONVITE: um arquivo HTML autocontido para mandar a quem vai usar o assistente.
 
     python scripts/gerar_convite.py "celular da ana" ana
+    python scripts/gerar_convite.py "celular do felipe" felipe --minutos 120
 
 Sai um `convite_<usuario>.html` em `dados/convites/`. Mande ele + o APK pelo WhatsApp;
 a pessoa abre no celular dela e segue os passos até estar conversando.
@@ -21,17 +22,17 @@ descobrir travada no meio do caminho.
 O código de pareamento vale poucos minutos (`MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS`,
 default 10) e serve UMA vez — então gere o convite quando for de fato mandar, não antes.
 
-⚠ QUANDO A PESSOA SÓ VAI PAREAR MAIS TARDE. Dez minutos cobrem "gerar no PC e digitar no
-celular que está na minha mão"; não cobrem "mandei pelo WhatsApp e ele entra daqui a uma
-hora" — e a recusa chega como `codigo_expirado`, que do lado de lá é indistinguível de
-dedo errado. Suba `MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS` no `.env`, REINICIE (o
-`settings` é lido uma vez no import; sem restart o `parear` segue com o valor velho) e
-BAIXE de volta depois — o porquê da conta de segurança está no campo em `config.py`.
+⚠ QUANDO A PESSOA SÓ VAI PAREAR MAIS TARDE, use `--minutos N`. Dez minutos cobrem "gerar
+no PC e digitar no celular que está na minha mão"; não cobrem "mandei pelo WhatsApp e ele
+entra daqui a uma hora" — e a recusa chega como `codigo_expirado`, que do lado de lá é
+indistinguível de dedo errado.
 
-⚠ E gere o convite DEPOIS do restart, nesta ordem. A validade em si é retroativa (é
-conferida no pareamento), mas o "vale N minutos" que a pessoa LÊ é gravado em texto por
-`montar_html` no instante da geração: um convite feito antes da mudança continua dizendo
-10 minutos, e quem o recebe desiste achando que perdeu a janela.
+A flag vale só para ESTE código (fica gravada na linha dele), e é por isso que ela existe
+em vez de "sobe o `MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS` no `.env`": o `.env` alarga a
+janela de TODOS os códigos, é RETROATIVO (a validade é conferida no pareamento, então
+ressuscita qualquer código antigo e esquecido), exige reiniciar o servidor e exige lembrar
+de baixar de volta depois. Nada disso vale aqui — os outros códigos seguem em 10 min e não
+há o que desfazer. Teto em `aparelhos.VALIDADE_MAX_MINUTOS`.
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from mente_digital import aparelhos as regras                          # noqa: E402
 from mente_digital import identidade                                   # noqa: E402
 from mente_digital.config import settings                              # noqa: E402
 from mente_digital.registro_aparelhos import RegistroAparelhos         # noqa: E402
@@ -194,6 +196,14 @@ def main(argv: list) -> int:
     if not argv:
         print(__doc__)
         return 0
+    try:
+        argv, minutos = regras.separar_minutos(argv)
+    except ValueError as exc:
+        print(f"\n✗ {exc}\n", file=sys.stderr)
+        return 1
+    if not argv:
+        print(__doc__)
+        return 0
     if len(argv) >= 2 and identidade.valido(argv[-1]) and " " not in argv[-1]:
         apelido, bruto = " ".join(argv[:-1]), argv[-1]
     else:
@@ -205,7 +215,10 @@ def main(argv: list) -> int:
         return 1
 
     reg = RegistroAparelhos(settings.db_telemetria)
-    codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto, usuario)
+    # `init()` antes de emitir: a coluna `validade_minutos` chegou depois: sem a migração
+    # idempotente aqui, gerar convite num banco anterior a ela falharia no INSERT.
+    reg.init()
+    codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto, usuario, minutos)
     if codigo is None:
         print(f"\n✗ Teto de {settings.aparelhos_teto} aparelhos atingido. "
               f"Revogue um antes (scripts/aparelhos.py listar).\n", file=sys.stderr)
@@ -216,17 +229,23 @@ def main(argv: list) -> int:
         print("⚠ Sem MENTE_SSL_CERT no .env — o convite sai sem o endereço.",
               file=sys.stderr)
 
+    # A MESMA resolução que o `parear` vai fazer daqui a pouco, para o número impresso na
+    # página ser o número que o servidor vai cobrar. Se o HTML dissesse 10 e o servidor
+    # aceitasse 120, a pessoa desistiria antes de tentar — e o convite estaria "certo".
+    validade = regras.validade_efetiva(minutos, settings.aparelhos_codigo_validade_minutos)
+
     DESTINO.mkdir(parents=True, exist_ok=True)
     alvo = DESTINO / f"convite_{usuario}.html"
     alvo.write_text(
-        montar_html(apelido, usuario, codigo, endereco,
-                    settings.aparelhos_codigo_validade_minutos),
+        montar_html(apelido, usuario, codigo, endereco, validade),
         encoding="utf-8",
     )
     print(f"\n  Convite para '{apelido}' (usuário: {usuario}):")
     print(f"     {alvo}")
-    print(f"  Código embutido, válido por "
-          f"{settings.aparelhos_codigo_validade_minutos:.0f} min e de uso único.")
+    print(f"  Código embutido, válido por {validade:.0f} min e de uso único.")
+    if minutos:
+        print("  (validade deste código só — os outros seguem no padrão de "
+              f"{settings.aparelhos_codigo_validade_minutos} min)")
     print("  Mande este arquivo + o APK pelo WhatsApp.")
     if usuario == identidade.MESTRE:
         print(f"  ⚠ '{usuario}' é o usuário MESTRE: administra aparelhos e recebe alertas.")

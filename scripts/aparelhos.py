@@ -15,6 +15,7 @@ USO:
     python scripts/aparelhos.py listar
     python scripts/aparelhos.py convidar "celular do dono"              (usuário: daniel)
     python scripts/aparelhos.py convidar "celular da ana" ana           (usuário: ana)
+    python scripts/aparelhos.py convidar "cel do felipe" felipe --minutos 120
     python scripts/aparelhos.py revogar <id>
     python scripts/aparelhos.py trilha [n]
 
@@ -33,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mente_digital import aparelhos as regras  # noqa: E402
 from mente_digital import identidade  # noqa: E402
 from mente_digital.config import settings  # noqa: E402
 from mente_digital.registro_aparelhos import RegistroAparelhos  # noqa: E402
@@ -73,7 +75,7 @@ def listar() -> int:
     return 0
 
 
-def convidar(apelido: str, usuario: str = "") -> int:
+def convidar(apelido: str, usuario: str = "", minutos: int = 0) -> int:
     reg = _registro()
     # O usuário decide de QUAL memória este aparelho vai ler e escrever. Validado aqui,
     # antes de tocar o banco: o nome vira pasta (`Pessoal/<usuario>/`) e coleção do
@@ -83,12 +85,20 @@ def convidar(apelido: str, usuario: str = "") -> int:
     except ValueError as exc:
         print(f"\n✗ {exc}\n")
         return 1
-    codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto, dono)
+    try:
+        codigo = reg.emitir_codigo(apelido, settings.aparelhos_teto, dono, minutos or None)
+    except ValueError as exc:                       # validade fora da faixa
+        print(f"\n✗ {exc}\n")
+        return 1
     if codigo is None:
         print(f"\n✗ Teto de {settings.aparelhos_teto} aparelhos atingido. Revogue um antes.\n")
         return 1
+    validade = regras.validade_efetiva(minutos, settings.aparelhos_codigo_validade_minutos)
     print(f"\n  Código para '{apelido}' (usuário: {dono}):   {codigo}")
-    print(f"  Vale por {settings.aparelhos_codigo_validade_minutos} min e serve UMA vez.")
+    print(f"  Vale por {validade} min e serve UMA vez.")
+    if minutos:
+        print("  (só este código — os outros seguem no padrão de "
+              f"{settings.aparelhos_codigo_validade_minutos} min)")
     print("  Digite-o no aparelho novo (tela de configuração).")
     if dono == identidade.MESTRE:
         print(f"  ⚠ '{dono}' é o usuário MESTRE: administra aparelhos e recebe os alertas.")
@@ -130,6 +140,13 @@ def main(argv: list[str]) -> int:
     if comando == "listar":
         return listar()
     if comando == "convidar":
+        # A flag sai ANTES do parsing posicional (o porquê está em `regras.separar_minutos`:
+        # "120" cabe na regra de nome de usuário e seria lido como um, calado).
+        try:
+            resto, minutos = regras.separar_minutos(resto)
+        except ValueError as exc:
+            print(f"\n✗ {exc}\n")
+            return 1
         if not resto:
             print("Falta o apelido: python scripts/aparelhos.py convidar \"celular da ana\" ana")
             return 2
@@ -138,8 +155,8 @@ def main(argv: list[str]) -> int:
         # antigo de uma palavra só (`convidar tablet`) continua valendo — nesse caso ela
         # é o APELIDO e o usuário fica no padrão, que é o comportamento de hoje.
         if len(resto) >= 2 and identidade.valido(resto[-1]) and " " not in resto[-1]:
-            return convidar(" ".join(resto[:-1]), resto[-1])
-        return convidar(" ".join(resto))
+            return convidar(" ".join(resto[:-1]), resto[-1], minutos or 0)
+        return convidar(" ".join(resto), "", minutos or 0)
     if comando == "revogar":
         if not resto:
             print("Falta o id: python scripts/aparelhos.py revogar <id>  (veja 'listar')")

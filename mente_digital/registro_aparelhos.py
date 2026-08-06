@@ -154,7 +154,7 @@ class RegistroAparelhos:
                 c.execute(
                     """CREATE TABLE IF NOT EXISTS aparelhos_pareamento
                        (codigo TEXT PRIMARY KEY, emitido_em TEXT, usado_em TEXT,
-                        apelido TEXT, usuario TEXT)"""
+                        apelido TEXT, usuario TEXT, validade_minutos INTEGER)"""
                 )
                 # Migração idempotente para banco que nasceu antes do multiusuário.
                 # Mesmo padrão do `conversa_id` em telemetry.py: lê `PRAGMA table_info`
@@ -162,6 +162,7 @@ class RegistroAparelhos:
                 # aparelho que já estava pareado é dele.
                 for tabela in ("aparelhos", "aparelhos_pareamento"):
                     self._garantir_coluna_usuario(c, tabela)
+                self._garantir_coluna_validade(c)
         except Exception as exc:
             telemetry.error("APARELHOS", "Erro ao criar as tabelas do registro", exc)
 
@@ -179,6 +180,22 @@ class RegistroAparelhos:
         cursor.execute(f"ALTER TABLE [{tabela}] ADD COLUMN usuario TEXT")
         cursor.execute(f"UPDATE [{tabela}] SET usuario = ? WHERE usuario IS NULL",
                        (identidade.DONO_PADRAO,))
+
+    @staticmethod
+    def _garantir_coluna_validade(cursor) -> None:
+        """Acrescenta `validade_minutos` se faltar — a validade PRÓPRIA de um código.
+
+        ⚠ SEM backfill, ao contrário do `usuario` logo acima, e a diferença é o ponto:
+        aqui NULL SIGNIFICA alguma coisa ("este código não pediu validade própria, use o
+        padrão do settings"). Carimbar os antigos com o valor de hoje congelaria neles um
+        número que o dono ainda pode mudar no `.env` — e mudaria, retroativamente, o
+        comportamento de códigos já emitidos, que é justamente o efeito que a validade
+        por código existe para evitar.
+        """
+        colunas = {c[1] for c in cursor.execute("PRAGMA table_info([aparelhos_pareamento])")}
+        if "validade_minutos" not in colunas:
+            cursor.execute(
+                "ALTER TABLE [aparelhos_pareamento] ADD COLUMN validade_minutos INTEGER")
 
     def _linha_para_aparelho(self, row: tuple) -> Aparelho:
         return Aparelho(
@@ -221,14 +238,21 @@ class RegistroAparelhos:
         return len(self.listar())
 
     # --- Inscrição (só o dono inicia) ----------------------------------------
-    def emitir_codigo(self, apelido: str, teto: int,
-                      usuario: Optional[str] = None) -> Optional[str]:
+    def emitir_codigo(self, apelido: str, teto: int, usuario: Optional[str] = None,
+                      validade_minutos: Optional[int] = None) -> Optional[str]:
         """Gera o código de pareamento. Chamado a partir do PAINEL (loopback), nunca
         por um pedido remoto — um aparelho novo não pode pedir a própria entrada.
 
         None = teto atingido. O teto é conferido AQUI e de novo no `parear`: entre
         emitir e usar o código o dono pode ter pareado outro celular, e o teto que
         vale é o do momento em que a vaga é ocupada.
+
+        `validade_minutos` é a validade DESTE código, e existe para o caso "convidar
+        alguém que só vai parear mais tarde" não ter de alargar a janela de TODOS os
+        códigos pelo `.env`. Alargar no settings tem três defeitos que isto não tem: vale
+        para todo mundo, é RETROATIVO (a validade é conferida no pareamento, então
+        ressuscita código antigo e esquecido), e exige lembrar de baixar de volta depois.
+        None = o padrão do settings, que é o comportamento de sempre.
         """
         if not regras.pode_inscrever(self.contar_ativos(), teto):
             telemetry.warn("APARELHOS", f"Código recusado: teto de {teto} aparelhos atingido.")
@@ -239,17 +263,23 @@ class RegistroAparelhos:
         # Normaliza já: o nome vira pasta (`Pessoal/<dono>/`) e coleção do Chroma, e um
         # apelido inválido tem de falhar aqui, na mão do dono, não lá na frente.
         dono = identidade.normalizar(usuario) if usuario else identidade.DONO_PADRAO
+        # Valida ANTES de gerar: um número fora da faixa tem de morrer na mão de quem
+        # digitou, não virar uma linha no banco com um prazo que ninguém pediu. Mesmo
+        # lugar em que o `identidade.normalizar` acima recusa apelido inválido.
+        validade = regras.validar_validade(validade_minutos) if validade_minutos else None
         codigo = regras.gerar_codigo()
         try:
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO aparelhos_pareamento "
-                    "(codigo, emitido_em, usado_em, apelido, usuario) "
-                    "VALUES (?, ?, NULL, ?, ?)",
-                    (codigo, self._agora().isoformat(), apelido, dono),
+                    "(codigo, emitido_em, usado_em, apelido, usuario, validade_minutos) "
+                    "VALUES (?, ?, NULL, ?, ?, ?)",
+                    (codigo, self._agora().isoformat(), apelido, dono, validade),
                 )
+            prazo = f" válido por {validade} min" if validade else ""
             telemetry.track(
-                "APARELHOS", f"Código de pareamento emitido para '{apelido}' (usuário {dono}).")
+                "APARELHOS",
+                f"Código de pareamento emitido para '{apelido}' (usuário {dono}){prazo}.")
             return codigo
         except Exception as exc:
             telemetry.error("APARELHOS", "Erro ao emitir código de pareamento", exc)
@@ -278,7 +308,7 @@ class RegistroAparelhos:
         try:
             with self._conn() as conn:
                 row = conn.execute(
-                    "SELECT emitido_em, usado_em, apelido, usuario "
+                    "SELECT emitido_em, usado_em, apelido, usuario, validade_minutos "
                     "FROM aparelhos_pareamento WHERE codigo = ?",
                     (codigo,),
                 ).fetchone()
@@ -287,7 +317,13 @@ class RegistroAparelhos:
             return ResultadoPareamento(False, regras.MOTIVO_CODIGO_INVALIDO)
 
         emitido = _iso_para_data(row[0]) if row else None
-        recusa = regras.codigo_valido(emitido, bool(row and row[1]), agora, validade_minutos)
+        # A validade do PRÓPRIO código vence a global quando ele pediu uma; NULL (todo
+        # código anterior a esta coluna) cai no `validade_minutos` recebido do settings,
+        # que é o comportamento de sempre. O `len(row)` guarda o banco montado à mão em
+        # teste antigo, no mesmo espírito do `len(row) > 3` do usuário logo abaixo.
+        validade = regras.validade_efetiva(
+            row[4] if row and len(row) > 4 else None, validade_minutos)
+        recusa = regras.codigo_valido(emitido, bool(row and row[1]), agora, validade)
         if recusa is not None:
             self._contar_falha(ip, agora)
             self._registrar_falha_pareamento(agora)

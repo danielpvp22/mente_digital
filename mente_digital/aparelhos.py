@@ -237,6 +237,83 @@ def normalizar_codigo(bruto: Optional[str]) -> str:
     return re.sub(r"[^0-9A-Z]", "", (bruto or "").upper())
 
 
+# Teto da validade PEDIDA por um código (2026-08-06). O caso real que abriu isto: convidar
+# alguém que só vai parear daqui a uma hora. Os 10 min do padrão cobrem "gerar no PC e
+# digitar no celular que está na minha mão", não "mandei pelo WhatsApp e ele entra mais
+# tarde" — e a recusa chega como `codigo_expirado`, que do lado de lá é indistinguível de
+# dedo errado.
+#
+# ⚠ O teto existe para a EXCEÇÃO não virar eternidade. `POST /api/aparelhos/parear` é a
+# única rota sem gate do sistema, e o docstring dela nomeia os dois guardas que a
+# defendem: uso único e VIDA CURTA. Sem teto, um `--minutos 99999` digitado uma vez
+# aposentaria o segundo guarda em silêncio, e nada no sistema voltaria a mencioná-lo.
+# 4 h cobre o caso de uso ("gerei de manhã, ele entra à tarde") sem virar porta aberta.
+VALIDADE_MAX_MINUTOS = 240
+
+
+def validar_validade(minutos: int) -> int:
+    """Valida a validade pedida para UM código. Levanta em vez de "consertar".
+
+    Não corta para o teto em silêncio pela mesma razão que `normalizar_codigo` se recusa a
+    consertar sósia de caractere: o servidor escolhendo um número que o dono não pediu é
+    ele adivinhando parte de uma decisão de segurança. E o erro aqui é barato — quem lê a
+    mensagem está no terminal, com o dedo no comando.
+    """
+    if minutos < 1 or minutos > VALIDADE_MAX_MINUTOS:
+        raise ValueError(
+            f"validade inválida: {minutos} min — use de 1 a {VALIDADE_MAX_MINUTOS}. "
+            "O teto existe para 'vida curta' continuar sendo um guarda de verdade "
+            "(ver VALIDADE_MAX_MINUTOS em aparelhos.py)."
+        )
+    return minutos
+
+
+def separar_minutos(argv: list) -> tuple:
+    """Tira `--minutos N` (ou `--minutos=N`) do argv e devolve `(resto, minutos|None)`.
+
+    Mora aqui, e não em cada script, por dois motivos. É a mesma família de
+    `normalizar_codigo`: entrada digitada por um humano virando valor seguro, com a mesma
+    recusa a adivinhar. E os DOIS painéis (`scripts/aparelhos.py convidar` e
+    `scripts/gerar_convite.py`) precisam dela — duplicar um parser de flag é como duas
+    cópias divergirem no primeiro conserto de uma, que é o argumento escrito no
+    `aparelhos.avaliar` para não reimplementar a regra legada.
+
+    ⚠ A flag tem de sair ANTES do parsing posicional dos scripts: neles o apelido é
+    posicional e o ÚLTIMO argumento vira o usuário quando cabe na regra de nome. Como
+    "120" CABE nessa regra (dígitos são válidos), uma flag deixada no meio faria o número
+    virar usuário e `--minutos` virar parte do apelido — calado, com o convite saindo
+    errado e ninguém avisado.
+    """
+    resto, minutos = [], None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--minutos":
+            if i + 1 >= len(argv):
+                raise ValueError("--minutos precisa de um número: --minutos 120")
+            bruto, i = argv[i + 1], i + 2
+        elif arg.startswith("--minutos="):
+            bruto, i = arg.split("=", 1)[1], i + 1
+        else:
+            resto.append(arg)
+            i += 1
+            continue
+        if not bruto.lstrip("+").isdigit():
+            raise ValueError(f"--minutos precisa de um número inteiro, não {bruto!r}")
+        minutos = validar_validade(int(bruto))
+    return resto, minutos
+
+
+def validade_efetiva(do_codigo: Optional[int], padrao: int) -> int:
+    """Qual validade vale para ESTE código: a dele, se pediu uma; senão a do `settings`.
+
+    `None` é a linha do meio da compatibilidade, e é por isso que ele não é "0 minutos":
+    todo código emitido ANTES de a coluna existir tem NULL ali e precisa continuar valendo
+    exatamente o que valia. Puro — quem lê o banco é o registro.
+    """
+    return do_codigo if do_codigo and do_codigo > 0 else padrao
+
+
 def codigo_valido(
     emitido_em: Optional[datetime],
     usado: bool,
