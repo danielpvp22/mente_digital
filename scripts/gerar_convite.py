@@ -18,8 +18,20 @@ de conta Tailscale própria E o dono precisa compartilhar a máquina com ela no 
 console. É ato do dono, e o convite diz isso na cara em vez de deixar a pessoa
 descobrir travada no meio do caminho.
 
-O código de pareamento vale poucos minutos (`MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS`)
-e serve UMA vez — então gere o convite quando for de fato mandar, não antes.
+O código de pareamento vale poucos minutos (`MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS`,
+default 10) e serve UMA vez — então gere o convite quando for de fato mandar, não antes.
+
+⚠ QUANDO A PESSOA SÓ VAI PAREAR MAIS TARDE. Dez minutos cobrem "gerar no PC e digitar no
+celular que está na minha mão"; não cobrem "mandei pelo WhatsApp e ele entra daqui a uma
+hora" — e a recusa chega como `codigo_expirado`, que do lado de lá é indistinguível de
+dedo errado. Suba `MENTE_APARELHOS_CODIGO_VALIDADE_MINUTOS` no `.env`, REINICIE (o
+`settings` é lido uma vez no import; sem restart o `parear` segue com o valor velho) e
+BAIXE de volta depois — o porquê da conta de segurança está no campo em `config.py`.
+
+⚠ E gere o convite DEPOIS do restart, nesta ordem. A validade em si é retroativa (é
+conferida no pareamento), mas o "vale N minutos" que a pessoa LÊ é gravado em texto por
+`montar_html` no instante da geração: um convite feito antes da mudança continua dizendo
+10 minutos, e quem o recebe desiste achando que perdeu a janela.
 """
 from __future__ import annotations
 

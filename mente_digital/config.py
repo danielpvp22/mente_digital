@@ -1416,6 +1416,28 @@ class Settings(BaseSettings):
     aparelhos_expira_dias: int = 90
     # O código de pareamento é a peça de BAIXA entropia (digitada à mão), então vive
     # pouco: o dono gera no PC e digita no celular em minutos, não em dias.
+    #
+    # ⚠ ESTICAR ISTO É RETROATIVO. A validade é conferida no PAREAMENTO (`aparelhos.
+    # codigo_valido` compara `agora >= emitido_em + validade`), não na emissão — subir o
+    # valor e reiniciar RESSUSCITA todo código já emitido e ainda não usado. É o que torna
+    # o ajuste útil para um convite em curso (não é preciso gerar outro), e é a razão de
+    # BAIXAR de volta depois: um código esquecido de semanas atrás volta a abrir a porta.
+    # O HTML do convite, porém, NÃO é retroativo — ele grava o número em TEXTO na hora da
+    # geração (`gerar_convite.montar_html`), então um convite emitido antes da mudança
+    # segue dizendo "10 minutos" a quem o recebeu, e a pessoa desiste achando que perdeu a
+    # janela. Ao esticar: reinicie primeiro, gere o convite depois.
+    #
+    # Conta REFEITA para 120 min (2026-08-06, pedido de convidar alguém com ~1 h de
+    # antecedência) porque o bloco logo abaixo manda refazê-la a cada mexida na validade:
+    #   - por IP, o bloqueio progressivo satura em `bloqueio_teto_segundos` (900 s), então
+    #     esticar a janela 12× compra 18 chutes em vez de 11 — não 12× mais;
+    #   - a varredura distribuída esbarra no teto GLOBAL de `registro_aparelhos.
+    #     _teto_pareamento` (30 falhas / 600 s deslizantes), ou seja ~360 chutes em 2 h.
+    # Contra 31**10 ≈ 8,2e14 códigos, ~4e-13. Força bruta NÃO é o que piora aqui.
+    # O que piora é o código VIVO numa conversa de WhatsApp por duas horas: o docstring de
+    # `POST /api/aparelhos/parear` (a única rota sem gate do sistema, de propósito) nomeia
+    # dois guardas — uso único e VIDA CURTA. Esticar gasta um dos dois, então é ajuste de
+    # OCASIÃO, não default. Para convite, aceitável; permanente, não.
     aparelhos_codigo_validade_minutos: int = 10
     # Bloqueio progressivo por IP: dobra a cada falha DEPOIS das 2 livres (que cobrem o
     # dedo errado do dono e não podem virar castigo). 2s na 3ª falha, teto de 900s.
