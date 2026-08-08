@@ -209,6 +209,20 @@ class Ponte:
             salvar_geometria(self._janela)
             self._janela.destroy()
 
+    def moldura(self, cor: str) -> bool:
+        """O front avisa a cor de fundo do tema vigente; a faixa acompanha.
+
+        A casca reserva 6 px em volta da página para devolver as alças de
+        redimensionar que o `frameless` levou, e essa faixa é pintada pelo
+        WinForms — ela NÃO enxerga o CSS. Sem este aviso, quem abre no tema claro
+        vê um friso quase-preto em volta da página branca. Ver
+        `redimensionar.pintar_faixa`, que valida a cor antes de usá-la."""
+        if not self._janela:
+            return False
+        from mente_digital import redimensionar
+
+        return redimensionar.pintar_faixa(self._janela, cor)
+
     def info(self) -> dict:
         """O front pergunta em que casca está rodando."""
         return {"nativo": True, "plataforma": sys.platform, "maximizada": self._maximizada}
@@ -394,6 +408,20 @@ body.dormindo #anel{animation:none}
 <script>
 const CIRC = 2 * Math.PI * 45;
 function api(m){ if (window.pywebview && window.pywebview.api) window.pywebview.api[m](); }
+
+// A faixa de 6px que devolve as alças de redimensionar é pintada pelo WinForms e
+// não enxerga este CSS (ver `Ponte.moldura`). A tela de boot avisa a própria cor
+// porque o claro DELA (`#F7F7F9`) não é o claro da página (`#FFFFFF`) — uma
+// tabela só em Python erraria um dos dois. Ela segue o sistema, então o listener
+// existe para quem troca o tema do Windows com o app subindo.
+function avisarMoldura(){
+  const cor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (cor && window.pywebview && window.pywebview.api && window.pywebview.api.moldura)
+    window.pywebview.api.moldura(cor);
+}
+avisarMoldura();
+window.addEventListener('pywebviewready', avisarMoldura);
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', avisarMoldura);
 
 // Chamado do Python (evaluate_js) a cada tique do poller. Nada aqui inventa
 // número: pct e serviços vêm dos marcos REAIS lidos do AppContext.
@@ -1190,6 +1218,11 @@ def main() -> int:
         # borda é só o recorte da região.
         shadow=False,
     )
+    # Aqui, e não só no `_acompanhar_boot`: a tela de boot avisa a cor do tema
+    # (`Ponte.moldura`) assim que carrega, e o poller que fazia esta amarração
+    # sobe numa thread do pywebview — sem isto o primeiro aviso chegaria a uma
+    # `Ponte` ainda sem janela e a faixa ficaria escura na tela de boot clara.
+    ponte._janela = janela
     # ---- bandeja: o X esconde, não encerra --------------------------------
     # Sem isto, fechar a janela custaria os ~36 s de boot para reabrir — e o app
     # foi feito para ficar aberto o dia inteiro. `_sair` é a única saída de
@@ -1265,6 +1298,34 @@ def main() -> int:
     janela.events.shown += lambda: arredondar_janela(janela)
     if hasattr(janela.events, "resized"):
         janela.events.resized += lambda *a: arredondar_janela(janela)
+
+    # ---- as alças que o `frameless` levou ---------------------------------
+    # Sem moldura não há área NÃO-CLIENTE, e é lá que vivem as alças de
+    # redimensionar do Windows — não sobrava um pixel para agarrar ao
+    # desmaximizar (queixa do dono, 2026-08-05). `ativar` reserva 6 px no
+    # formulário (o WebView2 empilha filhos sobre a janela INTEIRA, e sem esses
+    # pixels o `WM_NCHITTEST` nunca chegaria até nós) e responde ali borda e
+    # canto. O piso sai do `min_size` acima — uma fonte só.
+    #
+    # ⚠ SÓ no modo sem moldura. Com `--com-moldura` o Windows já desenha as
+    # alças, e o `WM_NCCALCSIZE` do módulo (que responde 0 para zerar a espessura
+    # da moldura) APAGARIA a barra de título nativa que a flag existe para
+    # mostrar. O gate é a mesma expressão do `frameless=` lá em cima.
+    #
+    # No MESMO `shown` do arredondamento e pela mesma razão dele: antes disso
+    # `janela.native` é None e não há HWND. Import aqui dentro como o da
+    # `Bandeja` — mantém o módulo fora do grafo de import do `app.py`, que cinco
+    # arquivos de teste carregam no CI Linux.
+    if not args.com_moldura:
+        from mente_digital import redimensionar
+
+        janela.events.shown += lambda: redimensionar.ativar(janela)
+        if hasattr(janela.events, "resized"):
+            # Só a faixa é reaplicada: `instalar` é idempotente por HWND e sai na
+            # primeira linha. Ela precisa voltar porque é calculada em pixel
+            # FÍSICO — mudar de monitor muda o DPI, e a alça de 6 px medida a
+            # 100% vira fina demais numa tela a 150%.
+            janela.events.resized += lambda *a: redimensionar.reservar_borda(janela)
 
     def _dormir_e_esperar() -> None:
         """O ciclo do `--standby`: solta os modelos e espera alguém querer o assistente.

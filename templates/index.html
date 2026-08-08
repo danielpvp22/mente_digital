@@ -776,9 +776,33 @@
         const ICO_SOL = '<circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>';
         const ICO_LUA = '<path d="M20.4 14.2A8.5 8.5 0 0 1 9.8 3.6a8.5 8.5 0 1 0 10.6 10.6z"/>';
         function temaDoSistema() { return window.matchMedia('(prefers-color-scheme: light)').matches ? 'claro' : 'escuro'; }
+        // A casca nativa reserva 6px em volta da página para devolver as alças de
+        // redimensionar que o `frameless` levou. Essa faixa é pintada pelo WinForms
+        // e NÃO enxerga o CSS — sem este aviso ela fica quase-preta em volta da
+        // página branca do tema claro. Mandamos o `--bg` computado em vez do NOME
+        // do tema: assim a paleta continua existindo num lugar só (aqui), e o
+        // Python não guarda uma segunda cópia para envelhecer.
+        let temaPendenteCasca = null;
+        function avisarMoldura(tema) {
+            const cor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+            if (!cor) return;
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.moldura) {
+                window.pywebview.api.moldura(cor);
+                temaPendenteCasca = null;
+            } else {
+                // A ponte é injetada de forma ASSÍNCRONA, e o `aplicarTema` da carga
+                // roda antes dela. Sem esta fila, quem abre no claro veria o friso
+                // escuro até tocar no botão de tema — justamente o caso mais comum.
+                temaPendenteCasca = tema;
+            }
+        }
+        window.addEventListener('pywebviewready', () => {
+            if (temaPendenteCasca !== null) avisarMoldura(temaPendenteCasca);
+        });
         function aplicarTema(tema) {
             document.documentElement.setAttribute('data-tema', tema);
             document.getElementById('ico-tema').innerHTML = tema === 'claro' ? ICO_LUA : ICO_SOL;
+            avisarMoldura(tema);
         }
         function alternarTema() {
             const novo = document.documentElement.getAttribute('data-tema') === 'claro' ? 'escuro' : 'claro';
