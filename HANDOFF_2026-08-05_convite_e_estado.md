@@ -65,7 +65,7 @@ gere na hora de mandar, não antes.
 
 | item | estado |
 |---|---|
-| Tailscale + TLS | ✅ cert `sechex-blrzc2v.tail412b37.ts.net`, válido até **2 nov 2026** |
+| Tailscale + TLS | ✅ cert do nome MagicDNS desta máquina (`tailscale status --json`), válido até **2 nov 2026** |
 | Renovação do cert | ✅ Tarefa Agendada rodou; próxima 06/08 03:30 |
 | `MULTIUSUARIO` / `APARELHOS` | ✅ os dois **ligados** em produção |
 | `TOKEN_LEGADO` | ⚠ `true` — ver Passo 2 |
@@ -138,7 +138,7 @@ e estava limpo. Essa varredura é a régua, não o opcional.
 - **`vigia.subir_app` NÃO sobe o vigia** — apesar do nome, levanta o *assistente*
   (`app.py --oculto`).
 - **O endereço de LAN não serve mais.** O cert cobre o nome do Tailscale, então
-  `https://192.168.15.13:8000` é rejeitado por nome. VPN ligada é obrigatória **até
+  `https://<IP-da-LAN>:8000` é rejeitado **por nome**. VPN ligada é obrigatória **até
   dentro de casa**.
 - **A MIUI barra `adb shell input text`** (`INJECT_EVENTS`). Funciona: `am start`,
   `am force-stop`, `pm list`, `uiautomator dump`, `adb install`.

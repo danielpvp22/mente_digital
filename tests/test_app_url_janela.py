@@ -63,11 +63,15 @@ def test_espaco_em_volta_nao_vira_credencial():
 
 
 def test_com_tls_usa_o_nome_do_certificado(tmp_path, monkeypatch):
-    cert = tmp_path / "sechex-blrzc2v.tail412b37.ts.net.crt"
+    # ⚠ Nome de EXEMPLO, não o MagicDNS desta máquina. O repositório é público, e
+    # o nome real do tailnet é identificador de alvo — nada aqui precisa dele para
+    # discriminar: o que o teste prova é que o nome sai do ARQUIVO, qualquer que
+    # ele seja. Ver `docs/ACESSO_REMOTO.md` para o valor de verdade.
+    cert = tmp_path / "maquina-exemplo.tail0a1b2c.ts.net.crt"
     cert.write_text("não é um PEM de verdade", encoding="utf-8")
     # Decodificar falha (não é PEM), então cai no nome do arquivo — que é
     # justamente o caminho de queda que este módulo promete.
-    assert app._host_da_janela("https", str(cert)) == "sechex-blrzc2v.tail412b37.ts.net"
+    assert app._host_da_janela("https", str(cert)) == "maquina-exemplo.tail0a1b2c.ts.net"
 
 
 def test_com_tls_e_cert_ausente_nao_inventa_host(tmp_path):

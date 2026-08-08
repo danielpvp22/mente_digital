@@ -34,8 +34,8 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
-    // ⚠ NASCE VAZIO, e isso não é descuido — o padrão daqui era `http://192.168.15.13:8000`,
-    // o IP de LAN DESTA casa, e ele viajava dentro do APK: quem recebesse o app abriria a
+    // ⚠ NASCE VAZIO, e isso não é descuido — o padrão daqui era o IP de LAN da casa de
+    // quem construiu o APK, cravado no código, e ele viajava dentro do APK: quem recebesse o app abriria a
     // configuração com o endereço da rede do dono já digitado. Vazamento de um lado e,
     // do outro, um endereço que não funciona mais NEM PARA ELE — o TLS entrou e o
     // certificado cobre só o nome do Tailscale, então a LAN é rejeitada por nome.
