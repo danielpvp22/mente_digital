@@ -31,6 +31,7 @@ from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
 from mente_digital.audio import SttService, build_tts  # noqa: E402
 from mente_digital.config import BASE_DIR, settings  # noqa: E402
 from mente_digital import energia  # noqa: E402
+from mente_digital import vez  # noqa: E402
 from mente_digital.llm import LlamaManager  # noqa: E402
 from mente_digital import mensageiro  # noqa: E402
 from mente_digital.rag import EmbeddingProvider, VectorStore, WebSearcher  # noqa: E402
@@ -561,6 +562,26 @@ async def energia_endpoint(request: Request):
         # matar de dentro de um handler sem deixar a resposta pela metade.
         "sem_uso_s": round(ctx.segundos_sem_uso(), 1),
         "ocupado": not ctx.interactive_idle.is_set() or ctx.idle_em_andamento,
+        # QUEM está usando o assistente agora, em uma frase, para a casca pôr na
+        # BANDEJA. É a metade que o dono pediu depois: ele não pode abrir um jogo e
+        # cortar sem querer quem estava no meio de uma conversa. Jogando, a janela
+        # não está visível — a bandeja é a única superfície que continua à vista, e
+        # ela não depende do toast (que o Assistente de Foco pode engolir em tela
+        # cheia).
+        #
+        # ⚠ Vai NESTA rota e não numa nova porque a casca já a consulta a cada
+        # ~30 s no laço ocioso: uma rota a mais seria um segundo polling para a
+        # mesma pergunta. E ela é gateada por `exigir_acesso` — nome de usuário
+        # não pode sair pelo `/api/health`, que é aberto.
+        #
+        # ⚠ `getattr` nas DUAS pontas, e não por preguiça: este é um campo de
+        # STATUS pendurado numa rota cujo trabalho é reportar energia. Um contexto
+        # sem `sessoes` (teste, container mínimo) ou uma sessão sem `usuario`
+        # (multiusuário desligado) não pode derrubar a resposta inteira e, com ela,
+        # o laço que decide encerrar o processo. Sem nome, o rótulo fica vazio — e
+        # vazio é exatamente "ninguém identificado usando", que é a verdade.
+        "usando": vez.resumo_de_uso(
+            getattr(s, "usuario", None) for s in list(getattr(ctx, "sessoes", ()) or ())),
     })
 
 

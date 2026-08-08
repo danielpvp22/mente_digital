@@ -33,7 +33,19 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable, Optional
+
+#: Nome do arquivo por onde os DOIS PROCESSOS conversam: o vigia escreve, o
+#: assistente drena. Uma fonte só de propósito — se cada lado derivasse o caminho
+#: por conta, o dia em que um mudasse deixaria o outro lendo um arquivo que nunca
+#: recebe nada, e o sintoma seria "o pedido some", não um erro.
+ARQUIVO_PEDIDOS = "pedidos_de_acesso.jsonl"
+
+
+def arquivo_pedidos(raiz: Path) -> Path:
+    """Onde o bilhete mora. PURA — recebe a raiz, não a adivinha."""
+    return Path(raiz) / "dados" / ARQUIVO_PEDIDOS
 
 #: Tipo de mensagem que o pedido vira no mensageiro. Nome próprio porque
 #: `normalizar_tipo` LEVANTA em tipo desconhecido — a gaveta tem de ser declarada,
@@ -44,6 +56,15 @@ TIPO_ACESSO = "acesso"
 #: sem teto, um celular em laço encheria o disco do dono. Os mais NOVOS ficam: o
 #: que interessa é "quem quer usar agora", não a arqueologia da madrugada.
 MAX_PEDIDOS = 200
+
+#: Quem pediu quando NÃO DÁ para saber quem pediu — com a identidade por aparelho
+#: desligada, o token legado é o mesmo para todos e não deixa rastro por
+#: construção. Constante, e não a string solta nos dois lados: `ler_linha` exige
+#: `usuario` não-vazio (linha sem dono é lixo), então o anônimo precisa de um NOME,
+#: e um nome parece um destinatário. Sem este sentinela, o aviso de "liberou" seria
+#: endereçado a um usuário chamado "alguém" que não existe — a mensagem ficaria no
+#: banco para sempre, sem entrega e sem erro. Foi um teste que pegou.
+ANONIMO = "alguém"
 
 #: Piso de sanidade do nome de usuário no bilhete. O arquivo é lido de volta e o
 #: texto vai para a tela do dono — entrada de fora, tamanho conhecido.

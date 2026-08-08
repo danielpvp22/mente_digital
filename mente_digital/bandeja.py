@@ -54,6 +54,8 @@ class Bandeja:
         self.ativa = False
         self.ligado = True
         self.consolidando = False
+        # Frase pronta de `vez.resumo_de_uso`; vazia é o caso normal. Ver `marcar`.
+        self.usando = ""
 
     # -- ciclo de vida ---------------------------------------------------------
     def iniciar(self) -> bool:
@@ -105,14 +107,28 @@ class Bandeja:
             fn()
 
     # -- estado e avisos -------------------------------------------------------
-    def marcar(self, ligado: Optional[bool] = None, consolidando: Optional[bool] = None) -> None:
+    def marcar(self, ligado: Optional[bool] = None, consolidando: Optional[bool] = None,
+               usando: Optional[str] = None) -> None:
         """Reflete o estado no ícone e no menu. O ícone APAGA quando descansando —
-        é o retorno visual de que a VRAM está livre sem precisar abrir a janela."""
+        é o retorno visual de que a VRAM está livre sem precisar abrir a janela.
+
+        `usando` é a frase pronta de `vez.resumo_de_uso` ("ana está usando agora"),
+        vazia quando não há ninguém. Ela existe para o dono não abrir um jogo e
+        cortar sem querer quem estava no meio de uma conversa — e mora AQUI, e não
+        na janela, porque jogando a janela não está visível. É também o caminho que
+        não depende do toast, que o Assistente de Foco pode engolir em tela cheia.
+
+        ⚠ Ela VENCE "descansando" no rótulo: se há alguém usando, o assistente por
+        definição não está descansando, e mostrar as duas coisas juntas faria o
+        dono duvidar da que importa. Perde só para "consolidando", que é trabalho
+        do próprio dono acontecendo agora."""
         mudou_cor = ligado is not None and ligado != self.ligado
         if ligado is not None:
             self.ligado = ligado
         if consolidando is not None:
             self.consolidando = consolidando
+        if usando is not None:
+            self.usando = usando.strip()
         if not self.ativa or self._icone is None:
             return
         try:
@@ -120,6 +136,7 @@ class Bandeja:
                 self._icone.icon = desenhar_icone(64, self.ligado)
             self._icone.title = (
                 "Mente Digital — consolidando…" if self.consolidando
+                else f"Mente Digital — {self.usando}" if self.usando
                 else "Mente Digital" if self.ligado else "Mente Digital — descansando"
             )
             self._icone.update_menu()

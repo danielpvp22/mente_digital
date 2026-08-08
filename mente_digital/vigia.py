@@ -193,7 +193,7 @@ class Vigia:
             return None
 
     def _arquivo_pedidos(self) -> Path:
-        return self.raiz / "dados" / "pedidos_de_acesso.jsonl"
+        return vez.arquivo_pedidos(self.raiz)
 
     def registrar_pedido(self, usuario: str, aparelho: str = "") -> bool:
         """Deixa o bilhete de quem quis entrar. O pedido NÃO PODE SE PERDER.
@@ -210,7 +210,7 @@ class Vigia:
         try:
             caminho = self._arquivo_pedidos()
             caminho.parent.mkdir(parents=True, exist_ok=True)
-            pedido = vez.Pedido(usuario or "alguém", vez.agora_iso(), aparelho)
+            pedido = vez.Pedido(usuario or vez.ANONIMO, vez.agora_iso(), aparelho)
             with open(caminho, "a", encoding="utf-8") as fh:
                 fh.write(vez.linha(pedido) + "\n")
             return True

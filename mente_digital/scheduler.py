@@ -56,7 +56,9 @@ from mente_digital import backup
 from mente_digital import calendario
 from mente_digital import energia
 from mente_digital import identidade
+from mente_digital import jogo_ativo
 from mente_digital import mensageiro
+from mente_digital import vez
 from mente_digital import potencia
 from mente_digital import tomada
 from mente_digital import prompts
@@ -174,6 +176,10 @@ class SchedulerService:
             for ag in await asyncio.to_thread(db.get_agendamentos_pendentes,
                                               todos_os_donos=True):
                 await self._entregar_pendente(ag, agora)
+        # Pedidos que o PLANTÃO recusou enquanto o dono jogava. Barato (um `stat`)
+        # e cedo: é a promessa "o pedido não se perde", e quem espera do outro lado
+        # já esperou uma partida inteira. Ver `vez.py`.
+        await self._drenar_pedidos_de_acesso()
         # Pesquisa proativa AGENDADA (#1): dispara em BACKGROUND para NÃO atrasar o loop
         # de alarmes — uma passada leva dezenas de segundos (web + LLM), e um lembrete não
         # pode esperar por isso. A flag/última-passada guardam contra sobreposição.
@@ -1134,6 +1140,97 @@ class SchedulerService:
         await self._entregar_pendente(ag, agora)
 
     # -- mensageiro usuário <-> MESTRE (2026-08-05) -----------------------------
+    # --- Pedidos que o plantão recusou durante o jogo -------------------------
+    def _arquivo_pedidos(self) -> Path:
+        """O MESMO caminho que o vigia escreve — a derivação mora em `vez`, para
+        os dois processos não terem cada um a sua."""
+        return vez.arquivo_pedidos(BASE_DIR)
+
+    async def _drenar_pedidos_de_acesso(self) -> int:
+        """O bilhete do plantão vira CONVERSA. Devolve quantas pessoas foram avisadas.
+
+        Enquanto o dono joga o assistente está desligado, então quem tenta entrar
+        recebe um "não" do vigia e o pedido fica num arquivo. Aqui ele acorda: cada
+        pessoa vira UMA mensagem para o mestre (não uma por tentativa — cinco
+        tiques da tela de carregamento são uma pessoa esperando), e o mestre
+        responde a estimativa pelo canal que já existe.
+
+        ⚠ O ARQUIVO É APAGADO ANTES DE PROCESSAR, não depois. Se a entrega falhar,
+        perde-se o AVISO — mas a linha já está na tabela `mensagens`, que é a fonte
+        durável (mesma regra do `entregar_mensagem`). Fazer o contrário é que seria
+        grave: um erro no meio deixaria o arquivo intacto e a cada 20 s o dono
+        receberia o mesmo recado de novo, para sempre.
+        """
+        caminho = self._arquivo_pedidos()
+        try:
+            if not caminho.exists() or caminho.stat().st_size == 0:
+                return 0
+            bruto = await asyncio.to_thread(caminho.read_text, encoding="utf-8")
+            await asyncio.to_thread(caminho.unlink)
+        except OSError:
+            return 0
+        pedidos = vez.ler_todos(bruto)
+        if not pedidos:
+            return 0
+        # Se NÃO há jogo agora, o app subiu porque o jogo fechou (é o que o plantão
+        # faz) — então esta é a hora de dizer "liberou" a quem esperou. Com jogo
+        # aberto, o app subiu por outro caminho e só o dono é avisado: prometer
+        # disponibilidade no meio de uma partida seria mentir para a pessoa errada.
+        liberou = not self._jogo_rodando()
+        avisados = 0
+        for usuario, lista in vez.agrupar(pedidos).items():
+            avisados += await self._recado_de_acesso(usuario, lista, liberou)
+        return avisados
+
+    def _jogo_rodando(self) -> bool:
+        try:
+            return bool(jogo_ativo.detectar(jogo_ativo.processos_em_execucao()))
+        except Exception:                              # noqa: BLE001
+            # Ignorância NÃO é "liberou": afirmar disponibilidade sem saber manda a
+            # pessoa voltar para um PC que pode estar em uso. Mesma assimetria do
+            # `ocioso.py`, onde não saber é presença.
+            return True
+
+    async def _recado_de_acesso(self, usuario: str, pedidos: list, liberou: bool) -> int:
+        """Uma pessoa -> uma mensagem para o mestre (e, se liberou, uma para ela)."""
+        mestre = identidade.MESTRE
+        texto = vez.texto_ao_mestre(pedidos)
+        try:
+            # Do PEDINTE para o mestre, e não do sistema: é o que faz o botão
+            # "Responder" do mestre cair na caixa certa. `mensageiro.responder`
+            # deriva as pontas da original — se o remetente fosse um nome de
+            # serviço, a estimativa do dono não chegaria a ninguém.
+            remetente = usuario or vez.ANONIMO
+            ident = await asyncio.to_thread(
+                db.salvar_mensagem, remetente, mestre, texto,
+                mensageiro.TIPO_ACESSO, mensageiro.agora_iso())
+            if ident is None:
+                telemetry.warn("VEZ", f"não gravei o pedido de acesso de {remetente}")
+                return 0
+            await self.entregar_mensagem(mensageiro.Mensagem(
+                id=ident, remetente=remetente, destinatario=mestre,
+                texto=texto, tipo=mensageiro.TIPO_ACESSO,
+                criada_em=mensageiro.agora_iso()))
+            if liberou and usuario and usuario != vez.ANONIMO:
+                # ⚠ Só com usuário CONHECIDO — e o `!= ANONIMO` é o ponto, não
+                # ruído defensivo: com a identidade desligada o vigia grava o
+                # sentinela, que é uma string TRUTHY. Sem esta comparação o aviso
+                # sairia endereçado a um usuário chamado "alguém", que não existe:
+                # linha no banco, entrega impossível, nenhum erro em lugar nenhum.
+                aviso = await asyncio.to_thread(
+                    db.salvar_mensagem, mestre, usuario,
+                    vez.texto_ao_pedinte(True), mensageiro.TIPO_ACESSO,
+                    mensageiro.agora_iso())
+                if aviso is not None:
+                    await self.entregar_mensagem(mensageiro.Mensagem(
+                        id=aviso, remetente=mestre, destinatario=usuario,
+                        texto=vez.texto_ao_pedinte(True),
+                        tipo=mensageiro.TIPO_ACESSO, criada_em=mensageiro.agora_iso()))
+            return 1
+        except Exception as exc:
+            telemetry.error("VEZ", f"falhei ao avisar sobre o pedido de {usuario}", exc)
+            return 0
+
     async def entregar_mensagem(self, msg: mensageiro.Mensagem) -> bool:
         """Empurra uma mensagem ao DESTINATÁRIO dela. True se alguma sessão dele aceitou.
 

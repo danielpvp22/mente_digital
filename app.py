@@ -858,7 +858,13 @@ def _laco_ocioso(base: str, token: str, bandeja, parar: threading.Event,
         if tique % 10 == 1:
             estado = _api(base, "/api/energia", "estado", token)
             if estado:
-                bandeja.marcar(ligado=(estado.get("estado") != "descansando"))
+                # `usando` põe na BANDEJA quem está no assistente agora — a única
+                # superfície visível quando o dono está num jogo em tela cheia. Sem
+                # ela, abrir o jogo cortaria sem aviso quem estava no meio de uma
+                # conversa. `or ""` e não `get(...)` seco: servidor de versão antiga
+                # não manda o campo, e `None` apagaria o rótulo em vez de mantê-lo.
+                bandeja.marcar(ligado=(estado.get("estado") != "descansando"),
+                               usando=(estado.get("usando") or ""))
                 # ENCERRAR de vez (o degrau acima do standby): o processo sai e o
                 # PC volta a zero, com o VIGIA assumindo o plantão. A decisão é
                 # pura e mora em standby.py; aqui só se lê o relógio do servidor e
