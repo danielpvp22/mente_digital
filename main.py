@@ -25,6 +25,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from mente_digital import acesso  # noqa: E402
+from mente_digital import aparelhos as aparelhos_regras  # noqa: E402
 from mente_digital import identidade  # noqa: E402
 from mente_digital.agent import Agent, EtlProcessor  # noqa: E402
 from mente_digital.audio import SttService, build_tts  # noqa: E402
@@ -921,16 +922,28 @@ async def convidar_aparelho(request: Request):
         # pasta e coleção — um apelido inválido não pode chegar ao disco.
         return JSONResponse(status_code=400,
                             content={"erro": "usuario_invalido", "detalhe": str(exc)})
+    # Validade PRÓPRIA deste código (opcional). Existe aqui, e não só nos scripts, para a
+    # rota não ficar podendo menos que o terminal — divergência entre painel e script é o
+    # tipo de coisa que só se descobre na hora em que o terminal não está à mão.
+    try:
+        minutos = corpo.get("validade_minutos")
+        minutos = aparelhos_regras.validar_validade(int(minutos)) if minutos else None
+    except (TypeError, ValueError) as exc:
+        return JSONResponse(status_code=400,
+                            content={"erro": "validade_invalida", "detalhe": str(exc)})
     codigo = await asyncio.to_thread(
         request.app.state.registro.emitir_codigo,
-        (corpo.get("apelido") or "aparelho")[:40], settings.aparelhos_teto, usuario)
+        (corpo.get("apelido") or "aparelho")[:40], settings.aparelhos_teto, usuario, minutos)
     if codigo is None:
         return JSONResponse(status_code=409,
                             content={"erro": "teto", "teto": settings.aparelhos_teto})
     return JSONResponse(content={
         "codigo": codigo,
         "usuario": usuario,     # ecoado para o dono conferir ANTES de ditar o código
-        "validade_minutos": settings.aparelhos_codigo_validade_minutos,
+        # O que o servidor vai COBRAR, não o default — senão a tela promete um prazo e o
+        # `parear` cobra outro.
+        "validade_minutos": aparelhos_regras.validade_efetiva(
+            minutos, settings.aparelhos_codigo_validade_minutos),
     })
 
 
