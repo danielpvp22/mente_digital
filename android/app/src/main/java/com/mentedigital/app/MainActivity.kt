@@ -133,7 +133,10 @@ class MainActivity : ComponentActivity() {
                                 val v = withContext(Dispatchers.IO) { servidor.vigiaStatus() }
                                 if (v != null && !v.servidorDePe && !v.subindo) {
                                     pediuAoVigia = true
-                                    when (withContext(Dispatchers.IO) { servidor.vigiaAcordar() }) {
+                                    val resposta = withContext(Dispatchers.IO) {
+                                        servidor.vigiaAcordar()
+                                    }
+                                    when (resposta.tipo) {
                                         // Token errado é problema de CREDENCIAL e se resolve
                                         // configurando — mandar esperar seria mentir. É a
                                         // "tela de autenticação" do fluxo pedido pelo dono.
@@ -143,6 +146,30 @@ class MainActivity : ComponentActivity() {
                                             break
                                         }
                                         PedidoVigia.ACEITO -> aviso = "Acordando o PC…"
+                                        // O PC está em uso e o plantão NÃO vai
+                                        // levantar o assistente agora. Sair do laço é
+                                        // o ponto: continuar girando mostraria
+                                        // "acordando" por um PC que ninguém mandou
+                                        // acordar — o defeito de 2026-08-02 por uma
+                                        // porta nova. O pedido não se perdeu (o
+                                        // plantão o guardou e o dono é avisado), e é
+                                        // isso que a frase diz.
+                                        //
+                                        // ⚠ A frase vem do SERVIDOR e não é montada
+                                        // aqui: é lá que se decide o que se conta a
+                                        // quem pede — e o que NÃO se conta (que o
+                                        // dono está jogando). Duas cópias do texto
+                                        // divergiriam, e a que vaza seria esta.
+                                        PedidoVigia.OCUPADO -> {
+                                            aviso = resposta.aviso.ifBlank {
+                                                // Só para servidor de versão antiga, que
+                                                // responde 200 sem o campo. O texto real
+                                                // vem de `vez.texto_ao_pedinte`.
+                                                "O PC está em uso agora — seu pedido foi " +
+                                                    "registrado."
+                                            }
+                                            break
+                                        }
                                         PedidoVigia.FALHOU -> pediuAoVigia = false
                                     }
                                 } else if (v != null && v.subindo) {

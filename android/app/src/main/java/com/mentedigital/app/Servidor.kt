@@ -136,9 +136,9 @@ class Servidor(private val conf: () -> Conf) {
      * situações pedem telas diferentes: token errado é problema de credencial e se
      * resolve configurando; falha de rede é esperar e tentar de novo.
      */
-    fun vigiaAcordar(): PedidoVigia {
+    fun vigiaAcordar(): RespostaVigia {
         val c = conf()
-        if (c.base.isBlank()) return PedidoVigia.FALHOU
+        if (c.base.isBlank()) return RespostaVigia(PedidoVigia.FALHOU)
         val corpo = JSONObject().toString().toRequestBody("application/json".toMediaType())
         val req = Request.Builder()
             .url(Endereco.vigia(c.base, "/vigia/acordar"))
@@ -148,13 +148,26 @@ class Servidor(private val conf: () -> Conf) {
         return try {
             httpCurto.newCall(req).execute().use { r ->
                 when {
-                    r.code == 401 -> PedidoVigia.RECUSADO
-                    r.isSuccessful -> PedidoVigia.ACEITO
-                    else -> PedidoVigia.FALHOU
+                    r.code == 401 -> RespostaVigia(PedidoVigia.RECUSADO)
+                    // ⚠ O CORPO decide, não só o código. "Ocupado" é um 200: o
+                    // pedido foi aceito, entendido e registrado — o que não vai
+                    // acontecer é o PC subir agora. Ler só o status faria o app
+                    // esperar para sempre por um servidor que ninguém mandou subir.
+                    r.isSuccessful -> {
+                        val o = try {
+                            JSONObject(r.body?.string().orEmpty())
+                        } catch (e: Exception) {
+                            null      // corpo ilegível: cai no comportamento de antes
+                        }
+                        if (o?.optString("estado", "") == "ocupado")
+                            RespostaVigia(PedidoVigia.OCUPADO, o.optString("aviso", ""))
+                        else RespostaVigia(PedidoVigia.ACEITO)
+                    }
+                    else -> RespostaVigia(PedidoVigia.FALHOU)
                 }
             }
         } catch (e: Exception) {
-            PedidoVigia.FALHOU
+            RespostaVigia(PedidoVigia.FALHOU)
         }
     }
 
@@ -252,7 +265,32 @@ data class Conf(val base: String, val token: String)
 data class VigiaStatus(val servidorDePe: Boolean, val subindo: Boolean)
 
 /** Resultado de pedir ao vigia que levante o assistente. */
-enum class PedidoVigia { ACEITO, RECUSADO, FALHOU }
+/**
+ * ⚠ `OCUPADO` é 200, e é por isso que ele PRECISA existir.
+ *
+ * Desde 2026-08-08 o plantão recusa levantar o PC enquanto o dono joga
+ * (`mente_digital/vez.py`) — e responde `200 {"estado":"ocupado"}`, porque nada
+ * falhou: o pedido foi aceito, entendido e registrado. Sem este caso o
+ * `isSuccessful` cairia em `ACEITO`, o app diria "Acordando o PC…" e ficaria na
+ * tela de carregamento PARA SEMPRE, esperando um servidor que ninguém mandou
+ * subir. Seria o mesmo defeito de 2026-08-02 ("procurando o servidor…" eterno),
+ * por uma porta nova.
+ */
+enum class PedidoVigia { ACEITO, RECUSADO, OCUPADO, FALHOU }
+
+/**
+ * A resposta do plantão, com o RECADO que ele mandou junto.
+ *
+ * O texto não é montado aqui de propósito: quem decide o que se conta a quem
+ * pede — e sobretudo o que NÃO se conta (que o dono está jogando) — é o
+ * servidor, em `vez.texto_ao_pedinte`. Uma segunda cópia da frase no cliente
+ * divergiria, e a que vaza seria justamente esta, porque é a que roda no
+ * aparelho de outra pessoa.
+ *
+ * `aviso` vazio é o normal: só o `OCUPADO` traz texto, e o chamador tem um
+ * fallback para servidor de versão antiga, que responde 200 sem o campo.
+ */
+data class RespostaVigia(val tipo: PedidoVigia, val aviso: String = "")
 
 /**
  * A resposta de `/api/energia` — estado e a medição que o servidor fez.
