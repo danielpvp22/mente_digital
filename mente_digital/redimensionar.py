@@ -85,6 +85,14 @@ CANTO = 16
 _WM_NCHITTEST = 0x0084
 _WM_NCCALCSIZE = 0x0083
 _WM_GETMINMAXINFO = 0x0024
+#: ⚠ `WM_NCCALCSIZE` governa a GEOMETRIA da área não-cliente, não a PINTURA dela —
+#: e são coisas separadas. Medido em 2026-08-08 na janela real: com a moldura
+#: geometricamente zerada, o Windows ainda pintava `SystemColors.ActiveBorder`
+#: (#B4B4B4) numa faixa de 8 px por cima da nossa, sempre que a janela tinha
+#: foco. Provado por eliminação: com foco #B4B4B4, sem foco #FFFFFF (o `--bg` do
+#: tema, ou seja, a faixa certa por baixo). Estes dois calam a pintura.
+_WM_NCPAINT = 0x0085
+_WM_NCACTIVATE = 0x0086
 _GWL_STYLE = -16
 _GWLP_WNDPROC = -4
 _WS_THICKFRAME = 0x00040000
@@ -403,6 +411,21 @@ def instalar(hwnd: int, margem: int = MARGEM, canto: int = CANTO,
                 except Exception as exc:                      # noqa: BLE001
                     print(f"[APP] piso de tamanho não aplicado: {exc}")
                 return r
+            if msg == _WM_NCPAINT:
+                # Engole a pintura da moldura. Zerar a GEOMETRIA (`WM_NCCALCSIZE`)
+                # não impede o Windows de PINTAR: são mensagens diferentes, e a de
+                # pintura continuava desenhando a moldura ativa por cima da faixa
+                # que devolve as alças — 8 px de cinza em volta da página, o tempo
+                # todo em que a janela está à frente. Devolver 0 diz "já pintei".
+                return 0
+            if msg == _WM_NCACTIVATE:
+                # O outro lado do mesmo defeito: ao ganhar/perder foco o Windows
+                # REPINTA a moldura, e por isso o cinza aparecia exatamente com a
+                # janela ativa. `lParam = -1` é o contrato documentado para "mude o
+                # estado, NÃO redesenhe" — sem ele o `DefWindowProc` volta a pintar
+                # a cada alt-tab. Encadeamos em vez de devolver TRUE seco porque o
+                # WinForms também escuta esta mensagem para o próprio estado.
+                return _encadear(janela, msg, wparam, -1)
             maximizada = bool(user32.IsZoomed(ctypes.c_void_p(hwnd)))
             if msg == _WM_NCCALCSIZE and wparam and not maximizada:
                 # A moldura que o `WS_THICKFRAME` traz de volta passa a ter
