@@ -209,6 +209,20 @@ class Ponte:
             salvar_geometria(self._janela)
             self._janela.destroy()
 
+    def moldura(self, cor: str) -> bool:
+        """O front avisa a cor de fundo do tema vigente; a faixa acompanha.
+
+        A casca reserva 6 px em volta da página para devolver as alças de
+        redimensionar que o `frameless` levou, e essa faixa é pintada pelo
+        WinForms — ela NÃO enxerga o CSS. Sem este aviso, quem abre no tema claro
+        vê um friso quase-preto em volta da página branca. Ver
+        `redimensionar.pintar_faixa`, que valida a cor antes de usá-la."""
+        if not self._janela:
+            return False
+        from mente_digital import redimensionar
+
+        return redimensionar.pintar_faixa(self._janela, cor)
+
     def info(self) -> dict:
         """O front pergunta em que casca está rodando."""
         return {"nativo": True, "plataforma": sys.platform, "maximizada": self._maximizada}
@@ -394,6 +408,20 @@ body.dormindo #anel{animation:none}
 <script>
 const CIRC = 2 * Math.PI * 45;
 function api(m){ if (window.pywebview && window.pywebview.api) window.pywebview.api[m](); }
+
+// A faixa de 6px que devolve as alças de redimensionar é pintada pelo WinForms e
+// não enxerga este CSS (ver `Ponte.moldura`). A tela de boot avisa a própria cor
+// porque o claro DELA (`#F7F7F9`) não é o claro da página (`#FFFFFF`) — uma
+// tabela só em Python erraria um dos dois. Ela segue o sistema, então o listener
+// existe para quem troca o tema do Windows com o app subindo.
+function avisarMoldura(){
+  const cor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (cor && window.pywebview && window.pywebview.api && window.pywebview.api.moldura)
+    window.pywebview.api.moldura(cor);
+}
+avisarMoldura();
+window.addEventListener('pywebviewready', avisarMoldura);
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', avisarMoldura);
 
 // Chamado do Python (evaluate_js) a cada tique do poller. Nada aqui inventa
 // número: pct e serviços vêm dos marcos REAIS lidos do AppContext.
@@ -908,6 +936,12 @@ def _argumentos() -> argparse.Namespace:
                    help="registra o app na pasta Inicializar do Windows (modo standby).")
     p.add_argument("--remover-inicio", action="store_true",
                    help="desfaz o --instalar-inicio.")
+    p.add_argument("--instalar-atalho", action="store_true",
+                   help="cria o atalho do app no Menu Iniciar (onde a busca do Windows "
+                        "acha) e na Área de Trabalho. É o que faz 'Fixar na barra de "
+                        "tarefas' fixar o Mente Digital em vez do python.exe.")
+    p.add_argument("--remover-atalho", action="store_true",
+                   help="desfaz o --instalar-atalho.")
     p.add_argument("--largura", type=int, default=430)
     p.add_argument("--altura", type=int, default=900)
     p.add_argument("--com-moldura", action="store_true",
@@ -939,6 +973,37 @@ def _gerir_inicio_automatico(args) -> Optional[int]:
     print("[APP] no próximo logon fica de plantão o VIGIA (~60 MB, sem modelo nenhum). "
           "Ele levanta o assistente quando o celular pedir, autenticado.")
     print("[APP] para desfazer: python app.py --remover-inicio")
+    return 0
+
+
+def _gerir_atalho(args) -> Optional[int]:
+    """Cria/apaga os atalhos do app e ENCERRA. Devolve o código de saída, ou None
+    quando não era esse o pedido.
+
+    Sai em vez de seguir para a janela pelo mesmo motivo do `--instalar-inicio`:
+    quem digita isto quer configurar o sistema, não abrir o assistente."""
+    if not (args.instalar_atalho or args.remover_atalho):
+        return None
+    from mente_digital import atalho_windows as atalho
+
+    if args.remover_atalho:
+        apagados = atalho.remover()
+        print(f"[APP] atalhos removidos: {len(apagados)}")
+        for caminho in apagados:
+            print(f"       {caminho}")
+        return 0
+    try:
+        destinos = atalho.instalar(BASE_DIR, APP_ID)
+    except Exception as exc:                       # noqa: BLE001 - pedido explícito: falha aparece
+        print(f"[APP] não consegui criar o atalho: {exc}")
+        return 1
+    for caminho in destinos:
+        print(f"[APP] atalho criado: {caminho}")
+    print("[APP] o Menu Iniciar e a busca do Windows já acham 'Mente Digital'.")
+    print("[APP] ⚠ se você JÁ tinha fixado o app na barra, DESAFIXE e fixe de novo: "
+          "o Windows guarda o pin antigo (que apontava para o python.exe) e não o "
+          "reescreve sozinho.")
+    print("[APP] para desfazer: python app.py --remover-atalho")
     return 0
 
 
@@ -1029,6 +1094,9 @@ def main() -> int:
     saida = _gerir_inicio_automatico(args)
     if saida is not None:
         return saida
+    saida = _gerir_atalho(args)
+    if saida is not None:
+        return saida
 
     if args.vigia:
         # Sai por aqui ANTES de qualquer coisa: o valor do vigia é não ter
@@ -1059,7 +1127,25 @@ def main() -> int:
         alvo_host, alvo_porta = host, porta
         if rede.porta_em_uso(host, porta):
             # Já tem um servidor de pé — não sobe um segundo (seria o zumbi de
-            # VRAM que o rede.py documenta). Só abre a janela nele.
+            # VRAM que o rede.py documenta). Resta decidir entre TRAZER a janela
+            # dele (instância única) ou criar uma apontada nele.
+            from mente_digital import janela_unica
+
+            # Só quem ia MESMO abrir uma janela nativa visível. `--standby` e
+            # `--oculto` não querem nada na frente (quem pediu está em outro
+            # cômodo); `--sem-janela` e `--navegador` nem chegam a criar janela —
+            # e ambos são decididos mais ABAIXO nesta função, então precisam ser
+            # antecipados aqui ou o app sairia sem fazer o que foi pedido.
+            quer_janela = not (args.standby or args.oculto
+                               or args.sem_janela or args.navegador)
+            hwnd = janela_unica.achar_janela(TITULO) if quer_janela else 0
+            if janela_unica.decidir(True, bool(hwnd), quer_janela) == "restaurar":
+                if janela_unica.trazer_para_frente(hwnd):
+                    print("[APP] o Mente Digital já estava aberto — trouxe a janela "
+                          "para a frente em vez de subir outro.")
+                    return 0
+                # Não veio para a frente: seguimos para o caminho antigo (criar uma
+                # janela nova). Melhor duas janelas do que nenhuma.
             print(f"[APP] porta {porta} já ocupada — abrindo a janela no servidor existente.")
             # Rota aberta (`/api/health`) — ver o comentário do ramo `--remoto` acima.
             ler_marcos = lambda: _prontos_remotos(url, settings.access_token)   # noqa: E731
@@ -1132,6 +1218,11 @@ def main() -> int:
         # borda é só o recorte da região.
         shadow=False,
     )
+    # Aqui, e não só no `_acompanhar_boot`: a tela de boot avisa a cor do tema
+    # (`Ponte.moldura`) assim que carrega, e o poller que fazia esta amarração
+    # sobe numa thread do pywebview — sem isto o primeiro aviso chegaria a uma
+    # `Ponte` ainda sem janela e a faixa ficaria escura na tela de boot clara.
+    ponte._janela = janela
     # ---- bandeja: o X esconde, não encerra --------------------------------
     # Sem isto, fechar a janela custaria os ~36 s de boot para reabrir — e o app
     # foi feito para ficar aberto o dia inteiro. `_sair` é a única saída de
@@ -1207,6 +1298,34 @@ def main() -> int:
     janela.events.shown += lambda: arredondar_janela(janela)
     if hasattr(janela.events, "resized"):
         janela.events.resized += lambda *a: arredondar_janela(janela)
+
+    # ---- as alças que o `frameless` levou ---------------------------------
+    # Sem moldura não há área NÃO-CLIENTE, e é lá que vivem as alças de
+    # redimensionar do Windows — não sobrava um pixel para agarrar ao
+    # desmaximizar (queixa do dono, 2026-08-05). `ativar` reserva 6 px no
+    # formulário (o WebView2 empilha filhos sobre a janela INTEIRA, e sem esses
+    # pixels o `WM_NCHITTEST` nunca chegaria até nós) e responde ali borda e
+    # canto. O piso sai do `min_size` acima — uma fonte só.
+    #
+    # ⚠ SÓ no modo sem moldura. Com `--com-moldura` o Windows já desenha as
+    # alças, e o `WM_NCCALCSIZE` do módulo (que responde 0 para zerar a espessura
+    # da moldura) APAGARIA a barra de título nativa que a flag existe para
+    # mostrar. O gate é a mesma expressão do `frameless=` lá em cima.
+    #
+    # No MESMO `shown` do arredondamento e pela mesma razão dele: antes disso
+    # `janela.native` é None e não há HWND. Import aqui dentro como o da
+    # `Bandeja` — mantém o módulo fora do grafo de import do `app.py`, que cinco
+    # arquivos de teste carregam no CI Linux.
+    if not args.com_moldura:
+        from mente_digital import redimensionar
+
+        janela.events.shown += lambda: redimensionar.ativar(janela)
+        if hasattr(janela.events, "resized"):
+            # Só a faixa é reaplicada: `instalar` é idempotente por HWND e sai na
+            # primeira linha. Ela precisa voltar porque é calculada em pixel
+            # FÍSICO — mudar de monitor muda o DPI, e a alça de 6 px medida a
+            # 100% vira fina demais numa tela a 150%.
+            janela.events.resized += lambda *a: redimensionar.reservar_borda(janela)
 
     def _dormir_e_esperar() -> None:
         """O ciclo do `--standby`: solta os modelos e espera alguém querer o assistente.

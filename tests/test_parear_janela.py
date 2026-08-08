@@ -65,3 +65,49 @@ def test_nao_toca_no_resto_do_arquivo():
     saida = env_com(entrada, CHAVE, "x")
     assert saida.startswith(entrada)
     assert "MENTE_ACCESS_TOKEN=segredo" in saida
+
+
+# --------------------------------------------------------------------------- #
+# O `--base`: a porta de socorro tem de abrir JUSTAMENTE quando é necessária   #
+# --------------------------------------------------------------------------- #
+class TestBaseDefault:
+    """O defeito que estes testes existem para impedir de voltar.
+
+    Até 2026-08-08 o default era `https://127.0.0.1:PORTA` com verificação
+    ESTRITA de TLS — e o certificado desta máquina cobre só o nome MagicDNS.
+    Nenhum certificado público pode cobrir um IP de loopback, então o script
+    falhava por NOME. E o `except` largo imprimia "não alcancei o servidor", o que
+    manda procurar rede caída quando o servidor respondeu perfeitamente.
+
+    Isso importa mais que um bug comum: este é o script de RESGATE da credencial.
+    Ele quebrar em silêncio significa quebrar no único dia em que se precisa dele.
+    """
+
+    def test_em_https_o_default_nao_e_loopback(self, tmp_path):
+        """A regra vem de `app._host_da_janela` — mesma fonte da janela nativa,
+        para não haver duas cópias que divirjam no primeiro conserto de uma."""
+        import app
+
+        cert = tmp_path / "maquina-exemplo.tail0a1b2c.ts.net.crt"
+        cert.write_text("não é um PEM de verdade", encoding="utf-8")
+        host = app._host_da_janela("https", str(cert))
+        assert host == "maquina-exemplo.tail0a1b2c.ts.net"
+        assert host not in ("127.0.0.1", "localhost")
+
+    def test_sem_tls_o_loopback_continua_certo(self):
+        """Em `http` não há nome a conferir, e o IP é o caminho que não depende de
+        DNS nenhum — inverter isto quebraria quem roda sem certificado."""
+        import app
+
+        assert app._host_da_janela("http", "") == "127.0.0.1"
+
+    def test_o_erro_de_certificado_nao_se_disfarca_de_queda_de_rede(self):
+        """Certificado e rede são defeitos DIFERENTES, e o `urllib` embrulha os
+        dois no mesmo `URLError`. O ramo tem de existir — sem ele o dono lê "não
+        alcancei o servidor" e vai depurar a rede enquanto o servidor responde."""
+        import inspect
+        import ssl as _ssl
+
+        fonte = inspect.getsource(parear_janela._resgatar)
+        assert "SSLCertVerificationError" in fonte
+        assert hasattr(_ssl, "SSLCertVerificationError")     # existe no Python desta env

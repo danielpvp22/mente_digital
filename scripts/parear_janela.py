@@ -81,6 +81,19 @@ def _resgatar(base: str, codigo: str) -> Optional[str]:
     except urllib.error.HTTPError as erro:
         print(f"  o servidor RECUSOU ({erro.code}): {erro.read().decode()[:200]}")
         return None
+    except urllib.error.URLError as erro:
+        # ⚠ CERTIFICADO E REDE SÃO DEFEITOS DIFERENTES, e o `urllib` embrulha os
+        # dois no MESMO `URLError`. Dizer "não alcancei o servidor" quando o
+        # servidor respondeu e só o NOME não conferiu manda procurar no lugar
+        # errado — e aqui esse é o caso provável, porque o certificado desta
+        # máquina cobre só o nome MagicDNS. Ver `--base` em `main`.
+        if isinstance(erro.reason, ssl.SSLCertVerificationError):
+            print(f"  o CERTIFICADO não cobre este endereço: {erro.reason}")
+            print("     use --base https://<nome-que-o-cert-cobre>:<porta> — o mesmo "
+                  "host que a janela nativa carrega.")
+        else:
+            print(f"  não alcancei o servidor: {erro.reason}")
+        return None
     except Exception as erro:                                    # noqa: BLE001
         print(f"  não alcancei o servidor: {erro}")
         return None
@@ -96,9 +109,22 @@ def main(argv: Optional[list] = None) -> int:
     from mente_digital.config import settings
 
     esquema = "https" if settings.ssl_cert else "http"
+    # ⚠ O HOST SAI DA MESMA REGRA DA JANELA, não de `127.0.0.1` cravado. Este
+    # script é a PORTA DE SOCORRO — é por ele que se recupera a credencial quando
+    # o acesso quebrou — e com o default antigo ele falhava JUSTAMENTE aí: em
+    # `https` o `create_default_context` verifica o NOME, e nenhum certificado
+    # público pode cobrir um IP de loopback. É a regressão que
+    # `app._host_da_janela` já documenta e conserta desde 2026-08-04; o script
+    # tinha ficado para trás, e o `except` largo ainda a disfarçava de queda de
+    # rede. Reusar a função é o ponto: duas cópias da regra divergem no primeiro
+    # conserto de uma — a mesma razão de `aparelhos.avaliar` chamar
+    # `acesso.cliente_autorizado` em vez de reimplementá-la.
+    from app import _host_da_janela
+
+    host = _host_da_janela(esquema, settings.ssl_cert)
     parser = argparse.ArgumentParser(description="Pareia a janela nativa do PC.")
-    parser.add_argument("--base", default=f"{esquema}://127.0.0.1:{settings.port}",
-                        help="endereço do servidor (default: o loopback deste PC)")
+    parser.add_argument("--base", default=f"{esquema}://{host}:{settings.port}",
+                        help="endereço do servidor (default: o mesmo host que a janela nativa usa)")
     parser.add_argument("--apelido", default="janela do PC")
     parser.add_argument("--usuario", default="daniel")
     args = parser.parse_args(argv)

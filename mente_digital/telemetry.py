@@ -497,6 +497,21 @@ class Database:
                     resumo TEXT, data TEXT, resolvido INTEGER DEFAULT 0,
                     UNIQUE(fonte_a, fonte_b))"""
             )
+            # MENSAGEIRO (2026-08-05): o canal usuário -> MESTRE (bug, pedido, livre) e a
+            # resposta dele. Ver mensageiro.py para a regra de quem lê o quê.
+            #
+            # ⚠ ESTA TABELA NÃO ENTRA NA SEGMENTAÇÃO POR `dono` ABAIXO, e a exceção é o
+            # ponto inteiro dela: uma mensagem tem DUAS pontas. Uma coluna `dono` teria de
+            # escolher uma — e qualquer escolha some com a linha para o outro lado (o
+            # remetente perde o que escreveu, ou o destinatário nunca recebe). O filtro
+            # aqui é `remetente = ? OR destinatario = ?`, que é a mesma promessa por outro
+            # meio: ninguém lê a linha em que não está.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS mensagens
+                   (id INTEGER PRIMARY KEY AUTOINCREMENT, remetente TEXT,
+                    destinatario TEXT, texto TEXT, tipo TEXT, criada_em TEXT,
+                    lida_em TEXT)"""
+            )
             # -- Segmentação por DONO (multiusuário, 2026-08-03) --------------------
             # Só as tabelas PESSOAIS entram aqui. O que é da MÁQUINA (metricas_latencia,
             # log_etl, base_snapshot, router_log, academico_pdfs, contradicoes) fica como
@@ -514,6 +529,11 @@ class Database:
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agend_dono ON agendamentos (dono, status)"
             )
+            # A caixa do MESTRE é lida por cinco pessoas e cresce sem podar; os dois
+            # índices cobrem os dois lados do OR (o SQLite não usa um índice composto
+            # para um OR entre colunas diferentes).
+            c.execute("CREATE INDEX IF NOT EXISTS idx_msg_dest ON mensagens (destinatario)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_msg_rem ON mensagens (remetente)")
             conn.commit()
 
     @staticmethod
@@ -1340,6 +1360,118 @@ class Database:
         except Exception as exc:
             telemetry.error("SQLITE", "Erro ao ler comandos desconhecidos", exc)
             return []
+
+    # ---- Mensageiro (2026-08-05): o canal usuário <-> MESTRE ----
+    # ⚠ Nenhum método daqui usa `_dono_para_consulta()` como FILTRO de uma coluna `dono`
+    # — a tabela não tem essa coluna, e o porquê está no DDL. O que ele devolve continua
+    # sendo a fonte única de "quem está pedindo"; o que muda é a cláusula, que casa as
+    # DUAS pontas. É por isso que `_eu()` existe em vez de cada método chamar direto:
+    # um único lugar para ler, um único lugar para consertar.
+    @staticmethod
+    def _eu() -> str:
+        """Quem está pedindo. Mesmo contrato do `_dono_para_consulta`: com a segmentação
+        ligada, esquecer de marcar o dono FALHA ALTO em vez de virar a caixa do 'daniel'."""
+        return _dono_para_consulta()
+
+    _COLS_MENSAGEM = "id, remetente, destinatario, texto, tipo, criada_em, lida_em"
+
+    @staticmethod
+    def _linha_mensagem(row: tuple) -> dict:
+        i, rem, dest, txt, tp, criada, lida = row
+        return {"id": i, "remetente": rem, "destinatario": dest, "texto": txt,
+                "tipo": tp, "criada_em": criada, "lida_em": lida}
+
+    def salvar_mensagem(self, remetente: str, destinatario: str, texto: str,
+                        tipo: str, criada_em: str) -> Optional[int]:
+        """Grava e devolve o id. `None` = não gravou — e o chamador PRECISA olhar: o
+        push ao vivo sem a linha durável seria uma mensagem que existiu só enquanto o
+        celular estava aberto.
+
+        O remetente NÃO sai de `_eu()`: quem chama pode estar agindo em nome de outro
+        (o mestre respondendo). Passar explícito é o que deixa `responder()` derivar as
+        pontas da mensagem original em vez de o servidor adivinhar."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    """INSERT INTO mensagens
+                       (remetente, destinatario, texto, tipo, criada_em, lida_em)
+                       VALUES (?, ?, ?, ?, ?, NULL)""",
+                    (remetente, destinatario, texto, tipo, criada_em),
+                )
+                conn.commit()
+                return cur.lastrowid
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao salvar mensagem", exc)
+            return None
+
+    def listar_mensagens(self, limit: int = 100, apenas_nao_lidas: bool = False,
+                         de: Optional[str] = None) -> list[dict]:
+        """As MINHAS mensagens (escritas por mim ou para mim), mais novas primeiro.
+
+        `apenas_nao_lidas` olha só o que chegou PARA mim: uma mensagem que eu escrevi
+        nunca está "não lida" para mim, e contá-la faria o crachá da caixa mentir.
+        `de` estreita a um interlocutor — é o que monta a conversa com UMA pessoa sem
+        trazer a caixa inteira.
+        """
+        eu = self._eu()
+        try:
+            with self._conn() as conn:
+                sql = (f"SELECT {self._COLS_MENSAGEM} FROM mensagens "
+                       "WHERE (remetente = ? OR destinatario = ?)")
+                params: tuple = (eu, eu)
+                if apenas_nao_lidas:
+                    sql += " AND destinatario = ? AND lida_em IS NULL"
+                    params += (eu,)
+                if de:
+                    sql += " AND (remetente = ? OR destinatario = ?)"
+                    params += (de, de)
+                rows = conn.execute(
+                    sql + " ORDER BY id DESC LIMIT ?", params + (limit,)).fetchall()
+            return [self._linha_mensagem(r) for r in rows]
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao listar mensagens", exc)
+            return []
+
+    def get_mensagem(self, msg_id: int) -> Optional[dict]:
+        """UMA mensagem minha, pelo id. Filtrada pelas duas pontas na própria SQL, pelo
+        mesmo motivo do `AND dono` do `cancelar_agendamento`: `msg_id` é um número que
+        trafega pelo cliente, e sem a cláusula bastava chutá-lo para ler a caixa alheia.
+
+        Devolve `None` tanto para "não existe" quanto para "não é sua" — de propósito.
+        Distinguir os dois casos transformaria a rota num oráculo que conta quantas
+        mensagens existem na casa."""
+        eu = self._eu()
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    f"SELECT {self._COLS_MENSAGEM} FROM mensagens "
+                    "WHERE id = ? AND (remetente = ? OR destinatario = ?)",
+                    (msg_id, eu, eu),
+                ).fetchone()
+            return self._linha_mensagem(row) if row else None
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao ler mensagem", exc)
+            return None
+
+    def marcar_mensagem_lida(self, msg_id: int, lida_em: str) -> bool:
+        """True se ESTA mensagem, endereçada A MIM e ainda não lida, virou lida.
+
+        `AND destinatario = ?` e não a cláusula das duas pontas: quem escreveu não marca
+        a própria mensagem como lida — isso apagaria o não-lido da caixa do outro sem
+        que ele tivesse aberto nada. `AND lida_em IS NULL` torna a operação idempotente
+        e faz o `False` significar "nada mudou", nunca "falhou"."""
+        try:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE mensagens SET lida_em = ? "
+                    "WHERE id = ? AND destinatario = ? AND lida_em IS NULL",
+                    (lida_em, msg_id, self._eu()),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as exc:
+            telemetry.error("SQLITE", "Erro ao marcar mensagem como lida", exc)
+            return False
 
     # ---- Auditoria (#27): trilha de ações dos agentes ----
     def registrar_auditoria(self, acao: str, detalhe: str) -> None:

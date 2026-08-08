@@ -16,6 +16,11 @@ Tipos de agendamento (coluna `tipo`):
 - 'pomodoro' : ciclo foco<->pausa; cada disparo anuncia a transição e reprograma a próxima.
 - 'seguranca': alerta para o MESTRE que não achou ninguém conectado. Não nasce de um
                pedido do usuário — é a fila durável reusada para o push não se perder.
+- 'mensagem' : aviso do mensageiro (usuário -> MESTRE e a resposta dele) que não achou
+               o destinatário conectado. Também não é um pedido do usuário: a mensagem
+               em si vive na tabela `mensagens`, e aqui está só o CARTEIRO — a mesma
+               fila, pelo mesmo motivo (ela já sabe reentregar, esperar o ack e não
+               duplicar). Ver mensageiro.py.
 
 Pilares respeitados:
 - GPU serializada: watcher e briefing usam o LLM só depois de `interactive_idle.wait()`
@@ -51,6 +56,7 @@ from mente_digital import backup
 from mente_digital import calendario
 from mente_digital import energia
 from mente_digital import identidade
+from mente_digital import mensageiro
 from mente_digital import potencia
 from mente_digital import tomada
 from mente_digital import prompts
@@ -626,6 +632,8 @@ class SchedulerService:
                 await self._disparar_pomodoro(ag, agora)
             elif tipo == "seguranca":
                 await self._disparar_alerta(ag, agora)
+            elif tipo == "mensagem":
+                await self._disparar_mensagem(ag, agora)
             else:
                 telemetry.warn("SCHEDULER", f"Tipo de agendamento desconhecido: {tipo!r} (id {ag['id']}).")
                 await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="cancelado")
@@ -660,6 +668,12 @@ class SchedulerService:
                 dados = self._payload(ag)
                 await self._empurrar_card_seguranca(
                     dados.get("titulo", "alerta"), dados.get("detalhe", ""), ag["mensagem"])
+            elif ag["tipo"] == "mensagem":
+                # Mesmo raciocínio do alerta: o card leva os campos separados (id, tipo,
+                # remetente) que a tela do mensageiro desenha e que a bolha falada não
+                # carrega. Reentregar só a fala deixaria a mensagem sem o botão de
+                # responder — ela CHEGOU, mas não dá para agir sobre ela.
+                await self._empurrar_card_mensagem(self._payload(ag))
             if not await self._notificar_falado(ag["mensagem"], ack_id=str(ag["id"])):
                 return  # ainda sem ouvinte real; tenta no próximo tick
             self._aguardando_ack[str(ag["id"])] = (ag, agora)
@@ -707,6 +721,13 @@ class SchedulerService:
                 # segurança procura pela ação de segurança, não no meio dos alarmes.
                 await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
                 await asyncio.to_thread(db.registrar_auditoria, "alerta_seguranca_entregue", ag["mensagem"])
+            elif ag["tipo"] == "mensagem":
+                # Ramo próprio pelo mesmo motivo do alerta, e não por simetria: sem ele a
+                # entrega cairia no `else`, que audita "lembrete_disparado" — e a trilha
+                # do dono passaria a mostrar alarmes que ele nunca criou. A linha da
+                # tabela `mensagens` é a fonte da verdade; este agendamento é só o
+                # carteiro, e o carteiro termina aqui (mensagem não recorre).
+                await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="concluido")
             else:
                 await asyncio.to_thread(db.registrar_auditoria, "lembrete_disparado", ag["mensagem"])
                 await self._reprogramar_ou_concluir(ag, agora)
@@ -1109,6 +1130,95 @@ class SchedulerService:
         """Alerta que ficou 'ativo' (o update que o marcaria como pendente falhou, ou um
         tick correu no meio da gravação). Mesmo desenho pessimista do lembrete: marca
         pendente JÁ e só o ack conclui."""
+        await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
+        await self._entregar_pendente(ag, agora)
+
+    # -- mensageiro usuário <-> MESTRE (2026-08-05) -----------------------------
+    async def entregar_mensagem(self, msg: mensageiro.Mensagem) -> bool:
+        """Empurra uma mensagem ao DESTINATÁRIO dela. True se alguma sessão dele aceitou.
+
+        Por que aqui e não num serviço novo: o problema "avisar alguém que pode não
+        estar conectado" já foi resolvido uma vez neste arquivo, com fila durável,
+        reentrega no accept do WebSocket e ack de aplicação. Um segundo mecanismo teria
+        de reaprender as três coisas — e a que se esquece é sempre a mesma (o ack), o
+        que devolve o push que "some" sem erro.
+
+        A linha da tabela `mensagens` já foi gravada pelo chamador ANTES daqui: falhar a
+        entrega não pode perder a mensagem, só adiar o aviso. Quem não recebeu push
+        nenhum ainda vê tudo em `GET /api/mensagens`."""
+        texto = mensageiro.falar(msg)
+        try:
+            # O `usar_dono` do DESTINATÁRIO é o que faz o `_sessoes_do_dono` escolher o
+            # celular certo E o `criar_agendamento` do pendente cair na fila dele. Sem
+            # ele, a mensagem para a Ana ficaria pendente na caixa de quem a enviou.
+            with identidade.usar_dono(msg.destinatario):
+                await self._empurrar_card_mensagem(self._card_mensagem(msg))
+                # A ENTREGA é medida pela bolha falada, e não pelo card, pelo mesmo
+                # motivo do alerta: é ela que o front de hoje exibe e ACKA. Card sem
+                # bolha seria "chegou" para um cliente que ainda não sabe desenhá-lo.
+                entregue = await self._notificar_falado(texto)
+                if not entregue:
+                    await self._guardar_mensagem_pendente(msg, texto)
+                return entregue
+        except Exception as exc:
+            telemetry.error("MENSAGEIRO",
+                            f"Falha ao entregar a mensagem {msg.id} a {msg.destinatario}", exc)
+            return False
+
+    @staticmethod
+    def _card_mensagem(msg: mensageiro.Mensagem) -> dict:
+        """O payload rico. Guardado no `payload` do pendente EXATAMENTE como vai para o
+        socket, para a reentrega desenhar o mesmo card do ao vivo.
+
+        ⚠ `classe` carrega o tipo da MENSAGEM (bug/pedido/livre) porque a chave `tipo`
+        já é do ENVELOPE — é por ela que o front roteia o push, como em "proativo" e
+        "energia". As duas colidiam: o `**msg.para_json()` sobrescrevia o envelope com
+        "bug", e o `_empurrar_card_mensagem` o restaurava logo em seguida, de modo que a
+        mensagem chegava íntegra e SEM o rótulo que o mestre usa para triar — um relato
+        de problema indistinguível de um "oi", sem nada falhar em lugar nenhum. Duplicar
+        num nome próprio é o que impede a colisão de voltar no próximo campo novo."""
+        return {**msg.para_json(), "tipo": "mensagem", "classe": msg.tipo}
+
+    async def _empurrar_card_mensagem(self, card: dict) -> bool:
+        """`{"tipo":"mensagem", ...}` para as sessões do dono do contexto.
+
+        ⚑ PONTO DE EXTENSÃO — o push FCM entra AQUI, como no card de segurança: é a
+        única função que sabe "esta mensagem precisa sair da máquina", e ela já roda sob
+        a identidade do destinatário."""
+        if not card:
+            return False
+        card = {**card, "tipo": "mensagem"}   # a reentrega remonta do payload gravado
+        entregue = False
+        for s in self._sessoes_do_dono(identidade.dono_atual()):
+            try:
+                entregue = await s.safe_send(card) or entregue
+            except Exception as exc:            # noqa: BLE001 - sessão morrendo
+                telemetry.warn("MENSAGEIRO", f"Não consegui enviar o card a uma sessão: {exc}")
+        return entregue
+
+    async def _guardar_mensagem_pendente(self, msg: mensageiro.Mensagem, texto: str) -> None:
+        """Sem ouvinte, o aviso entra na MESMA fila durável dos lembretes e dos alertas.
+
+        O que fica pendente é o AVISO, não a mensagem: ela já está gravada e visível na
+        caixa. Por isso um pendente perdido é um incômodo (a pessoa descobre ao abrir o
+        app), e não uma perda — o oposto do lembrete, onde a fila É o dado."""
+        agora = datetime.now().isoformat()
+        ag_id = await asyncio.to_thread(
+            db.criar_agendamento, "mensagem", texto, agora,
+            payload=json.dumps(self._card_mensagem(msg)))
+        if ag_id is None:
+            telemetry.error("MENSAGEIRO",
+                            f"Mensagem {msg.id} sem ouvinte NÃO pôde ser enfileirada.")
+            return
+        # Nasce 'ativo' (único status que o `criar_agendamento` escreve) e vira pendente
+        # em seguida. Um tick nessa fresta cai no `_disparar_mensagem`, que cobre.
+        await asyncio.to_thread(db.atualizar_agendamento, ag_id, status="pendente_entrega")
+        telemetry.track("MENSAGEIRO",
+                        f"Mensagem {msg.id} guardada para a próxima conexão de {msg.destinatario!r}.")
+
+    async def _disparar_mensagem(self, ag: dict, agora: datetime) -> None:
+        """Aviso que ficou 'ativo' (o update que o marcaria pendente falhou, ou um tick
+        correu no meio da gravação). Mesmo desenho pessimista do lembrete e do alerta."""
         await asyncio.to_thread(db.atualizar_agendamento, ag["id"], status="pendente_entrega")
         await self._entregar_pendente(ag, agora)
 

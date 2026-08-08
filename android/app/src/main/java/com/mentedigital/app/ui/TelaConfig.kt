@@ -34,7 +34,15 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun TelaConfig(ajustes: Ajustes, servidor: Servidor, aoConcluir: () -> Unit) {
-    var base by remember { mutableStateOf(ajustes.base.ifEmpty { "http://192.168.15.13:8000" }) }
+    // ⚠ NASCE VAZIO, e isso não é descuido — o padrão daqui era o IP de LAN da casa de
+    // quem construiu o APK, cravado no código, e ele viajava dentro do APK: quem recebesse o app abriria a
+    // configuração com o endereço da rede do dono já digitado. Vazamento de um lado e,
+    // do outro, um endereço que não funciona mais NEM PARA ELE — o TLS entrou e o
+    // certificado cobre só o nome do Tailscale, então a LAN é rejeitada por nome.
+    // Campo vazio deixa o `placeholder` (genérico) ensinar o formato, e quem chega pelo
+    // convite recebe o endereço certo escrito lá. Medido em 2026-08-05 varrendo o próprio
+    // APK: era a ÚNICA string concreta desta máquina nas 151 entradas.
+    var base by remember { mutableStateOf(ajustes.base) }
     var token by remember { mutableStateOf(ajustes.token) }
     var testando by remember { mutableStateOf(false) }
     var resultado by remember { mutableStateOf<Saude?>(null) }
