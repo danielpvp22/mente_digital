@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from mente_digital import vigia
+from mente_digital import vez, vigia
 
 
 # --------------------------------------------------------------------------- #
@@ -490,3 +490,131 @@ def test_recusa_por_lotacao_nao_devolve_vaga_que_nunca_pegou():
     # Se cada recusa tivesse liberado uma vaga, haveria 20 vagas sobrando agora.
     p.process_request(None, ("10.0.2.1", 1))
     assert len(p.atendidas) == 1                 # segue com a vaga única ocupada
+
+
+# --------------------------------------------------------------------------- #
+# O plantão respeita o jogo (2026-08-08)                                       #
+# --------------------------------------------------------------------------- #
+class TestRespeitaOJogo:
+    """Levantar o assistente é ~7,7 GB de RAM e a VRAM inteira. Fazer isso no meio
+    de uma raid, por um pedido que podia esperar três minutos, é o pior resultado
+    possível — e era o comportamento até 2026-08-08.
+
+    ⚠ E o caminho é JUSTAMENTE este: aos 20 min o assistente dorme e aos 45 ele
+    SAI, então quem joga três horas quase nunca tem o assistente de pé para um
+    gate dentro dele barrar. Sem o plantão, não há gate."""
+
+    def test_com_jogo_aberto_o_pedido_e_recusado(self):
+        assert vigia.decidir(False, None, "escapefromtarkov.exe").subir is False
+        assert vigia.decidir(False, None, "escapefromtarkov.exe").estado == "ocupado"
+
+    def test_sem_jogo_nada_muda(self):
+        """A função nasce ligada, então o caminho de quem não joga TEM de ser byte
+        a byte o de antes."""
+        assert vigia.decidir(False, None, None).subir is True
+        assert vigia.decidir(False, None, None).estado == "subindo_agora"
+
+    def test_servidor_JA_DE_PE_vence_o_jogo(self):
+        """Se o assistente já está no ar, o jogo não é da conta de ninguém: a
+        pessoa já podia usar um segundo atrás, e recusar agora seria derrubá-la
+        do nada."""
+        assert vigia.decidir(True, None, "tarkov.exe").estado == "ja_de_pe"
+
+    def test_JA_SUBINDO_vence_o_jogo(self):
+        """Aqui já mandamos subir, talvez antes de o jogo abrir. Dizer 'ocupado'
+        seria MENTIRA — o app está vindo de qualquer jeito, e o celular mostraria
+        'não deu' enquanto a tela do PC acende."""
+        assert vigia.decidir(False, 5.0, "tarkov.exe").estado == "subindo"
+
+    def test_o_estado_nao_conta_ao_pedinte_o_que_o_dono_faz(self):
+        """⚠ `ocupado`, nunca `jogo`. O nome atravessa a rede até o aparelho de
+        OUTRA pessoa. O mensageiro inteiro foi desenhado para o poder não vazar
+        numa direção; vazar a atividade do dono na outra é o espelho."""
+        estado = vigia.decidir(False, None, "escapefromtarkov.exe").estado
+        assert "jogo" not in estado and "tarkov" not in estado
+
+    def test_a_recusa_GUARDA_o_pedido(self, tmp_path, monkeypatch):
+        """A recusa só é aceitável porque o pedido não se perde. Sem o bilhete, o
+        pedinte ouve 'não' e o dono nunca fica sabendo que alguém quis entrar."""
+        v = vigia.Vigia(tmp_path)
+        monkeypatch.setattr(v, "jogo_agora", lambda: "escapefromtarkov.exe")
+        monkeypatch.setattr(v, "servidor_de_pe", lambda: False)
+        resposta = v.acordar("ana", "cel-da-ana")
+
+        assert resposta["estado"] == "ocupado"
+        assert "registrado" in resposta["aviso"] or "avisado" in resposta["aviso"]
+        assert v.tem_pedido_pendente() is True
+        guardados = vez.ler_todos((tmp_path / "dados" / "pedidos_de_acesso.jsonl")
+                                  .read_text(encoding="utf-8"))
+        assert [p.usuario for p in guardados] == ["ana"]
+
+    def test_a_recusa_NAO_sobe_o_app(self, tmp_path, monkeypatch):
+        subiu = []
+        monkeypatch.setattr(vigia, "subir_app", lambda raiz: subiu.append(raiz) or True)
+        v = vigia.Vigia(tmp_path)
+        monkeypatch.setattr(v, "jogo_agora", lambda: "tarkov.exe")
+        monkeypatch.setattr(v, "servidor_de_pe", lambda: False)
+        v.acordar("ana")
+        assert subiu == []
+
+    def test_quando_o_jogo_fecha_o_app_SOBE_para_avisar(self, tmp_path, monkeypatch):
+        """A outra metade da promessa. Nessa hora o assistente está DESLIGADO — é a
+        premissa toda —, então não há mais ninguém para notar que o jogo saiu."""
+        subiu = []
+        monkeypatch.setattr(vigia, "subir_app", lambda raiz: subiu.append(raiz) or True)
+        v = vigia.Vigia(tmp_path)
+        monkeypatch.setattr(v, "servidor_de_pe", lambda: False)
+
+        monkeypatch.setattr(v, "jogo_agora", lambda: "tarkov.exe")
+        v.acordar("ana")                       # recusado, pedido guardado
+        assert subiu == []
+        monkeypatch.setattr(v, "jogo_agora", lambda: None)
+        assert v.tique_do_jogo() is True       # o jogo fechou -> sobe
+        assert subiu == [tmp_path]
+
+    def test_jogo_fechado_SEM_ninguem_esperando_nao_acorda_a_maquina(self, tmp_path, monkeypatch):
+        """Levantar 7,7 GB sem ninguém esperando gasta a máquina exatamente no
+        instante em que o dono acabou de sair de um jogo — quando ele menos quer o
+        PC ocupado."""
+        subiu = []
+        monkeypatch.setattr(vigia, "subir_app", lambda raiz: subiu.append(raiz) or True)
+        v = vigia.Vigia(tmp_path)
+        monkeypatch.setattr(v, "servidor_de_pe", lambda: False)
+        monkeypatch.setattr(v, "jogo_agora", lambda: "tarkov.exe")
+        v.tique_do_jogo()                      # marca que havia jogo, sem pedido
+        monkeypatch.setattr(v, "jogo_agora", lambda: None)
+        assert v.tique_do_jogo() is False
+        assert subiu == []
+
+    def test_o_tique_nao_repete_o_disparo(self, tmp_path, monkeypatch):
+        """Agir no ESTADO em vez da BORDA faria cada passada tentar subir um app
+        já de pé — o mesmo raciocínio de `jogo_ativo.decidir`."""
+        subiu = []
+        monkeypatch.setattr(vigia, "subir_app", lambda raiz: subiu.append(raiz) or True)
+        v = vigia.Vigia(tmp_path)
+        monkeypatch.setattr(v, "servidor_de_pe", lambda: False)
+        monkeypatch.setattr(v, "jogo_agora", lambda: "tarkov.exe")
+        v.acordar("ana")
+        monkeypatch.setattr(v, "jogo_agora", lambda: None)
+        assert v.tique_do_jogo() is True
+        assert v.tique_do_jogo() is False      # segunda passada: nada
+        assert len(subiu) == 1
+
+    def test_desligado_o_caminho_e_o_de_hoje(self, tmp_path, monkeypatch):
+        """`MENTE_VIGIA_RESPEITA_JOGO=false` tem de devolver o comportamento
+        anterior por inteiro — inclusive não pagar a leitura de processos."""
+        monkeypatch.setattr(vigia.settings, "vigia_respeita_jogo", False)
+        olhou = []
+        monkeypatch.setattr(vigia.jogo_ativo, "processos_em_execucao",
+                            lambda: olhou.append(1) or [])
+        v = vigia.Vigia(tmp_path)
+        assert v.jogo_agora() is None
+        assert olhou == []
+
+    def test_erro_ao_olhar_processos_nao_tranca_o_dono(self, tmp_path, monkeypatch):
+        """Fail-soft, e o sentido importa: recusar por causa de uma leitura que
+        falhou trocaria um conforto por uma tranca."""
+        monkeypatch.setattr(vigia.settings, "vigia_respeita_jogo", True)
+        monkeypatch.setattr(vigia.jogo_ativo, "processos_em_execucao",
+                            lambda: (_ for _ in ()).throw(OSError("sem permissão")))
+        assert vigia.Vigia(tmp_path).jogo_agora() is None
