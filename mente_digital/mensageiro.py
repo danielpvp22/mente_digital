@@ -43,7 +43,16 @@ from mente_digital import identidade
 TIPO_BUG = "bug"          # "isto está quebrado"
 TIPO_PEDIDO = "pedido"    # "queria que fizesse X"
 TIPO_LIVRE = "livre"      # qualquer outra coisa — o default
-TIPOS = (TIPO_BUG, TIPO_PEDIDO, TIPO_LIVRE)
+# A quarta gaveta (2026-08-08): "alguém quis usar o PC e o plantão recusou porque
+# você estava jogando". Não é `pedido` — aquele é "queria que fizesse X" e espera
+# uma decisão de produto; este é um alerta de DISPONIBILIDADE, com validade curta
+# e uma resposta esperada ("já libero"). Rótulo próprio é o que deixa o mestre
+# triar sem ler: um "a Ana quer entrar agora" perdido no meio de sugestões de
+# funcionalidade é o mesmo defeito da colisão de `tipo` que este arquivo já pagou.
+# Quem escreve estas é o servidor, ao drenar `dados/pedidos_de_acesso.jsonl` — ver
+# `vez.py` e `scheduler._drenar_pedidos_de_acesso`.
+TIPO_ACESSO = "acesso"
+TIPOS = (TIPO_BUG, TIPO_PEDIDO, TIPO_LIVRE, TIPO_ACESSO)
 
 # Teto do texto. Constante de módulo e não campo de `Settings` porque isto é um piso de
 # sanidade contra colar um arquivo inteiro no campo — não uma preferência a calibrar.

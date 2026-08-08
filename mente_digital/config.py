@@ -1178,6 +1178,23 @@ class Settings(BaseSettings):
     # quando o celular pede (autenticado). Separada da porta do servidor de
     # propósito: os dois coexistem, e o vigia continua ali depois de o app sair.
     vigia_port: int = 8765
+    # O PLANTÃO RESPEITA O JOGO. Com um jogo aberto, `POST /vigia/acordar` RECUSA
+    # levantar o assistente — ~7,7 GB de RAM e a VRAM inteira no meio de uma raid —
+    # e guarda o pedido em `dados/pedidos_de_acesso.jsonl` para não se perder.
+    # Quando o jogo fecha e há alguém esperando, o plantão sobe o app, que avisa
+    # os dois lados. Ver `vez.py`.
+    #
+    # ⚠ LIGADO por default, ao contrário de quase toda função nova daqui. O motivo
+    # é que o padrão ANTIGO já era uma escolha, e a pior das duas: levantar sempre
+    # significa o dono perder a partida por um pedido que podia esperar três
+    # minutos. Aqui ninguém fica sem acesso — o pedido é registrado e respondido —,
+    # então o custo do default é atraso, e o custo do outro é a raid.
+    vigia_respeita_jogo: bool = True
+    # Jogos ALÉM da lista de `jogo_ativo.JOGOS_PADRAO`, separados por vírgula
+    # (ex.: "cs2.exe,valorant.exe"). A lista base é compartilhada com a afinidade
+    # de CCD de propósito: acrescentar um jogo lá passa a valer nos dois lugares,
+    # e duas listas divergiriam no primeiro jogo novo.
+    vigia_jogos_extras: str = ""
     # WATT DA CPU — o arquivo que o AJUDANTE ELEVADO publica (scripts/ajudante_watts.py).
     # VAZIO = `dados/potencia_cpu.json`, derivado de __file__ como todo caminho daqui.
     #

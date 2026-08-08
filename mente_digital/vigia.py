@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:      # só para a anotação: `ssl` é carregado sob demanda, e este
     import ssl         # módulo existe para não carregar o que não vai usar
 
-from mente_digital import acesso, rede
+from mente_digital import acesso, jogo_ativo, rede, vez
 from mente_digital.config import settings
 
 # Quanto tempo o vigia considera que "já mandei subir" ainda vale. O boot leva
@@ -59,20 +59,37 @@ class Veredito:
     """O que fazer com um pedido de acordar. Puro — decidido sem tocar em nada."""
 
     subir: bool
-    estado: str          # "ja_de_pe" | "subindo" | "subindo_agora"
+    estado: str          # "ja_de_pe" | "subindo" | "ocupado" | "subindo_agora"
 
 
-def decidir(servidor_de_pe: bool, subindo_ha: Optional[float]) -> Veredito:
+def decidir(servidor_de_pe: bool, subindo_ha: Optional[float],
+            jogo: Optional[str] = None) -> Veredito:
     """Este pedido deve levantar o `app.py`?
 
-    Três respostas, e as três importam para o celular: já está de pé (entra
-    direto), já mandei subir (mostre a tela de carregamento e espere) e vou subir
-    agora (mostre a tela de carregamento). Puro/testável, como `standby.avaliar`.
+    Quatro respostas, e as quatro importam para o celular: já está de pé (entra
+    direto), já mandei subir (mostre a tela de carregamento e espere), o PC está
+    ocupado (não vai subir agora — deixe o recado) e vou subir agora. Puro/testável,
+    como `standby.avaliar`.
+
+    ⚠ A ORDEM É DELIBERADA e cada troca quebra um caso:
+    - `ja_de_pe` VENCE o jogo. Se o assistente já está no ar, o jogo não é da
+      conta de ninguém: a pessoa já podia usar um segundo atrás, e recusar agora
+      seria derrubá-la do nada.
+    - `subindo` VENCE o jogo. Aqui já mandamos subir (talvez antes de o jogo
+      abrir); dizer "ocupado" seria MENTIRA — o app está vindo de qualquer jeito,
+      e o celular ficaria mostrando "não deu" enquanto a tela do PC acende.
+    - `ocupado` vem por último, e é o único que não tem volta neste tique.
+
+    ⚠ O estado é `ocupado`, NÃO `jogo`. O nome atravessa a rede até o aparelho de
+    outra pessoa; contar a ela o que o dono está fazendo é o espelho do vazamento
+    que o mensageiro inteiro foi desenhado para evitar. Ver `vez.texto_ao_pedinte`.
     """
     if servidor_de_pe:
         return Veredito(False, "ja_de_pe")
     if subindo_ha is not None and subindo_ha < SEGUNDOS_SUBINDO:
         return Veredito(False, "subindo")
+    if jogo:
+        return Veredito(False, "ocupado")
     return Veredito(True, "subindo_agora")
 
 
@@ -128,6 +145,9 @@ class Vigia:
         # Injetável para o teste; em produção nasce None e só é construído se a
         # identidade por aparelho estiver LIGADA (ver `_registro`).
         self._registro_aparelhos = registro
+        # O jogo da passada ANTERIOR. `vez.deve_liberar` age na borda, não no
+        # estado — sem esta lembrança não há transição para detectar.
+        self._ultimo_jogo: Optional[str] = None
         # Trava PRÓPRIA, e não a do `acordar`: `threading.Lock` não é reentrante, e
         # o dia em que alguém autorizar de dentro do `acordar` o plantão travaria
         # para sempre — em silêncio, que é o pior jeito de um vigia falhar.
@@ -156,6 +176,79 @@ class Vigia:
                 self._registro_aparelhos = reg
             return self._registro_aparelhos
 
+    # --- O jogo, e o recado que o pedido deixa --------------------------------
+    def jogo_agora(self) -> Optional[str]:
+        """Que jogo está aberto, ou None. Fail-soft: erro aqui devolve None e o
+        plantão volta a ser o de sempre — recusar o dono por causa de uma leitura
+        de processos que falhou seria trocar um conforto por uma tranca."""
+        if not settings.vigia_respeita_jogo:
+            return None
+        try:
+            alvos = jogo_ativo.JOGOS_PADRAO
+            extras = [j.strip() for j in settings.vigia_jogos_extras.split(",") if j.strip()]
+            return jogo_ativo.detectar(jogo_ativo.processos_em_execucao(),
+                                       set(alvos) | set(extras))
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[VIGIA] não consegui olhar os processos: {exc}", flush=True)
+            return None
+
+    def _arquivo_pedidos(self) -> Path:
+        return vez.arquivo_pedidos(self.raiz)
+
+    def registrar_pedido(self, usuario: str, aparelho: str = "") -> bool:
+        """Deixa o bilhete de quem quis entrar. O pedido NÃO PODE SE PERDER.
+
+        ⚠ ARQUIVO, e não o mensageiro. Escrever a mensagem daqui exigiria
+        `telemetry.Database`, e o valor deste processo é ser barato — há teste em
+        subprocesso que falha se peso entrar. O assistente drena este arquivo
+        quando sobe: a decisão de virar conversa é dele, que já sabe fazê-la.
+
+        Append e não reescrita: dois celulares podem bater juntos (o
+        `ThreadingHTTPServer` atende cada um numa thread), e `open(..., 'a')` com
+        uma linha por vez é o que o sistema de arquivos serializa por nós.
+        """
+        try:
+            caminho = self._arquivo_pedidos()
+            caminho.parent.mkdir(parents=True, exist_ok=True)
+            pedido = vez.Pedido(usuario or vez.ANONIMO, vez.agora_iso(), aparelho)
+            with open(caminho, "a", encoding="utf-8") as fh:
+                fh.write(vez.linha(pedido) + "\n")
+            return True
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[VIGIA] não consegui guardar o pedido: {exc}", flush=True)
+            return False
+
+    def tem_pedido_pendente(self) -> bool:
+        try:
+            return self._arquivo_pedidos().stat().st_size > 0
+        except OSError:
+            return False
+
+    def tique_do_jogo(self) -> bool:
+        """Uma passada do plantão. Devolve se levantou o assistente.
+
+        É aqui que a promessa "quando o jogo fechar, eu te aviso" se cumpre: o
+        assistente está DESLIGADO nessa hora (é a premissa toda), então não há
+        ninguém além do vigia para notar que o jogo saiu.
+
+        A decisão mora em `vez.deve_liberar`, pura, e é uma BORDA: só a transição
+        de "tinha jogo" para "não tem" dispara. Sem isso cada passada tentaria
+        subir um app já de pé.
+        """
+        agora = self.jogo_agora()
+        antes, self._ultimo_jogo = self._ultimo_jogo, agora
+        if not vez.deve_liberar(agora, antes, self.tem_pedido_pendente()):
+            return False
+        print(f"[VIGIA] {antes} fechou e havia gente esperando — subindo o assistente.",
+              flush=True)
+        with self._trava:
+            if self.servidor_de_pe():
+                return False
+            if not subir_app(self.raiz):
+                return False
+            self._mandou_subir_em = self._relogio()
+        return True
+
     def autorizado(self, credencial: Optional[str], host: Optional[str]) -> bool:
         """Este pedido pode levantar o assistente?
 
@@ -167,12 +260,37 @@ class Vigia:
         """
         if not settings.aparelhos_habilitado:
             return acesso.cliente_autorizado(host, credencial, settings.access_token)
+        return self._avaliar(credencial, host).autorizado
+
+    def _avaliar(self, credencial: Optional[str], host: Optional[str]):
         return self._registro().autorizar(
             credencial, host, "/vigia/acordar",
             habilitado=True,
             token_legado=settings.access_token,
             aceita_token_legado=settings.aparelhos_token_legado,
-        ).autorizado
+        )
+
+    def quem_e(self, credencial: Optional[str], host: Optional[str]) -> tuple[str, str]:
+        """(usuário, aparelho) de um pedido JÁ AUTORIZADO. Só para o recado.
+
+        ⚠ Não decide nada — quem decide é `autorizado`, que já rodou. Isto existe
+        porque o recado ao dono precisa de um NOME, e o único nome confiável é o
+        que o gate devolve. Perguntá-lo ao cliente deixaria qualquer um assinar o
+        pedido como outra pessoa.
+
+        ⚠ Com a identidade DESLIGADA não há nome nenhum a dar: o token legado é o
+        mesmo para todos, e por construção não deixa rastro de quem. Devolve
+        vazio, e o recado vira "alguém quis usar" — que é a verdade disponível,
+        não um palpite.
+        """
+        if not settings.aparelhos_habilitado:
+            return "", ""
+        try:
+            v = self._avaliar(credencial, host)
+            return (v.usuario or ""), (v.aparelho_id or "")
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[VIGIA] não consegui identificar quem pediu: {exc}", flush=True)
+            return "", ""
 
     def _subindo_ha(self) -> Optional[float]:
         if self._mandou_subir_em is None:
@@ -189,11 +307,20 @@ class Vigia:
             "porta_servidor": settings.port,
         }
 
-    def acordar(self) -> dict:
+    def acordar(self, usuario: str = "", aparelho: str = "") -> dict:
         """Levanta o app se preciso. Serializado: dois celulares (ou dois tiques
         da mesma tela) chegando juntos não podem disparar dois `app.py`."""
         with self._trava:
-            veredito = decidir(self.servidor_de_pe(), self._subindo_ha())
+            jogo = self.jogo_agora()
+            veredito = decidir(self.servidor_de_pe(), self._subindo_ha(), jogo)
+            if veredito.estado == "ocupado":
+                # O recado é a razão de a recusa ser aceitável. Sem ele o pedinte
+                # ouve "não" e o dono nunca fica sabendo que alguém quis entrar —
+                # que é o estado de hoje, só que agora com o "não" explícito.
+                self.registrar_pedido(usuario, aparelho)
+                self._ultimo_jogo = jogo      # a borda começa a contar daqui
+                return {"estado": "ocupado", "porta_servidor": settings.port,
+                        "aviso": vez.texto_ao_pedinte(False)}
             if not veredito.subir:
                 return {"estado": veredito.estado, "porta_servidor": settings.port}
             if not subir_app(self.raiz):
@@ -239,7 +366,16 @@ def _montar_handler(vigia: Vigia):
                 print("[VIGIA] pedido de acordar RECUSADO (token).", flush=True)
                 self._responder(401, {"erro": "não autorizado"})
                 return
-            self._responder(200, vigia.acordar())
+            # De QUEM é este pedido, para o recado ao dono ("a Ana tentou 3x").
+            # ⚠ A identidade sai da CREDENCIAL já autenticada, nunca de um
+            # cabeçalho que o cliente escolhe — senão qualquer um poderia assinar
+            # o pedido com o nome de outro, e o dono decidiria sobre uma
+            # identidade inventada. É o mesmo princípio de o gate DEVOLVER o
+            # usuário em vez de o chamador declará-lo (ver `aparelhos.Veredito`).
+            token = self.headers.get("X-Mente-Token")
+            host = self.client_address[0] if self.client_address else None
+            quem, aparelho = vigia.quem_e(token, host)
+            self._responder(200, vigia.acordar(quem, aparelho))
 
         def log_message(self, *_args):
             """Silencia o log de acesso da stdlib. O que interessa (recusa, subida)
@@ -437,9 +573,49 @@ def servir(raiz: Path, porta: Optional[int] = None) -> None:
     esquema = "https" if ctx is not None else "http"
     print(f"[VIGIA] de plantão em {esquema}://{settings.host}:{porta} ({protegido}); "
           f"o assistente responde na {settings.port} quando subir.", flush=True)
+    parar = _vigiar_o_jogo(vigia)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        parar.set()
         httpd.server_close()
+
+
+#: De quanto em quanto o plantão olha se o jogo fechou. Generoso de propósito: a
+#: leitura custa um snapshot de processos (Toolhelp), o plantão existe para ser
+#: barato, e ninguém percebe a diferença entre ser avisado 10 s ou 40 s depois de
+#: uma partida acabar. É o oposto da régua do VAD, onde 200 ms se ouvem.
+SEGUNDOS_ENTRE_TIQUES = 20.0
+
+
+def _vigiar_o_jogo(vigia: Vigia, intervalo: float = SEGUNDOS_ENTRE_TIQUES):
+    """Thread que cumpre a metade "eu te aviso quando o jogo fechar".
+
+    ⚠ PRECISA existir aqui e não no assistente: nessa hora o assistente está
+    DESLIGADO — é a premissa inteira da função. Não há mais ninguém no processo
+    para notar que o jogo saiu.
+
+    `daemon=True` porque o dono do processo é o `serve_forever`: quando ele cai
+    (Ctrl-C, logoff), esta thread não pode segurar o encerramento por até um
+    intervalo inteiro. E o `Event.wait` no lugar de `sleep` para que a saída seja
+    imediata em vez de esperar o tique corrente.
+    """
+    parar = threading.Event()
+    if not settings.vigia_respeita_jogo:
+        return parar
+
+    def _laco() -> None:
+        while not parar.wait(intervalo):
+            try:
+                vigia.tique_do_jogo()
+            except Exception as exc:                  # noqa: BLE001
+                # Uma falha de fundo JAMAIS derruba o plantão: o valor dele é
+                # estar de pé quando o celular bater, e um erro ao olhar
+                # processos não pode custar isso. Mesma régua da pesquisa
+                # agendada no `scheduler`.
+                print(f"[VIGIA] tique do jogo falhou: {exc}", flush=True)
+
+    threading.Thread(target=_laco, name="vigia-jogo", daemon=True).start()
+    return parar
