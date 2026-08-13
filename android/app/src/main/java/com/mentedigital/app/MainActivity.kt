@@ -75,6 +75,10 @@ class MainActivity : ComponentActivity() {
                     var consolidando by remember { mutableStateOf(false) }
                     var ocupado by remember { mutableStateOf<String?>(null) }
                     var aviso by remember { mutableStateOf<String?>(null) }
+                    // O plantão recusou levantar o PC porque ele está em uso. Estado
+                    // separado do `aviso` porque a TELA se comporta diferente: não é
+                    // uma legenda a mais numa espera, é o fim da espera. Ver TelaBoot.
+                    var bloqueio by remember { mutableStateOf<String?>(null) }
                     var medidaRepouso by remember { mutableStateOf("") }
                     val escopo = rememberCoroutineScope()
 
@@ -161,7 +165,7 @@ class MainActivity : ComponentActivity() {
                                         // dono está jogando). Duas cópias do texto
                                         // divergiriam, e a que vaza seria esta.
                                         PedidoVigia.OCUPADO -> {
-                                            aviso = resposta.aviso.ifBlank {
+                                            bloqueio = resposta.aviso.ifBlank {
                                                 // Só para servidor de versão antiga, que
                                                 // responde 200 sem o campo. O texto real
                                                 // vem de `vez.texto_ao_pedinte`.
@@ -245,6 +249,12 @@ class MainActivity : ComponentActivity() {
                                 segundos = segundos,           // segundos de PAREDE
                                 escapeOferecido = Boot.ofereceSaida(segundos),
                                 aoForcarEntrada = { forcou = true },
+                                // Estado PRÓPRIO, e não o `aviso`: aquele é uma
+                                // legenda que várias situações escrevem, e a tela
+                                // precisa distinguir "esperando com um recado" de
+                                // "não vai acontecer". Só o plantão dizendo
+                                // `ocupado` preenche isto.
+                                bloqueio = bloqueio.orEmpty(),
                             )
 
                             Tela.DORMINDO -> {
