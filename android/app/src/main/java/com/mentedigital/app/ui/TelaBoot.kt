@@ -40,6 +40,7 @@ fun TelaBoot(
     segundos: Int,
     escapeOferecido: Boolean,
     aoForcarEntrada: () -> Unit,
+    bloqueio: String = "",
 ) {
     val marcos = Boot.marcosDe(saude)
     val (pct, _) = Boot.progresso(marcos)
@@ -53,6 +54,24 @@ fun TelaBoot(
     ) {
         Wordmark(tamanho = 13)
         Spacer(Modifier.height(34.dp))
+        // ⚠ BLOQUEADO NÃO É "ESPERANDO", e a tela precisa dizer isso com o corpo
+        // inteiro, não só com uma linha de texto. Medido ao vivo em 2026-08-08: o
+        // servidor respondeu `ocupado`, o laço parou de perguntar e mesmo assim a
+        // tela seguia com "Acordando a mente", o anel girando e o contador subindo
+        // — os três dizendo "estamos trabalhando" sobre uma espera que nunca
+        // acabaria. O `detalhe` cravava o texto e ignorava o aviso.
+        //
+        // Anel, trilho e lista de serviços são PROGRESSO. Aqui não há progresso a
+        // mostrar: há um recado e um fim de linha.
+        if (bloqueio.isNotBlank()) {
+            Text("PC em uso", fontSize = 22.sp,
+                color = MaterialTheme.colorScheme.onBackground)
+            Spacer(Modifier.height(18.dp))
+            Text(bloqueio, color = Texto2, fontSize = 13.sp)
+            Spacer(Modifier.height(40.dp))
+            Text("100% local · nada sai da sua rede", color = Texto2, fontSize = 11.sp)
+            return@Column
+        }
         Text(Boot.estagio(marcos), fontSize = 22.sp, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(30.dp))
 
