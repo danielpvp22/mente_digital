@@ -250,6 +250,22 @@ def normalizar_codigo(bruto: Optional[str]) -> str:
 # 4 h cobre o caso de uso ("gerei de manhã, ele entra à tarde") sem virar porta aberta.
 VALIDADE_MAX_MINUTOS = 240
 
+#: "Vale ATÉ SER USADO" — o código não expira pelo relógio (dono, 2026-08-13).
+#:
+#: ⚠ ISTO ABRE MÃO DE UM DOS DOIS GUARDAS. `POST /api/aparelhos/parear` é a única
+#: rota sem gate do sistema, e o docstring dela nomeia os dois que a sustentam: USO
+#: ÚNICO e VIDA CURTA. Aqui sobra o primeiro — o código continua morrendo no
+#: primeiro pareamento, então no máximo UMA pessoa entra. O que muda é a JANELA de
+#: exposição: um código de 2 h parado num WhatsApp é alcançável por 2 h; um sem
+#: prazo é alcançável até alguém usá-lo. Quem tiver acesso à conversa antes do
+#: convidado pareia no lugar dele — e, como o código é de uso único, o convidado
+#: descobre o roubo (o dele falha), o que é bem melhor que um acesso silencioso.
+#:
+#: Por que -1 e não 0: `0` já SIGNIFICA "não pediu validade própria" — é o que o
+#: SQLite devolve de campo nunca preenchido, e `validade_efetiva` o trata como
+#: ausência. Reusar o 0 faria todo código antigo virar eterno de uma vez, calado.
+SEM_PRAZO = -1
+
 
 def validar_validade(minutos: int) -> int:
     """Valida a validade pedida para UM código. Levanta em vez de "consertar".
@@ -258,10 +274,17 @@ def validar_validade(minutos: int) -> int:
     consertar sósia de caractere: o servidor escolhendo um número que o dono não pediu é
     ele adivinhando parte de uma decisão de segurança. E o erro aqui é barato — quem lê a
     mensagem está no terminal, com o dedo no comando.
+
+    `SEM_PRAZO` passa: é uma escolha EXPLÍCITA do dono, não um número fora da faixa.
+    A diferença importa — um `--minutos 99999` continua recusado, porque aquilo é
+    dedo escorregando; `--sem-prazo` é alguém dizendo o que quer.
     """
+    if minutos == SEM_PRAZO:
+        return SEM_PRAZO
     if minutos < 1 or minutos > VALIDADE_MAX_MINUTOS:
         raise ValueError(
-            f"validade inválida: {minutos} min — use de 1 a {VALIDADE_MAX_MINUTOS}. "
+            f"validade inválida: {minutos} min — use de 1 a {VALIDADE_MAX_MINUTOS}, "
+            "ou --sem-prazo para um código que vale até ser usado. "
             "O teto existe para 'vida curta' continuar sendo um guarda de verdade "
             "(ver VALIDADE_MAX_MINUTOS em aparelhos.py)."
         )
@@ -288,6 +311,13 @@ def separar_minutos(argv: list) -> tuple:
     i = 0
     while i < len(argv):
         arg = argv[i]
+        if arg == "--sem-prazo":
+            # Flag SEM valor, e de propósito: "sem prazo" não é um número grande,
+            # é a ausência de prazo. Escrevê-la como `--minutos 0` reusaria o
+            # sentinela de "não pediu" e `--minutos 999999` seria um número que a
+            # faixa recusa — os dois esconderiam a decisão dentro de um inteiro.
+            minutos, i = SEM_PRAZO, i + 1
+            continue
         if arg == "--minutos":
             if i + 1 >= len(argv):
                 raise ValueError("--minutos precisa de um número: --minutos 120")
@@ -310,7 +340,14 @@ def validade_efetiva(do_codigo: Optional[int], padrao: int) -> int:
     `None` é a linha do meio da compatibilidade, e é por isso que ele não é "0 minutos":
     todo código emitido ANTES de a coluna existir tem NULL ali e precisa continuar valendo
     exatamente o que valia. Puro — quem lê o banco é o registro.
+
+    ⚠ `SEM_PRAZO` ATRAVESSA em vez de cair no padrão. Sem este ramo o `-1` seria
+    falsy-por-comparação (`> 0` reprova) e o código sem prazo passaria a valer os
+    10 min do `settings` — expirando exatamente o convite que foi emitido para não
+    expirar, e sem erro nenhum para avisar.
     """
+    if do_codigo == SEM_PRAZO:
+        return SEM_PRAZO
     return do_codigo if do_codigo and do_codigo > 0 else padrao
 
 
@@ -320,11 +357,19 @@ def codigo_valido(
     agora: datetime,
     validade_minutos: int,
 ) -> Optional[str]:
-    """None = pode usar; senão o motivo da recusa. Puro."""
+    """None = pode usar; senão o motivo da recusa. Puro.
+
+    ⚠ A ORDEM importa e é a mesma de sempre: `usado` é conferido ANTES do relógio,
+    e continua sendo o guarda que sobra quando o código é `SEM_PRAZO`. Inverter os
+    dois deixaria um código sem prazo já usado responder "expirado" — motivo errado
+    para a recusa certa, que é como uma investigação começa no lugar errado.
+    """
     if emitido_em is None:
         return MOTIVO_CODIGO_INVALIDO
     if usado:
         return MOTIVO_CODIGO_USADO
+    if validade_minutos == SEM_PRAZO:
+        return None
     if agora >= emitido_em + timedelta(minutes=validade_minutos):
         return MOTIVO_CODIGO_EXPIRADO
     return None

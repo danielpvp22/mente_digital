@@ -3,6 +3,7 @@ Gera o CONVITE: um arquivo HTML autocontido para mandar a quem vai usar o assist
 
     python scripts/gerar_convite.py "celular da ana" ana
     python scripts/gerar_convite.py "celular do felipe" felipe --minutos 120
+    python scripts/gerar_convite.py "celular do felipe" felipe --sem-prazo
 
 Sai um `convite_<usuario>.html` em `dados/convites/`. Mande ele + o APK pelo WhatsApp;
 a pessoa abre no celular dela e segue os passos até estar conversando.
@@ -72,6 +73,19 @@ def endereco_do_assistente() -> str:
         return ""
     nome = Path(settings.ssl_cert).stem
     return f"https://{nome}:{settings.port}"
+
+
+def _prazo_em_palavras(validade_min: float) -> str:
+    """A frase do prazo, para o convite não mentir em nenhum dos dois casos.
+
+    PURA. Com `SEM_PRAZO` o `{:.0f}` imprimiria **"Vale -1 minutos"** — um número
+    negativo na única instrução que o convidado precisa entender, e do lado dele
+    isso se lê como convite quebrado. É o mesmo defeito de imprimir um sentinela
+    cru que o `vez.ANONIMO` já pagou: um valor especial precisa de uma FRASE
+    especial, senão ele escapa pela formatação."""
+    if int(validade_min) == regras.SEM_PRAZO:
+        return "Vale <strong>até você usá-lo</strong> (não expira com o tempo)"
+    return f"Vale <strong>{validade_min:.0f} minutos</strong>"
 
 
 def montar_html(apelido: str, usuario: str, codigo: str, endereco: str,
@@ -171,8 +185,8 @@ def montar_html(apelido: str, usuario: str, codigo: str, endereco: str,
        a de mais ninguém.</p>
     <div class="codigo">{e(codigo)}</div>
     <div class="aviso">
-      Vale <strong>{validade_min:.0f} minutos</strong> e serve <strong>uma vez
-      só</strong>. Se expirar, peça outro — não é problema, é de propósito.
+      {_prazo_em_palavras(validade_min)} e serve <strong>uma vez só</strong>.
+      Se não funcionar, peça outro — não é problema, é de propósito.
     </div>
   </li>
 </ol>
@@ -242,7 +256,15 @@ def main(argv: list) -> int:
     )
     print(f"\n  Convite para '{apelido}' (usuário: {usuario}):")
     print(f"     {alvo}")
-    print(f"  Código embutido, válido por {validade:.0f} min e de uso único.")
+    if int(validade) == regras.SEM_PRAZO:
+        print("  Código embutido: NÃO EXPIRA pelo relógio, e é de uso único.")
+        # O aviso é para o DONO, no terminal, e por isso ele existe: o convidado
+        # não tem como avaliar este risco, e a decisão foi de quem lê esta linha.
+        print("  ⚠ Ele vale até alguém usá-lo. Quem alcançar a conversa antes do "
+              "convidado pareia no lugar dele — o uso único faz o convidado "
+              "DESCOBRIR (o dele falha), mas o acesso já terá sido dado.")
+    else:
+        print(f"  Código embutido, válido por {validade:.0f} min e de uso único.")
     if minutos:
         print("  (validade deste código só — os outros seguem no padrão de "
               f"{settings.aparelhos_codigo_validade_minutos} min)")

@@ -197,3 +197,94 @@ def test_flag_sem_numero_ou_com_lixo_falha_em_vez_de_ser_ignorada():
         regras.separar_minutos(["cel", "--minutos", "duas horas"])
     with pytest.raises(ValueError):
         regras.separar_minutos(["cel", "--minutos", "99999"])
+
+
+# --------------------------------------------------------------------------- #
+# `--sem-prazo`: vale ATE SER USADO (dono, 2026-08-13)                         #
+# --------------------------------------------------------------------------- #
+class TestSemPrazo:
+    """⚠ ISTO ABRE MAO DE UM DOS DOIS GUARDAS.
+
+    `POST /api/aparelhos/parear` e a unica rota sem gate, e o docstring dela nomeia
+    os dois que a sustentam: USO UNICO e VIDA CURTA. Aqui sobra o primeiro. Estes
+    testes existem para garantir que o que sobrou continua de pe — um codigo sem
+    prazo que tambem deixasse de ser de uso unico nao teria guarda nenhum."""
+
+    def test_o_uso_unico_continua_valendo(self):
+        """O guarda que SOBRA. Se este cair, a rota fica sem nenhum."""
+        emitido = datetime(2026, 8, 13, 10, 0)
+        assert regras.codigo_valido(emitido, usado=True,
+                                    agora=datetime(2026, 8, 13, 10, 1),
+                                    validade_minutos=regras.SEM_PRAZO) == regras.MOTIVO_CODIGO_USADO
+
+    def test_usado_vence_o_relogio_no_motivo(self):
+        """A ordem importa: inverter faria um codigo sem prazo JA USADO responder
+        "expirado" — motivo errado para a recusa certa, que e como uma investigacao
+        comeca no lugar errado."""
+        emitido = datetime(2026, 8, 13, 10, 0)
+        motivo = regras.codigo_valido(emitido, usado=True,
+                                      agora=datetime(2027, 1, 1),
+                                      validade_minutos=regras.SEM_PRAZO)
+        assert motivo == regras.MOTIVO_CODIGO_USADO
+
+    @pytest.mark.parametrize("depois", [
+        datetime(2026, 8, 13, 10, 11),      # passou o padrao de 10 min
+        datetime(2026, 8, 13, 15, 0),       # passou o teto de 4 h
+        datetime(2027, 8, 13, 10, 0),       # um ANO depois
+    ])
+    def test_nao_expira_pelo_relogio(self, depois):
+        emitido = datetime(2026, 8, 13, 10, 0)
+        assert regras.codigo_valido(emitido, usado=False, agora=depois,
+                                    validade_minutos=regras.SEM_PRAZO) is None
+
+    def test_validade_efetiva_ATRAVESSA_o_sem_prazo(self):
+        """⚠ O ramo mais facil de esquecer. `-1` reprova em `> 0`, entao sem o ramo
+        proprio ele cairia no padrao do settings — expirando em 10 min exatamente o
+        convite emitido para nao expirar, e sem erro nenhum avisando."""
+        assert regras.validade_efetiva(regras.SEM_PRAZO, 10) == regras.SEM_PRAZO
+
+    def test_o_sentinela_NAO_e_zero(self):
+        """`0` ja significa "nao pediu validade propria" — e o que o SQLite devolve
+        de campo nunca preenchido. Reusa-lo faria todo codigo antigo virar eterno de
+        uma vez, calado."""
+        assert regras.SEM_PRAZO != 0
+        assert regras.validade_efetiva(0, 10) == 10
+        assert regras.validade_efetiva(None, 10) == 10
+
+    def test_numero_absurdo_continua_RECUSADO(self):
+        """`--sem-prazo` e uma escolha explicita; `--minutos 99999` e dedo
+        escorregando. A distincao e o ponto — se o numero grande virasse "sem
+        prazo", a decisao de seguranca aconteceria por acidente."""
+        with pytest.raises(ValueError):
+            regras.validar_validade(99999)
+        with pytest.raises(ValueError):
+            regras.validar_validade(-5)          # so o -1 EXATO passa
+        assert regras.validar_validade(regras.SEM_PRAZO) == regras.SEM_PRAZO
+
+    def test_a_mensagem_de_erro_ENSINA_a_saida(self):
+        """Quem digitou 99999 queria "que dure": a recusa tem de dizer como."""
+        with pytest.raises(ValueError, match="sem-prazo"):
+            regras.validar_validade(99999)
+
+    def test_a_flag_sai_do_argv_sem_valor(self):
+        resto, minutos = regras.separar_minutos(["cel do felipe", "--sem-prazo", "felipe"])
+        assert resto == ["cel do felipe", "felipe"]
+        assert minutos == regras.SEM_PRAZO
+
+    def test_o_convite_nao_imprime_o_sentinela_cru(self):
+        """⚠ Com `{:.0f}` o convite diria "Vale -1 minutos" — um numero negativo na
+        unica instrucao que o convidado precisa entender. Mesmo defeito que o
+        `vez.ANONIMO` pagou: valor especial precisa de FRASE especial, senao escapa
+        pela formatacao."""
+        import importlib.util
+        from pathlib import Path
+        caminho = Path(__file__).resolve().parent.parent / "scripts" / "gerar_convite.py"
+        spec = importlib.util.spec_from_file_location("gerar_convite", caminho)
+        gc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gc)
+
+        html = gc.montar_html("cel do felipe", "felipe", "ABC123", "", regras.SEM_PRAZO)
+        assert "-1" not in html
+        assert "até você usá-lo" in html
+        # e o caso normal nao regrediu
+        assert "120 minutos" in gc.montar_html("x", "y", "ABC", "", 120)

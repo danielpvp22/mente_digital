@@ -276,7 +276,12 @@ class RegistroAparelhos:
                     "VALUES (?, ?, NULL, ?, ?, ?)",
                     (codigo, self._agora().isoformat(), apelido, dono, validade),
                 )
-            prazo = f" válido por {validade} min" if validade else ""
+            # ⚠ O sentinela precisa de FRASE em TODO lugar que o imprime, não só no
+            # que alguém lembrou. Aqui ele vazava como "válido por -1 min" — e esta
+            # linha é a trilha que o dono relê meses depois para saber o que emitiu.
+            # Um "-1" ali se lê como bug, não como decisão.
+            prazo = (" que vale até ser usado" if validade == regras.SEM_PRAZO
+                     else f" válido por {validade} min" if validade else "")
             telemetry.track(
                 "APARELHOS",
                 f"Código de pareamento emitido para '{apelido}' (usuário {dono}){prazo}.")
