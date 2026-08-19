@@ -93,8 +93,14 @@ def montar_html(apelido: str, usuario: str, codigo: str, endereco: str,
     """O convite. PURO — recebe tudo pronto, para o teste conferir o conteúdo sem
     emitir código de verdade nem tocar o banco."""
     e = html.escape
+    # ⚠ A dica de formato ("com o https:// e a porta") vive DENTRO do ramo que tem
+    # endereço, e não no texto do passo. Sem cert não há endereço alcançável, e o convite
+    # admite isso em vez de inventar — falar de `https://` ali seria ensinar o formato de
+    # um valor que não existe, que é a mesma família do palpite que o teste proíbe.
     aviso_endereco = (
-        f'<code class="alvo">{e(endereco)}</code>' if endereco else
+        f'<code class="alvo">{e(endereco)}</code>'
+        '<p>Copie inteiro, com o começo e a porta — sem isso o app não conecta.</p>'
+        if endereco else
         '<span class="ruim">(o assistente ainda não tem TLS configurado — '
         'peça o endereço a quem te convidou)</span>'
     )
@@ -175,19 +181,49 @@ def montar_html(apelido: str, usuario: str, codigo: str, endereco: str,
 
   <li class="passo">
     <h2>Aponte o app para o assistente</h2>
-    <p>Na primeira tela, informe o endereço:</p>
+    <p>Na tela de configuração, no campo <strong>Endereço do servidor</strong>,
+       digite exatamente isto:</p>
     {aviso_endereco}
+    <div class="aviso">
+      O campo mostra <code>192.168.0.10:8000</code> em cinza claro. Isso é só um
+      <em>exemplo</em> apagado, não um valor — e não funciona. Digite o endereço
+      acima por cima dele.
+    </div>
   </li>
 
   <li class="passo">
-    <h2>Cole o código de pareamento</h2>
-    <p>É ele que dá a você uma identidade própria — sua memória não se mistura com
-       a de mais ninguém.</p>
+    <h2>Deixe o campo de token VAZIO</h2>
+    <p>Logo abaixo do endereço há um campo
+       <strong>&ldquo;Token de acesso (ou credencial do aparelho)&rdquo;</strong>.
+       <strong>Não escreva nada nele.</strong></p>
+    <p>Ele parece obrigatório e não é: o app o preenche <em>sozinho</em> quando o
+       pareamento do passo seguinte der certo. O token é o resultado, não a senha
+       de entrada — e é por isso que ninguém vai te mandar um.</p>
+  </li>
+
+  <li class="passo">
+    <h2>Cole o código de pareamento e toque no botão</h2>
+    <p>Role um pouco até a seção <strong>Pareamento por código</strong>, cole o
+       código abaixo no campo <strong>Código de pareamento</strong> e toque em
+       <strong>&ldquo;Parear este aparelho&rdquo;</strong>.</p>
     <div class="codigo">{e(codigo)}</div>
+    <p>É ele que te dá uma identidade própria — sua memória não se mistura com a
+       de mais ninguém.</p>
+    <div class="aviso">
+      <strong>O botão está apagado?</strong> Ele só acende com o endereço do
+      passo 4 preenchido e o código completo. Volte e confira o endereço.
+    </div>
     <div class="aviso">
       {_prazo_em_palavras(validade_min)} e serve <strong>uma vez só</strong>.
       Se não funcionar, peça outro — não é problema, é de propósito.
     </div>
+  </li>
+
+  <li class="passo">
+    <h2>Salvar e entrar</h2>
+    <p>Deu certo? O campo de token agora tem um texto começando por
+       <code>mdk1.</code> — foi o app que escreveu, é a sua credencial. Toque em
+       <strong>Salvar e entrar</strong> e pode conversar.</p>
   </li>
 </ol>
 

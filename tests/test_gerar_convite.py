@@ -101,6 +101,56 @@ def test_o_codigo_aparece_uma_vez_e_visivel():
     assert pagina.count("XYZ-789") == 1
 
 
+def test_manda_deixar_o_campo_de_TOKEN_vazio():
+    """⚑ Medido em 2026-08-19, com uma pessoa real parada na tela: o convite ensinava
+    "informe o endereço" e "cole o código", e a tela de configuração tem TRÊS campos —
+    o do meio, "Token de acesso", parece obrigatório e não é. Quem chega ali sem aviso
+    pede um token a quem convidou, e o dono não tem um para dar: a única coisa que
+    caberia ali é o `MENTE_ACCESS_TOKEN`, que faz a pessoa entrar COMO O DONO, lendo a
+    memória dele. O convite tinha de dizer "deixe vazio" e não dizia."""
+    pagina = _html()
+
+    assert "Token de acesso" in pagina
+    assert "vazio" in pagina.lower()
+    assert "sozinho" in pagina, "tem de explicar que o app preenche o token ele mesmo"
+
+
+def test_nomeia_o_BOTAO_que_a_pessoa_precisa_tocar():
+    """"Cole o código" não basta: colar não pareia. O que pareia é o botão — e ele fica
+    numa seção própria, abaixo do campo de token, que a pessoa não vê se não rolar."""
+    pagina = _html()
+
+    assert "Parear este aparelho" in pagina
+    assert "Pareamento por código" in pagina
+
+
+def test_explica_o_botao_APAGADO_em_vez_de_deixar_a_pessoa_travada():
+    """O botão só habilita com endereço preenchido (`base.isNotBlank()` no TelaConfig).
+    Sem essa frase, o sintoma é "o app não deixa eu parear" e a causa está dois passos
+    acima, invisível."""
+    assert "apagado" in _html().lower()
+
+
+def test_avisa_que_o_IP_esmaecido_do_campo_NAO_e_um_valor():
+    """O campo traz `192.168.0.10:8000` como placeholder. Desde o TLS esse endereço não
+    serve (o cert cobre o nome do Tailscale e o IP é rejeitado por nome), e um exemplo
+    apagado dentro de um campo vazio é lido como "já está preenchido"."""
+    pagina = _html()
+
+    assert "192.168.0.10:8000" in pagina
+    assert "exemplo" in pagina.lower()
+
+
+def test_sem_TLS_nao_ensina_o_formato_de_um_endereco_que_nao_existe():
+    """Gêmeo do teste abaixo: sem cert o convite admite que não sabe. Falar de
+    `https://` ali seria ensinar o formato de um valor que ele não tem — o palpite
+    disfarçado de instrução."""
+    pagina = _html(endereco="")
+
+    assert "https://" not in pagina.split("Aponte o app")[1][:600]
+    assert "peça o endereço" in pagina.lower()
+
+
 def test_endereco_sai_do_CERTIFICADO_e_nao_de_config_solta(monkeypatch):
     """O nome tem de ser o MESMO para o qual o cert foi emitido — derivá-lo do
     arquivo faz os dois baterem por construção. Um campo separado poderia divergir,
